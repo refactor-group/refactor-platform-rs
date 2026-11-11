@@ -11,9 +11,10 @@ use utoipa::ToSchema;
 
 use log::*;
 
-use super::actions_user;
 use super::error::{EntityApiErrorKind, Error};
+use super::{actions_user, coaching_relationship};
 use entity::actions::{ActiveModel, Entity, Model};
+use entity::coaching_relationships::Visibility;
 use entity::{actions, coaching_relationships, coaching_sessions, status::Status, Id};
 
 /// An action with its associated assignee user IDs.
@@ -311,8 +312,9 @@ pub struct FindByUserParams {
     pub scope: Scope,
     pub coaching_session_id: Option<Id>,
     pub coaching_relationship_id: Option<Id>,
-    /// Limits results to relationships this user coaches with the target user as coachee.
-    pub coached_by: Option<Id>,
+    /// Limits results to relationships this user coaches with the target user as coachee,
+    /// who is still a member of the relationship's organization.
+    pub coached_by: Option<Visibility>,
     pub goal_id: Option<Id>,
     pub status: Option<entity::status::Status>,
     pub assignee_filter: AssigneeFilter,
@@ -389,10 +391,8 @@ pub async fn find_by_user(
         }
     }
 
-    if let Some(coach_id) = params.coached_by {
-        select = select
-            .filter(coaching_relationships::Column::CoachId.eq(coach_id))
-            .filter(coaching_relationships::Column::CoacheeId.eq(user_id));
+    if let Some(coach) = &params.coached_by {
+        select = select.filter(coaching_relationship::coached_by(coach, user_id));
     }
 
     if let Some(session_id) = params.coaching_session_id {

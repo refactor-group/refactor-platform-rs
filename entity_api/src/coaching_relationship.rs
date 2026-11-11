@@ -6,7 +6,7 @@ use crate::user;
 use chrono::Utc;
 use entity::{
     coachees, coaches,
-    coaching_relationships::{self, ActiveModel, Entity, Model},
+    coaching_relationships::{self, ActiveModel, Entity, Model, Visibility},
     users, Id,
 };
 use log::*;
@@ -344,21 +344,29 @@ pub async fn find_by_user_and_organization(
     Ok(relationships)
 }
 
+/// Relationships where `coach` coaches `coachee_id` and is still a member of the
+/// relationship's organization, unless `coach` is a SuperAdmin.
+pub fn coached_by(coach: &Visibility, coachee_id: Id) -> Condition {
+    Condition::all()
+        .add(coaching_relationships::Column::CoachId.eq(coach.user_id))
+        .add(coaching_relationships::Column::CoacheeId.eq(coachee_id))
+        .add_option((!coach.is_super_admin).then(|| {
+            coaching_relationships::Column::OrganizationId
+                .is_in(coach.member_org_ids.iter().copied())
+        }))
+}
+
 /// Checks if a user is a coach of another user.
 ///
-/// Returns `true` if there exists a coaching relationship where
-/// `potential_coach_id` is the coach and `potential_coachee_id` is the coachee.
+/// Returns `true` if `coach` coaches `potential_coachee_id` in a relationship they may
+/// still access (see [`coached_by`]).
 pub async fn is_coach_of(
     db: &DatabaseConnection,
-    potential_coach_id: Id,
+    coach: &Visibility,
     potential_coachee_id: Id,
 ) -> Result<bool, Error> {
     let relationship = coaching_relationships::Entity::find()
-        .filter(
-            Condition::all()
-                .add(coaching_relationships::Column::CoachId.eq(potential_coach_id))
-                .add(coaching_relationships::Column::CoacheeId.eq(potential_coachee_id)),
-        )
+        .filter(coached_by(coach, potential_coachee_id))
         .one(db)
         .await?;
 
@@ -745,15 +753,26 @@ mod tests {
         Ok(())
     }
 
+    /// A non-SuperAdmin caller who is a member of `organization_id`.
+    fn member(user_id: Id, organization_id: Id) -> Visibility {
+        Visibility {
+            user_id,
+            is_super_admin: false,
+            admin_org_ids: vec![],
+            member_org_ids: vec![organization_id],
+        }
+    }
+
     #[tokio::test]
     async fn is_coach_of_returns_true_when_relationship_exists() -> Result<(), Error> {
         let now = chrono::Utc::now();
         let coach_id = Id::new_v4();
         let coachee_id = Id::new_v4();
 
+        let organization_id = Id::new_v4();
         let relationship = Model {
             id: Id::new_v4(),
-            organization_id: Id::new_v4(),
+            organization_id,
             coach_id,
             coachee_id,
             slug: "test-relationship".to_string(),
@@ -765,7 +784,7 @@ mod tests {
             .append_query_results(vec![vec![relationship]])
             .into_connection();
 
-        let result = is_coach_of(&db, coach_id, coachee_id).await?;
+        let result = is_coach_of(&db, &member(coach_id, organization_id), coachee_id).await?;
 
         assert!(result);
         Ok(())
@@ -781,7 +800,7 @@ mod tests {
             .append_query_results(vec![Vec::<Model>::new()])
             .into_connection();
 
-        let result = is_coach_of(&db, coach_id, coachee_id).await?;
+        let result = is_coach_of(&db, &member(coach_id, Id::new_v4()), coachee_id).await?;
 
         assert!(!result);
         Ok(())
@@ -798,8 +817,8 @@ mod tests {
             .append_query_results(vec![Vec::<Model>::new()])
             .into_connection();
 
-        // coachee_id is passed as potential_coach, coach_id as potential_coachee
-        let result = is_coach_of(&db, coachee_id, coach_id).await?;
+        // coachee_id is passed as the coach, coach_id as potential_coachee
+        let result = is_coach_of(&db, &member(coachee_id, Id::new_v4()), coach_id).await?;
 
         assert!(!result);
         Ok(())

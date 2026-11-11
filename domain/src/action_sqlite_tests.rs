@@ -1,5 +1,6 @@
 //! A user's actions read against a real SQL engine: `coached_by` keeps only the
-//! relationships that coach has with the user as coachee.
+//! relationships that coach has with the user as coachee, in organizations the coach
+//! still belongs to.
 
 use std::collections::BTreeSet;
 
@@ -8,6 +9,7 @@ use entity::{actions, actions_users, coaching_relationships, coaching_sessions, 
 use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 
 use super::*;
+use crate::coaching_relationships::Visibility;
 use crate::test_utils::sqlite::{database, seed_organization, seed_user, within_time_limit};
 
 /// COACH, COACHEE, OTHER_COACH and MENTEE across two organizations, with actions A1 to A6.
@@ -17,6 +19,8 @@ struct World {
     coachee: Id,
     other_coach: Id,
     mentee: Id,
+    o1: Id,
+    o2: Id,
     r1: Id,
     r2: Id,
     a: [Id; 6],
@@ -134,6 +138,8 @@ async fn world() -> World {
         coachee,
         other_coach,
         mentee,
+        o1,
+        o2,
         r1,
         r2,
         a,
@@ -150,13 +156,28 @@ impl World {
             .collect())
     }
 
+    /// `user_id` as a coach holding a role in both organizations.
+    fn in_both_orgs(&self, user_id: Id) -> Visibility {
+        member_of(user_id, &[self.o1, self.o2])
+    }
+
     /// Actions A`n` for each `n` in `numbers`.
     fn actions(&self, numbers: &[usize]) -> BTreeSet<Id> {
         numbers.iter().map(|n| self.a[n - 1]).collect()
     }
 }
 
-fn params(scope: Scope, coached_by: Option<Id>) -> FindByUserParams {
+/// A non-SuperAdmin `user_id` holding a role in each of `organization_ids`.
+fn member_of(user_id: Id, organization_ids: &[Id]) -> Visibility {
+    Visibility {
+        user_id,
+        is_super_admin: false,
+        admin_org_ids: vec![],
+        member_org_ids: organization_ids.to_vec(),
+    }
+}
+
+fn params(scope: Scope, coached_by: Option<Visibility>) -> FindByUserParams {
     FindByUserParams {
         scope,
         coached_by,
@@ -169,7 +190,9 @@ fn params(scope: Scope, coached_by: Option<Id>) -> FindByUserParams {
 async fn a_coach_sees_only_their_relationships_with_the_user() -> Result<(), Error> {
     within_time_limit(async {
         let w = world().await;
-        let ids = w.ids(params(Scope::Sessions, Some(w.coach))).await?;
+        let ids = w
+            .ids(params(Scope::Sessions, Some(w.in_both_orgs(w.coach))))
+            .await?;
         assert_eq!(ids, w.actions(&[1, 2, 6]));
         Ok::<(), Error>(())
     })
@@ -181,7 +204,9 @@ async fn a_coach_sees_only_their_relationships_with_the_user() -> Result<(), Err
 async fn a_coach_sees_only_assignments_from_their_relationships() -> Result<(), Error> {
     within_time_limit(async {
         let w = world().await;
-        let ids = w.ids(params(Scope::Assigned, Some(w.coach))).await?;
+        let ids = w
+            .ids(params(Scope::Assigned, Some(w.in_both_orgs(w.coach))))
+            .await?;
         assert_eq!(ids, w.actions(&[1, 6]));
         Ok::<(), Error>(())
     })
@@ -193,7 +218,9 @@ async fn a_coach_sees_only_assignments_from_their_relationships() -> Result<(), 
 async fn another_coach_sees_only_their_own_relationship() -> Result<(), Error> {
     within_time_limit(async {
         let w = world().await;
-        let ids = w.ids(params(Scope::Sessions, Some(w.other_coach))).await?;
+        let ids = w
+            .ids(params(Scope::Sessions, Some(w.in_both_orgs(w.other_coach))))
+            .await?;
         assert_eq!(ids, w.actions(&[3, 4]));
         Ok::<(), Error>(())
     })
@@ -208,7 +235,7 @@ async fn a_coach_naming_another_coachs_relationship_sees_nothing() -> Result<(),
         let ids = w
             .ids(FindByUserParams {
                 coaching_relationship_id: Some(w.r2),
-                ..params(Scope::Sessions, Some(w.coach))
+                ..params(Scope::Sessions, Some(w.in_both_orgs(w.coach)))
             })
             .await?;
         assert_eq!(ids, BTreeSet::new());
@@ -225,7 +252,7 @@ async fn a_coach_naming_their_relationship_sees_its_assignments() -> Result<(), 
         let ids = w
             .ids(FindByUserParams {
                 coaching_relationship_id: Some(w.r1),
-                ..params(Scope::Assigned, Some(w.coach))
+                ..params(Scope::Assigned, Some(w.in_both_orgs(w.coach)))
             })
             .await?;
         assert_eq!(ids, w.actions(&[1]));
@@ -239,7 +266,9 @@ async fn a_coach_naming_their_relationship_sees_its_assignments() -> Result<(), 
 async fn the_users_own_coachee_sees_nothing_as_their_coach() -> Result<(), Error> {
     within_time_limit(async {
         let w = world().await;
-        let ids = w.ids(params(Scope::Sessions, Some(w.mentee))).await?;
+        let ids = w
+            .ids(params(Scope::Sessions, Some(w.in_both_orgs(w.mentee))))
+            .await?;
         assert_eq!(ids, BTreeSet::new());
         Ok::<(), Error>(())
     })
@@ -255,8 +284,65 @@ async fn a_coach_does_not_see_assignments_from_their_other_coachees() -> Result<
         let (_, s6) = relationship(&w.db, organization_id, w.coach, w.mentee).await;
         action(&w.db, s6, w.coach, Some(w.coachee)).await;
 
-        let ids = w.ids(params(Scope::Assigned, Some(w.coach))).await?;
+        let ids = w
+            .ids(params(Scope::Assigned, Some(w.in_both_orgs(w.coach))))
+            .await?;
         assert_eq!(ids, w.actions(&[1, 6]));
+        Ok::<(), Error>(())
+    })
+    .await
+}
+
+/// ACT-24j
+#[tokio::test]
+async fn a_coach_in_one_org_sees_only_that_orgs_relationship() -> Result<(), Error> {
+    within_time_limit(async {
+        let w = world().await;
+        let coach = member_of(w.coach, &[w.o1]);
+        let ids = w.ids(params(Scope::Sessions, Some(coach))).await?;
+        assert_eq!(ids, w.actions(&[1, 2]));
+        Ok::<(), Error>(())
+    })
+    .await
+}
+
+/// ACT-24k
+#[tokio::test]
+async fn a_coach_in_the_other_org_sees_only_its_assignments() -> Result<(), Error> {
+    within_time_limit(async {
+        let w = world().await;
+        let coach = member_of(w.coach, &[w.o2]);
+        let ids = w.ids(params(Scope::Assigned, Some(coach))).await?;
+        assert_eq!(ids, w.actions(&[6]));
+        Ok::<(), Error>(())
+    })
+    .await
+}
+
+/// ACT-24l
+#[tokio::test]
+async fn a_coach_in_no_org_sees_nothing() -> Result<(), Error> {
+    within_time_limit(async {
+        let w = world().await;
+        let coach = member_of(w.coach, &[]);
+        let ids = w.ids(params(Scope::Sessions, Some(coach))).await?;
+        assert_eq!(ids, BTreeSet::new());
+        Ok::<(), Error>(())
+    })
+    .await
+}
+
+/// ACT-24m
+#[tokio::test]
+async fn a_super_admin_coach_with_no_org_role_sees_their_relationships() -> Result<(), Error> {
+    within_time_limit(async {
+        let w = world().await;
+        let coach = Visibility {
+            is_super_admin: true,
+            ..member_of(w.coach, &[])
+        };
+        let ids = w.ids(params(Scope::Sessions, Some(coach))).await?;
+        assert_eq!(ids, w.actions(&[1, 2, 6]));
         Ok::<(), Error>(())
     })
     .await

@@ -8,6 +8,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
+use domain::search::visibility_for;
 use domain::{action as ActionApi, Id, QuerySort};
 use service::config::ApiVersion;
 
@@ -70,7 +71,7 @@ pub async fn index(
         },
         coaching_session_id: params.coaching_session_id,
         coaching_relationship_id: params.coaching_relationship_id,
-        coached_by: (user.id != user_id).then_some(user.id),
+        coached_by: (user.id != user_id).then(|| visibility_for(&user)),
         goal_id: params.goal_id,
         status: params.status,
         assignee_filter: match params.assignee_filter {

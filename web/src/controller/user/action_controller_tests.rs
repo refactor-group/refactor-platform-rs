@@ -1,5 +1,6 @@
 //! A user's actions read through the router and `protect::users::actions`: a coach's query
-//! is held to their own relationship with the user, a user's own query is not.
+//! is held to their own relationship with the user in orgs they still belong to, a user's
+//! own query is not.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -7,7 +8,7 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use axum::{middleware::from_fn_with_state, routing::get, Router};
 use chrono::Utc;
-use domain::{actions, Id};
+use domain::{actions, coaching_relationships, Id};
 use sea_orm::{DatabaseConnection, MockDatabase, Value};
 
 use crate::controller::user::action_controller::index;
@@ -16,6 +17,9 @@ use crate::{protect, AppState};
 
 /// Marks a WHERE clause that holds the relationship's coach to one user.
 const COACH_FILTER: &str = r#"AND "coaching_relationships"."coach_id" ="#;
+
+/// Marks a WHERE clause that holds the coach to orgs they still belong to.
+const ORG_FILTER: &str = r#""coaching_relationships"."organization_id" IN ("#;
 
 fn routes(db: &Arc<DatabaseConnection>) -> Router<AppState> {
     Router::new()
@@ -47,6 +51,16 @@ fn reaching_actions(w: &World, caller: Caller) -> MockDatabase {
     }
 }
 
+/// The SQL of every statement `db` ran.
+fn statements(db: &DatabaseConnection) -> Vec<String> {
+    db.clone()
+        .into_transaction_log()
+        .iter()
+        .flat_map(|t| t.statements().to_vec())
+        .map(|s| s.sql)
+        .collect()
+}
+
 /// GETs the coachee's actions as `email` and returns the actions query's WHERE clause.
 async fn actions_where(w: &World, db: MockDatabase, email: &str, query: &str) -> String {
     let db = Arc::new(
@@ -57,12 +71,8 @@ async fn actions_where(w: &World, db: MockDatabase, email: &str, query: &str) ->
     let response = support::send(routes(&db), &db, email, "GET", &uri, None).await;
     assert_eq!(response.status(), StatusCode::OK);
 
-    let sql = (*db)
-        .clone()
-        .into_transaction_log()
-        .iter()
-        .flat_map(|t| t.statements().to_vec())
-        .map(|s| s.sql)
+    let sql = statements(&db)
+        .into_iter()
         .find(|sql| sql.contains(r#"FROM "refactor_platform"."actions""#))
         .expect("the actions query ran");
     sql.split_once(" WHERE ")
@@ -79,6 +89,7 @@ async fn a_coach_reading_sessions_scope_is_held_to_their_relationship() {
         clause.contains(r#"AND "coaching_relationships"."coachee_id" ="#),
         "{clause}"
     );
+    assert!(clause.contains(ORG_FILTER), "{clause}");
 }
 
 #[tokio::test]
@@ -93,6 +104,44 @@ async fn a_coach_reading_assigned_scope_is_held_to_their_relationship() {
     assert!(
         clause.contains(r#""coaching_relationships"."coachee_id" ="#),
         "{clause}"
+    );
+    assert!(clause.contains(ORG_FILTER), "{clause}");
+}
+
+/// ACT-24i
+#[tokio::test]
+async fn a_coach_removed_from_the_relationships_org_is_forbidden() {
+    let w = support::world();
+    // What the guard's coach check returns once org membership is required.
+    let db = Arc::new(
+        w.signed_in(Caller::Removed)
+            .append_query_results([Vec::<coaching_relationships::Model>::new()])
+            .into_connection(),
+    );
+    let uri = format!("/users/{}/actions", w.coachee.id);
+    let response = support::send(routes(&db), &db, &w.coach.email, "GET", &uri, None).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let sql = statements(&db);
+    let check = sql
+        .iter()
+        .find_map(|sql| {
+            sql.contains(r#"FROM "refactor_platform"."coaching_relationships""#)
+                .then(|| sql.split_once(" WHERE "))
+                .flatten()
+        })
+        .map(|(_, clause)| clause)
+        .expect("the coach check ran");
+    // An empty membership list still adds a condition that matches nothing.
+    let after_pair = check
+        .split_once(r#""coaching_relationships"."coachee_id" = "#)
+        .map(|(_, rest)| rest)
+        .expect("the check names the coachee");
+    assert!(after_pair.contains(" AND "), "{check}");
+    assert!(
+        !sql.iter()
+            .any(|sql| sql.contains(r#"FROM "refactor_platform"."actions""#)),
+        "no actions query ran"
     );
 }
 

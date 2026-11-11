@@ -5,6 +5,7 @@ use axum::{
     middleware::Next,
     response::IntoResponse,
 };
+use domain::search::visibility_for;
 use domain::{coaching_relationship, Id};
 use log::*;
 
@@ -12,7 +13,8 @@ use log::*;
 ///
 /// Access is granted if:
 /// - The authenticated user is requesting their own actions (self-access)
-/// - The authenticated user is a coach of the target user
+/// - The authenticated user is a coach of the target user and still a member of that
+///   relationship's organization
 pub(crate) async fn index(
     State(app_state): State<AppState>,
     AuthenticatedUser(authenticated_user): AuthenticatedUser,
@@ -28,7 +30,7 @@ pub(crate) async fn index(
     // Allow coach to access coachee's actions
     match coaching_relationship::is_coach_of(
         app_state.db_conn_ref(),
-        authenticated_user.id,
+        &visibility_for(&authenticated_user),
         user_id,
     )
     .await
