@@ -1,3 +1,4 @@
+pub(crate) mod action_access;
 pub(crate) mod authenticated_user;
 pub(crate) mod coaching_relationship_access;
 pub(crate) mod coaching_session_access;
