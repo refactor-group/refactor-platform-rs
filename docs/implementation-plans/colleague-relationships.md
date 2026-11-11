@@ -24,7 +24,7 @@ Every coach and coachee permission works exactly as it does today when this is d
 | Frontend companion plan's coach/coachee rows in Playwright | After phases 3 and 6 |
 
 The only sanctioned changes to coaching behavior, each approved separately: the phase S
-fixes (phase S verifies first that no admin flow depends on today's behavior), an
+relationship authorization fixes (the matrix rows marked `[tightened]`), an
 action-visibility correction if phase 0 finds today's rule unintended (approved separately,
 landing before 0b), and the phase 6 response shape change (same access, different fields).
 
@@ -33,9 +33,14 @@ landing before 0b), and the phase 6 response shape change (same access, differen
 Each phase is its own PR; phase 1 is two (migration and backfill, then code). Order: S, 0,
 0b, 1, 2, 3, 3b, 4, 4b, E, 5, 6. Phases S and 0 can run in parallel.
 
-**S. Tighten two existing authorization checks.** Ships first, so the phase 0b baseline
-records the corrected behavior. Each fix is test first: a test that fails on `main`, then the
-fix, in separate commits. Details are tracked privately until released.
+**S. Relationship authorization fixes.** Its own security PR, ahead of the colleague work, so
+the phase 0b baseline records the corrected behavior. Notes, agreements, actions, goals and
+goal links require a participant of the relationship who is still an org member; action
+assignees must be the relationship's coach or coachee; the batch session-goals read
+authorizes every id; `POST /coaching_sessions` is coach only (colleagues later get session and
+series creation through `has_authority`); series creation also requires org membership; a
+coach reading a user's actions sees only their own relationship with that user. One commit per
+area, each test first. The access matrix marks every changed row `[tightened]`.
 
 **0. Capability audit** (read-only). Enumerate every route, background job and email, and who
 may act or receive under coach/coachee, plus where each check lives today (`protect/`
@@ -58,8 +63,9 @@ existing checks, since a route with no check is invisible to grep.
 **0b. Baseline tests.** Every coach/coachee row of the matrix becomes a test that sends a real
 request through the router as each caller and asserts status codes and returned ids (never
 full bodies, so phase 6 shape changes don't touch frozen files), plus email and reminder
-recipients. Rows that depend on which rows a query selects use the SQLite tier. Written against
-`main`, must pass there, then frozen.
+recipients. Rows that depend on which rows a query selects use the SQLite tier. Includes every
+`[tightened]` row, so the phase S rules are locked in as regressions too. Written against
+`main` after phase S merges, must pass there, then frozen.
 
 **1. Record who scheduled each session** (no visible change).
 
