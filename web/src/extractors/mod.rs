@@ -18,6 +18,10 @@ pub(crate) mod transcript_suggestion_access;
 
 #[cfg(test)]
 #[cfg(feature = "mock")]
+pub(crate) mod relationship_access_test_support;
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
 mod session_renewal_tests;
 
 #[cfg(test)]
