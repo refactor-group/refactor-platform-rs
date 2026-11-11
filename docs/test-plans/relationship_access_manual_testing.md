@@ -274,10 +274,10 @@ How to read the tables:
 | ACT-15 | GET /actions?coaching_session_id=S1 | COACHEE | 200, A1 A2 A3 | `web/src/protect/actions.rs:34`; `web/src/controller/action_controller.rs:300` | [rows] no assignee narrowing here |
 | ACT-16 | GET /actions?coaching_session_id=S1 | non-participants | 403 | `web/src/protect/actions.rs:34` | |
 | ACT-17 | GET /actions?coaching_session_id=S3 | REMOVED | 403 | `web/src/protect/actions.rs:34` | |
-| ACT-18 | GET /users/{COACHEE_ID}/actions (scope=sessions, default) | COACHEE | 200, A1 A2 A3 A4 A5 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:356` | [rows] self access; no assignee narrowing |
-| ACT-19 | GET /users/{COACHEE_ID}/actions?scope=assigned | COACHEE | 200, A2 A5 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:347` | [rows] |
-| ACT-20 | GET /users/{COACH_ID}/actions (scope=sessions) | COACH | 200, A1 A2 A3 A6 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:356` | [rows] `scope=assigned`: A1 |
-| ACT-21 | GET /users/{REMOVED_ID}/actions (scope=sessions) | REMOVED | 200, A6 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:356` | [rows] self route has no membership filter |
+| ACT-18 | GET /users/{COACHEE_ID}/actions (scope=sessions, default) | COACHEE | 200, A1 A2 A3 A4 A5 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:359` | [rows] self access; no assignee narrowing |
+| ACT-19 | GET /users/{COACHEE_ID}/actions?scope=assigned | COACHEE | 200, A2 A5 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:350` | [rows] |
+| ACT-20 | GET /users/{COACH_ID}/actions (scope=sessions) | COACH | 200, A1 A2 A3 A6 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:359` | [rows] `scope=assigned`: A1 |
+| ACT-21 | GET /users/{REMOVED_ID}/actions (scope=sessions) | REMOVED | 200, A6 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:359` | [rows] self route has no membership filter |
 | ACT-22 | GET /users/{COACHEE_ID}/actions (scope=sessions) | COACH | 200, A1 A2 A3; not A4 A5 | `web/src/protect/users/actions.rs:16`; `web/src/controller/user/action_controller.rs:74`; `entity_api/src/action.rs:395`; `entity_api/src/coaching_relationship.rs:349` | [rows] [tightened] only relationships where the caller coaches this user |
 | ACT-23 | GET /users/{COACHEE_ID}/actions?scope=assigned | COACH | 200, A2; not A5 | `web/src/protect/users/actions.rs:16`; `web/src/controller/user/action_controller.rs:74`; `entity_api/src/action.rs:395`; `entity_api/src/coaching_relationship.rs:349` | [rows] [tightened] |
 | ACT-24 | GET /users/{COACHEE_ID}/actions (scope=sessions) | OTHER_COACH | 200, A4 A5; not A1 A2 A3 | `web/src/protect/users/actions.rs:16`; `web/src/controller/user/action_controller.rs:74`; `entity_api/src/action.rs:395`; `entity_api/src/coaching_relationship.rs:349` | [rows] [tightened] |
@@ -443,7 +443,7 @@ Organization membership changes decide `grants_access_to`; these rows create or 
 |---|---|---|---|---|---|
 | ORG-01 | POST /organizations/O1/users `{..., coach_id: COACH}` | ADMIN, SUPER | 200 (201), new user plus relationship COACH to new user | `web/src/extractors/organization_admin_access.rs:42`; `domain/src/user.rs:156` | Sends MAIL-12 |
 | ORG-02 | POST /organizations/O1/users | COACH, COACHEE, MEMBER, OUTSIDER | 403 | `web/src/extractors/organization_admin_access.rs:48` | |
-| ORG-03 | POST /organizations/O1/users/{user}/role `{role: User, coach_id: COACH}` | ADMIN, SUPER | 200 (201), membership plus relationship | `web/src/controller/organization/user/role_controller.rs:85`; `domain/src/user_role.rs:77` | Target must be administrable by the caller, else 404. Sends MAIL-13 |
+| ORG-03 | POST /organizations/O1/users/{user}/role `{role: User, coach_id: COACH}` | ADMIN, SUPER | 200 (201), membership plus relationship | `web/src/controller/organization/user/role_controller.rs:80`; `domain/src/user_role.rs:77` | Target must be administrable by the caller, else 404. Sends MAIL-13 |
 | ORG-04 | DELETE /organizations/O1/users/{REMOVED_ID}/role | ADMIN, SUPER | 200 (204) | `web/src/extractors/organization_admin_access.rs:42`; `domain/src/user_role.rs:107` | R3 is kept; REMOVED loses every `grants_access_to` route |
 | ORG-05 | DELETE /organizations/O1/users/{user}/role | COACH, COACHEE, MEMBER, OUTSIDER | 403 | `web/src/extractors/organization_admin_access.rs:48` | |
 | ORG-06 | DELETE /organizations/O1/users/{user} (single-org user) | ADMIN, SUPER | 200 (204) | `web/src/extractors/organization_admin_access.rs:42`; `domain/src/user.rs:237` | Deletes the account and every relationship it is in. Multi-org user: 409 |
