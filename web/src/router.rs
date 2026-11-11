@@ -195,6 +195,8 @@ use utoipa_rapidoc::RapiDoc;
                 domain::actions::Model,
                 domain::agreements::Model,
                 domain::coaching_relationship::CoachingRelationshipWithUserNames,
+                domain::coaching_relationship::Membership,
+                domain::coaching_relationship::WithMembership,
                 domain::coaching_relationships::Model,
                 domain::coaching_session::CountByMonth,
                 domain::coaching_session::EnrichedSession,

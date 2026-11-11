@@ -378,7 +378,10 @@ async fn include_relationship_loads_coach_and_coachee() -> Result<(), Error> {
         let [session] = sessions.as_slice() else {
             panic!("expected one session, got {sessions:?}");
         };
-        assert_eq!(session.relationship.as_ref().map(|r| r.id), Some(rel.id));
+        assert_eq!(
+            session.relationship.as_ref().map(|r| r.relationship.id),
+            Some(rel.id)
+        );
         assert_eq!(session.coach.as_ref().map(|u| u.id), Some(rel.coach_id));
         assert_eq!(session.coachee.as_ref().map(|u| u.id), Some(rel.coachee_id));
         Ok::<(), Error>(())

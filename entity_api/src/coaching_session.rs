@@ -1,5 +1,5 @@
 use super::error::{EntityApiErrorKind, Error};
-use crate::coaching_relationship::accessible_to;
+use crate::coaching_relationship::{accessible_to, find_memberships, Membership, WithMembership};
 use crate::duration::Duration;
 use crate::mutate::UpdateMap;
 use chrono::NaiveDateTime;
@@ -961,8 +961,9 @@ pub async fn find_counts_by_month_for_user(
 pub struct EnrichedSession {
     #[serde(flatten)]
     pub session: Model,
+    /// The session's relationship and whether each participant is still a member.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub relationship: Option<coaching_relationships::Model>,
+    pub relationship: Option<WithMembership>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coach: Option<users::Model>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1312,6 +1313,7 @@ async fn enrich(
 #[derive(Debug, Default)]
 struct RelatedData {
     relationships: HashMap<Id, coaching_relationships::Model>,
+    memberships: HashMap<Id, Membership>,
     coaches: HashMap<Id, users::Model>,
     coachees: HashMap<Id, users::Model>,
     organizations: HashMap<Id, organizations::Model>,
@@ -1341,8 +1343,17 @@ async fn load_related_data(
         data.relationships = batch_load_relationships(db, &relationship_ids).await?;
     }
 
-    // Load users (coaches and coachees) if relationship is included
+    // Load memberships and users (coaches and coachees) if relationship is included
     if includes.relationship {
+        let relationships: Vec<coaching_relationships::Model> =
+            data.relationships.values().cloned().collect();
+        let memberships = find_memberships(db, &relationships).await?;
+        data.memberships = relationships
+            .iter()
+            .map(|r| r.id)
+            .zip(memberships)
+            .collect();
+
         let coach_ids: Vec<Id> = data.relationships.values().map(|r| r.coach_id).collect();
         let coachee_ids: Vec<Id> = data.relationships.values().map(|r| r.coachee_id).collect();
 
@@ -1629,6 +1640,15 @@ fn assemble_enriched_session(
                     last_session_date,
                 })
         });
+
+    let relationship = relationship.map(|relationship| WithMembership {
+        membership: related
+            .memberships
+            .get(&relationship.id)
+            .copied()
+            .unwrap_or_default(),
+        relationship,
+    });
 
     EnrichedSession {
         session,

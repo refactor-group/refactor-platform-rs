@@ -203,7 +203,107 @@ pub async fn notify_member_ids(
     .await
 }
 
+/// Whether each participant still holds a role in the relationship's organization.
+///
+/// The same test as [`notify_member_ids`], so `true` means a write naming that
+/// participant is not refused for membership.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, ToSchema)]
+#[schema(as = domain::coaching_relationship::Membership)]
+pub struct Membership {
+    /// Whether the coach still holds a role in the relationship's organization.
+    pub coach_is_member: bool,
+    /// Whether the coachee still holds a role in the relationship's organization.
+    pub coachee_is_member: bool,
+}
+
+/// A coaching relationship with its participants' [`Membership`].
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+#[schema(as = domain::coaching_relationship::WithMembership)]
+pub struct WithMembership {
+    #[serde(flatten)]
+    pub relationship: Model,
+    #[serde(flatten)]
+    pub membership: Membership,
+}
+
+/// A coaching relationship's organization and participants.
+pub trait Participants {
+    fn organization_id(&self) -> Id;
+    fn coach_id(&self) -> Id;
+    fn coachee_id(&self) -> Id;
+}
+
+impl Participants for Model {
+    fn organization_id(&self) -> Id {
+        self.organization_id
+    }
+    fn coach_id(&self) -> Id {
+        self.coach_id
+    }
+    fn coachee_id(&self) -> Id {
+        self.coachee_id
+    }
+}
+
+impl Participants for CoachingRelationshipWithUserNames {
+    fn organization_id(&self) -> Id {
+        self.organization_id
+    }
+    fn coach_id(&self) -> Id {
+        self.coach_id
+    }
+    fn coachee_id(&self) -> Id {
+        self.coachee_id
+    }
+}
+
+/// Each relationship's [`Membership`], in input order, from one membership query.
+pub async fn find_memberships<R: Participants>(
+    db: &impl ConnectionTrait,
+    relationships: &[R],
+) -> Result<Vec<Membership>, Error> {
+    let pairs: Vec<(Id, Id)> = relationships
+        .iter()
+        .flat_map(|r| {
+            [
+                (r.coach_id(), r.organization_id()),
+                (r.coachee_id(), r.organization_id()),
+            ]
+        })
+        .collect();
+    let members = crate::user_role::organization_memberships(db, &pairs).await?;
+
+    Ok(relationships
+        .iter()
+        .map(|r| Membership {
+            coach_is_member: members.contains(&(r.coach_id(), r.organization_id())),
+            coachee_is_member: members.contains(&(r.coachee_id(), r.organization_id())),
+        })
+        .collect())
+}
+
+/// `relationships` with their participants' membership filled in.
+async fn with_membership(
+    db: &impl ConnectionTrait,
+    relationships: Vec<CoachingRelationshipWithUserNames>,
+) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
+    let memberships = find_memberships(db, &relationships).await?;
+    Ok(relationships
+        .into_iter()
+        .zip(memberships)
+        .map(
+            |(relationship, membership)| CoachingRelationshipWithUserNames {
+                coach_is_member: membership.coach_is_member,
+                coachee_is_member: membership.coachee_is_member,
+                ..relationship
+            },
+        )
+        .collect())
+}
+
 /// Pairs a coaching relationship with the names of its coach and coachee.
+///
+/// Only `create` builds one, after refusing unless both hold a role in the organization.
 fn with_user_names(
     coaching_relationship: Model,
     coach: &users::Model,
@@ -211,6 +311,7 @@ fn with_user_names(
 ) -> CoachingRelationshipWithUserNames {
     CoachingRelationshipWithUserNames {
         id: coaching_relationship.id,
+        organization_id: coaching_relationship.organization_id,
         coach_id: coaching_relationship.coach_id,
         coachee_id: coaching_relationship.coachee_id,
         coach_first_name: coach.first_name.clone(),
@@ -219,6 +320,8 @@ fn with_user_names(
         coachee_last_name: coachee.last_name.clone(),
         created_at: coaching_relationship.created_at,
         updated_at: coaching_relationship.updated_at,
+        coach_is_member: true,
+        coachee_is_member: true,
     }
 }
 
@@ -430,7 +533,7 @@ pub async fn find_by_organization_with_user_names(
         .column_as(Expr::cust("coachees.last_name"), "coachee_last_name")
         .into_model::<CoachingRelationshipWithUserNames>();
 
-    Ok(query.all(db).await?)
+    with_membership(db, query.all(db).await?).await
 }
 
 pub async fn find_by_user_and_organization_with_user_names(
@@ -471,7 +574,7 @@ pub async fn find_by_user_and_organization_with_user_names(
         .column_as(Expr::cust("coachees.last_name"), "coachee_last_name")
         .into_model::<CoachingRelationshipWithUserNames>();
 
-    Ok(query.all(db).await?)
+    with_membership(db, query.all(db).await?).await
 }
 
 pub async fn get_relationship_with_user_names(
@@ -506,7 +609,11 @@ pub async fn get_relationship_with_user_names(
         .column_as(Expr::cust("coachees.last_name"), "coachee_last_name")
         .into_model::<CoachingRelationshipWithUserNames>();
 
-    Ok(query.one(db).await?)
+    Ok(
+        with_membership(db, query.one(db).await?.into_iter().collect())
+            .await?
+            .pop(),
+    )
 }
 
 pub async fn by_coaching_relationship(
@@ -608,7 +715,7 @@ pub async fn find_by_user_id_with_user_names(
         .column_as(Expr::cust("coachees.last_name"), "coachee_last_name")
         .into_model::<CoachingRelationshipWithUserNames>();
 
-    Ok(query.all(db).await?)
+    with_membership(db, query.all(db).await?).await
 }
 
 // A convenient combined struct that holds the results of looking up the Users associated
@@ -617,6 +724,8 @@ pub async fn find_by_user_id_with_user_names(
 #[schema(as = domain::coaching_relationship::CoachingRelationshipWithUserNames)]
 pub struct CoachingRelationshipWithUserNames {
     pub id: Id,
+    #[schema(ignore)]
+    pub organization_id: Id,
     pub coach_id: Id,
     pub coachee_id: Id,
     pub coach_first_name: String,
@@ -625,6 +734,12 @@ pub struct CoachingRelationshipWithUserNames {
     pub coachee_last_name: String,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
+    /// Whether the coach still holds a role in the relationship's organization.
+    #[sea_orm(skip)]
+    pub coach_is_member: bool,
+    /// Whether the coachee still holds a role in the relationship's organization.
+    #[sea_orm(skip)]
+    pub coachee_is_member: bool,
 }
 
 // serialize the CoachingRelationshipUserWithNames struct so that it can be used in the API
@@ -634,7 +749,7 @@ impl Serialize for CoachingRelationshipWithUserNames {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("CoachingRelationship", 9)?;
+        let mut state = serializer.serialize_struct("CoachingRelationship", 11)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("coach_id", &self.coach_id)?;
         state.serialize_field("coachee_id", &self.coachee_id)?;
@@ -644,6 +759,8 @@ impl Serialize for CoachingRelationshipWithUserNames {
         state.serialize_field("coachee_last_name", &self.coachee_last_name)?;
         state.serialize_field("created_at", &self.created_at)?;
         state.serialize_field("updated_at", &self.updated_at)?;
+        state.serialize_field("coach_is_member", &self.coach_is_member)?;
+        state.serialize_field("coachee_is_member", &self.coachee_is_member)?;
         state.end()
     }
 }
@@ -922,3 +1039,8 @@ mod reuse_tests;
 #[cfg(feature = "mock")]
 #[path = "coaching_relationship_race_tests.rs"]
 mod race_tests;
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "coaching_relationship_membership_tests.rs"]
+mod membership_tests;
