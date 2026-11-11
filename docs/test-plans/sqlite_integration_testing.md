@@ -178,7 +178,11 @@ default flag feature that pulls in no SQLite code.)
   (`domain/src/transcript_suggestion/review_sqlite_tests.rs`). The organization
   relationship list reports `coach_is_member` and `coachee_is_member` per participant,
   including to an org admin when the coach was removed
-  (`domain/src/coaching_relationship_membership_sqlite_tests.rs`).
+  (`domain/src/coaching_relationship_membership_sqlite_tests.rs`). Those fields agree with the
+  notify filter for a member, a removed user, a user with a role only in another
+  organization, a global super admin and an org admin, and a session read with
+  `include=relationship` marks a removed coachee
+  (`domain/src/coaching_session_sqlite_tests.rs`).
 - **The coaching session image purge**, below.
 
 ### The coaching session image purge
