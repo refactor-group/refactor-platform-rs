@@ -5,8 +5,26 @@ that reads or writes relationship-scoped data, per caller, with where the rule i
 It is the regression reference for rs#399: coach and coachee rows must answer the same before
 and after that work. Plan: [`colleague-relationships.md`](../implementation-plans/colleague-relationships.md).
 
-Rows record what the code does today, not what it should do. Row ids are stable; never
-renumber them. Phase 4 adds colleague rows; there are none yet.
+Rows record what the code does today, plus the rules tightened by the relationship
+authorization security PR (`fix/relationship-scoped-authorization`), which lands before the
+rs#399 baseline is frozen. Rows it changes or adds are marked `[tightened]`; their
+`Enforced at` cells are filled in once it lands. Row ids are stable; never renumber them.
+Phase 4 adds colleague rows; there are none yet.
+
+Rules the security PR adds:
+
+- Notes, agreements and actions, read or written by id or created for a session: the caller
+  must be a participant of that session's relationship and still a member of its
+  organization (`grants_access_to`). Unknown id: 404. Otherwise: 403.
+- Action assignees must be the relationship's coach or coachee. Anyone else: 422, nothing
+  written, no email.
+- Goals created for a relationship, and goal links on a session: same participant rule. A
+  goal can only be linked to a session in its own relationship.
+- The batch session-goals read authorizes every session id, not only the first.
+- `POST /coaching_sessions`: only the relationship's coach, still a member of its
+  organization. Series creation also requires that membership.
+- `GET /users/{id}/actions` by a coach of that user: only actions from relationships where
+  the caller coaches that user.
 
 > [!WARNING]
 > Several rows mutate or delete data, and the `MAIL` rows send real mail when Resend is
@@ -157,12 +175,12 @@ How to read the tables:
 | SES-06 | GET /coaching_sessions/S3 | REMOVED | 403 | `web/src/extractors/coaching_session_access.rs:108` | |
 | SES-07 | POST /coaching_sessions/S1/view | COACH, COACHEE | 200, prior marker | `web/src/extractors/coaching_session_access.rs:108` | Per-caller marker |
 | SES-08 | POST /coaching_sessions/S1/view | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:108` | |
-| SES-09 | POST /coaching_sessions `{coaching_relationship_id: R1}` | COACH | TBD (pending fix) | `web/src/controller/coaching_session_controller.rs:172`; `domain/src/coaching_session.rs:79` | Pending fix; overseer confirms the rule. Sends MAIL-01 |
-| SES-10 | POST /coaching_sessions `{coaching_relationship_id: R1}` | COACHEE | TBD (pending fix) | same as SES-09 | Pending fix |
-| SES-11 | POST /coaching_sessions `{coaching_relationship_id: R1}` | MEMBER, OTHER_COACH | TBD (pending fix) | same as SES-09 | Pending fix |
-| SES-12 | POST /coaching_sessions `{coaching_relationship_id: R1}` | ADMIN, SUPER | TBD (pending fix) | same as SES-09 | Pending fix |
-| SES-13 | POST /coaching_sessions `{coaching_relationship_id: R1}` | OUTSIDER | TBD (pending fix) | same as SES-09 | Pending fix |
-| SES-14 | POST /coaching_sessions `{coaching_relationship_id: R3}` | REMOVED | TBD (pending fix) | same as SES-09 | Pending fix |
+| SES-09 | POST /coaching_sessions `{coaching_relationship_id: R1}` | COACH | 200 (201), new session in R1 | security PR, pending | [tightened] Coach only, still a member. Sends MAIL-01 |
+| SES-10 | POST /coaching_sessions `{coaching_relationship_id: R1}` | COACHEE | 403 | security PR, pending | [tightened] Coachee cannot create; colleagues will (has_authority, rs#399 phase 3) |
+| SES-11 | POST /coaching_sessions `{coaching_relationship_id: R1}` | MEMBER, OTHER_COACH | 403 | security PR, pending | [tightened] Unknown relationship: 404 |
+| SES-12 | POST /coaching_sessions `{coaching_relationship_id: R1}` | ADMIN, SUPER | 403 | security PR, pending | [tightened] |
+| SES-13 | POST /coaching_sessions `{coaching_relationship_id: R1}` | OUTSIDER | 403 | security PR, pending | [tightened] |
+| SES-14 | POST /coaching_sessions `{coaching_relationship_id: R3}` | REMOVED | 403 | security PR, pending | [tightened] Not the coach, and no longer a member |
 | SES-15 | PUT /coaching_sessions/S1 | COACH | 200 (204) | `web/src/protect/coaching_sessions.rs:129` | Coach only. A date change queues JOB-02 |
 | SES-16 | PUT /coaching_sessions/S1 | COACHEE | 403 | `web/src/protect/coaching_sessions.rs:129` | |
 | SES-17 | PUT /coaching_sessions/S1 | non-participants | 403 | `web/src/protect/coaching_sessions.rs:129` | Unknown session: 404 |
@@ -188,7 +206,7 @@ How to read the tables:
 |---|---|---|---|---|---|
 | SER-01 | POST /coaching_session_series `{coaching_relationship_id: R1}` | COACH | 200 (201), series and its sessions | `domain/src/coaching_session_series.rs:92` | Sends MAIL-05 |
 | SER-02 | POST /coaching_session_series `{coaching_relationship_id: R1}` | COACHEE | 403 | `domain/src/coaching_session_series.rs:92` | |
-| SER-03 | POST /coaching_session_series `{coaching_relationship_id: R1}` | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403 | `domain/src/coaching_session_series.rs:92` | Unknown relationship: 404. Check compares `coach_id` only, no membership |
+| SER-03 | POST /coaching_session_series `{coaching_relationship_id: R1}` | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403 | `domain/src/coaching_session_series.rs:92` | Unknown relationship: 404. [tightened] Coach check now also requires membership, see SER-16 |
 | SER-04 | GET /coaching_session_series?coaching_relationship_id=R1 | COACH, COACHEE | 200, SR1 | `web/src/extractors/coaching_session_series_access.rs:88` | [rows] |
 | SER-05 | GET /coaching_session_series?coaching_relationship_id=R1 | non-participants | 403 | `web/src/extractors/coaching_session_series_access.rs:88` | |
 | SER-06 | GET /coaching_session_series/SR1 | COACH, COACHEE | 200, SR1 and its sessions | `web/src/extractors/coaching_session_series_access.rs:36` | |
@@ -201,6 +219,7 @@ How to read the tables:
 | SER-13 | DELETE /coaching_session_series/SR1 | COACHEE, non-participants | 403 | `web/src/extractors/coaching_session_series_access.rs:110` | |
 | SER-14 | POST /coaching_session_series/SR1/resend_invite | COACH | 204 | `web/src/extractors/coaching_session_series_access.rs:110` | Sends MAIL-09 |
 | SER-15 | POST /coaching_session_series/SR1/resend_invite | COACHEE, non-participants | 403 | `web/src/extractors/coaching_session_series_access.rs:110` | |
+| SER-16 | POST /coaching_session_series `{coaching_relationship_id: R1}` | COACH after removal from O1 | 403 | security PR, pending | [tightened] Run last, or on a disposable relationship: remove the coach from O1 first |
 
 ### 4.4 Notes (`NOTE`)
 
@@ -209,9 +228,13 @@ How to read the tables:
 | NOTE-01 | GET /notes?coaching_session_id=S1 | COACH, COACHEE | 200, N1 | `web/src/protect/notes.rs:34` | [rows] |
 | NOTE-02 | GET /notes?coaching_session_id=S1 | non-participants | 403 | `web/src/protect/notes.rs:34` | |
 | NOTE-03 | GET /notes?coaching_session_id=S3 | REMOVED | 403 | `web/src/protect/notes.rs:34` | |
-| NOTE-04 | GET /notes/N1 | any authenticated caller | 200, N1 | none (`web/src/controller/note_controller.rs:141`) | No relationship check |
-| NOTE-05 | POST /notes `{coaching_session_id: S1}` | any authenticated caller | 200 (201), new note | none (`web/src/controller/note_controller.rs:34`) | No relationship check |
-| NOTE-06 | PUT /notes/N1 | any authenticated caller | 200, N1 updated | none (`web/src/controller/note_controller.rs:69`) | No relationship check |
+| NOTE-04 | GET /notes/N1 | COACH, COACHEE | 200, N1 | security PR, pending | [tightened] |
+| NOTE-05 | POST /notes `{coaching_session_id: S1}` | COACH, COACHEE | 200 (201), new note | security PR, pending | [tightened] |
+| NOTE-06 | PUT /notes/N1 | COACH, COACHEE | 200, N1 updated | security PR, pending | [tightened] |
+| NOTE-07 | GET /notes/N1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403 | security PR, pending | [tightened] Unknown note: 404 |
+| NOTE-08 | POST /notes `{coaching_session_id: S1}` | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, nothing written | security PR, pending | [tightened] Unknown session: 404 |
+| NOTE-09 | PUT /notes/N1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, N1 unchanged | security PR, pending | [tightened] |
+| NOTE-10 | GET, PUT a note in S3; POST `{coaching_session_id: S3}` | REMOVED | 403 | security PR, pending | [tightened] |
 
 ### 4.5 Agreements (`AGR`)
 
@@ -220,10 +243,14 @@ How to read the tables:
 | AGR-01 | GET /agreements?coaching_session_id=S1 | COACH, COACHEE | 200, AG1 | `web/src/protect/agreements.rs:29` | [rows] |
 | AGR-02 | GET /agreements?coaching_session_id=S1 | non-participants | 403 | `web/src/protect/agreements.rs:29` | |
 | AGR-03 | GET /agreements?coaching_session_id=S3 | REMOVED | 403 | `web/src/protect/agreements.rs:29` | |
-| AGR-04 | GET /agreements/AG1 | any authenticated caller | 200, AG1 | none (`web/src/controller/agreement_controller.rs:82`) | No relationship check |
-| AGR-05 | POST /agreements `{coaching_session_id: S1}` | any authenticated caller | 200 (201), new agreement | none (`web/src/controller/agreement_controller.rs:37`) | No relationship check |
-| AGR-06 | PUT /agreements/AG1 | any authenticated caller | 200, AG1 updated | none (`web/src/controller/agreement_controller.rs:112`) | No relationship check |
-| AGR-07 | DELETE /agreements/AG1 | any authenticated caller | 200, `{id}` | none (`web/src/controller/agreement_controller.rs:196`) | No relationship check |
+| AGR-04 | GET /agreements/AG1 | COACH, COACHEE | 200, AG1 | security PR, pending | [tightened] |
+| AGR-05 | POST /agreements `{coaching_session_id: S1}` | COACH, COACHEE | 200 (201), new agreement | security PR, pending | [tightened] |
+| AGR-06 | PUT /agreements/AG1 | COACH, COACHEE | 200, AG1 updated | security PR, pending | [tightened] |
+| AGR-07 | DELETE /agreements/AG1 | COACH, COACHEE | 200, `{id}` | security PR, pending | [tightened] Run last in this table |
+| AGR-08 | GET /agreements/AG1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403 | security PR, pending | [tightened] Unknown agreement: 404 |
+| AGR-09 | POST /agreements `{coaching_session_id: S1}` | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, nothing written | security PR, pending | [tightened] Unknown session: 404 |
+| AGR-10 | PUT, DELETE /agreements/AG1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, AG1 unchanged | security PR, pending | [tightened] |
+| AGR-11 | GET, PUT, DELETE an agreement in S3; POST `{coaching_session_id: S3}` | REMOVED | 403 | security PR, pending | [tightened] |
 
 ### 4.6 Actions (`ACT`)
 
@@ -250,16 +277,21 @@ How to read the tables:
 | ACT-19 | GET /users/{COACHEE_ID}/actions?scope=assigned | COACHEE | 200, A2 A5 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:347` | [rows] |
 | ACT-20 | GET /users/{COACH_ID}/actions (scope=sessions) | COACH | 200, A1 A2 A3 A6 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:356` | [rows] `scope=assigned`: A1 |
 | ACT-21 | GET /users/{REMOVED_ID}/actions (scope=sessions) | REMOVED | 200, A6 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:356` | [rows] self route has no membership filter |
-| ACT-22 | GET /users/{COACHEE_ID}/actions (scope=sessions) | COACH | 200, A1 A2 A3; not A4 A5 | `web/src/protect/users/actions.rs:16` | [rows] post-fix: only relationships where the caller coaches this user |
-| ACT-23 | GET /users/{COACHEE_ID}/actions?scope=assigned | COACH | 200, A2; not A5 | `web/src/protect/users/actions.rs:16` | [rows] post-fix |
-| ACT-24 | GET /users/{COACHEE_ID}/actions (scope=sessions) | OTHER_COACH | 200, A4 A5; not A1 A2 A3 | `web/src/protect/users/actions.rs:16` | [rows] post-fix |
-| ACT-25 | GET /users/{COACHEE_ID}/actions | MEMBER, ADMIN, SUPER | 403 | `web/src/protect/users/actions.rs:16` | Post-fix |
-| ACT-26 | GET /users/{COACH_ID}/actions | COACHEE | 403 | `web/src/protect/users/actions.rs:16` | Post-fix; a coachee is not the coach's coach |
-| ACT-27 | GET /actions/A1 | any authenticated caller | 200, A1 | none (`web/src/controller/action_controller.rs:113`) | No relationship check |
-| ACT-28 | POST /actions `{coaching_session_id: S1, assignee_ids}` | any authenticated caller | 200 (201), new action | none (`web/src/controller/action_controller.rs:61`) | No relationship check; assignees not validated. Sends MAIL-11 |
-| ACT-29 | PUT /actions/A1 | any authenticated caller | 200, A1 updated | none (`web/src/controller/action_controller.rs:182`) | No relationship check. Newly added assignees get MAIL-11 |
-| ACT-30 | PUT /actions/A1/status?value=completed | any authenticated caller | 200, A1 | none (`web/src/controller/action_controller.rs:239`) | No relationship check |
-| ACT-31 | DELETE /actions/A1 | any authenticated caller | 200, `{id}` | none (`web/src/controller/action_controller.rs:326`) | No relationship check |
+| ACT-22 | GET /users/{COACHEE_ID}/actions (scope=sessions) | COACH | 200, A1 A2 A3; not A4 A5 | `web/src/protect/users/actions.rs:16` | [rows] [tightened] only relationships where the caller coaches this user |
+| ACT-23 | GET /users/{COACHEE_ID}/actions?scope=assigned | COACH | 200, A2; not A5 | `web/src/protect/users/actions.rs:16` | [rows] [tightened] |
+| ACT-24 | GET /users/{COACHEE_ID}/actions (scope=sessions) | OTHER_COACH | 200, A4 A5; not A1 A2 A3 | `web/src/protect/users/actions.rs:16` | [rows] [tightened] |
+| ACT-25 | GET /users/{COACHEE_ID}/actions | MEMBER, ADMIN, SUPER | 403 | `web/src/protect/users/actions.rs:16` | [tightened] |
+| ACT-26 | GET /users/{COACH_ID}/actions | COACHEE | 403 | `web/src/protect/users/actions.rs:16` | [tightened] A coachee is not the coach's coach |
+| ACT-27 | GET /actions/A1 | COACH, COACHEE | 200, A1 | security PR, pending | [tightened] |
+| ACT-28 | POST /actions `{coaching_session_id: S1, assignee_ids: [COACHEE_ID]}` | COACH, COACHEE | 200 (201), new action | security PR, pending | [tightened] Sends MAIL-11 |
+| ACT-29 | PUT /actions/A1 | COACH, COACHEE | 200, A1 updated | security PR, pending | [tightened] Newly added assignees get MAIL-11 |
+| ACT-30 | PUT /actions/A1/status?value=completed | COACH, COACHEE | 200, A1 | security PR, pending | [tightened] |
+| ACT-31 | DELETE /actions/A1 | COACH, COACHEE | 200, `{id}` | security PR, pending | [tightened] Run last in this table |
+| ACT-32 | GET /actions/A1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403 | security PR, pending | [tightened] Unknown action: 404 |
+| ACT-33 | POST /actions `{coaching_session_id: S1}` | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, nothing written, no email | security PR, pending | [tightened] Unknown session: 404 |
+| ACT-34 | PUT /actions/A1, PUT /actions/A1/status, DELETE /actions/A1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, A1 unchanged | security PR, pending | [tightened] |
+| ACT-35 | GET, PUT, DELETE A6; POST `{coaching_session_id: S3}` | REMOVED | 403 | security PR, pending | [tightened] |
+| ACT-36 | POST /actions `{coaching_session_id: S1, assignee_ids: [MEMBER_ID]}`; PUT /actions/A3 adding MEMBER_ID | COACH | 422, nothing written, no email | security PR, pending | [tightened] Assignees must be the relationship's coach or coachee |
 
 ### 4.7 Goals (`GOAL`)
 
@@ -274,14 +306,14 @@ How to read the tables:
 | GOAL-07 | DELETE /goals/G1 | COACH, COACHEE | 200, `{id}` | `web/src/protect/goals.rs:73` | Either participant |
 | GOAL-08 | PUT, DELETE /goals/G1 | non-participants | 403 | `web/src/protect/goals.rs:73` | |
 | GOAL-09 | GET /goals/G1/sessions | COACH, COACHEE | 200, S1 | `web/src/protect/goals.rs:73` | [rows] |
-| GOAL-10 | POST /goals `{coaching_relationship_id: R1}` | any authenticated caller | 200 (201), new goal | none (`web/src/controller/goal_controller.rs:68`) | No relationship check |
+| GOAL-10 | POST /goals `{coaching_relationship_id: R1}` | COACH, COACHEE | 200 (201), new goal | security PR, pending | [tightened] Non-participants: GOAL-25 |
 | GOAL-11 | GET /coaching_sessions/S1/goals | COACH, COACHEE | 200, G1 | `web/src/protect/goals.rs:114` | [rows] |
 | GOAL-12 | GET /coaching_sessions/S1/goals | non-participants | 403 | `web/src/protect/goals.rs:114` | |
-| GOAL-13 | POST /coaching_sessions/S1/goals `{goal_id: G1}` | any authenticated caller | 200 (201), link | none (`web/src/controller/coaching_session/goal_controller.rs:41`) | No relationship check |
-| GOAL-14 | DELETE /coaching_sessions/S1/goals/G1 | any authenticated caller | 200, `{goal_id}` | none (`web/src/controller/coaching_session/goal_controller.rs:83`) | No relationship check |
+| GOAL-13 | POST /coaching_sessions/S1/goals `{goal_id: G1}` | COACH, COACHEE | 200 (201), link | security PR, pending | [tightened] Non-participants: GOAL-26 |
+| GOAL-14 | DELETE /coaching_sessions/S1/goals/G1 | COACH, COACHEE | 200, `{goal_id}` | security PR, pending | [tightened] Non-participants: GOAL-26 |
 | GOAL-15 | GET /coaching_sessions/goals?coaching_relationship_id=R1 | COACH, COACHEE | 200, `session_goals` S1 [G1], SR1-* [] | `web/src/protect/goals.rs:163` | [rows] |
 | GOAL-16 | GET /coaching_sessions/goals?coaching_relationship_id=R1 | non-participants | 403 | `web/src/protect/goals.rs:163` | |
-| GOAL-17 | GET /coaching_sessions/goals?coaching_session_ids=S1,S2 | COACH | 200, S1 [G1], S2 [G2] | `web/src/protect/goals.rs:142` | [rows] only the first session id is authorized |
+| GOAL-17 | GET /coaching_sessions/goals?coaching_session_ids=S1,S2 | COACH | 403 | security PR, pending | [tightened] Every id is authorized; S2 is in R2. `S1` alone: 200, S1 [G1] |
 | GOAL-18 | GET /coaching_sessions/goals?coaching_session_ids=S1 | non-participants | 403 | `web/src/protect/goals.rs:163` | |
 | GOAL-19 | GET /organizations/O1/coaching_relationships/R1/goal_progress | COACH, COACHEE | 200, progress for G1 | `web/src/extractors/coaching_relationship_access.rs:84` | [rows] `assignee=coach`/`coachee`/participant id allowed |
 | GOAL-20 | GET /organizations/O1/coaching_relationships/R1/goal_progress?assignee={MEMBER_ID} | COACH | 400 | `web/src/controller/organization/coaching_relationship_controller.rs:219` | Non-participant id rejected |
@@ -289,6 +321,9 @@ How to read the tables:
 | GOAL-22 | GET /users/{COACH_ID}/goals | COACH | 200, G1 | `web/src/protect/users/goals.rs:20` | [rows] goals the user created |
 | GOAL-23 | GET /users/{COACHEE_ID}/goals | COACHEE | 200, empty list | `web/src/protect/users/goals.rs:20` | [rows] COACHEE created no goal |
 | GOAL-24 | GET /users/{COACHEE_ID}/goals | COACH, MEMBER, ADMIN, SUPER | 403 | `web/src/protect/users/goals.rs:20` | Self only |
+| GOAL-25 | POST /goals `{coaching_relationship_id: R1}` | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, nothing written | security PR, pending | [tightened] Unknown relationship: 404. REMOVED on R3: 403 |
+| GOAL-26 | POST /coaching_sessions/S1/goals, DELETE /coaching_sessions/S1/goals/G1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, links unchanged | security PR, pending | [tightened] REMOVED on S3: 403 |
+| GOAL-27 | POST /coaching_sessions/S1/goals `{goal_id: G2}` | COACH | 422, nothing linked | security PR, pending | [tightened] G2 belongs to R2; a goal links only to sessions in its own relationship |
 
 ### 4.8 Topics (`TOP`)
 
@@ -353,7 +388,7 @@ How to read the tables:
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
 | MEET-01 | GET /coaching_sessions/SR1-x (not yet hydrated) | COACHEE | 200, session with provider and `meeting_url` from COACH's connection | `web/src/extractors/coaching_session_access.rs:108`; `domain/src/coaching_session.rs:259` | Hydration always uses the coach's account, whoever reads first |
-| MEET-02 | POST /coaching_sessions with `provider` | caller per SES-09 to SES-14 | TBD (pending fix) | `domain/src/coaching_session.rs:111` | Pending fix. Link comes from the coach's account or a reused relationship link (`:564`) |
+| MEET-02 | POST /coaching_sessions with `provider` | caller per SES-09 to SES-14 | as SES-09 to SES-14; a link is attached only on SES-09 | `domain/src/coaching_session.rs:111` | [tightened] Link comes from the coach's account or a reused relationship link (`:564`) |
 | MEET-03 | PUT /coaching_sessions/S1 `{meeting_url, provider}` | COACH | 200 (204) | `web/src/protect/coaching_sessions.rs:129` | Coach only; COACHEE 403 (SES-16) |
 | MEET-04 | POST /coaching_sessions/S1/meeting_recording `{meeting_url}` | COACHEE | 200 (201) | `web/src/extractors/coaching_session_access.rs:108` | URL is caller supplied; not tied to an account |
 | MEET-05 | GET /oauth/connections, GET/DELETE /oauth/connections/{provider} | any authenticated caller | 200, caller's own connections | `web/src/router.rs:902` (auth only) | Self scoped, no relationship data. Listed so MEET-01 has its prerequisite |
