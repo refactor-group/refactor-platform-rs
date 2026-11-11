@@ -19,7 +19,8 @@ Every coach and coachee permission works exactly as it does today when this is d
 |---|---|
 | Baseline suite (phase 0b): today's coach/coachee access as automated tests, passing on `main` before any change | Every phase. Must stay green with zero edits; review confirms `git diff main` does not touch those files. |
 | `kind` defaults to `coaching`; for coaching, `has_authority` equals "is the coach" | Phase 2, pinned by a unit test |
-| Phase 3 moves checks, never changes them; any diff that adds or removes a caller is sent back | Phase 3, per handoff |
+| Phase 0c moves checks, never changes them; any diff that adds or removes a caller is sent back | Phase 0c, per handoff |
+| Phase 3 switches each check to a Model method that, for coaching, admits exactly the same callers | Phase 3, per handoff |
 | Manual access matrix run against the local API, all coach/coachee rows | After phase 3, and before phase 5 ships |
 | Frontend companion plan's coach/coachee rows in Playwright | After phases 3 and 6 |
 
@@ -31,7 +32,7 @@ landing before 0b), and the phase 6 response shape change (same access, differen
 ## Phases
 
 Each phase is its own PR; phase 1 is two (migration and backfill, then code). Order: S, 0,
-0b, 1, 2, 3, 3b, 4, 4b, E, 5, 6. Phases S and 0 can run in parallel.
+0b, 0c, 1, 2, 3, 3b, 4, 4b, E, 5, 6. Phases S and 0 can run in parallel.
 
 **S. Relationship authorization fixes.** Its own security PR, ahead of the colleague work, so
 the phase 0b baseline records the corrected behavior. Notes, agreements, actions, goals and
@@ -67,6 +68,16 @@ recipients. Rows that depend on which rows a query selects use the SQLite tier. 
 `[tightened]` row, so the phase S rules are locked in as regressions too. Written against
 `main` after phase S merges, must pass there, then frozen.
 
+**0c. Move relationship checks onto extractors** (no behavior change; part of #218). The seven
+relationship-scoped `protect/` modules (`actions`, `agreements`, `coaching_sessions`, `goals`,
+`jwt`, `notes`, `users/actions`) become `*_access` extractors built on the shared
+`authorize_session` / `authorize_relationship` / `authorize_relationship_coach` helpers from
+phase S; `goals::by_id` gets a `GoalAccess` extractor. Each check moves exactly as it is,
+including today's coach-only rule on session update, delete and resend invite. The 0b
+baseline must stay green with zero edits. Then those `protect/` modules are deleted. About
+three handoffs (list reads, sessions, goals), one PR. Afterwards every relationship check
+lives in `web/src/extractors/`, so phase 3 only switches them.
+
 **1. Record who scheduled each session** (no visible change).
 
 - `scheduled_by_user_id` on `coaching_sessions`, set on create and reschedule; base for
@@ -92,13 +103,12 @@ decides view/edit/delete through a relationship asks the Model:
 - `sees_all_actions(user)`: action visibility (replaces `CallerVisibility::for_relationship`'s
   hand comparison)
 
-Folds in #218 for these checks. One handoff per check site: the seven relationship-scoped
-`protect/` modules (`actions`, `agreements`, `coaching_sessions`, `goals`, `jwt`, `notes`,
-`users/actions`) become `*_access` extractors; plus the existing `coaching_session_access`,
-`coaching_session_series_access` and `coaching_session_topic_access` extractors,
-`CallerVisibility`, search visibility (`entity_api/src/search/visibility.rs`), email recipients
-in `domain/src/jobs/`, and the transcription and recording controllers. Final list from the
-phase 0 audit. Each moves unchanged first, then switches to the Model method.
+One handoff per check site: the extractors from phase 0c; the existing
+`coaching_session_access`, `coaching_session_series_access` and `coaching_session_topic_access`
+extractors; `CallerVisibility`; search visibility (`entity_api/src/search/visibility.rs`);
+email recipients in `domain/src/jobs/`; and the transcription and recording controllers. Final
+list from the phase 0 audit. Sites outside `web/src/extractors/` move unchanged first, then
+switch to the Model method.
 
 **3b. Finish #218.** `UserIsAdmin` (only use passes no org) is covered by `SuperAdminAccess`;
 "is this my own user" becomes `UserDataAccess`. Then delete `web/src/protect/` and close #218.
