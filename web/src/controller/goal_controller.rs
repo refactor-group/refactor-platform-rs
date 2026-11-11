@@ -1,13 +1,14 @@
 use crate::controller::ApiResponse;
 use crate::extractors::{
-    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    authenticated_user::AuthenticatedUser, coaching_relationship_access::authorize_relationship,
+    compare_api_version::CompareApiVersion,
 };
 use crate::params::goal::{IndexParams, SortField};
 use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use domain::goal as GoalApi;
 use domain::goal_progress as GoalProgressApi;
@@ -58,6 +59,8 @@ pub async fn coaching_sessions_by_goal(
         (status = 201, description = "Successfully Created a New Goal", body = domain::goals::Model),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Coaching relationship not found"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -70,8 +73,14 @@ pub async fn create(
     AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Json(goal_model): Json<Model>,
-) -> Result<impl IntoResponse, Error> {
+) -> Result<Response, Error> {
     debug!("POST Create a New Goal from: {goal_model:?}");
+
+    if let Err(rejection) =
+        authorize_relationship(&app_state, &user, goal_model.coaching_relationship_id).await
+    {
+        return Ok(rejection.into_response());
+    }
 
     let goal = GoalApi::create(
         app_state.db_conn_ref(),
@@ -83,7 +92,7 @@ pub async fn create(
 
     debug!("New Goal: {goal:?}");
 
-    Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), goal)))
+    Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), goal)).into_response())
 }
 
 /// GET a particular Goal specified by its id.
@@ -309,3 +318,8 @@ pub async fn progress(
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), metrics)))
 }
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "goal_controller_tests.rs"]
+mod tests;

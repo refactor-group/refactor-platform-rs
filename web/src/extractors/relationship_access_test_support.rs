@@ -159,16 +159,21 @@ impl World {
     }
 }
 
-/// The login route plus `routes` behind sign-in.
-fn build_app(db: Arc<DatabaseConnection>, routes: Router<AppState>) -> Router {
-    let app_state = AppState::new(
-        service::AppState::new(Config::default(), &db),
+/// The app state over `db`, for routes layered with `from_fn_with_state`.
+pub(crate) fn app_state(db: &Arc<DatabaseConnection>) -> AppState {
+    AppState::new(
+        service::AppState::new(Config::default(), db),
         Arc::new(sse::Manager::default()),
         domain::events::EventPublisher::default(),
         None,
         None,
         None,
-    );
+    )
+}
+
+/// The login route plus `routes` behind sign-in.
+fn build_app(db: Arc<DatabaseConnection>, routes: Router<AppState>) -> Router {
+    let app_state = app_state(&db);
 
     let session_layer = SessionManagerLayer::new(MemoryStore::default())
         .with_secure(false)

@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use crate::controller::ApiResponse;
 use crate::error::WebErrorKind;
 use crate::extractors::{
-    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    authenticated_user::AuthenticatedUser,
+    coaching_session_access::{CoachingSessionAccess, CoachingSessionContextAccess},
+    compare_api_version::CompareApiVersion,
 };
 use crate::params::coaching_session::goal::{BatchIndexParams, LinkParams};
 use crate::{AppState, Error};
@@ -11,12 +13,21 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
+use domain::error::{DomainErrorKind, Error as DomainError};
 use domain::goal as GoalApi;
 use domain::goals;
 use domain::Id;
 use service::config::ApiVersion;
 
 use log::*;
+
+/// A 422 refusal carrying `message`.
+fn validation(message: &str) -> Error {
+    Error::Domain(DomainError {
+        source: None,
+        error_kind: DomainErrorKind::Validation(message.to_string()),
+    })
+}
 
 /// POST link a goal to a coaching session
 #[utoipa::path(
@@ -30,6 +41,8 @@ use log::*;
     responses(
         (status = 201, description = "Successfully linked goal to session", body = domain::coaching_sessions_goals::Model),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Coaching session or goal not found"),
         (status = 409, description = "Goal already linked to session"),
         (status = 422, description = "Unprocessable Entity"),
         (status = 503, description = "Service temporarily unavailable")
@@ -40,15 +53,22 @@ use log::*;
 )]
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    CoachingSessionContextAccess(session, relationship): CoachingSessionContextAccess,
     State(app_state): State<AppState>,
-    Path(coaching_session_id): Path<Id>,
     Json(params): Json<LinkParams>,
 ) -> Result<impl IntoResponse, Error> {
+    let coaching_session_id = session.id;
     debug!(
         "POST Link goal {} to session {}",
         params.goal_id, coaching_session_id
     );
+
+    let goal = GoalApi::find_by_id(app_state.db_conn_ref(), params.goal_id).await?;
+    if goal.coaching_relationship_id != relationship.id {
+        return Err(validation(
+            "goal_id must name a goal of the session's relationship.",
+        ));
+    }
 
     let link = GoalApi::link_to_coaching_session(
         app_state.db_conn_ref(),
@@ -73,6 +93,7 @@ pub async fn create(
     responses(
         (status = 200, description = "Successfully unlinked goal from session"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -82,7 +103,7 @@ pub async fn create(
 )]
 pub async fn delete(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    CoachingSessionAccess(_session): CoachingSessionAccess,
     State(app_state): State<AppState>,
     Path((coaching_session_id, goal_id)): Path<(Id, Id)>,
 ) -> Result<impl IntoResponse, Error> {
@@ -193,3 +214,8 @@ pub async fn batch_index(
         serde_json::json!({ "session_goals": session_goals }),
     )))
 }
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "goal_controller_tests.rs"]
+mod tests;
