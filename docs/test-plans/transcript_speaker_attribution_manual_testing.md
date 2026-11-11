@@ -423,33 +423,3 @@ DELETE FROM refactor_platform.meeting_recordings WHERE id = '41900000-0000-0000-
 ```
 
 **Pass:** participants and segments for the transcription are gone (cascade).
-
-## Results
-
-| Case | Result | Date | Notes |
-|---|---|---|---|
-| A1 | | | |
-| A2 | | | |
-| A3 | | | |
-| A4 | | | |
-| A5 | | | |
-| A6 | | | |
-| A7 | | | |
-| A8 | | | |
-| A9 | | | |
-| A10 | | | |
-| A11 | | | |
-| A12 | | | |
-| A13 | PASS (API only) | 2026-10-06 | non-participant `admin@refactorcoach.com` got 403 from `meta`, `latest`, `segs` on a fixture transcript |
-| A14 | | | |
-| A15 | | | |
-| B1 | PASS | 2026-10-06 | PR #434 preview |
-| B2 | PASS | 2026-10-06 | PR #434 preview |
-| B3 | PASS | 2026-10-06 | PR #434 preview |
-| B3b | PASS | 2026-10-06 | PR #434 preview |
-| B3c | PASS | 2026-10-06 | PR #434 preview |
-| B4 | PASS | 2026-10-06 | PR #434 preview |
-| B5 | PASS | 2026-10-06 | PR #434 preview |
-| B6 | PASS | 2026-10-06 | PR #434 preview |
-| B7 | PASS | 2026-10-06 | PR #434 preview |
-| B8 | PASS | 2026-10-06 | PR #434 preview |

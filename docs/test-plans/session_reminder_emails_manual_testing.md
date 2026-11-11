@@ -389,16 +389,5 @@ H1 through H5 and S2 through S5 are all reachable from SQL seeding plus log and 
 assertions. H5 needs `notice_given_at` controlled rather than defaulted, so seed it
 explicitly instead of relying on insertion time, so they automate cleanly against the mock Resend. S1, S6, and S7 require a
 process restart with different env, so they suit a shell-driven matrix rather than an
-in-process test. S8 and S9 need a database that has not had the migration applied.
-
-## Last run
-
-2026-08-19, local backend against a local Postgres with a mock Resend, 1 hour lead and
-1 minute cadence. H1 through H6, S1 through S7, and S9 passed against a running backend;
-H7 and S8 were exercised at the SQL and migration level.
-
-S10 through S13 were added after that run, from review passes, and have **not** been
-executed yet. H5, H5a and H5b postdate the `notice_given_at` change and are also unrun,
-though the H5 boundary was checked directly against the predicate in Postgres (22h
-suppressed, 26h reminded, a month-early move reminded). S11 in particular cannot be driven from outside the process without the
-mock-side delay it describes.
+in-process test. S8 and S9 need a database that has not had the migration applied. S11 cannot be driven from
+outside the process without the mock-side delay it describes.
