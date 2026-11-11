@@ -476,6 +476,8 @@ async fn delete_succeeds_for_an_organization_admin_targeting_another_member() {
             .append_query_results([vec![merge([row(target.clone())])]])
             .append_query_results([vec![requester_row_with_count, target_row]])
             .append_query_results([vec![merge([count_row(1)])]])
+            // None of the target's relationships has a session.
+            .append_query_results([vec![merge([count_row(0)])]])
             // The roles the deletion is about to destroy, read before they are gone,
             // then the audit row each one owes.
             .append_query_results([vec![merge([row(target_role.clone())])]])
@@ -501,6 +503,59 @@ async fn delete_succeeds_for_an_organization_admin_targeting_another_member() {
     .await;
 
     assert_eq!(api_status_code(response).await, 204);
+}
+
+#[tokio::test]
+async fn delete_refuses_a_member_with_coaching_history() {
+    let organization_id = Id::new_v4();
+    let user = requester();
+    let role = test_role(user.id, Some(organization_id), users::Role::Admin);
+    let target = target_user();
+    let target_role = test_role(target.id, Some(organization_id), users::Role::User);
+
+    let requester_row = merge([row((user.clone(), role.clone()))]);
+    let target_row = merge([row((target.clone(), target_role.clone()))]);
+    let requester_row_with_count = merge([row((user.clone(), role.clone())), count_row(1)]);
+
+    let db = Arc::new(
+        authenticated_as(&user, &role)
+            .append_query_results([vec![merge([row(test_organization(organization_id))])]])
+            .append_query_results([vec![requester_row, target_row.clone()]])
+            .append_query_results([vec![merge([row(target.clone())])]])
+            .append_query_results([vec![requester_row_with_count, target_row]])
+            .append_query_results([vec![merge([count_row(1)])]])
+            // Two of the target's relationships have sessions.
+            .append_query_results([vec![merge([count_row(2)])]])
+            .into_connection(),
+    );
+
+    let app = build_app(db);
+    let cookie = login_cookie(&app).await;
+
+    let response = send(
+        &app,
+        &cookie,
+        "DELETE",
+        delete_uri(organization_id, target.id),
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        body["details"]["reason"], "user_has_coaching_history",
+        "{body}"
+    );
+    assert_eq!(
+        body["details"]["user_id"],
+        serde_json::json!(target.id),
+        "{body}"
+    );
+    assert_eq!(body["details"]["relationship_count"], 2, "{body}");
 }
 
 #[tokio::test]

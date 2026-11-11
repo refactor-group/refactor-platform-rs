@@ -8,7 +8,7 @@ use chrono::Utc;
 use entity::{
     coachees, coaches,
     coaching_relationships::{self, ActiveModel, Entity, Model, Visibility},
-    users, Id,
+    coaching_sessions, users, Id,
 };
 use log::*;
 use sea_orm::{
@@ -588,16 +588,46 @@ async fn by_organization(
     )
 }
 
+/// Deletes every relationship `user_id` coaches or is coached in.
+///
+/// # Errors
+///
+/// A relationship that still has a coaching session fails the foreign key; see
+/// [`Error::is_foreign_key_violation`].
 pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error> {
     Entity::delete_many()
-        .filter(
-            Condition::any()
-                .add(coaching_relationships::Column::CoachId.eq(user_id))
-                .add(coaching_relationships::Column::CoacheeId.eq(user_id)),
-        )
+        .filter(involving(user_id))
         .exec(db)
         .await?;
     Ok(())
+}
+
+/// Counts the relationships `user_id` coaches or is coached in that have at least one session.
+pub async fn count_with_sessions_by_user_id(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+) -> Result<u64, Error> {
+    let has_session = coaching_sessions::Entity::find()
+        .select_only()
+        .expr(Expr::cust("1"))
+        .filter(
+            Expr::col(coaching_sessions::Column::CoachingRelationshipId.as_column_ref())
+                .equals(coaching_relationships::Column::Id.as_column_ref()),
+        )
+        .into_query();
+
+    Ok(Entity::find()
+        .filter(involving(user_id))
+        .filter(Expr::exists(has_session))
+        .count(db)
+        .await?)
+}
+
+/// Relationships in which `user_id` is the coach or the coachee.
+fn involving(user_id: Id) -> Condition {
+    Condition::any()
+        .add(coaching_relationships::Column::CoachId.eq(user_id))
+        .add(coaching_relationships::Column::CoacheeId.eq(user_id))
 }
 
 /// Trait for filtering coaching relationships by user's role.
@@ -822,6 +852,31 @@ mod tests {
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
                 r#"DELETE FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
+                [user_id.into(), user_id.into()]
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn count_with_sessions_by_user_id_counts_only_relationships_with_a_session(
+    ) -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([[std::collections::BTreeMap::from([(
+                "num_items".to_string(),
+                sea_orm::Value::BigInt(Some(2)),
+            )])]])
+            .into_connection();
+
+        let user_id = Id::new_v4();
+        assert_eq!(count_with_sessions_by_user_id(&db, user_id).await?, 2);
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT COUNT(*) AS num_items FROM (SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND EXISTS(SELECT 1 FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id")) AS "sub_query""#,
                 [user_id.into(), user_id.into()]
             )]
         );

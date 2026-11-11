@@ -165,6 +165,7 @@ pub(crate) async fn resend_invite(
         (status = 200, description = "User deleted successfully"),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
+        (status = 409, description = "The user has coaching history (`details.reason` is `user_has_coaching_history`, with `user_id` and, when known, `relationship_count`), belongs to another organization, or is its last admin"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(

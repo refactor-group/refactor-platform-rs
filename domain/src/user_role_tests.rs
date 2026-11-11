@@ -841,6 +841,44 @@ async fn delete_refuses_when_the_user_is_an_organizations_last_admin() {
 }
 
 #[tokio::test]
+async fn delete_refuses_a_user_with_coaching_history() {
+    let target_id = Id::new_v4();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user(target_id, vec![])]])
+        .append_query_results([vec![count_row(1)]])
+        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+        .append_query_results([vec![count_row(3)]])
+        .into_connection();
+
+    let error = crate::user::delete(&db, Actor::new(Id::new_v4()), target_id)
+        .await
+        .expect_err("expected coaching-history rejection");
+
+    let EntityErrorKind::Conflict {
+        details: Some(details),
+        ..
+    } = entity_error_kind(&error)
+    else {
+        panic!("expected a conflict with details, got {error:?}");
+    };
+    assert_eq!(
+        details,
+        &serde_json::json!({
+            "reason": "user_has_coaching_history",
+            "user_id": target_id,
+            "relationship_count": 3,
+        })
+    );
+    let sql = statements(db);
+    assert!(
+        !sql.iter()
+            .any(|statement| statement.contains("DELETE") || statement.contains("INSERT")),
+        "nothing may be written when the account has coaching history: {sql:?}"
+    );
+}
+
+#[tokio::test]
 async fn delete_still_cascades_for_a_single_organization_user() -> Result<(), Error> {
     let actor_id = Id::new_v4();
     let target_id = Id::new_v4();
@@ -852,6 +890,8 @@ async fn delete_still_cascades_for_a_single_organization_user() -> Result<(), Er
         .append_query_results([vec![count_row(1)]])
         // Administers nothing, so the last-admin guard has nothing to check.
         .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+        // No relationship with a session.
+        .append_query_results([vec![count_row(0)]])
         // The roles the delete is about to destroy, read before they are gone.
         .append_query_results([[destroyed.clone()]])
         .append_query_results([[role_change(
@@ -913,6 +953,7 @@ async fn delete_audits_every_destroyed_role_including_a_global_super_admin() -> 
         .append_query_results([[user(target_id, vec![])]])
         .append_query_results([vec![count_row(1)]])
         .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
+        .append_query_results([vec![count_row(0)]])
         .append_query_results([[org_role.clone(), global_role.clone()]])
         .append_query_results([[role_change(
             actor_id,
