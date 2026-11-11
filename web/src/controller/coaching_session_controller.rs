@@ -320,7 +320,7 @@ pub async fn delete(
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden — not the coach on the relationship"),
         (status = 404, description = "Coaching Session not found"),
-        (status = 409, description = "Not resendable; `details.reason` is `no_upcoming_sessions` or `series_member`"),
+        (status = 409, description = "Not resendable; `details.reason` is `no_upcoming_sessions`, `series_member`, or `coachee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status = 502, description = "The invite did not reach the coachee"),
     ),
     security(

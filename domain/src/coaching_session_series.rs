@@ -5,6 +5,7 @@
 //! This module owns the JSONB rule serialization: callers interact with the
 //! typed [`SeriesRule`] struct, never with `serde_json::Value` directly.
 
+use crate::coaching_relationship::{self, ensure_coachee_is_member};
 use crate::coaching_session;
 use crate::coaching_session_image;
 use crate::coaching_sessions;
@@ -746,27 +747,43 @@ pub async fn reschedule_following(
     )
     .await;
 
-    // Created sessions were stamped on insert; moved ones are stamped once the email
-    // reached the coachee, and the response carries the stamped rows.
-    let moved = match told {
-        true => {
-            stream::iter(moved)
-                .then(|session| async move {
-                    coaching_session::record_notice(db, &session)
-                        .await
-                        .unwrap_or(session)
-                })
-                .collect::<Vec<_>>()
-                .await
-        }
-        false => moved,
-    };
+    let moved = record_following_notice(db, told, moved).await;
 
     Ok(Rescheduled {
         series: target,
         sessions: by_date(moved.into_iter().chain(created)),
         changed: true,
     })
+}
+
+/// Records what a "this and following" email did for the moved sessions, returning them as
+/// the response carries them. Created sessions were stamped on insert. Moved ones are
+/// stamped once the email reached the coachee; a coachee no longer in the organization is
+/// owed nothing, so their pending reschedules settle unstamped.
+async fn record_following_notice(
+    db: &DatabaseConnection,
+    told: emails::Delivery,
+    moved: Vec<coaching_sessions::Model>,
+) -> Vec<coaching_sessions::Model> {
+    match told {
+        emails::Delivery::Sent => {
+            stream::iter(moved)
+                .then(|session| async move {
+                    coaching_session::record_notice(db, &session)
+                        .await
+                        .unwrap_or(session)
+                })
+                .collect()
+                .await
+        }
+        emails::Delivery::NotAMember => {
+            stream::iter(&moved)
+                .for_each(|session| coaching_session::record_announced(db, session))
+                .await;
+            moved
+        }
+        emails::Delivery::Failed => moved,
+    }
 }
 
 /// Delete the series row and its future sessions. Past sessions survive as
@@ -837,8 +854,9 @@ pub async fn delete_with_future_sessions(
 
 /// Resend a series' invite to both participants as it stands today, under a bumped
 /// SEQUENCE so calendars replace the recurring event they hold. Refused when nothing is
-/// left to attend, or when an upcoming member predates `ical_recurrence_id`: such a series
-/// was never published as one, so a snapshot would not line up with what calendars hold.
+/// left to attend, when an upcoming member predates `ical_recurrence_id` (such a series
+/// was never published as one, so a snapshot would not line up with what calendars hold),
+/// or when the coachee is no longer in the organization.
 pub async fn resend_invite(
     db: &DatabaseConnection,
     config: &Config,
@@ -864,6 +882,10 @@ pub async fn resend_invite(
         ));
     }
 
+    let relationship =
+        coaching_relationship::find_by_id(db, series.coaching_relationship_id).await?;
+    let notify = ensure_coachee_is_member(db, &relationship).await?;
+
     // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
     // Members are raised with the series because Google drops an override whose SEQUENCE
     // trails its master.
@@ -880,12 +902,15 @@ pub async fn resend_invite(
     let mut upcoming: Vec<coaching_sessions::Model> =
         rows.iter().filter(|s| s.date > now).cloned().collect();
     upcoming.sort_by_key(|s| s.date);
-    let parties = emails::InviteParties::load(db, bumped.coaching_relationship_id).await?;
+    let parties = emails::InviteParties::load(db, &relationship).await?;
     let delivered = emails::send_series_invite_resend(
         db,
         config,
         &bumped,
-        &parties.participants(),
+        &emails::Audience {
+            participants: &parties.participants(),
+            notify: &notify,
+        },
         &upcoming,
         &rows,
         &parties.organization,
@@ -942,6 +967,7 @@ mod tests {
     use super::*;
     use crate::coaching_session::Frequency;
     use crate::coaching_session_images;
+    use crate::test_utils::mock::both_participants_are_members;
     use chrono::NaiveDate;
     use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
 
@@ -2138,11 +2164,12 @@ mod tests {
             .append_query_results(vec![moved.clone()])
             .append_query_results(vec![moved.clone()])
             .append_exec_results(vec![exec_ok()])
-            // the email: parties, the series' rows, the first session's goals
-            .append_query_results(vec![vec![relationship]])
+            // the email: parties, members, the series' rows, the first session's goals
+            .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![coach]])
             .append_query_results(vec![vec![coachee]])
             .append_query_results(vec![vec![organization]])
+            .append_query_results(vec![both_participants_are_members(&relationship)])
             .append_query_results(vec![moved.clone()])
             .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
             // record_notice × 2: the locked re-read and its clear, then mark_notice_given
@@ -2225,11 +2252,13 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![sessions.clone()])
+            // the relationship and its members
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![both_participants_are_members(&relationship)])
             // the series bump, then its members raised
             .append_query_results(vec![vec![bumped]])
             .append_query_results(vec![sessions.clone()])
             // the email: parties, then the first session's goals
-            .append_query_results(vec![vec![relationship]])
             .append_query_results(vec![vec![coach]])
             .append_query_results(vec![vec![coachee]])
             .append_query_results(vec![vec![organization]])

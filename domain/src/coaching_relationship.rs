@@ -1,5 +1,7 @@
 use crate::coaching_relationships::Model;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
+use crate::Id;
+use entity_api::coaching_relationship::notify_member_ids;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
 use entity_api::{coaching_relationships, query};
 use sea_orm::{DatabaseConnection, TransactionTrait};
@@ -72,6 +74,37 @@ pub async fn find_by_organization_for_user_with_user_names(
     })?;
 
     Ok(coaching_relationships)
+}
+
+/// The relationship's participants still in its organization, or a 409 when the coachee
+/// is not one of them: anything sent on the relationship would not reach them.
+pub(crate) async fn ensure_coachee_is_member(
+    db: &DatabaseConnection,
+    relationship: &Model,
+) -> Result<Vec<Id>, Error> {
+    let members = notify_member_ids(db, relationship).await?;
+    match members.contains(&relationship.coachee_id) {
+        true => Ok(members),
+        false => Err(not_a_member(
+            "Your coachee is no longer a member of this organization. Re-add them to the \
+             organization first.",
+            relationship.organization_id,
+            relationship.coachee_id,
+        )),
+    }
+}
+
+/// A 409 for a user who no longer belongs to the organization, carrying a
+/// machine-readable `reason`, the organization, and the user.
+pub(crate) fn not_a_member(message: &str, organization_id: Id, user_id: Id) -> Error {
+    Error::conflict(
+        message,
+        serde_json::json!({
+            "reason": "coachee_not_a_member",
+            "organization_id": organization_id,
+            "user_id": user_id,
+        }),
+    )
 }
 
 #[cfg(test)]

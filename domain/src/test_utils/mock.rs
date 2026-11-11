@@ -2,6 +2,7 @@
 
 use crate::coaching_relationships;
 use crate::events::{DomainEvent, EventPublisher};
+use crate::Id;
 use async_trait::async_trait;
 use events::EventHandler;
 use sea_orm::Value;
@@ -37,8 +38,13 @@ pub(crate) fn recording_publisher() -> (EventPublisher, Arc<Mutex<Vec<DomainEven
 pub(crate) fn both_participants_are_members(
     relationship: &coaching_relationships::Model,
 ) -> Vec<BTreeMap<String, Value>> {
-    [relationship.coach_id, relationship.coachee_id]
-        .into_iter()
-        .map(|user_id| BTreeMap::from([("user_id".to_string(), user_id.into())]))
+    members(&[relationship.coach_id, relationship.coachee_id])
+}
+
+/// Mock rows for the organization-membership filter, keeping exactly `user_ids`.
+pub(crate) fn members(user_ids: &[Id]) -> Vec<BTreeMap<String, Value>> {
+    user_ids
+        .iter()
+        .map(|&user_id| BTreeMap::from([("user_id".to_string(), user_id.into())]))
         .collect()
 }

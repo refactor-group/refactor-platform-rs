@@ -2,6 +2,7 @@
 //! `POST /coaching_sessions/:id/resend_invite`, driven through the real routers with a
 //! logged-in session, a mock database, and a mock Resend.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use axum::{body::Body, extract::Request, http::StatusCode, routing::post, Router};
@@ -200,10 +201,24 @@ impl Fixture {
 
     /// The loads `InviteParties::load` makes.
     fn parties(&self, db: MockDatabase) -> MockDatabase {
-        db.append_query_results([vec![self.relationship.clone()]])
-            .append_query_results([vec![self.coach.clone()]])
+        db.append_query_results([vec![self.coach.clone()]])
             .append_query_results([vec![self.coachee.clone()]])
             .append_query_results([vec![self.organization.clone()]])
+    }
+
+    /// The relationship, then which of `members` still hold a role in its organization.
+    fn membership(&self, db: MockDatabase, members: &[Id]) -> MockDatabase {
+        let rows: Vec<_> = members
+            .iter()
+            .map(|&id| BTreeMap::from([("user_id".to_string(), sea_orm::Value::from(id))]))
+            .collect();
+        db.append_query_results([vec![self.relationship.clone()]])
+            .append_query_results([rows])
+    }
+
+    /// Both participants.
+    fn both(&self) -> Vec<Id> {
+        vec![self.coach.id, self.coachee.id]
     }
 
     fn series_gate(&self, caller: &users::Model, series: &Series) -> Call {
@@ -227,9 +242,14 @@ impl Fixture {
         })
     }
 
-    /// Up to the send: the bump, the members raised to it, the parties, then the goals
-    /// the description lists.
+    /// Up to the send with both participants members.
     fn series_sent(&self, series: &Series, rows: Vec<Session>) -> Call {
+        self.series_sent_to(series, rows, &self.both())
+    }
+
+    /// Up to the send: the membership check, the bump, the members raised to it, the
+    /// parties, then the goals the description lists.
+    fn series_sent_to(&self, series: &Series, rows: Vec<Session>, members: &[Id]) -> Call {
         let bumped = series.ical_sequence + 1;
         let raised: Vec<_> = rows
             .iter()
@@ -244,7 +264,8 @@ impl Fixture {
         };
         self.series_loaded(series, rows).then(|db| {
             self.parties(
-                db.append_query_results([vec![bumped]])
+                self.membership(db, members)
+                    .append_query_results([vec![bumped]])
                     .append_query_results([raised]),
             )
             .append_query_results::<goals::Model, _, _>([vec![]])
@@ -264,18 +285,26 @@ impl Fixture {
             .then(|db| db.append_query_results([vec![session.clone()]]))
     }
 
-    /// Up to the send: the bump, the parties, then the topics, goals and open actions
-    /// the description lists.
+    /// Up to the send with both participants members.
     fn session_sent(&self, session: &Session) -> Call {
+        self.session_sent_to(session, &self.both())
+    }
+
+    /// Up to the send: the membership check, the bump, the parties, then the topics,
+    /// goals and open actions the description lists.
+    fn session_sent_to(&self, session: &Session, members: &[Id]) -> Call {
         let bumped = Session {
             ical_sequence: session.ical_sequence + 1,
             ..session.clone()
         };
         self.session_loaded(session).then(|db| {
-            self.parties(db.append_query_results([vec![bumped]]))
-                .append_query_results::<coaching_session_topics::Model, _, _>([vec![]])
-                .append_query_results::<goals::Model, _, _>([vec![]])
-                .append_query_results::<actions::Model, _, _>([vec![]])
+            self.parties(
+                self.membership(db, members)
+                    .append_query_results([vec![bumped]]),
+            )
+            .append_query_results::<coaching_session_topics::Model, _, _>([vec![]])
+            .append_query_results::<goals::Model, _, _>([vec![]])
+            .append_query_results::<actions::Model, _, _>([vec![]])
         })
     }
 }
@@ -283,10 +312,14 @@ impl Fixture {
 struct Outcome {
     status: StatusCode,
     reason: Option<String>,
+    /// The 409 body's `details`.
+    details: serde_json::Value,
     /// The unfolded `.ics` of every Resend request.
     sent: Vec<String>,
     /// Every UPDATE that wrote an `ical_sequence`.
     sequence_updates: Vec<String>,
+    /// Every INSERT, UPDATE and DELETE.
+    writes: Vec<String>,
 }
 
 impl Outcome {
@@ -297,19 +330,36 @@ impl Outcome {
     }
 }
 
-/// Mocks Resend: the coachee gets `coachee_status` and the coach 200, or with `None`,
-/// no request may arrive.
+/// How Resend answers each participant: `Some(status)` expects one request, `None` none.
+#[derive(Clone, Copy)]
+struct Mail {
+    coachee: Option<usize>,
+    coach: Option<usize>,
+}
+
+impl Mail {
+    const NONE: Mail = Mail {
+        coachee: None,
+        coach: None,
+    };
+
+    /// The coachee answered with `status`, the coach with 200.
+    fn coachee(status: usize) -> Mail {
+        Mail {
+            coachee: Some(status),
+            coach: Some(200),
+        }
+    }
+}
+
+/// Mocks Resend per participant as `mail` says.
 async fn mock_resend(
     server: &mut ServerGuard,
     sent: &Arc<Mutex<Vec<String>>>,
-    coachee_status: Option<usize>,
+    mail: Mail,
 ) -> Vec<Mock> {
-    let Some(coachee_status) = coachee_status else {
-        let none = server.mock("POST", "/emails").expect(0);
-        return vec![none.create_async().await];
-    };
     let mut mocks = Vec::new();
-    for (email, status) in [("coachee@", coachee_status), ("coach@", 200)] {
+    for (email, status) in [("coachee@", mail.coachee), ("coach@", mail.coach)] {
         let sent = sent.clone();
         let record = move |request: &mockito::Request| {
             let ics = serde_json::from_slice::<serde_json::Value>(request.body().unwrap())
@@ -328,19 +378,19 @@ async fn mock_resend(
             .match_body(to)
             .match_request(record);
         let mock = mock
-            .with_status(status)
+            .with_status(status.unwrap_or(200))
             .with_body(r#"{"id":"e"}"#)
-            .expect(1);
+            .expect(usize::from(status.is_some()));
         mocks.push(mock.create_async().await);
     }
     mocks
 }
 
 /// Logs the caller in over the real routers, then sends the resend `POST`.
-async fn resend(call: Call, coachee_status: Option<usize>) -> Outcome {
+async fn resend(call: Call, mail: Mail) -> Outcome {
     let mut server = Server::new_async().await;
     let sent = Arc::new(Mutex::new(Vec::new()));
-    let mocks = mock_resend(&mut server, &sent, coachee_status).await;
+    let mocks = mock_resend(&mut server, &sent, mail).await;
     let config = Config::from_args([
         "test",
         "--resend-api-key=test_api_key_123",
@@ -384,26 +434,38 @@ async fn resend(call: Call, coachee_status: Option<usize>) -> Outcome {
 
     let status = response.status();
     let body = axum::body::to_bytes(response.into_body(), usize::MAX).await;
-    let reason = serde_json::from_slice::<serde_json::Value>(&body.unwrap())
-        .ok()
-        .and_then(|body| body["details"]["reason"].as_str().map(String::from));
+    let details = serde_json::from_slice::<serde_json::Value>(&body.unwrap())
+        .map(|body| body["details"].clone())
+        .unwrap_or_default();
+    let reason = details["reason"].as_str().map(String::from);
     for mock in mocks {
         mock.assert_async().await;
     }
     let log = Arc::try_unwrap(db).expect("the app has been dropped");
-    let sequence_updates = log
+    let writes: Vec<String> = log
         .into_transaction_log()
         .iter()
         .flat_map(|txn| txn.statements())
         .map(|stmt| stmt.sql.clone())
+        .filter(|sql| {
+            ["INSERT", "UPDATE", "DELETE"]
+                .iter()
+                .any(|w| sql.starts_with(w))
+        })
+        .collect();
+    let sequence_updates = writes
+        .iter()
         .filter(|sql| sql.starts_with("UPDATE") && sql.contains("ical_sequence"))
+        .cloned()
         .collect();
     let sent = sent.lock().unwrap().clone();
     Outcome {
         status,
         reason,
+        details,
         sent,
         sequence_updates,
+        writes,
     }
 }
 
@@ -438,7 +500,7 @@ async fn refusals_send_nothing_and_bump_nothing() {
             Some(_) => StatusCode::CONFLICT,
             None => StatusCode::FORBIDDEN,
         };
-        let out = resend(call, None).await;
+        let out = resend(call, Mail::NONE).await;
         assert_eq!(out.status, status, "case {case}");
         assert_eq!(out.reason.as_deref(), reason, "case {case}");
         assert!(out.sequence_updates.is_empty(), "case {case}");
@@ -475,7 +537,7 @@ async fn unauthenticated_and_unknown_send_nothing_and_bump_nothing() {
     ];
 
     for (case, (call, status)) in cases.into_iter().enumerate() {
-        let out = resend(call, None).await;
+        let out = resend(call, Mail::NONE).await;
         assert_eq!(out.status, status, "case {case}");
         assert!(out.sequence_updates.is_empty(), "case {case}");
     }
@@ -489,7 +551,7 @@ async fn series_resend_bumps_the_series_and_raises_its_members() {
     rows[1].date += chrono::Duration::days(1);
     rows[1].ical_sequence = 1;
 
-    let out = resend(f.series_sent(&series, rows), Some(200)).await;
+    let out = resend(f.series_sent(&series, rows), Mail::coachee(200)).await;
 
     assert_eq!(out.status, StatusCode::NO_CONTENT);
     assert_eq!(out.sent.len(), 2);
@@ -502,7 +564,11 @@ async fn series_resend_reports_an_unreached_coachee() {
     let f = Fixture::new();
     let series = f.series(start_in(7));
 
-    let out = resend(f.series_sent(&series, f.members(&series)), Some(400)).await;
+    let out = resend(
+        f.series_sent(&series, f.members(&series)),
+        Mail::coachee(400),
+    )
+    .await;
 
     assert_eq!(out.status, StatusCode::BAD_GATEWAY);
 }
@@ -515,7 +581,7 @@ async fn session_resend_sends_a_legacy_member_standalone() {
         ..f.session(start_in(7))
     };
 
-    let out = resend(f.session_sent(&session), Some(200)).await;
+    let out = resend(f.session_sent(&session), Mail::coachee(200)).await;
 
     assert_eq!(out.status, StatusCode::NO_CONTENT);
     assert_eq!(out.sent.len(), 2);
@@ -530,9 +596,74 @@ async fn session_resend_bumps_a_one_off() {
     let f = Fixture::new();
     let session = f.session(start_in(7));
 
-    let out = resend(f.session_sent(&session), Some(200)).await;
+    let out = resend(f.session_sent(&session), Mail::coachee(200)).await;
 
     assert_eq!(out.status, StatusCode::NO_CONTENT);
     assert_eq!(out.sent.len(), 2);
     assert!(out.updated("coaching_sessions", "ical_sequence"));
+}
+
+/// A coachee no longer in the organization is refused before anything is bumped or sent,
+/// with the coachee named so the coach can re-add them. Both resends, coachee alone or
+/// both removed.
+#[tokio::test]
+async fn resend_to_a_removed_coachee_is_refused() {
+    let f = Fixture::new();
+    let series = f.series(start_in(7));
+    let session = f.session(start_in(7));
+    let removed = [vec![f.coach.id], vec![]];
+
+    let calls = removed.iter().flat_map(|members| {
+        [
+            f.series_loaded(&series, f.members(&series))
+                .then(|db| f.membership(db, members)),
+            f.session_loaded(&session)
+                .then(|db| f.membership(db, members)),
+        ]
+    });
+
+    for (case, call) in calls.enumerate() {
+        let out = resend(call, Mail::NONE).await;
+        assert_eq!(out.status, StatusCode::CONFLICT, "case {case}");
+        assert_eq!(
+            out.reason.as_deref(),
+            Some("coachee_not_a_member"),
+            "case {case}"
+        );
+        assert_eq!(
+            out.details["user_id"],
+            serde_json::json!(f.coachee.id),
+            "case {case}"
+        );
+        assert_eq!(
+            out.details["organization_id"],
+            serde_json::json!(f.organization.id),
+            "case {case}"
+        );
+        assert!(out.writes.is_empty(), "case {case}: {:?}", out.writes);
+    }
+}
+
+/// A coach no longer in the organization still resends to a current coachee, who alone
+/// is mailed.
+#[tokio::test]
+async fn resend_with_a_removed_coach_mails_only_the_coachee() {
+    let f = Fixture::new();
+    let series = f.series(start_in(7));
+    let session = f.session(start_in(7));
+    let coachee_only = Mail {
+        coachee: Some(200),
+        coach: None,
+    };
+
+    let calls = [
+        f.series_sent_to(&series, f.members(&series), &[f.coachee.id]),
+        f.session_sent_to(&session, &[f.coachee.id]),
+    ];
+
+    for (case, call) in calls.into_iter().enumerate() {
+        let out = resend(call, coachee_only).await;
+        assert_eq!(out.status, StatusCode::NO_CONTENT, "case {case}");
+        assert_eq!(out.sent.len(), 1, "case {case}");
+    }
 }

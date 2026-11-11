@@ -1,5 +1,6 @@
 pub(crate) mod recurrence;
 
+use crate::coaching_relationship::ensure_coachee_is_member;
 use crate::coaching_relationships;
 use crate::coaching_session_hydration::{
     run_coaching_session_hydration_tasks, CoachingSessionHydrationContext,
@@ -511,7 +512,8 @@ pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<
 /// Resend a session's invite to both participants, under a bumped SEQUENCE so calendars
 /// update the event they already hold. A member of a current series is refused: its
 /// invite is the series', so it is resent from there. A legacy member never had a series
-/// invite and goes out standalone.
+/// invite and goes out standalone. Refused when the coachee is no longer in the
+/// organization.
 pub async fn resend_invite(db: &DatabaseConnection, config: &Config, id: Id) -> Result<(), Error> {
     let session = find_by_id(db, id).await?;
     if session.date <= chrono::Utc::now().naive_utc() {
@@ -527,15 +529,20 @@ pub async fn resend_invite(db: &DatabaseConnection, config: &Config, id: Id) -> 
         ));
     }
 
+    let relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    let notify = ensure_coachee_is_member(db, &relationship).await?;
+
     // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
     let bumped = coaching_session::increment_ical_sequence(db, id).await?;
-    let parties = emails::InviteParties::load(db, bumped.coaching_relationship_id).await?;
+    let parties = emails::InviteParties::load(db, &relationship).await?;
     let delivered = emails::send_session_invite_resend(
         db,
         config,
         &parties.participants(),
         &bumped,
         &parties.organization,
+        &notify,
     )
     .await?;
     ensure_coachee_reached(&delivered)?;
@@ -552,8 +559,8 @@ pub(crate) fn resend_refused(message: &str, reason: &str) -> Error {
 /// coach is the one asking.
 pub(crate) fn ensure_coachee_reached(delivered: &emails::Delivered) -> Result<(), Error> {
     match delivered.coachee {
-        true => Ok(()),
-        false => Err(Error {
+        emails::Delivery::Sent => Ok(()),
+        _ => Err(Error {
             source: None,
             error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
         }),
@@ -910,7 +917,12 @@ mod tests {
         ]);
 
         let organization = test_organization();
-        let relationship = test_coaching_relationship(Id::new_v4(), organization.id);
+        let coach = test_user_with_email("coach@example.com");
+        let coachee = test_user_with_email("coachee@example.com");
+        let relationship = coaching_relationships::Model {
+            coachee_id: coachee.id,
+            ..test_coaching_relationship(coach.id, organization.id)
+        };
         let mut session = test_session(relationship.id, None);
         session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
         let bumped = coaching_sessions::Model {
@@ -920,10 +932,11 @@ mod tests {
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![bumped.clone()]])
-            .append_query_results(vec![vec![relationship]])
-            .append_query_results(vec![vec![test_user_with_email("coach@example.com")]])
-            .append_query_results(vec![vec![test_user_with_email("coachee@example.com")]])
+            .append_query_results(vec![vec![coach]])
+            .append_query_results(vec![vec![coachee]])
             .append_query_results(vec![vec![organization]])
             // The invite body's topics, goals and actions.
             .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
