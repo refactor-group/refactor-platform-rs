@@ -11,6 +11,20 @@ rs#399 baseline is frozen. Rows it changes or adds are marked `[tightened]`; the
 `Enforced at` cells point at the new checks. Row ids are stable; never renumber them.
 Phase 4 adds colleague rows; there are none yet.
 
+Rows marked `[membership]` change in phase M (org membership consistency), which also lands
+before the baseline. Their expected results already show the phase M rule:
+
+- A user's own lists (`/users/{self}/coaching-relationships`, `/coaching_sessions` and its
+  `/counts` and `/nearest`, `/actions`) leave out relationships in orgs the user no longer
+  belongs to, unless they are a SuperAdmin, matching the 403 they get opening one.
+- Session and series emails, and action assignment emails, go only to participants who are
+  still members of the relationship's org.
+
+Two behaviors are confirmed as intended and recorded as they are: a coachee's Actions page
+(batch and per-relationship lists) shows only their own and unassigned actions, while every
+other surface shows the session's actions in full; and org admins and SuperAdmins who are
+not participants can list an org's relationships but get 403 reading one or its content.
+
 Rules the security PR adds:
 
 - Notes, agreements and actions, read or written by id or created for a session: the caller
@@ -162,7 +176,7 @@ How to read the tables:
 | REL-14 | GET /users/{COACHEE_ID}/coaching-relationships | COACH, MEMBER, ADMIN, SUPER | 403 | `web/src/protect/users/mod.rs:26` | Self only, no admin bypass |
 | REL-15 | POST /organizations/O1/coaching_relationships `{coach_id: COACH, coachee_id: MEMBER}` | ADMIN, SUPER | 200 (201), new relationship | `web/src/extractors/organization_admin_access.rs:42`; `entity_api/src/coaching_relationship.rs:70` | Same pair again returns the existing row. Both people must be O1 members |
 | REL-16 | POST /organizations/O1/coaching_relationships | COACH, COACHEE, MEMBER, OUTSIDER | 403 | `web/src/extractors/organization_admin_access.rs:48` | |
-| REL-17 | GET /users/{REMOVED_ID}/coaching-relationships | REMOVED | 200, R3 | `web/src/protect/users/mod.rs:26`; `entity_api/src/coaching_relationship.rs:543` | [rows] self route has no membership filter |
+| REL-17 | GET /users/{REMOVED_ID}/coaching-relationships | REMOVED | 200, empty list | `web/src/protect/users/mod.rs:26`; `entity_api/src/coaching_relationship.rs:543` | [membership] self list leaves out R3; was 200, R3 |
 
 ### 4.2 Sessions (`SES`)
 
@@ -197,7 +211,7 @@ How to read the tables:
 | SES-27 | GET /users/{COACH_ID}/coaching_sessions | COACH | 200, S1 S3 SR1-* | `web/src/protect/users/coaching_sessions.rs:20`; `entity_api/src/coaching_session.rs:1176` | [rows] self only. `include=relationship` adds `coach`/`coachee` |
 | SES-28 | GET /users/{COACHEE_ID}/coaching_sessions | COACHEE | 200, S1 S2 SR1-* | same as SES-27 | [rows] |
 | SES-29 | GET /users/{COACHEE_ID}/coaching_sessions | COACH, MEMBER, ADMIN, SUPER | 403 | `web/src/protect/users/coaching_sessions.rs:20` | Same gate for `/counts` and `/nearest` |
-| SES-30 | GET /users/{REMOVED_ID}/coaching_sessions | REMOVED | 200, S3 | `web/src/protect/users/coaching_sessions.rs:20` | [rows] self route has no membership filter |
+| SES-30 | GET /users/{REMOVED_ID}/coaching_sessions | REMOVED | 200, empty list | `web/src/protect/users/coaching_sessions.rs:20` | [membership] self list leaves out S3; was 200, S3 |
 | SES-31 | GET /users/{COACHEE_ID}/coaching_sessions/counts | COACHEE | 200, counts over S1 S2 SR1-* | `web/src/protect/users/coaching_sessions.rs:20`; `entity_api/src/coaching_session.rs:877` | [rows] |
 | SES-32 | GET /users/{COACHEE_ID}/coaching_sessions/nearest?coaching_relationship_ids=R1,R2 | COACHEE | 200, nearest of R1 and of R2 | `web/src/protect/users/coaching_sessions.rs:20`; `entity_api/src/coaching_session.rs:1206` | [rows] a relationship the user is not in contributes nothing |
 
@@ -277,7 +291,7 @@ How to read the tables:
 | ACT-18 | GET /users/{COACHEE_ID}/actions (scope=sessions, default) | COACHEE | 200, A1 A2 A3 A4 A5 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:359` | [rows] self access; no assignee narrowing |
 | ACT-19 | GET /users/{COACHEE_ID}/actions?scope=assigned | COACHEE | 200, A2 A5 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:350` | [rows] |
 | ACT-20 | GET /users/{COACH_ID}/actions (scope=sessions) | COACH | 200, A1 A2 A3 A6 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:359` | [rows] `scope=assigned`: A1 |
-| ACT-21 | GET /users/{REMOVED_ID}/actions (scope=sessions) | REMOVED | 200, A6 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:359` | [rows] self route has no membership filter |
+| ACT-21 | GET /users/{REMOVED_ID}/actions (scope=sessions) | REMOVED | 200, empty list | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:359` | [membership] self list leaves out A6; was 200, A6 |
 | ACT-22 | GET /users/{COACHEE_ID}/actions (scope=sessions) | COACH | 200, A1 A2 A3; not A4 A5 | `web/src/protect/users/actions.rs:16`; `web/src/controller/user/action_controller.rs:74`; `entity_api/src/action.rs:395`; `entity_api/src/coaching_relationship.rs:349` | [rows] [tightened] only relationships where the caller coaches this user |
 | ACT-23 | GET /users/{COACHEE_ID}/actions?scope=assigned | COACH | 200, A2; not A5 | `web/src/protect/users/actions.rs:16`; `web/src/controller/user/action_controller.rs:74`; `entity_api/src/action.rs:395`; `entity_api/src/coaching_relationship.rs:349` | [rows] [tightened] |
 | ACT-24 | GET /users/{COACHEE_ID}/actions (scope=sessions) | OTHER_COACH | 200, A4 A5; not A1 A2 A3 | `web/src/protect/users/actions.rs:16`; `web/src/controller/user/action_controller.rs:74`; `entity_api/src/action.rs:395`; `entity_api/src/coaching_relationship.rs:349` | [rows] [tightened] |
@@ -472,17 +486,17 @@ Check with two browsers or `curl -N -b /tmp/<jar>.jar -H "$VER" $BASE/sse`.
 | JOB-03 | Transcript suggestions sweep (`domain/src/jobs/transcript_suggestions.rs:74`) | No email. SSE to participants still members (SSE-05). Prompt names coach and coachee | `domain/src/transcript_suggestion/extract.rs:240`, `:115` |
 | JOB-04 | Note image purge (`domain/src/jobs/coaching_session_image_purge.rs`) | None | not relationship-scoped |
 | JOB-05 | Password reset token cleanup (`domain/src/jobs/password_reset.rs`) | None | not relationship-scoped |
-| MAIL-01 | Session scheduled: `POST /coaching_sessions` (`domain/src/coaching_session.rs:143`) | COACH and COACHEE, no membership filter | `domain/src/emails.rs:1007` |
+| MAIL-01 | Session scheduled: `POST /coaching_sessions` (`domain/src/coaching_session.rs:143`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:1007` |
 | MAIL-02 | Session rescheduled (JOB-02) | COACH and COACHEE, each only if still an org member; none if both left | `domain/src/emails.rs:1198` |
-| MAIL-03 | Session cancelled: `DELETE /coaching_sessions/{id}` (`domain/src/coaching_session.rs:507`); also orphan cancels in series edits (`domain/src/emails.rs:2547`) | COACH and COACHEE, no membership filter; nothing for a past session | `domain/src/emails.rs:1546`, `:1497`, `:1516` |
-| MAIL-04 | Session invite resend: SES-24 (`domain/src/coaching_session.rs:533`) | COACH and COACHEE, no membership filter | `domain/src/emails.rs:2087` |
-| MAIL-05 | Series scheduled: SER-01 (`domain/src/coaching_session_series.rs:141`) | COACH and COACHEE, no membership filter | `domain/src/emails.rs:2160`, `:1953`, `:1977` |
-| MAIL-06 | Series rescheduled: SER-08 (`domain/src/coaching_session_series.rs:290`) | COACH and COACHEE, no membership filter | `domain/src/emails.rs:2203` |
-| MAIL-07 | Series rescheduled from an occurrence on: SER-10 (`domain/src/coaching_session_series.rs:731`) | COACH and COACHEE, no membership filter | `domain/src/emails.rs:2285` |
-| MAIL-08 | Series cancelled: SER-12 (`domain/src/coaching_session_series.rs:832`) | COACH and COACHEE, no membership filter | `domain/src/emails.rs:2684`, `:2564` |
-| MAIL-09 | Series invite resend: SER-14 (`domain/src/coaching_session_series.rs:884`) | COACH and COACHEE, no membership filter | `domain/src/emails.rs:2037` |
+| MAIL-03 | Session cancelled: `DELETE /coaching_sessions/{id}` (`domain/src/coaching_session.rs:507`); also orphan cancels in series edits (`domain/src/emails.rs:2547`) | COACH and COACHEE, each only if still an org member [membership]; nothing for a past session | `domain/src/emails.rs:1546`, `:1497`, `:1516` |
+| MAIL-04 | Session invite resend: SES-24 (`domain/src/coaching_session.rs:533`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:2087` |
+| MAIL-05 | Series scheduled: SER-01 (`domain/src/coaching_session_series.rs:141`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:2160`, `:1953`, `:1977` |
+| MAIL-06 | Series rescheduled: SER-08 (`domain/src/coaching_session_series.rs:290`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:2203` |
+| MAIL-07 | Series rescheduled from an occurrence on: SER-10 (`domain/src/coaching_session_series.rs:731`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:2285` |
+| MAIL-08 | Series cancelled: SER-12 (`domain/src/coaching_session_series.rs:832`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:2684`, `:2564` |
+| MAIL-09 | Series invite resend: SER-14 (`domain/src/coaching_session_series.rs:884`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:2037` |
 | MAIL-10 | Session reminder (JOB-01) | COACHEE only | `domain/src/emails.rs:1246` |
-| MAIL-11 | Action assigned: ACT-28, ACT-29, TRN-11, TRN-13 | Every listed assignee id, not checked against the relationship or org | `domain/src/emails.rs:2732`; `web/src/controller/action_controller.rs:81`, `:154`; `domain/src/transcript_suggestion/review.rs:377` |
+| MAIL-11 | Action assigned: ACT-28, ACT-29, TRN-11, TRN-13 | Every listed assignee (the coach or coachee, per ACT rules) who is still an org member [membership] | `domain/src/emails.rs:2732`; `web/src/controller/action_controller.rs:81`, `:154`; `domain/src/transcript_suggestion/review.rs:377` |
 | MAIL-12 | Welcome (magic link): ORG-01 and `POST /organizations/{id}/users/{user}/resend-invite` | The new user; `coach_first_name` is whoever sent the invite | `domain/src/emails.rs:242`, `:297` |
 | MAIL-13 | Added to organization: ORG-03 | The attached user | `domain/src/emails.rs:312` |
 | MAIL-14 | Password reset: `POST /password-reset/request` | The account owner | `domain/src/password_reset.rs:236`; not relationship-related |

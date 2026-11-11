@@ -25,13 +25,13 @@ Every coach and coachee permission works exactly as it does today when this is d
 | Frontend companion plan's coach/coachee rows in Playwright | After phases 3 and 6 |
 
 The only sanctioned changes to coaching behavior, each approved separately: the phase S
-relationship authorization fixes (the matrix rows marked `[tightened]`), an
-action-visibility correction if phase 0 finds today's rule unintended (approved separately,
-landing before 0b), and the phase 6 response shape change (same access, different fields).
+relationship authorization fixes (the matrix rows marked `[tightened]`), the phase M
+membership rules (rows marked `[membership]`), and the phase 6 response shape change (same
+access, different fields).
 
 ## Phases
 
-Each phase is its own PR; phase 1 is two (migration and backfill, then code). Order: S, 0,
+Each phase is its own PR; phase 1 is two (migration and backfill, then code). Order: S, 0, M,
 0b, 0c, 1, 2, 3, 3b, 4, 4b, E, 5, 6. Phases S and 0 can run in parallel.
 
 **S. Relationship authorization fixes.** Its own security PR, ahead of the colleague work, so
@@ -56,17 +56,27 @@ existing checks, since a route with no check is invisible to grep.
   Phase 6's contract is built from it.
 - Every non-permission place that assumes coach/coachee: transcript attribution and export,
   suggested actions, email templates, background jobs.
-- Settle one known inconsistency: action search and self-access on `/users/{id}/actions` show a
-  coachee coach-assigned actions; the batch actions endpoint never does.
+- Settled: a coachee's Actions page (batch and per-relationship lists) shows only their own and
+  unassigned actions, while every other surface shows the session's actions in full. Intended;
+  recorded as is. Org admins and SuperAdmins who aren't participants list relationships but
+  get 403 reading one; also intended.
 - Frontend companion (written by the FE session): which controls each role sees or can use,
   each linked to its backend row id, run via Playwright.
+
+**M. Org membership consistency.** Its own PR, before 0b. A user's own lists
+(`/users/{self}/coaching-relationships`, `/coaching_sessions` with `/counts` and `/nearest`,
+`/actions`) leave out relationships in orgs they no longer belong to, unless they are a
+SuperAdmin, matching the 403 they get opening one. Session, series and action assignment
+emails go only to participants still in the org, as reschedule and reminder emails already do.
+The access matrix marks these rows `[membership]`. The frontend confirms the rule and updates
+its test plan before the PR merges.
 
 **0b. Baseline tests.** Every coach/coachee row of the matrix becomes a test that sends a real
 request through the router as each caller and asserts status codes and returned ids (never
 full bodies, so phase 6 shape changes don't touch frozen files), plus email and reminder
-recipients. Rows that depend on which rows a query selects use the SQLite tier. Includes every
-`[tightened]` row, so the phase S rules are locked in as regressions too. Written against
-`main` after phase S merges, must pass there, then frozen.
+recipients. Rows that depend on which rows a query selects use the SQLite tier. Includes every `[tightened]` and `[membership]` row, so the phase S and M rules are locked in
+as regressions too. Written against
+`main` after phases S and M merge, must pass there, then frozen.
 
 **0c. Move relationship checks onto extractors** (no behavior change; part of #218). The seven
 relationship-scoped `protect/` modules (`actions`, `agreements`, `coaching_sessions`, `goals`,
