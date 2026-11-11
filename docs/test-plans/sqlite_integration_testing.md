@@ -183,6 +183,13 @@ default flag feature that pulls in no SQLite code.)
   organization, a global super admin and an org admin, and a session read with
   `include=relationship` marks a removed coachee
   (`domain/src/coaching_session_sqlite_tests.rs`).
+- **Account delete with coaching history** (`domain/src/user_delete_sqlite_tests.rs`): an
+  account in any relationship that has a session is refused with `user_has_coaching_history`
+  and the count of such relationships, and nothing is deleted. An account whose relationships
+  have no sessions is deleted along with them and their goals. A session that appears after
+  the check, forced with a temporary trigger, is refused the same way rather than surfacing a
+  foreign key fault. The tests recreate `user_role_changes` with SQLite defaults, since its id
+  and timestamp defaults exist only in the migrations.
 - **The coaching session image purge**, below.
 
 ### The coaching session image purge
