@@ -74,7 +74,10 @@ relationship-scoped `protect/` modules (`actions`, `agreements`, `coaching_sessi
 `authorize_session` / `authorize_relationship` / `authorize_relationship_coach` helpers from
 phase S; `goals::by_id` gets a `GoalAccess` extractor. Each check moves exactly as it is,
 including today's coach-only rule on session update, delete and resend invite. The 0b
-baseline must stay green with zero edits. Then those `protect/` modules are deleted. About
+baseline must stay green with zero edits. Then those `protect/` modules are deleted. Two
+fixes ride along, each its own commit with tests: the batch session-goals check loads every
+session and its relationship in one query instead of one per id; and the access helpers and
+extractors answer 404 only for a missing record, so a database error is a 5xx, not a 404. About
 three handoffs (list reads, sessions, goals), one PR. Afterwards every relationship check
 lives in `web/src/extractors/`, so phase 3 only switches them.
 
