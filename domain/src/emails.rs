@@ -1168,13 +1168,14 @@ async fn send_action_assigned_email(
 /// Orchestrate sending session-scheduled emails (best-effort).
 ///
 /// Looks up the coaching relationship, both users, and the organization,
-/// then emails the participants still in the organization.
+/// then emails `notify`, the participants the caller found still in the organization.
 /// Errors are logged internally — email delivery must never block or fail
 /// the calling operation.
 pub async fn notify_session_scheduled(
     db: &DatabaseConnection,
     config: &Config,
     session: &coaching_sessions::Model,
+    notify: &[Id],
 ) {
     let result: Result<(), Error> = async {
         let relationship =
@@ -1182,9 +1183,8 @@ pub async fn notify_session_scheduled(
         let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
         let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
-        let notify = notify_member_ids(db, &relationship).await?;
 
-        send_session_scheduled_email(db, config, &coach, &coachee, session, &org, &notify).await
+        send_session_scheduled_email(db, config, &coach, &coachee, session, &org, notify).await
     }
     .await;
 
@@ -2170,7 +2170,7 @@ async fn send_recurring_sessions_rescheduled_email(
 /// Orchestrate sending recurring-sessions-scheduled emails (best-effort).
 ///
 /// Looks up the coaching relationship, both users, and the organization,
-/// then sends a single summary email per recipient covering the whole series — count.
+/// then sends a single summary email per recipient in `notify` covering the whole series — count.
 ///
 /// Errors are logged internally — email delivery must never block or fail
 /// the calling operation.
@@ -2179,6 +2179,7 @@ pub async fn notify_recurring_sessions_scheduled(
     config: &Config,
     series: &coaching_session_series::Model,
     sessions: &[coaching_sessions::Model],
+    notify: &[Id],
 ) {
     if sessions.is_empty() {
         return;
@@ -2190,7 +2191,6 @@ pub async fn notify_recurring_sessions_scheduled(
         let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
         let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
-        let notify = notify_member_ids(db, &relationship).await?;
 
         send_recurring_sessions_scheduled_email(
             db,
@@ -2201,7 +2201,7 @@ pub async fn notify_recurring_sessions_scheduled(
                     coach: &coach,
                     coachee: &coachee,
                 },
-                notify: &notify,
+                notify,
             },
             sessions,
             &org,
@@ -2222,8 +2222,8 @@ pub async fn notify_recurring_sessions_scheduled(
 ///
 /// `series` must be the post-update model, so its `ical_sequence` is already
 /// incremented. Looks up the coaching relationship, both users, and the organization,
-/// then re-sends the series invite to the participants still in the organization so
-/// their recurring calendar event updates in place. A reschedule can legitimately leave no
+/// then re-sends the series invite to `notify`, the participants the caller found still in
+/// the organization, so their recurring calendar event updates in place. A reschedule can legitimately leave no
 /// future sessions, in which case there is nothing to invite anyone to. `previous_series`
 /// is the pre-update model: its rule carries the start the recipients last saw.
 /// `replaced` is the set the reschedule deleted, needed only so any standalone calendar
@@ -2236,6 +2236,7 @@ pub async fn notify_recurring_sessions_rescheduled(
     previous_series: PreviousSeries<'_>,
     sessions: &[coaching_sessions::Model],
     replaced: ReplacedSessions<'_>,
+    notify: &[Id],
 ) {
     // No future sessions means no series invite to send, but the replaced rows are gone
     // either way and any standalone event they left is addressed by nothing else. Cancel
@@ -2252,7 +2253,6 @@ pub async fn notify_recurring_sessions_rescheduled(
         let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
         let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
-        let notify = notify_member_ids(db, &relationship).await?;
 
         send_recurring_sessions_rescheduled_email(
             db,
@@ -2264,7 +2264,7 @@ pub async fn notify_recurring_sessions_rescheduled(
                     coach: &coach,
                     coachee: &coachee,
                 },
-                notify: &notify,
+                notify,
             },
             &SeriesSessions {
                 current: sessions,
@@ -2304,6 +2304,8 @@ pub struct FollowingRescheduleNotice<'a> {
     /// `previous_series`. Each is replaced where the new invite reuses its address, else
     /// cancelled.
     pub previous_overrides: &'a [coaching_sessions::Model],
+    /// The participants the caller found still in the organization.
+    pub notify: &'a [Id],
 }
 
 /// Orchestrate the email for a "this and following" series reschedule (best-effort).
@@ -2324,7 +2326,6 @@ pub async fn notify_recurring_sessions_rescheduled_following(
         let relationship =
             coaching_relationship::find_by_id(db, change.series.coaching_relationship_id).await?;
         let parties = InviteParties::load(db, &relationship).await?;
-        let notify = notify_member_ids(db, &relationship).await?;
         let previous_rule: SeriesRule =
             serde_json::from_value(change.previous_series.0.rule.clone())?;
         let rows = coaching_session::find_by_series_id(db, change.series.id).await?;
@@ -2352,7 +2353,7 @@ pub async fn notify_recurring_sessions_rescheduled_following(
             change.series,
             &Audience {
                 participants: &parties.participants(),
-                notify: &notify,
+                notify: change.notify,
             },
             &SeriesSessions {
                 current: change.sessions,

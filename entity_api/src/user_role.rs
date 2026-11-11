@@ -9,18 +9,17 @@
 //! a shared transaction keeps it atomic with the change it describes; requiring
 //! the concrete type makes that a compile error instead of a convention.
 
-use std::collections::HashSet;
-
 use super::actor::Actor;
 use super::error::{EntityApiErrorKind, Error};
 use chrono::Utc;
 use entity::roles::Role;
 use entity::user_roles::{ActiveModel, Column, Entity, Model};
-use entity::Id;
+use entity::{users, Id};
 use sea_orm::{
+    sea_query::{Expr, SimpleExpr},
     ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, DatabaseTransaction, DbErr,
-    EntityTrait, FromQueryResult, IntoActiveModel, PaginatorTrait, QueryFilter, QuerySelect, Set,
-    SqlErr,
+    EntityTrait, ExprTrait, IntoActiveModel, PaginatorTrait, QueryFilter, QuerySelect, QueryTrait,
+    Set, SqlErr,
 };
 
 /// Partial unique index holding a user to one role per organization.
@@ -367,67 +366,43 @@ pub async fn retain_organization_members(
     user_ids: &[Id],
     organization_id: Id,
 ) -> Result<Vec<Id>, Error> {
-    let pairs: Vec<(Id, Id)> = user_ids
-        .iter()
-        .map(|&user_id| (user_id, organization_id))
-        .collect();
-    let members = organization_memberships(db, &pairs).await?;
+    let members: Vec<Id> = users::Entity::find()
+        .select_only()
+        .column_as(users::Column::Id, "user_id")
+        .filter(users::Column::Id.is_in(user_ids.iter().copied()))
+        .filter(is_member(
+            Expr::col(users::Column::Id.as_column_ref()),
+            Expr::val(organization_id),
+        ))
+        .into_tuple::<Id>()
+        .all(db)
+        .await?;
 
     Ok(user_ids
         .iter()
         .copied()
-        .filter(|&user_id| members.contains(&(user_id, organization_id)))
+        .filter(|user_id| members.contains(user_id))
         .collect())
 }
 
-/// The `(user_id, organization_id)` pairs whose user currently holds a role in that
-/// organization, in one query.
-///
-/// The batched form of [`retain_organization_members`]: a global SuperAdmin is a
-/// member of every organization.
-pub async fn organization_memberships(
-    db: &impl ConnectionTrait,
-    pairs: &[(Id, Id)],
-) -> Result<HashSet<(Id, Id)>, Error> {
-    if pairs.is_empty() {
-        return Ok(HashSet::new());
-    }
-
-    let roles = Entity::find()
-        .select_only()
-        .column(Column::UserId)
-        .column(Column::OrganizationId)
-        .filter(Column::UserId.is_in(pairs.iter().map(|&(user_id, _)| user_id)))
-        .filter(
-            Condition::any()
-                .add(Column::OrganizationId.is_in(pairs.iter().map(|&(_, org_id)| org_id)))
-                .add(
-                    Condition::all()
-                        .add(Column::Role.eq(Role::SuperAdmin))
-                        .add(Column::OrganizationId.is_null()),
-                ),
-        )
-        .into_model::<MembershipRow>()
-        .all(db)
-        .await?;
-
-    Ok(pairs
-        .iter()
-        .copied()
-        .filter(|&(user_id, organization_id)| {
-            roles.iter().any(|role| {
-                role.user_id == user_id
-                    && role.organization_id.is_none_or(|id| id == organization_id)
-            })
-        })
-        .collect())
-}
-
-/// A role row the membership query reads back; a null organization is a global SuperAdmin.
-#[derive(FromQueryResult)]
-struct MembershipRow {
-    user_id: Id,
-    organization_id: Option<Id>,
+/// Whether `user` holds a role in `organization`; a global SuperAdmin is a member of every one.
+pub fn is_member(user: impl Into<SimpleExpr>, organization: impl Into<SimpleExpr>) -> SimpleExpr {
+    Expr::exists(
+        Entity::find()
+            .select_only()
+            .expr(Expr::cust("1"))
+            .filter(Expr::col(Column::UserId.as_column_ref()).eq(user))
+            .filter(
+                Condition::any()
+                    .add(Expr::col(Column::OrganizationId.as_column_ref()).eq(organization))
+                    .add(
+                        Condition::all()
+                            .add(Column::Role.eq(Role::SuperAdmin))
+                            .add(Column::OrganizationId.is_null()),
+                    ),
+            )
+            .into_query(),
+    )
 }
 
 #[cfg(test)]

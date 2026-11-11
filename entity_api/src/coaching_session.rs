@@ -1,5 +1,5 @@
 use super::error::{EntityApiErrorKind, Error};
-use crate::coaching_relationship::{accessible_to, find_memberships, Membership, WithMembership};
+use crate::coaching_relationship::{accessible_to, select_membership, WithMembership};
 use crate::duration::Duration;
 use crate::mutate::UpdateMap;
 use chrono::NaiveDateTime;
@@ -439,9 +439,10 @@ struct ClaimedPair {
 ///
 /// The membership test only ever removes people. Removal leaves relationships and
 /// sessions in place, so without it a former member is mailed session details forever. A
-/// global SuperAdmin holds no per-organization row and counts as a member everywhere,
-/// matching `user_role::retain_organization_members`. It is a semi-join because a join
-/// would yield a row per role, and the upsert cannot touch one row twice.
+/// global SuperAdmin holds no per-organization row and counts as a member everywhere.
+/// The clause mirrors [`crate::user_role::is_member`], hand-written because this statement
+/// is raw SQL. It is a semi-join because a join would yield a row per role, and the upsert
+/// cannot touch one row twice.
 ///
 /// The upsert is the claim: the unique index arbitrates between replicas, and `RETURNING`
 /// yields only the pairs this caller won. The `WHERE` on the `DO UPDATE` is what keeps it
@@ -1312,8 +1313,7 @@ async fn enrich(
 /// 3. Discard: This struct is not returned to clients
 #[derive(Debug, Default)]
 struct RelatedData {
-    relationships: HashMap<Id, coaching_relationships::Model>,
-    memberships: HashMap<Id, Membership>,
+    relationships: HashMap<Id, WithMembership>,
     coaches: HashMap<Id, users::Model>,
     coachees: HashMap<Id, users::Model>,
     organizations: HashMap<Id, organizations::Model>,
@@ -1343,19 +1343,18 @@ async fn load_related_data(
         data.relationships = batch_load_relationships(db, &relationship_ids).await?;
     }
 
-    // Load memberships and users (coaches and coachees) if relationship is included
+    // Load users (coaches and coachees) if relationship is included
     if includes.relationship {
-        let relationships: Vec<coaching_relationships::Model> =
-            data.relationships.values().cloned().collect();
-        let memberships = find_memberships(db, &relationships).await?;
-        data.memberships = relationships
-            .iter()
-            .map(|r| r.id)
-            .zip(memberships)
+        let coach_ids: Vec<Id> = data
+            .relationships
+            .values()
+            .map(|r| r.relationship.coach_id)
             .collect();
-
-        let coach_ids: Vec<Id> = data.relationships.values().map(|r| r.coach_id).collect();
-        let coachee_ids: Vec<Id> = data.relationships.values().map(|r| r.coachee_id).collect();
+        let coachee_ids: Vec<Id> = data
+            .relationships
+            .values()
+            .map(|r| r.relationship.coachee_id)
+            .collect();
 
         data.coaches = batch_load_users(db, &coach_ids).await?;
         data.coachees = batch_load_users(db, &coachee_ids).await?;
@@ -1366,7 +1365,7 @@ async fn load_related_data(
         let org_ids: Vec<Id> = data
             .relationships
             .values()
-            .map(|r| r.organization_id)
+            .map(|r| r.relationship.organization_id)
             .collect();
         data.organizations = batch_load_organizations(db, &org_ids).await?;
     }
@@ -1400,21 +1399,23 @@ async fn load_related_data(
     Ok(data)
 }
 
-/// Batch load coaching relationships by IDs
+/// Batch load coaching relationships by IDs, with their participants' membership, in one query
 async fn batch_load_relationships(
     db: &impl ConnectionTrait,
     ids: &[Id],
-) -> Result<HashMap<Id, coaching_relationships::Model>, Error> {
+) -> Result<HashMap<Id, WithMembership>, Error> {
     if ids.is_empty() {
         return Ok(HashMap::new());
     }
 
-    Ok(coaching_relationships::Entity::find()
-        .filter(coaching_relationships::Column::Id.is_in(ids.iter().copied()))
+    let query = coaching_relationships::Entity::find()
+        .filter(coaching_relationships::Column::Id.is_in(ids.iter().copied()));
+    Ok(select_membership(query)
+        .into_model::<WithMembership>()
         .all(db)
         .await?
         .into_iter()
-        .map(|r| (r.id, r))
+        .map(|r| (r.relationship.id, r))
         .collect())
 }
 
@@ -1600,15 +1601,18 @@ fn assemble_enriched_session(
         .as_ref()
         .map(|rel| {
             (
-                related.coaches.get(&rel.coach_id).cloned(),
-                related.coachees.get(&rel.coachee_id).cloned(),
+                related.coaches.get(&rel.relationship.coach_id).cloned(),
+                related.coachees.get(&rel.relationship.coachee_id).cloned(),
             )
         })
         .unwrap_or((None, None));
 
-    let organization = relationship
-        .as_ref()
-        .and_then(|rel| related.organizations.get(&rel.organization_id).cloned());
+    let organization = relationship.as_ref().and_then(|rel| {
+        related
+            .organizations
+            .get(&rel.relationship.organization_id)
+            .cloned()
+    });
 
     let goals = if includes.goal {
         Some(related.goals.get(&session.id).cloned().unwrap_or(vec![]))
@@ -1640,15 +1644,6 @@ fn assemble_enriched_session(
                     last_session_date,
                 })
         });
-
-    let relationship = relationship.map(|relationship| WithMembership {
-        membership: related
-            .memberships
-            .get(&relationship.id)
-            .copied()
-            .unwrap_or_default(),
-        relationship,
-    });
 
     EnrichedSession {
         session,
@@ -1685,6 +1680,7 @@ mod tests {
     use super::*;
     use entity::meeting_provider::Provider;
     use entity::Id;
+    use sea_orm::sea_query::{Alias, PostgresQueryBuilder};
     use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult, Statement, Transaction, Value};
 
     /// `user_id` as a SuperAdmin, whose reads carry no organization predicate.
@@ -1822,9 +1818,51 @@ mod tests {
         assert!(
             sql.contains("ur.organization_id IS NULL AND ur.role = 'super_admin'"),
             "a global SuperAdmin holds no organization row and must still count, \
-             matching user_role::retain_organization_members, got: {sql}"
+             matching user_role::is_member, got: {sql}"
         );
 
+        Ok(())
+    }
+
+    /// `is_member`'s conditions, spelled the way the reminder's raw SQL spells them.
+    fn is_member_conditions() -> Vec<String> {
+        let sql = Query::select()
+            .expr(crate::user_role::is_member(
+                Expr::col((Alias::new("cr"), Alias::new("coachee_id"))),
+                Expr::col((Alias::new("cr"), Alias::new("organization_id"))),
+            ))
+            .to_string(PostgresQueryBuilder)
+            .replace('"', "")
+            .replace("(CAST('super_admin' AS role))", "'super_admin'")
+            .replace("user_roles.", "ur.");
+        let (_, filter) = sql.split_once(" WHERE ").expect("is_member filters");
+        filter
+            .split(" AND ")
+            .flat_map(|part| part.split(" OR "))
+            .map(|condition| condition.trim_matches(['(', ')']).to_string())
+            .collect()
+    }
+
+    /// The reminder claim hand-writes `is_member` in raw SQL; this keeps the two in step.
+    #[tokio::test]
+    async fn claim_due_reminders_membership_mirrors_is_member() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+
+        claim_due_reminders(&db, now, chrono::Duration::hours(24), 200).await?;
+
+        let log = db.into_transaction_log();
+        let sql = &log[0].statements()[0].sql;
+        let conditions = is_member_conditions();
+        assert_eq!(conditions.len(), 4, "{conditions:?}");
+        for condition in &conditions {
+            assert!(sql.contains(condition.as_str()), "{condition}: {sql}");
+        }
         Ok(())
     }
 
@@ -2499,6 +2537,109 @@ mod tests {
             )]
         );
 
+        Ok(())
+    }
+
+    /// A relationship row with its membership columns, as the include's load reads it back.
+    fn relationship_row(
+        id: Id,
+        coachee_is_member: bool,
+    ) -> std::collections::BTreeMap<String, Value> {
+        let now: DateTimeWithTimeZone = chrono::Utc::now().into();
+        std::collections::BTreeMap::from([
+            ("id".to_string(), id.into()),
+            ("organization_id".to_string(), Id::new_v4().into()),
+            ("coach_id".to_string(), Id::new_v4().into()),
+            ("coachee_id".to_string(), Id::new_v4().into()),
+            ("slug".to_string(), "slug".into()),
+            ("created_at".to_string(), now.into()),
+            ("updated_at".to_string(), now.into()),
+            ("coach_is_member".to_string(), true.into()),
+            ("coachee_is_member".to_string(), coachee_is_member.into()),
+        ])
+    }
+
+    #[tokio::test]
+    async fn m5_05_included_relationships_carry_membership_in_one_statement() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let (kept, removed) = (Id::new_v4(), Id::new_v4());
+        let session = |relationship_id: Id| Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship_id,
+            coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
+            date: now.naive_utc(),
+            collab_document_name: None,
+            duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: Some(now.into()),
+            notice_given_at: now.into(),
+        };
+        let sessions = vec![session(kept), session(removed), session(kept)];
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![sessions.clone()])
+            .append_query_results::<entity::coaching_session_views::Model, Vec<_>, _>(vec![vec![]])
+            .append_query_results([vec![
+                relationship_row(kept, true),
+                relationship_row(removed, false),
+            ]])
+            .append_query_results(vec![Vec::<users::Model>::new()])
+            .append_query_results(vec![Vec::<users::Model>::new()])
+            .append_query_results(vec![Vec::<coaching_session_topics::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let results = find_by_user_with_includes(
+            &db,
+            &viewer(Id::new_v4()),
+            SessionQueryOptions::default(),
+            IncludeOptions {
+                relationship: true,
+                ..IncludeOptions::none()
+            },
+        )
+        .await?;
+
+        let coachee_is_member: Vec<Option<bool>> = results
+            .iter()
+            .map(|r| {
+                r.relationship
+                    .as_ref()
+                    .map(|r| r.membership.coachee_is_member)
+            })
+            .collect();
+        assert_eq!(coachee_is_member, [Some(true), Some(false), Some(true)]);
+        let log = db.into_transaction_log();
+        let statements: Vec<&str> = log
+            .iter()
+            .flat_map(Transaction::statements)
+            .map(|statement| statement.sql.as_str())
+            .collect();
+        let relationship_loads: Vec<&&str> = statements
+            .iter()
+            .filter(|sql| sql.contains(r#"FROM "refactor_platform"."coaching_relationships""#))
+            .collect();
+        let [relationship_load] = relationship_loads.as_slice() else {
+            panic!("expected one relationship load: {statements:?}");
+        };
+        assert!(
+            relationship_load.contains(r#"EXISTS(SELECT 1 FROM "refactor_platform"."user_roles""#),
+            "{relationship_load}"
+        );
+        assert_eq!(
+            statements
+                .iter()
+                .filter(|sql| sql.contains("user_roles"))
+                .count(),
+            1,
+            "no separate membership statement: {statements:?}"
+        );
         Ok(())
     }
 

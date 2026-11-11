@@ -8,10 +8,11 @@ use entity::{coaching_relationships, coaching_sessions};
 use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 
 use super::*;
+use crate::coaching_relationship::Membership;
 use crate::coaching_relationships::Visibility;
 use crate::test_utils::sqlite::{
-    database, seed_lapsed_membership, seed_organization, seed_user, within_time_limit,
-    LapsedMembership,
+    database, organization_of, seed_lapsed_membership, seed_membership, seed_organization,
+    seed_user, within_time_limit, LapsedMembership,
 };
 
 /// 2026-10-30 14:00 UTC, the window's center in every test.
@@ -384,6 +385,41 @@ async fn include_relationship_loads_coach_and_coachee() -> Result<(), Error> {
         );
         assert_eq!(session.coach.as_ref().map(|u| u.id), Some(rel.coach_id));
         assert_eq!(session.coachee.as_ref().map(|u| u.id), Some(rel.coachee_id));
+        Ok::<(), Error>(())
+    })
+    .await
+}
+
+/// M5-02: the own list's included relationship marks a removed coachee.
+#[tokio::test]
+async fn m5_02_an_included_relationship_marks_a_removed_coachee() -> Result<(), Error> {
+    within_time_limit(async {
+        let db = database().await;
+        let rel = seed_relationship(&db).await;
+        let session = seed_session(&db, rel.id, around()).await;
+        seed_membership(&db, rel.coach_id, organization_of(&db, session).await).await;
+
+        let sessions = find_by_user_with_includes(
+            &db,
+            &participant(rel.coach_id),
+            SessionQueryOptions::default(),
+            IncludeOptions {
+                relationship: true,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let [enriched] = sessions.as_slice() else {
+            panic!("expected one session, got {sessions:?}");
+        };
+        assert_eq!(
+            enriched.relationship.as_ref().map(|r| r.membership),
+            Some(Membership {
+                coach_is_member: true,
+                coachee_is_member: false,
+            })
+        );
         Ok::<(), Error>(())
     })
     .await

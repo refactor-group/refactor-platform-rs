@@ -3,6 +3,7 @@
 
 use chrono::Utc;
 use entity::roles::Role;
+use entity_api::user_role::retain_organization_members;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 
 use super::{find_by_organization_for_user_with_user_names, CoachingRelationshipWithUserNames};
@@ -49,18 +50,23 @@ async fn seeded() -> Seeded {
 
 /// Gives `user_id` an Admin role in `organization_id`.
 async fn seed_admin(db: &DatabaseConnection, user_id: Id, organization_id: Id) {
+    seed_role(db, user_id, Role::Admin, Some(organization_id)).await
+}
+
+/// Gives `user_id` `role` in `organization_id` (`None`: a global role).
+async fn seed_role(db: &DatabaseConnection, user_id: Id, role: Role, organization_id: Option<Id>) {
     let now = Utc::now();
     user_roles::ActiveModel {
         id: Set(Id::new_v4()),
-        role: Set(Role::Admin),
-        organization_id: Set(Some(organization_id)),
+        role: Set(role),
+        organization_id: Set(organization_id),
         user_id: Set(user_id),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
     }
     .insert(db)
     .await
-    .expect("the admin role is seeded");
+    .expect("the role is seeded");
 }
 
 /// `caller`'s view of the organization's one relationship.
@@ -115,6 +121,64 @@ async fn m4_03_a_removed_coach_is_not_a_member_to_an_admin() {
 
         assert!(!relationship.coach_is_member, "{relationship:?}");
         assert!(relationship.coachee_is_member, "{relationship:?}");
+    })
+    .await
+}
+
+/// How the coachee stands in the relationship's organization, for M5-01.
+#[derive(Debug, Clone, Copy)]
+enum Standing {
+    Member,
+    Removed,
+    ElsewhereOnly,
+    GlobalSuperAdmin,
+    OrganizationAdmin,
+}
+
+impl Standing {
+    async fn seed(self, s: &Seeded) {
+        match self {
+            Standing::Member => seed_membership(&s.db, s.coachee, s.organization).await,
+            Standing::Removed => {}
+            Standing::ElsewhereOnly => {
+                seed_membership(&s.db, s.coachee, seed_organization(&s.db).await).await
+            }
+            Standing::GlobalSuperAdmin => seed_role(&s.db, s.coachee, Role::SuperAdmin, None).await,
+            Standing::OrganizationAdmin => seed_admin(&s.db, s.coachee, s.organization).await,
+        }
+    }
+
+    fn is_member(self) -> bool {
+        matches!(
+            self,
+            Standing::Member | Standing::GlobalSuperAdmin | Standing::OrganizationAdmin
+        )
+    }
+}
+
+#[tokio::test]
+async fn m5_01_the_list_field_agrees_with_the_notify_filter() {
+    within_time_limit(async {
+        for standing in [
+            Standing::Member,
+            Standing::Removed,
+            Standing::ElsewhereOnly,
+            Standing::GlobalSuperAdmin,
+            Standing::OrganizationAdmin,
+        ] {
+            let s = seeded().await;
+            seed_membership(&s.db, s.coach, s.organization).await;
+            standing.seed(&s).await;
+
+            let listed = listed(&s, s.coach).await.coachee_is_member;
+            let retained = retain_organization_members(&s.db, &[s.coachee], s.organization)
+                .await
+                .expect("the filter reads")
+                .contains(&s.coachee);
+
+            assert_eq!(listed, retained, "{standing:?}");
+            assert_eq!(listed, standing.is_member(), "{standing:?}");
+        }
     })
     .await
 }

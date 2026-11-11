@@ -1940,7 +1940,7 @@ async fn test_scheduled_and_rescheduled_no_longer_short_circuit_a_legacy_series_
     session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
 
     let scheduled_db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-    notify_session_scheduled(&scheduled_db, &config, &session).await;
+    notify_session_scheduled(&scheduled_db, &config, &session, &[]).await;
     assert!(
         !scheduled_db.into_transaction_log().is_empty(),
         "scheduled must not skip a legacy series member"
@@ -3393,6 +3393,7 @@ async fn test_notify_recurring_sessions_rescheduled_with_no_sessions_does_nothin
         PreviousSeries(&series),
         &[],
         ReplacedSessions(&[]),
+        &[],
     )
     .await;
 
@@ -3933,6 +3934,7 @@ async fn test_a_reschedule_to_no_future_sessions_still_cancels_the_standalone_ev
         PreviousSeries(&series),
         &[],
         ReplacedSessions(std::slice::from_ref(&orphan)),
+        &[],
     )
     .await;
 
@@ -3973,6 +3975,7 @@ async fn test_a_reschedule_to_no_future_sessions_stays_quiet_when_nothing_was_in
         PreviousSeries(&series),
         &[],
         ReplacedSessions(std::slice::from_ref(&never_invited)),
+        &[],
     )
     .await;
 
@@ -5017,20 +5020,25 @@ impl MembershipFixture {
             .collect()
     }
 
-    /// The loads every entry point makes, `member_ids` holding a role, then `rest`.
-    fn db(
-        &self,
-        member_ids: &[Id],
-        rest: impl FnOnce(MockDatabase) -> MockDatabase,
-    ) -> MockDatabase {
+    /// The loads every entry point makes, then `rest`.
+    fn loads(&self, rest: impl FnOnce(MockDatabase) -> MockDatabase) -> MockDatabase {
         rest(
             MockDatabase::new(DatabaseBackend::Postgres)
                 .append_query_results(vec![vec![self.relationship.clone()]])
                 .append_query_results(vec![vec![self.coach.clone()]])
                 .append_query_results(vec![vec![self.coachee.clone()]])
-                .append_query_results(vec![vec![self.org.clone()]])
-                .append_query_results(vec![members(member_ids)]),
+                .append_query_results(vec![vec![self.org.clone()]]),
         )
+    }
+
+    /// [`Self::loads`] for an entry point that checks membership itself, `member_ids`
+    /// holding a role.
+    fn db(
+        &self,
+        member_ids: &[Id],
+        rest: impl FnOnce(MockDatabase) -> MockDatabase,
+    ) -> MockDatabase {
+        self.loads(|db| rest(db.append_query_results(vec![members(member_ids)])))
     }
 }
 
@@ -5083,25 +5091,25 @@ async fn send_relationship_email(
     let mut told = None;
     match email {
         RelationshipEmail::SessionScheduled => {
-            let db = f.db(members, |db| {
+            let db = f.loads(|db| {
                 db.append_query_results::<entity::coaching_session_topics::Model, _, _>(vec![
                     vec![],
                 ])
                 .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
                 .append_query_results::<entity::actions::Model, _, _>(vec![vec![]])
             });
-            notify_session_scheduled(&db.into_connection(), &config, &f.session).await;
+            notify_session_scheduled(&db.into_connection(), &config, &f.session, members).await;
         }
         RelationshipEmail::SessionCancelled => {
             let db = f.db(members, |db| db).into_connection();
             notify_session_cancelled(&db, &config, &f.session).await;
         }
         RelationshipEmail::SeriesScheduled => {
-            let db = f.db(members, goals).into_connection();
-            notify_recurring_sessions_scheduled(&db, &config, &f.series, &sessions).await;
+            let db = f.loads(goals).into_connection();
+            notify_recurring_sessions_scheduled(&db, &config, &f.series, &sessions, members).await;
         }
         RelationshipEmail::SeriesRescheduled => {
-            let db = f.db(members, goals).into_connection();
+            let db = f.loads(goals).into_connection();
             notify_recurring_sessions_rescheduled(
                 &db,
                 &config,
@@ -5109,14 +5117,13 @@ async fn send_relationship_email(
                 PreviousSeries(&f.series),
                 &sessions,
                 ReplacedSessions(&[]),
+                members,
             )
             .await;
         }
         RelationshipEmail::SeriesFollowing => {
             let db = f
-                .db(members, |db| {
-                    goals(db.append_query_results(vec![sessions.clone()]))
-                })
+                .loads(|db| goals(db.append_query_results(vec![sessions.clone()])))
                 .into_connection();
             told = Some(
                 notify_recurring_sessions_rescheduled_following(
@@ -5130,6 +5137,7 @@ async fn send_relationship_email(
                         replaced: ReplacedSessions(&[]),
                         split_from: None,
                         previous_overrides: &[],
+                        notify: members,
                     },
                 )
                 .await,

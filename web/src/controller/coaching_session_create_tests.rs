@@ -135,7 +135,6 @@ async fn ses_09_coach_creates_a_session_in_the_relationship() {
             .append_query_results([vec![organization(&w)]])
             .append_query_results([members(&w)])
             .append_query_results([vec![session.clone()]])
-            .append_query_results([members(&w)])
             .append_query_results([Vec::<goals::Model>::new()])
             .append_query_results([Vec::<coaching_sessions::Model>::new()])
             .into_connection(),

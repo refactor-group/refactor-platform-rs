@@ -65,8 +65,8 @@ fn read_uri(w: &World) -> String {
     )
 }
 
-/// The relationship's row as the names-joined read returns it.
-fn listed_row(w: &World) -> BTreeMap<String, Value> {
+/// The relationship's row as the names-joined read returns it, with `members` holding a role.
+fn listed_row(w: &World, members: &[Id]) -> BTreeMap<String, Value> {
     let r = &w.relationship;
     let name = |n: &str| Value::from(n.to_string());
     BTreeMap::from([
@@ -80,29 +80,53 @@ fn listed_row(w: &World) -> BTreeMap<String, Value> {
         ("coachee_last_name".to_string(), name("Two")),
         ("created_at".to_string(), r.created_at.into()),
         ("updated_at".to_string(), r.updated_at.into()),
+        (
+            "coach_is_member".to_string(),
+            members.contains(&r.coach_id).into(),
+        ),
+        (
+            "coachee_is_member".to_string(),
+            members.contains(&r.coachee_id).into(),
+        ),
     ])
 }
 
-/// Role rows holding exactly `user_ids` in the relationship's organization.
-fn roles_in_organization(w: &World, user_ids: &[Id]) -> Vec<BTreeMap<String, Value>> {
+/// The relationship's model row with its membership columns, `members` holding a role.
+fn included_row(w: &World, members: &[Id]) -> BTreeMap<String, Value> {
+    let r = &w.relationship;
+    BTreeMap::from([
+        ("id".to_string(), r.id.into()),
+        ("organization_id".to_string(), r.organization_id.into()),
+        ("coach_id".to_string(), r.coach_id.into()),
+        ("coachee_id".to_string(), r.coachee_id.into()),
+        ("slug".to_string(), r.slug.clone().into()),
+        ("created_at".to_string(), r.created_at.into()),
+        ("updated_at".to_string(), r.updated_at.into()),
+        (
+            "coach_is_member".to_string(),
+            members.contains(&r.coach_id).into(),
+        ),
+        (
+            "coachee_is_member".to_string(),
+            members.contains(&r.coachee_id).into(),
+        ),
+    ])
+}
+
+/// Membership-check rows keeping exactly `user_ids`.
+fn member_rows(user_ids: &[Id]) -> Vec<BTreeMap<String, Value>> {
     user_ids
         .iter()
-        .map(|&user_id| {
-            BTreeMap::from([
-                ("user_id".to_string(), user_id.into()),
-                ("organization_id".to_string(), w.organization_id.into()),
-            ])
-        })
+        .map(|&user_id| BTreeMap::from([("user_id".to_string(), user_id.into())]))
         .collect()
 }
 
-/// The coach GETs the relationship, with `members` the membership rows; returns `data`.
-async fn read_as_coach(w: &World, members: Vec<BTreeMap<String, Value>>) -> serde_json::Value {
+/// The coach GETs the relationship, with `members` holding a role; returns `data`.
+async fn read_as_coach(w: &World, members: &[Id]) -> serde_json::Value {
     let db = Arc::new(
         w.signed_in(Caller::Coach)
             .append_query_results([vec![w.relationship.clone()]])
-            .append_query_results([vec![listed_row(w)]])
-            .append_query_results([members])
+            .append_query_results([vec![listed_row(w, members)]])
             .into_connection(),
     );
     let response = support::send(routes(&db), &db, &w.coach.email, "GET", &read_uri(w), None).await;
@@ -114,7 +138,7 @@ async fn read_as_coach(w: &World, members: Vec<BTreeMap<String, Value>>) -> serd
 async fn m4_04_the_single_read_marks_a_removed_coachee() {
     let w = support::world();
 
-    let data = read_as_coach(&w, roles_in_organization(&w, &[w.coach.id])).await;
+    let data = read_as_coach(&w, &[w.coach.id]).await;
 
     assert_eq!(data["coach_is_member"], json!(true), "{data}");
     assert_eq!(data["coachee_is_member"], json!(false), "{data}");
@@ -127,8 +151,7 @@ async fn m4_05_an_included_relationship_marks_a_removed_coachee() {
         w.signed_in(Caller::Coach)
             .append_query_results([vec![w.session.clone()]])
             .append_query_results([Vec::<coaching_sessions::Model>::new()])
-            .append_query_results([vec![w.relationship.clone()]])
-            .append_query_results([roles_in_organization(&w, &[w.coach.id])])
+            .append_query_results([vec![included_row(&w, &[w.coach.id])]])
             .append_query_results([vec![w.coach.clone()]])
             .append_query_results([vec![w.coachee.clone()]])
             .append_query_results([Vec::<users::Model>::new()])
@@ -175,11 +198,10 @@ async fn create_as_coach(
         .append_query_results([vec![w.relationship.clone()]])
         .append_query_results([vec![w.relationship.clone()]])
         .append_query_results([vec![organization(w)]])
-        .append_query_results([members.clone()]);
+        .append_query_results([members]);
     let db: MockDatabase = match created {
         Some(session) => db
             .append_query_results([vec![session.clone()]])
-            .append_query_results([members])
             .append_query_results([Vec::<goals::Model>::new()])
             .append_query_results([Vec::<coaching_sessions::Model>::new()]),
         None => db,
@@ -208,22 +230,22 @@ async fn create_as_coach(
 async fn m4_07_the_field_agrees_with_the_create_refusal() {
     let w = support::world();
 
-    let removed = roles_in_organization(&w, &[w.coach.id]);
-    let data = read_as_coach(&w, removed.clone()).await;
+    let removed = [w.coach.id];
+    let data = read_as_coach(&w, &removed).await;
     assert_eq!(data["coachee_is_member"], json!(false), "{data}");
-    let (status, body) = create_as_coach(&w, removed, None).await;
+    let (status, body) = create_as_coach(&w, member_rows(&removed), None).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["details"]["reason"], "coachee_not_a_member", "{body}");
 
-    let readded = roles_in_organization(&w, &[w.coach.id, w.coachee.id]);
-    let data = read_as_coach(&w, readded.clone()).await;
+    let readded = [w.coach.id, w.coachee.id];
+    let data = read_as_coach(&w, &readded).await;
     assert_eq!(data["coachee_is_member"], json!(true), "{data}");
     let session = coaching_sessions::Model {
         id: Id::new_v4(),
         date: tomorrow(),
         ..w.session.clone()
     };
-    let (status, body) = create_as_coach(&w, readded, Some(&session)).await;
+    let (status, body) = create_as_coach(&w, member_rows(&readded), Some(&session)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["id"], json!(session.id), "{body}");
 }
