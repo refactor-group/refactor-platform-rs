@@ -24,7 +24,10 @@ fn session(title: Option<&str>, date: NaiveDate) -> coaching_sessions::Model {
     }
 }
 
-/// Session rows, then the (empty) topic and goal tiers `batch_load_display_titles` reads.
+/// Session rows, then the (empty) topic and goal tiers `batch_load_display_titles`
+/// reads. The tiers are joined, not sequential; the mock still hands results
+/// out in this order because `try_join!` polls its arguments in order and the
+/// mock answers without yielding. Reorder here if the join's argument order changes.
 fn db_with(sessions: Vec<coaching_sessions::Model>) -> DatabaseConnection {
     MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results(vec![sessions])

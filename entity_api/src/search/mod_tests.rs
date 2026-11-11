@@ -561,36 +561,37 @@ mod mock_tests {
         })
     }
 
-    fn snippet_row(id: Id, snippet: &str) -> BTreeMap<String, Value> {
+    fn snippet_row(hit_type: HitType, id: Id, snippet: &str) -> BTreeMap<String, Value> {
         BTreeMap::from([
             ("id".to_string(), id.into()),
+            (
+                "hit_type_code".to_string(),
+                i16::from(hit_type.code()).into(),
+            ),
             ("snippet".to_string(), snippet.into()),
         ])
     }
 
     #[tokio::test]
-    async fn snippet_hydration_batches_one_query_per_type_and_maps_by_id() {
+    async fn snippet_hydration_is_one_union_query_over_the_page() {
         let action_id = Id::new_v4();
         let goal_a = Id::new_v4();
         let goal_b = Id::new_v4();
         let mut hits = vec![action_hit(action_id), goal_hit(goal_a), goal_hit(goal_b)];
 
-        // Types are hydrated in HitType order: actions first, then goals. The
-        // goal batch deliberately omits goal_b — its snippet must stay None.
+        // One result set for the whole page; goal_b deliberately has no row,
+        // so its snippet must stay None.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![snippet_row(
-                action_id,
-                "the \u{2}quarterly\u{3} action",
-            )]])
-            .append_query_results(vec![vec![snippet_row(
-                goal_a,
-                "the \u{2}quarterly\u{3} goal",
-            )]])
+            .append_query_results(vec![vec![
+                snippet_row(HitType::Action, action_id, "the \u{2}quarterly\u{3} action"),
+                snippet_row(HitType::Goal, goal_a, "the \u{2}quarterly\u{3} goal"),
+            ]])
             .into_connection();
 
-        hydrate_snippets(&db, "quarterly", &mut hits)
+        let snippets = resolve_snippets(&db, "quarterly", &hits)
             .await
-            .expect("hydrates");
+            .expect("resolves");
+        apply_snippets(&mut hits, snippets);
 
         assert_eq!(
             hits[0].core().snippet.as_deref(),
@@ -603,13 +604,15 @@ mod mock_tests {
         assert_eq!(hits[2].core().snippet, None);
 
         let log = db.into_transaction_log();
-        assert_eq!(log.len(), 2, "one batched query per type present");
-        let first = format!("{:?}", log[0]);
-        assert!(first.contains("ts_headline"), "{first}");
+        assert_eq!(log.len(), 1, "one query however many types the page mixes");
+        let query = format!("{:?}", log[0]);
+        assert_eq!(query.matches("UNION ALL").count(), 1, "{query}");
+        assert_eq!(query.matches("ts_headline").count(), 2, "{query}");
         // Debug-formatting escapes the control-character markers.
-        assert!(first.contains(r"StartSel=\u{2}, StopSel=\u{3}"), "{first}");
-        // Both goal ids travel in the second (goal) batch.
-        let second = format!("{:?}", log[1]);
-        assert!(second.contains(&goal_a.to_string()) && second.contains(&goal_b.to_string()));
+        assert!(query.contains(r"StartSel=\u{2}, StopSel=\u{3}"), "{query}");
+        // Every id on the page travels in the one query.
+        for id in [action_id, goal_a, goal_b] {
+            assert!(query.contains(&id.to_string()), "{query}");
+        }
     }
 }

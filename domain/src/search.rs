@@ -2,7 +2,12 @@
 //! resolution, bounded searcher fan-out, merge/rank/paginate, and post-merge
 //! hydration (display titles and snippets for exactly the returned page).
 
+use std::collections::HashMap;
+use std::time::Instant;
+
 use futures::stream::{self, StreamExt};
+use futures::try_join;
+use log::debug;
 use sea_orm::DatabaseConnection;
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -12,7 +17,7 @@ use crate::error::Error;
 use crate::users::{self, Role};
 use crate::Id;
 use entity_api::search::{
-    hydrate_snippets, resolve_participant_relationship_ids, resolve_session_titles,
+    apply_snippets, resolve_participant_relationship_ids, resolve_session_titles, resolve_snippets,
     resolve_visible_relationship_ids, searchers, Request,
 };
 
@@ -91,6 +96,7 @@ pub async fn search(
     visibility: &Visibility,
     spec: Spec,
 ) -> Result<Results, Error> {
+    let started = Instant::now();
     let visible = resolve_visible_relationship_ids(
         db,
         visibility,
@@ -114,6 +120,8 @@ pub async fn search(
         filters.participant_relationship_ids =
             Some(resolve_participant_relationship_ids(db, user_id, visible.as_deref()).await?);
     }
+
+    let visibility_resolved = Instant::now();
 
     let request = Request {
         q: &spec.q_raw,
@@ -150,9 +158,27 @@ pub async fn search(
         .flatten()
         .collect();
     let (mut merged, next_cursor) = merge_and_paginate(merged, spec.limit);
+    let fanned_out = Instant::now();
 
-    hydrate_session_titles(db, &mut merged).await?;
-    hydrate_snippets(db, &spec.q_raw, &mut merged).await?;
+    // Titles and snippets are independent lookups over the same page, so they
+    // overlap rather than queue; both write back only once both have resolved.
+    let session_ids = title_session_ids(&mut merged);
+    let (titles, snippets) = try_join!(
+        resolve_session_titles(db, &session_ids),
+        resolve_snippets(db, &spec.q_raw, &merged),
+    )?;
+    apply_session_titles(&mut merged, &titles);
+    apply_snippets(&mut merged, snippets);
+
+    // Per-phase wall-clock so latency work has before/after numbers from one place.
+    debug!(
+        "search timing: visibility={}ms fan_out={}ms hydrate={}ms total={}ms hits={}",
+        (visibility_resolved - started).as_millis(),
+        (fanned_out - visibility_resolved).as_millis(),
+        fanned_out.elapsed().as_millis(),
+        started.elapsed().as_millis(),
+        merged.len(),
+    );
 
     Ok(Results {
         query: spec.query,
@@ -189,17 +215,19 @@ fn merge_and_paginate(mut merged: Vec<Hit>, limit: u16) -> (Vec<Hit>, Option<Str
     (merged, next_cursor)
 }
 
-/// Fill session titles for the returned page: a `SessionHit`'s `title`
-/// and the `session_title` context on action/agreement/suggestion hits. Titles come from
-/// [`resolve_session_titles`], whose date fallback keeps both never empty.
-async fn hydrate_session_titles(db: &DatabaseConnection, hits: &mut [Hit]) -> Result<(), Error> {
+/// The sessions whose titles the returned page displays: a `SessionHit`'s own
+/// `title` and the `session_title` context on action/agreement/suggestion hits.
+fn title_session_ids(hits: &mut [Hit]) -> Vec<Id> {
     // `iter_mut` only because the slot accessor borrows mutably; this pass just reads ids.
-    let session_ids: Vec<Id> = hits
-        .iter_mut()
+    hits.iter_mut()
         .filter_map(|h| h.session_title_slot().map(|(id, _)| id))
-        .collect();
-    let titles = resolve_session_titles(db, &session_ids).await?;
+        .collect()
+}
 
+/// Fill the page's session-title slots from [`resolve_session_titles`], whose
+/// date fallback keeps every resolved title non-empty; unknown ids leave the
+/// slot untouched.
+fn apply_session_titles(hits: &mut [Hit], titles: &HashMap<Id, String>) {
     hits.iter_mut()
         .filter_map(Hit::session_title_slot)
         .for_each(|(id, slot)| {
@@ -207,7 +235,6 @@ async fn hydrate_session_titles(db: &DatabaseConnection, hits: &mut [Hit]) -> Re
                 *slot = title.clone();
             }
         });
-    Ok(())
 }
 
 #[cfg(test)]
