@@ -138,13 +138,7 @@ pub(crate) async fn resend_invite(
     OrganizationUserAccess(user): OrganizationUserAccess,
 ) -> Result<impl IntoResponse, Error> {
     if user.password.is_some() {
-        return Err(domain::error::Error {
-            source: None,
-            error_kind: domain::error::DomainErrorKind::Validation(
-                "User has already completed setup".into(),
-            ),
-        }
-        .into());
+        return Err(Error::validation("User has already completed setup"));
     }
 
     EmailsAPI::create_and_send_welcome_email(

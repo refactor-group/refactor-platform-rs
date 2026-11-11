@@ -13,21 +13,12 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use domain::error::{DomainErrorKind, Error as DomainError};
 use domain::goal as GoalApi;
 use domain::goals;
 use domain::Id;
 use service::config::ApiVersion;
 
 use log::*;
-
-/// A 422 refusal carrying `message`.
-fn validation(message: &str) -> Error {
-    Error::Domain(DomainError {
-        source: None,
-        error_kind: DomainErrorKind::Validation(message.to_string()),
-    })
-}
 
 /// POST link a goal to a coaching session
 #[utoipa::path(
@@ -65,7 +56,7 @@ pub async fn create(
 
     let goal = GoalApi::find_by_id(app_state.db_conn_ref(), params.goal_id).await?;
     if goal.coaching_relationship_id != relationship.id {
-        return Err(validation(
+        return Err(Error::validation(
             "goal_id must name a goal of the session's relationship.",
         ));
     }

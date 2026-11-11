@@ -11,7 +11,6 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use domain::coaching_session as CoachingSessionApi;
-use domain::error::{DomainErrorKind, Error as DomainError};
 use domain::goal as GoalApi;
 use domain::goal_progress as GoalProgressApi;
 use domain::status::Status;
@@ -20,14 +19,6 @@ use serde_json::json;
 use service::config::ApiVersion;
 
 use log::*;
-
-/// A 422 refusal carrying `message`.
-fn validation(message: &str) -> Error {
-    Error::Domain(DomainError {
-        source: None,
-        error_kind: DomainErrorKind::Validation(message.to_string()),
-    })
-}
 
 /// GET sessions linked to a specific goal
 #[utoipa::path(
@@ -95,7 +86,7 @@ pub async fn create(
     if let Some(session_id) = goal_model.created_in_session_id {
         let session = CoachingSessionApi::find_by_id(app_state.db_conn_ref(), session_id).await?;
         if session.coaching_relationship_id != goal_model.coaching_relationship_id {
-            return Err(validation(
+            return Err(Error::validation(
                 "created_in_session_id must name a session of the goal's relationship.",
             ));
         }

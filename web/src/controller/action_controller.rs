@@ -3,7 +3,6 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use domain::action::ActionWithAssignees;
-use domain::error::{DomainErrorKind, Error as DomainError};
 use domain::status::Status;
 use domain::{
     action as ActionApi, actions::Model, coaching_relationships, emails as EmailsApi,
@@ -59,7 +58,7 @@ async fn validate_links(
         .flatten()
         .all(|id| relationship.includes_user(*id));
     if !assignees_in_relationship {
-        return Err(validation(
+        return Err(Error::validation(
             "assignee_ids must name the coach or coachee of the action's relationship.",
         ));
     }
@@ -69,19 +68,11 @@ async fn validate_links(
     };
     let goal = GoalApi::find_by_id(db, goal_id).await?;
     if goal.coaching_relationship_id != relationship.id {
-        return Err(validation(
+        return Err(Error::validation(
             "goal_id must name a goal of the action's relationship.",
         ));
     }
     Ok(())
-}
-
-/// A 422 refusal carrying `message`.
-fn validation(message: &str) -> Error {
-    Error::Domain(DomainError {
-        source: None,
-        error_kind: DomainErrorKind::Validation(message.to_string()),
-    })
 }
 
 /// POST create a new Action
