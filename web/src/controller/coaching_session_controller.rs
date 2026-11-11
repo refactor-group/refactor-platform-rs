@@ -167,6 +167,7 @@ pub async fn index(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Coaching relationship not found"),
         (status = 405, description = "Method not allowed"),
+        (status = 409, description = "The coachee is no longer a member of the organization; `details.reason` is `coachee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -222,6 +223,7 @@ pub async fn create(
     responses(
         (status = 204, description = "Successfully updated a Coaching Session", body = ()),
         (status = 401, description = "Unauthorized"),
+        (status = 409, description = "A new `date` or `duration_minutes` while the coachee is no longer a member of the organization; `details.reason` is `coachee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status = 503, description = "Service temporarily unavailable"),
     ),
     security(

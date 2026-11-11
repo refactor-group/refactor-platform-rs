@@ -22,7 +22,8 @@ use entity::{
     user_lookup_attempts, user_role_changes, user_roles, users, Id,
 };
 use sea_orm::{
-    ActiveModelTrait, ConnectOptions, ConnectionTrait, Database, DatabaseConnection, Set,
+    ActiveModelTrait, ConnectOptions, ConnectionTrait, Database, DatabaseConnection, EntityTrait,
+    Set,
 };
 
 /// Ceiling on one SQLite test. Per-acquire timeouts still add up across many rows.
@@ -148,6 +149,37 @@ pub(crate) async fn seed_organization(db: &DatabaseConnection) -> Id {
     .await
     .expect("the organization is seeded")
     .id
+}
+
+/// Gives `user_id` a User role in `organization_id`.
+pub(crate) async fn seed_membership(db: &DatabaseConnection, user_id: Id, organization_id: Id) {
+    let now = Utc::now();
+    user_roles::ActiveModel {
+        id: Set(Id::new_v4()),
+        role: Set(Role::User),
+        organization_id: Set(Some(organization_id)),
+        user_id: Set(user_id),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the role is seeded");
+}
+
+/// The organization a session's relationship belongs to.
+pub(crate) async fn organization_of(db: &DatabaseConnection, session_id: Id) -> Id {
+    let session = coaching_sessions::Entity::find_by_id(session_id)
+        .one(db)
+        .await
+        .expect("the session reads")
+        .expect("the session exists");
+    coaching_relationships::Entity::find_by_id(session.coaching_relationship_id)
+        .one(db)
+        .await
+        .expect("the relationship reads")
+        .expect("the relationship exists")
+        .organization_id
 }
 
 /// Inserts a coaching session and its parents; returns the session and its one user.

@@ -168,7 +168,7 @@ pub async fn start_scan(
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "The coachee may not accept this suggestion"),
         (status = 404, description = "Suggestion not found in this session"),
-        (status = 409, description = "The suggestion is no longer pending"),
+        (status = 409, description = "The suggestion is no longer pending, or an assignee is no longer a member of the organization: `details.reason` is `assignee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status = 422, description = "Invalid edits"),
     ),
     security(("cookie_auth" = []))

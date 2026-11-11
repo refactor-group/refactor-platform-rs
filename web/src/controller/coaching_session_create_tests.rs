@@ -79,10 +79,7 @@ pub(crate) fn organization(w: &World) -> organizations::Model {
 
 /// The participants who still belong to the relationship's organization.
 fn members(w: &World) -> Vec<BTreeMap<String, Value>> {
-    [w.coach.id, w.coachee.id]
-        .into_iter()
-        .map(|user_id| BTreeMap::from([("user_id".to_string(), user_id.into())]))
-        .collect()
+    support::members(&[w.coach.id, w.coachee.id])
 }
 
 /// `caller` signed in, with R1 queued for the relationship check.
@@ -136,6 +133,7 @@ async fn ses_09_coach_creates_a_session_in_the_relationship() {
         reaching_relationship(&w, Caller::Coach)
             .append_query_results([vec![w.relationship.clone()]])
             .append_query_results([vec![organization(&w)]])
+            .append_query_results([members(&w)])
             .append_query_results([vec![session.clone()]])
             .append_query_results([members(&w)])
             .append_query_results([Vec::<goals::Model>::new()])
@@ -262,4 +260,40 @@ async fn ses_14c_unknown_relationship_is_not_found() {
         StatusCode::NOT_FOUND,
     )
     .await;
+}
+
+#[tokio::test]
+async fn m3_01_coach_cannot_schedule_with_a_coachee_no_longer_in_the_organization() {
+    let w = support::world();
+    let mut server = Server::new_async().await;
+    let outbound = no_outbound_posts(&mut server).await;
+    let db = Arc::new(
+        reaching_relationship(&w, Caller::Coach)
+            .append_query_results([vec![w.relationship.clone()]])
+            .append_query_results([vec![organization(&w)]])
+            .append_query_results([support::members(&[w.coach.id])])
+            .into_connection(),
+    );
+    let response = support::send_with(
+        config(&server),
+        routes(),
+        &db,
+        &w.coach.email,
+        "POST",
+        "/coaching_sessions",
+        Some(create_body(w.relationship.id)),
+    )
+    .await;
+    let status = response.status();
+    let body = json_body(response).await;
+    assert_eq!(status, StatusCode::CONFLICT, "M3-01: {body}");
+    support::assert_not_a_member(
+        "M3-01",
+        &body,
+        "coachee_not_a_member",
+        w.coachee.id,
+        w.organization_id,
+    );
+    support::assert_nothing_written("M3-01", &db);
+    outbound.assert_async().await;
 }

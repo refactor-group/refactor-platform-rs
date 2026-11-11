@@ -43,6 +43,7 @@ pub struct SeriesWithSessions {
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden — not the coach on the target relationship"),
         (status = 404, description = "Coaching relationship not found"),
+        (status = 409, description = "The coachee is no longer a member of the organization; `details.reason` is `coachee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status = 422, description = "Invalid recurrence rule"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -156,6 +157,7 @@ pub async fn index(
         (status = 200, description = "Rescheduled", body = SeriesWithSessions),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden — not the coach on the relationship"),
+        (status = 409, description = "The coachee is no longer a member of the organization; `details.reason` is `coachee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status = 422, description = "Invalid recurrence rule")
     ),
     security(("cookie_auth" = []))
@@ -215,7 +217,7 @@ pub async fn update(
         (status = 401, description = "Unauthorized (plain text)"),
         (status = 403, description = "Forbidden: not the coach on the relationship (plain text)"),
         (status = 404, description = "Not found (plain text)"),
-        (status = 409, description = "Leftover sessions have content. JSON `{status_code, error: \"conflict\", message, details: {reason: \"sessions_have_content\", coaching_session_ids}}`"),
+        (status = 409, description = "Leftover sessions have content. JSON `{status_code, error: \"conflict\", message, details: {reason: \"sessions_have_content\", coaching_session_ids}}`, or the coachee is no longer a member of the organization: `details: {reason: \"coachee_not_a_member\", user_id, organization_id}`"),
         (status = 422, description = "Invalid session, start, duration or recurrence rule. JSON `{status_code, error: \"validation_error\", message}`, or plain text for a malformed body")
     ),
     security(("cookie_auth" = []))

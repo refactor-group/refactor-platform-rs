@@ -17,14 +17,15 @@ use super::{
     Suggestible, Target,
 };
 use crate::action::{self, ActionWithAssignees};
+use crate::coaching_relationship::ensure_assignees_are_members;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::events::EventPublisher;
 use crate::status::Status as ActionStatus;
 use crate::transcript_analysis::Status as AnalysisStatus;
 use crate::transcript_export::{LabeledSegment, SpeakerRole};
 use crate::{
-    actions, coaching_session, coaching_sessions, emails, goal, transcript_analysis, transcription,
-    users, Id,
+    actions, coaching_relationships, coaching_session, coaching_sessions, emails, goal,
+    transcript_analysis, transcription, users, Id,
 };
 
 /// Most suggestions one list returns: a database bound well above what real sessions collect (at
@@ -316,7 +317,8 @@ fn undated_reason(proposal: &ActionProposal, default_due: &DefaultDue) -> Option
 /// Creates the suggested action, applying `edits` when given, and marks the suggestion accepted.
 ///
 /// The accepting user owns the action. Without a due date it gets `default_due`. The action and
-/// the transition commit together, so a suggestion accepted twice creates one action.
+/// the transition commit together, so a suggestion accepted twice creates one action. An assignee
+/// no longer in the organization refuses it with a 409.
 pub async fn accept_action(
     db: &DatabaseConnection,
     publisher: &EventPublisher,
@@ -328,12 +330,13 @@ pub async fn accept_action(
 ) -> Result<ActionWithAssignees, Error> {
     let stored = read_proposal(&suggestion)?;
     let requested = edits.as_ref().map(|e| e.assignee_ids.as_slice());
-    let (session, people) = authorize(db, user, &suggestion, &stored, requested).await?;
+    let (session, relationship) = authorize(db, user, &suggestion, &stored, requested).await?;
     let proposed = match edits {
-        Some(edits) => revise(edits.onto(&stored), &stored, people)?,
+        Some(edits) => revise(edits.onto(&stored), &stored, people_of(&relationship))?,
         None => stored.action,
     };
     check_goal(db, &session, proposed.action.goal_id).await?;
+    ensure_assignees_are_members(db, &relationship, &proposed.assignee_ids).await?;
 
     let due_by = match proposed.action.due_by {
         Some(due_by) => due_by,
@@ -535,25 +538,29 @@ async fn queue_scan(db: &DatabaseConnection, transcription_id: Id) -> Result<(),
     }
 }
 
-/// Loads the suggestion's session and people, and rejects a user who may not act on it.
+/// Loads the suggestion's session and relationship, and rejects a user who may not act on it.
 async fn authorize(
     db: &DatabaseConnection,
     user: &users::Model,
     suggestion: &Model,
     stored: &ActionProposal,
     requested: Option<&[Id]>,
-) -> Result<(coaching_sessions::Model, People), Error> {
+) -> Result<(coaching_sessions::Model, coaching_relationships::Model), Error> {
     let (session, relationship) =
         coaching_session::find_by_id_with_coaching_relationship(db, suggestion.coaching_session_id)
             .await?;
-    let people = People {
-        coach_id: relationship.coach_id,
-        coachee_id: relationship.coachee_id,
-    };
+    let people = people_of(&relationship);
     actor_of(user.id, people)
         .filter(|actor| may_act(*actor, people, Actions::assignees(stored), requested))
-        .map(|_| (session, people))
+        .map(|_| (session, relationship))
         .ok_or_else(forbidden)
+}
+
+fn people_of(relationship: &coaching_relationships::Model) -> People {
+    People {
+        coach_id: relationship.coach_id,
+        coachee_id: relationship.coachee_id,
+    }
 }
 
 /// Rejects a goal outside the session's coaching relationship; a missing goal is rejected alike.

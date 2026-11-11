@@ -5,8 +5,8 @@ use axum::Json;
 use domain::action::ActionWithAssignees;
 use domain::status::Status;
 use domain::{
-    action as ActionApi, actions::Model, coaching_relationships, emails as EmailsApi,
-    goal as GoalApi, users, Id,
+    action as ActionApi, actions::Model, coaching_relationship as CoachingRelationshipApi,
+    coaching_relationships, emails as EmailsApi, goal as GoalApi, users, Id,
 };
 use log::*;
 use sea_orm::DatabaseConnection;
@@ -45,12 +45,14 @@ impl ActionRequest {
     }
 }
 
-/// Refuses assignees who are not the relationship's coach or coachee, and a goal from
-/// another relationship, before anything is written.
+/// Refuses assignees who are not the relationship's coach or coachee, an added assignee no
+/// longer in its organization, and a goal from another relationship, before anything is
+/// written. `previous` are the action's current assignees, which are not re-checked.
 async fn validate_links(
     db: &DatabaseConnection,
     relationship: &coaching_relationships::Model,
     request: &ActionRequest,
+    previous: &[Id],
 ) -> Result<(), Error> {
     let assignees_in_relationship = request
         .assignee_ids
@@ -62,6 +64,15 @@ async fn validate_links(
             "assignee_ids must name the coach or coachee of the action's relationship.",
         ));
     }
+
+    let added: Vec<Id> = request
+        .assignee_ids
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|id| !previous.contains(id))
+        .collect();
+    CoachingRelationshipApi::ensure_assignees_are_members(db, relationship, &added).await?;
 
     let Some(goal_id) = request.action.goal_id else {
         return Ok(());
@@ -83,6 +94,7 @@ async fn validate_links(
     request_body = ActionRequest,
     responses(
         (status = 201, description = "Successfully Created a New Action", body = domain::action::ActionWithAssignees),
+        (status = 409, description = "An assignee is no longer a member of the organization; `details.reason` is `assignee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
@@ -107,7 +119,7 @@ pub async fn create(
             Ok((_, relationship)) => relationship,
             Err(rejection) => return Ok(rejection.into_response()),
         };
-    validate_links(app_state.db_conn_ref(), &relationship, &request).await?;
+    validate_links(app_state.db_conn_ref(), &relationship, &request, &[]).await?;
 
     let action = ActionApi::create_with_assignees(
         app_state.db_conn_ref(),
@@ -168,21 +180,6 @@ pub async fn read(
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), action)))
 }
 
-/// Fetch the current assignee IDs for an action before an update.
-/// Returns `None` if the fetch fails (email notification will be skipped).
-async fn fetch_previous_assignee_ids(db: &DatabaseConnection, action_id: Id) -> Option<Vec<Id>> {
-    match ActionApi::find_assignee_ids(db, action_id).await {
-        Ok(ids) => Some(ids),
-        Err(e) => {
-            warn!(
-                "Failed to fetch previous assignees for action {action_id}, \
-                 skipping action assigned email: {e:?}"
-            );
-            None
-        }
-    }
-}
-
 /// Notify newly added assignees via email.
 /// Compares the post-update assignee list against `previous_ids` and
 /// only notifies users who were not previously assigned.
@@ -220,6 +217,7 @@ async fn notify_added_assignees(
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Action not found"),
+        (status = 409, description = "An added assignee is no longer a member of the organization; `details.reason` is `assignee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status = 422, description = "Unprocessable Entity"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -241,16 +239,18 @@ pub async fn update(
     let id = action.id;
     debug!("PUT Update Action with id: {id}");
 
-    validate_links(app_state.db_conn_ref(), &relationship, &request).await?;
-
-    let assignees_changed = request.have_assignees_changed();
-
-    // Capture current assignees BEFORE the update for diffing
-    let previous_assignee_ids = if assignees_changed {
-        fetch_previous_assignee_ids(app_state.db_conn_ref(), id).await
-    } else {
-        None
+    // Current assignees, read before the update: only those added are checked and notified.
+    let previous_assignee_ids = match request.have_assignees_changed() {
+        true => Some(ActionApi::find_assignee_ids(app_state.db_conn_ref(), id).await?),
+        false => None,
     };
+    validate_links(
+        app_state.db_conn_ref(),
+        &relationship,
+        &request,
+        previous_assignee_ids.as_deref().unwrap_or_default(),
+    )
+    .await?;
 
     let action = ActionApi::update_with_assignees(
         app_state.db_conn_ref(),

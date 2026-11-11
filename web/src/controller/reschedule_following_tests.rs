@@ -142,7 +142,8 @@ async fn leaving_out_a_session_with_content_is_a_409_naming_it() {
     let series = f.series(start_in(7));
     let rows = f.members(&series);
     let call = f.locked(&series, &rows, 3).then(|db| {
-        db.append_query_results([vec![session_id_row(rows[1].id), session_id_row(rows[2].id)]])
+        f.membership(db, &f.both())
+            .append_query_results([vec![session_id_row(rows[1].id), session_id_row(rows[2].id)]])
             .append_query_results([vec![session_id_row(rows[2].id)]])
     });
 
@@ -157,6 +158,29 @@ async fn leaving_out_a_session_with_content_is_a_409_naming_it() {
     assert_eq!(body["error"], "conflict");
     assert_eq!(body["details"]["reason"], "sessions_have_content");
     assert_eq!(body["details"]["coaching_session_ids"], json!([rows[2].id]));
+}
+
+/// Moving sessions whose coachee is no longer in the organization is refused before
+/// anything is written.
+#[tokio::test]
+async fn m3_05_a_reschedule_with_a_coachee_no_longer_in_the_organization_is_a_409() {
+    let f = Fixture::new();
+    let series = f.series(start_in(7));
+    let rows = f.members(&series);
+    let call = f
+        .locked(&series, &rows, 2)
+        .then(|db| f.membership(db, &[f.coach.id]));
+
+    let (status, body) = post_json(
+        call,
+        move_to(&rows[1], rows[1].date + chrono::Duration::hours(1)),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["details"]["reason"], "coachee_not_a_member");
+    assert_eq!(body["details"]["user_id"], json!(f.coachee.id));
+    assert_eq!(body["details"]["organization_id"], json!(f.organization.id));
 }
 
 /// A session from outside the series is a validation error, refused before any lock.

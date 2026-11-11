@@ -96,6 +96,7 @@ pub async fn create(
             )),
         });
     }
+    ensure_coachee_is_member(db, &coaching_relationship).await?;
     let coach_id = coaching_relationship.coach_id;
 
     coaching_session_model.date = SessionDate::new(coaching_session_model.date)?.into_inner();
@@ -361,6 +362,17 @@ pub async fn update(
     );
     let old = existing.clone();
     let active_model = existing.into_active_model();
+
+    // Moving a session sends the coachee a reschedule, so they must still be a member.
+    let proposed = mutate::preview::<coaching_sessions::ActiveModel, coaching_sessions::Column>(
+        active_model.clone(),
+        &update_map,
+    )?;
+    if emails::affects_schedule(&old, &proposed) {
+        let relationship =
+            coaching_relationship::find_by_id(&txn, old.coaching_relationship_id).await?;
+        ensure_coachee_is_member(&txn, &relationship).await?;
+    }
 
     let updated = mutate::update::<coaching_sessions::ActiveModel, coaching_sessions::Column>(
         &txn,
@@ -799,10 +811,11 @@ mod tests {
         map
     }
 
-    /// Runs [`update`] against a mock stocked through the locked read, the UPDATE ...
-    /// RETURNING, the SEQUENCE bump and a pending reschedule's two writes, and returns the
-    /// SQL it issued.
+    /// Runs [`update`] against a mock stocked through the locked read, a move's membership
+    /// check, the UPDATE ... RETURNING, the SEQUENCE bump and a pending reschedule's two
+    /// writes, and returns the SQL it issued.
     async fn statements_for_update(
+        relationship: &coaching_relationships::Model,
         session: &coaching_sessions::Model,
         updated: &coaching_sessions::Model,
         params: mutate::UpdateMap,
@@ -812,7 +825,14 @@ mod tests {
             ..updated.clone()
         };
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![session.clone()]]);
+        let db = match emails::affects_schedule(session, updated) {
+            true => db
+                .append_query_results(vec![vec![relationship.clone()]])
+                .append_query_results([both_participants_are_members(relationship)]),
+            false => db,
+        };
+        let db = db
             .append_query_results(vec![vec![updated.clone()]])
             .append_query_results(vec![vec![bumped]])
             // record_change's upsert and undo check; unused by a title edit.
@@ -837,9 +857,9 @@ mod tests {
         }
     }
 
-    /// The notify path opens by resolving the session's relationship, so this identifies it.
-    /// `coaching_relationship_id` on the session UPDATE does not match: it is singular.
-    const RELATIONSHIP_LOOKUP: &str = r#"\"coaching_relationships\""#;
+    /// The notify path loads the participants, so this identifies it. The move's membership
+    /// check reads `user_roles`, which does not match.
+    const PARTICIPANTS_LOOKUP: &str = r#"\"users\""#;
 
     /// Whether a logged statement writes a pending reschedule.
     fn records_a_pending_reschedule(sql: &str) -> bool {
@@ -864,12 +884,17 @@ mod tests {
             title: Some("Renamed".to_string()),
             ..session.clone()
         };
-        let title_sql =
-            statements_for_update(&session, &renamed, string_update("title", "Renamed")).await;
+        let title_sql = statements_for_update(
+            &relationship,
+            &session,
+            &renamed,
+            string_update("title", "Renamed"),
+        )
+        .await;
         assert!(
             !title_sql
                 .iter()
-                .any(|sql| sql.contains(RELATIONSHIP_LOOKUP)),
+                .any(|sql| sql.contains(PARTICIPANTS_LOOKUP)),
             "a title edit must not reach the notify path: {title_sql:?}"
         );
         assert!(
@@ -883,11 +908,12 @@ mod tests {
             date: session.date + chrono::Duration::hours(1),
             ..session.clone()
         };
-        let moved_sql = statements_for_update(&session, &moved, date_update(moved.date)).await;
+        let moved_sql =
+            statements_for_update(&relationship, &session, &moved, date_update(moved.date)).await;
         assert!(
             !moved_sql
                 .iter()
-                .any(|sql| sql.contains(RELATIONSHIP_LOOKUP)),
+                .any(|sql| sql.contains(PARTICIPANTS_LOOKUP)),
             "a moved start must not reach the notify path: {moved_sql:?}"
         );
         assert!(
@@ -1093,11 +1119,12 @@ mod tests {
             updated_at: now.into(),
         };
 
-        // Queries: relationship, organization, session INSERT, membership filter,
-        // in-progress goals SELECT (one goal), join INSERT...RETURNING (one freshly-linked row).
+        // Queries: relationship, organization, coachee membership, session INSERT, membership
+        // filter, in-progress goals SELECT (one goal), join INSERT...RETURNING (one freshly-linked row).
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![goal.clone()]])
@@ -1216,13 +1243,15 @@ mod tests {
             ..deferred_topic.clone()
         };
 
-        // relationship → organization → session INSERT → membership filter → in-progress
+        // relationship → organization → coachee membership → session INSERT → membership
+        // filter → in-progress
         // goals SELECT (empty, no goal event) → find_prior_session (returns prior) →
         // move_deferred_to_session source SELECT (one Deferred topic) → target SELECT
         // (empty, for base) → UPDATE (the moved topic) → membership filter.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![Vec::<goals::Model>::new()])
@@ -1284,12 +1313,13 @@ mod tests {
         let relationship = test_coaching_relationship(coach_id, org.id);
         let session = test_session(relationship.id, None);
 
-        // Queries: relationship SELECT, organization SELECT, session INSERT, membership
-        // filter, in-progress goals SELECT (for link_in_progress_goals_to_session).
+        // Queries: relationship SELECT, organization SELECT, coachee membership, session
+        // INSERT, membership filter, in-progress goals SELECT (for link_in_progress_goals_to_session).
         // No oauth_connections query because provider is None.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![Vec::<goals::Model>::new()])
@@ -1359,14 +1389,16 @@ mod tests {
         // Query sequence:
         // 1. relationship SELECT
         // 2. organization SELECT
-        // 3. find_meeting_url_by_relationship_and_provider → returns existing session
+        // 3. coachee membership
+        // 4. find_meeting_url_by_relationship_and_provider → returns existing session
         //    (no oauth lookup or Meet API call needed!)
-        // 4. session INSERT → returns saved_session with the reused meeting_url
-        // 5. membership filter
-        // 6. in-progress goals SELECT
+        // 5. session INSERT → returns saved_session with the reused meeting_url
+        // 6. membership filter
+        // 7. in-progress goals SELECT
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![existing_session_with_url]])
             .append_query_results(vec![vec![saved_session]])
             .append_query_results([both_participants_are_members(&relationship)])
@@ -1409,7 +1441,7 @@ mod tests {
         let relationship = test_coaching_relationship(coach_id, org.id);
         let session = test_session(relationship.id, Some(Provider::Google));
 
-        // 7 queries: relationship, organization,
+        // 8 queries: relationship, organization, coachee membership,
         // find_meeting_url (empty = no reusable URL),
         // oauth_connection (empty = no credentials),
         // session INSERT, membership filter, in-progress goals SELECT.
@@ -1417,6 +1449,7 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results::<coaching_sessions::Model, Vec<coaching_sessions::Model>, _>(
                 vec![vec![]],
             )

@@ -207,7 +207,7 @@ impl Fixture {
     }
 
     /// The relationship, then which of `members` still hold a role in its organization.
-    fn membership(&self, db: MockDatabase, members: &[Id]) -> MockDatabase {
+    pub(super) fn membership(&self, db: MockDatabase, members: &[Id]) -> MockDatabase {
         let rows: Vec<_> = members
             .iter()
             .map(|&id| BTreeMap::from([("user_id".to_string(), sea_orm::Value::from(id))]))
@@ -217,7 +217,7 @@ impl Fixture {
     }
 
     /// Both participants.
-    fn both(&self) -> Vec<Id> {
+    pub(super) fn both(&self) -> Vec<Id> {
         vec![self.coach.id, self.coachee.id]
     }
 

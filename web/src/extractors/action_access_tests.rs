@@ -262,6 +262,7 @@ async fn act_28_coach_creates_an_action_assigned_to_the_coachee() {
     let w = world();
     let db = Arc::new(
         w.reaching_session(Caller::Coach)
+            .append_query_results([support::members(&[w.coachee.id])])
             .append_query_results([vec![w.action.clone()]])
             .append_exec_results([MockExecResult {
                 last_insert_id: 0,
@@ -348,7 +349,8 @@ async fn act_36b_update_refuses_an_assignee_outside_the_relationship() {
     let w = world();
     assert_refused(
         "ACT-36b",
-        w.reaching_action(Caller::Coach),
+        w.reaching_action(Caller::Coach)
+            .append_query_results([Vec::<BTreeMap<&str, Value>>::new()]),
         &w.coach.email,
         "PUT",
         &format!("/actions/{}", w.action.id),
@@ -365,6 +367,7 @@ async fn act_37_create_refuses_a_goal_from_another_relationship() {
     assert_refused(
         "ACT-37",
         w.reaching_session(Caller::Coach)
+            .append_query_results([support::members(&[w.coachee.id])])
             .append_query_results([vec![other_goal.clone()]]),
         &w.coach.email,
         "POST",
@@ -373,6 +376,92 @@ async fn act_37_create_refuses_a_goal_from_another_relationship() {
         StatusCode::UNPROCESSABLE_ENTITY,
     )
     .await;
+}
+
+/// Sends the request and asserts the 409 refusing the removed coachee as an assignee,
+/// with nothing written.
+async fn assert_assignee_refused(
+    row: &str,
+    w: &World,
+    db: MockDatabase,
+    method: &str,
+    uri: &str,
+    body: serde_json::Value,
+) {
+    let db = Arc::new(db.into_connection());
+    let response = send(&db, &w.coach.email, method, uri, Some(body)).await;
+    let status = response.status();
+    let body = json_body(response).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{row}: {body}");
+    support::assert_not_a_member(
+        row,
+        &body,
+        "assignee_not_a_member",
+        w.coachee.id,
+        w.organization_id,
+    );
+    support::assert_nothing_written(row, &db);
+}
+
+#[tokio::test]
+async fn m3_07_create_refuses_assigning_a_coachee_no_longer_in_the_organization() {
+    let w = world();
+    assert_assignee_refused(
+        "M3-07",
+        &w,
+        w.reaching_session(Caller::Coach)
+            .append_query_results([support::members(&[w.coach.id])]),
+        "POST",
+        "/actions",
+        w.create_body(&[w.coach.id, w.coachee.id], None),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn m3_08_update_refuses_adding_a_coachee_no_longer_in_the_organization() {
+    let w = world();
+    assert_assignee_refused(
+        "M3-08",
+        &w,
+        w.reaching_action(Caller::Coach)
+            .append_query_results([vec![assignment_row(w.action.id, w.coach.id)]])
+            .append_query_results([Vec::<BTreeMap<String, Value>>::new()]),
+        "PUT",
+        &format!("/actions/{}", w.action.id),
+        w.update_body(Some(&[w.coach.id, w.coachee.id])),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn m3_09_update_keeps_a_removed_coachee_already_assigned() {
+    let w = world();
+    let db = Arc::new(
+        w.reaching_action(Caller::Coach)
+            .append_query_results([vec![assignment_row(w.action.id, w.coachee.id)]])
+            // The locked read, then the UPDATE ... RETURNING.
+            .append_query_results([vec![w.action.clone()]])
+            .append_query_results([vec![w.action.clone()]])
+            // The assignees replaced as they were.
+            .append_exec_results([MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_results([vec![assignment_row(w.action.id, w.coachee.id)]])
+            .into_connection(),
+    );
+    let response = send(
+        &db,
+        &w.coach.email,
+        "PUT",
+        &format!("/actions/{}", w.action.id),
+        Some(w.update_body(Some(&[w.coachee.id]))),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "M3-09");
+    let body = json_body(response).await;
+    assert_eq!(body["data"]["assignee_ids"], json!([w.coachee.id]), "M3-09");
 }
 
 #[tokio::test]

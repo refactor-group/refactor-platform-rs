@@ -3,8 +3,9 @@ use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::Id;
 use entity_api::coaching_relationship::notify_member_ids;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
+use entity_api::user_role::retain_organization_members;
 use entity_api::{coaching_relationships, query};
-use sea_orm::{DatabaseConnection, TransactionTrait};
+use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 
 pub use entity_api::coaching_relationship::{
     create, find_by_coach_and_organization, find_by_id, find_by_organization_with_user_names,
@@ -79,7 +80,7 @@ pub async fn find_by_organization_for_user_with_user_names(
 /// The relationship's participants still in its organization, or a 409 when the coachee
 /// is not one of them: anything sent on the relationship would not reach them.
 pub(crate) async fn ensure_coachee_is_member(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     relationship: &Model,
 ) -> Result<Vec<Id>, Error> {
     let members = notify_member_ids(db, relationship).await?;
@@ -88,19 +89,67 @@ pub(crate) async fn ensure_coachee_is_member(
         false => Err(not_a_member(
             "Your coachee is no longer a member of this organization. Re-add them to the \
              organization first.",
+            NotAMember::Coachee,
             relationship.organization_id,
             relationship.coachee_id,
         )),
     }
 }
 
+/// A 409 for the first of `assignee_ids`, in order, no longer in the relationship's
+/// organization.
+pub async fn ensure_assignees_are_members(
+    db: &impl ConnectionTrait,
+    relationship: &Model,
+    assignee_ids: &[Id],
+) -> Result<(), Error> {
+    if assignee_ids.is_empty() {
+        return Ok(());
+    }
+    let members =
+        retain_organization_members(db, assignee_ids, relationship.organization_id).await?;
+    assignee_ids
+        .iter()
+        .find(|id| !members.contains(id))
+        .map_or(Ok(()), |&user_id| {
+            Err(not_a_member(
+                "An assignee is no longer a member of this organization; re-add them to the \
+                 organization first.",
+                NotAMember::Assignee,
+                relationship.organization_id,
+                user_id,
+            ))
+        })
+}
+
+/// Who was refused for no longer belonging to the organization.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum NotAMember {
+    Coachee,
+    Assignee,
+}
+
+impl NotAMember {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Coachee => "coachee_not_a_member",
+            Self::Assignee => "assignee_not_a_member",
+        }
+    }
+}
+
 /// A 409 for a user who no longer belongs to the organization, carrying a
 /// machine-readable `reason`, the organization, and the user.
-pub(crate) fn not_a_member(message: &str, organization_id: Id, user_id: Id) -> Error {
+pub(crate) fn not_a_member(
+    message: &str,
+    who: NotAMember,
+    organization_id: Id,
+    user_id: Id,
+) -> Error {
     Error::conflict(
         message,
         serde_json::json!({
-            "reason": "coachee_not_a_member",
+            "reason": who.reason(),
             "organization_id": organization_id,
             "user_id": user_id,
         }),
