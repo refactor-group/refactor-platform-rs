@@ -92,7 +92,7 @@ load-bearing, not cosmetic.
 Calendar clients decide whether to apply an update by **identity**, not markup. We send from
 `hello@mail.myrefactor.com`; when the invite claimed the coach as organizer, the two disagreed and
 Google refused every reschedule despite a matching `UID` and a higher `SEQUENCE`. It matched the
-event and declined to mutate it. Verified live 2026-08-11. `ORGANIZER;SENT-BY=...` was tried and
+event and declined to mutate it. `ORGANIZER;SENT-BY=...` was tried and
 made it worse (Gmail stopped recognising the message as an invitation); do not reintroduce it.
 
 Two consequences to expect while testing, both correct:
@@ -524,62 +524,24 @@ in the app.
   or removes the whole recurring event, including past occurrences. Phase 8 fixed per-occurrence
   operations, not that.
 
-## Verified live (2026-08-11, real Resend to real Gmail/Google Calendar)
+## Testing updates
 
-Driven end to end against a real database with real email delivery, coach `jim@refactorgroup.com`
-(America/New_York) and coachee `james.hodapp@gmail.com` (America/Chicago):
+Test updates by email delivery, not by importing the `.ics` file. Import bypasses sender
+identity, so it cannot show whether a client will apply an update.
 
-| Flow | Coachee | Coach |
-|---|---|---|
-| Create | pass | pass |
-| Reschedule, applied **in place** (no duplicate) | pass | pass |
-| Cancel, event removed | pass | pass |
-
-Also confirmed in that run: all six Resend templates render with no leftover placeholders;
-per-recipient timezone rendering (coachee 2:00 PM Central against coach 3:00 PM Eastern for the
-same meeting); `VTIMEZONE` conversion honoured by Google **and** Apple; and the `CONFERENCE`
-property rendering as a real "Join with Google Meet" button.
-
-Earlier Apple Calendar checks (file import) confirmed create, series create, the per-occurrence
-`RECURRENCE-ID` move, and series cancel. File import is a weak proxy for update semantics because
-it bypasses sender identity entirely, so prefer email delivery when testing updates.
-
-A follow-up run on **2026-08-11** verified the Phase 10 and 11 email content live: `Repeats: Weekly`
-on a new series (cross-checked against Google's own "Weekly on Monday"), the cadence-only case
-(HE4), the start-only mirror case (HE5), and `Previous time` / `New time` on a single-session
-reschedule (HE1).
-
-## Verified against real Postgres (2026-08-12)
-
-The concurrency and no-op behaviors were driven through the running backend against the dev
-database, since they are not observable from an email:
-
-| Behavior | Result |
-|---|---|
-| Single reschedule bumps `SEQUENCE` in one transaction | 0 -> 1 |
-| **10 concurrent reschedules of one session** | advanced by exactly 10, no lost updates |
-| Series reschedule rewrites the rule and bumps `SEQUENCE` | 0 -> 1, biweekly spacing correct |
-| Identical series rule re-submitted (RS5) | no bump, **same session rows survived** |
-| A real change after a no-op | applied normally, 1 -> 2 |
-| Open-actions filter with completed rows present | invite path ran clean, no enum binding error |
-
-For contrast, the previous read-modify-write bump was replayed at the same concurrency and lost
-**9 of 10** updates, which is exactly the silent-duplicate failure this feature exists to avoid.
-
-## Outlook gate (please record the result)
+## Outlook gate
 
 Outlook desktop is the strict client this feature specifically targets (it drops undefined
 TZIDs and renders floating time). Saving the `invite.ics` from an H1 or H3 email and opening it
-in **Outlook desktop** is the outstanding verification gate before this work merges. Confirm the
+in **Outlook desktop** is the verification gate for this feature. Confirm the
 event renders at the coach's correct local time with the `VTIMEZONE` respected.
 
 ---
 
-## Already automated (frontend, 2026-08-12)
+## Already automated (frontend)
 
-Three Playwright specs live in the frontend repo, 13 tests, all green against a backend built from
-this branch on real Postgres. They use the mock-Resend harness described at the top, so they assert
-on the invite itself rather than only on app state:
+Three Playwright specs in the frontend repo cover these against a backend on real Postgres. They
+use the mock-Resend harness described at the top, so they assert on the invite itself rather than only on app state:
 
 - `__tests__/e2e/ics-invite-attachment-live.spec.ts` plus `support/mock-resend.ts`: create,
   **RS1** (proven as *zero emails sent*, not merely an unchanged sequence), **HR1**, **HC1**,

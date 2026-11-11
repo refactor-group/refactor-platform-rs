@@ -134,23 +134,6 @@ UPDATE refactor_platform.transcript_suggestions SET status = 'pending' WHERE id 
 
 **Pass:** the phrase does not appear in the log, and `error_message` holds only an error kind.
 
-## Results
-
-| Case | Result | Date | Notes |
-|---|---|---|---|
-| A1 |  |  |  |
-| B1 |  |  |  |
-| B2 |  |  |  |
-| B3 |  |  |  |
-| B4 |  |  |  |
-| C1 |  |  |  |
-| C2 |  |  |  |
-| C3 |  |  |  |
-| D1 |  |  |  |
-| D2 |  |  |  |
-| D3 |  |  |  |
-| E1 |  |  |  |
-
 ## Part F: comprehensive prompt testing
 
 Checks what the model suggests across every kind of spoken commitment, and every look-alike, that the
@@ -173,7 +156,7 @@ shows a new kind of miss into a robustness case.
 3. After `transcript.done`, wait about a minute and list the suggestions (as in the Prerequisites, with
    Jim's or Caleb's cookie).
 4. Compare against the **Expected** table. "None" means the line must not produce a suggestion.
-5. Record the outcome in the Part F results table, noting any line that differed.
+5. Report the outcome with the run, noting any line that differed.
 
 **Date notation.** `D` is the session's date in Jim's timezone, `N` the next scheduled session's date.
 "Fri+" means the first Friday after `D`. Dates show as `due_by` at 12:00 noon in Jim's timezone, except
@@ -524,23 +507,6 @@ mean the first such day after the session.
 Watch for a deadline being invented for a commitment that had none: no suggestion here other than
 those listed should have a date.
 
-### Part F results
-
-| Group | Result | Date | Lines that differed |
-|---|---|---|---|
-| F1 |  |  |  |
-| F2 |  |  |  |
-| F3 |  |  |  |
-| F4 |  |  |  |
-| F5 |  |  |  |
-| F6 |  |  |  |
-| F7 |  |  |  |
-| F8 |  |  |  |
-| F9 |  |  |  |
-| F10 |  |  |  |
-| F11 |  |  |  |
-| F12 |  |  |  |
-
 ## Part G: seeing and starting a scan
 
 Each case uses a session whose latest transcript completed (Part A works). Read the scan state and
@@ -622,14 +588,3 @@ unchanged by it.
 
 **Pass:** steps 1 and 2 return 403 for both GET and POST and the analysis row is unchanged; step 3
 returns 401.
-
-### Part G results
-
-| Case | Result | Date | Notes |
-|---|---|---|---|
-| G1 |  |  |  |
-| G2 |  |  |  |
-| G3 |  |  |  |
-| G4 |  |  |  |
-| G5 |  |  |  |
-| G6 |  |  |  |
