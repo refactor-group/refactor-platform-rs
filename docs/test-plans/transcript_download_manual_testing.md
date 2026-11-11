@@ -68,7 +68,8 @@ INSERT INTO transcript_segments (transcription_id, speaker_label, text, start_ms
   ('22222222-2222-2222-2222-222222222222', 'Jim H',       'Wrapping up.',         3735000, 3737000);
 ```
 
-For case 8, add a second transcription on another session with `status = 'queued'`.
+For case 8, add a second transcription with `status = 'queued'` on another session in the same
+relationship. Its `meeting_recordings.status` must be `recording` (`in_progress` is not a valid value).
 
 ## 2. Cases
 
@@ -240,38 +241,3 @@ WHERE id = '<segment id>';
 DELETE FROM refactor_platform.meeting_recordings
 WHERE id = '11111111-1111-1111-1111-111111111111';
 ```
-
-## 4. Results
-
-Run 2026-09-21 against the local backend with the section 1.2 fixture on the
-seeded Jim / Caleb relationship.
-
-| Case | Result | Date |
-|---|---|---|
-| 1 | PASS | 2026-09-21 |
-| 2 | PASS | 2026-09-21 |
-| 3 | PASS | 2026-09-21 |
-| 4 | PASS | 2026-09-21 |
-| 5 | PASS | 2026-09-21 |
-| 5b | PASS | 2026-09-21 |
-| 6 | PASS | 2026-09-21 |
-| 7 | PASS | 2026-09-21 |
-| 8 | PASS | 2026-09-21 |
-| 9 | PASS | 2026-09-21 |
-| 10 | SKIPPED (needs a browser against the frontend) | 2026-09-21 |
-| 10b | PASS | 2026-09-21 |
-| 11 | PASS | 2026-09-21 |
-
-### Notes from the run
-
-- Case 9: a non-participant SuperAdmin (`admin@refactorcoach.com`) also got
-  403. The case text above was corrected; the first draft claimed 200.
-- Case 5b: the restore originally used `PUT /users/{id}` with
-  `"display_name": null`, which is a no-op. Corrected to SQL above.
-- Case 10b: the first draft expected per-variant descriptions on
-  `SpeakerRole`. utoipa emits one schema-level description for a string enum,
-  which is all OpenAPI 3 allows. Corrected above.
-- Case 8's `queued` fixture went on a second session in the same relationship
-  and doubled as case 7's other-session transcription. Its
-  `meeting_recordings.status` was `recording` (`in_progress` is not a valid
-  value).

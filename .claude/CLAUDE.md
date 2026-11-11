@@ -5,6 +5,7 @@
 **Code Implementation/Editing** → Read `.claude/coding-standards.md` FIRST
 **Pull Request Operations** → Read `.claude/pr-instructions.md` FIRST
 **Database Migrations** → Read the Database Migrations section below FIRST
+**Manual Testing** → Read `docs/test-plans/README.md` FIRST (which plan to run, what it needs)
 
 ## Rules
 - Project standards override global defaults on conflict
