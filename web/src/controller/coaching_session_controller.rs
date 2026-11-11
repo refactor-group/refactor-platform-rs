@@ -3,7 +3,9 @@ use crate::extractors::coaching_session_access::{
     CoachingSessionAccess, CoachingSessionContextAccess,
 };
 use crate::extractors::{
-    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    authenticated_user::AuthenticatedUser,
+    coaching_relationship_access::authorize_relationship_coach,
+    compare_api_version::CompareApiVersion,
 };
 use crate::params::coaching_session::{
     CreateParams, IndexParams, SortField, TitleUpdateParams, UpdateParams,
@@ -12,7 +14,7 @@ use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use domain::{coaching_session as CoachingSessionApi, coaching_sessions, Id};
 use serde::Serialize;
@@ -162,6 +164,8 @@ pub async fn index(
         (status = 201, description = "Successfully Created a new Coaching Session", body = domain::coaching_sessions::Model),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Coaching relationship not found"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -171,13 +175,17 @@ pub async fn index(
 )]
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
+    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Json(params): Json<CreateParams>,
-) -> Result<impl IntoResponse, Error> {
+) -> Result<Response, Error> {
     debug!("POST Create a new Coaching Session from: {params:?}");
+
+    if let Err(rejection) =
+        authorize_relationship_coach(&app_state, &user, params.coaching_relationship_id).await
+    {
+        return Ok(rejection.into_response());
+    }
 
     // Validate wire `Option<i16>` → `Option<Duration>` so lower layers see
     // only already-validated values. Out-of-range propagates as 422.
@@ -198,7 +206,8 @@ pub async fn create(
     Ok(Json(ApiResponse::new(
         StatusCode::CREATED.into(),
         coaching_session,
-    )))
+    ))
+    .into_response())
 }
 
 /// PUT update a Coaching Session
@@ -444,3 +453,8 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "coaching_session_create_tests.rs"]
+pub(super) mod coaching_session_create_tests;

@@ -11,7 +11,6 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use domain::error::{DomainErrorKind, Error as DomainError};
 use domain::users::Role;
 use domain::Actor;
 use domain::{emails as EmailsAPI, user_role as UserRoleApi, Id};
@@ -72,13 +71,9 @@ pub(crate) async fn attach_role(
              reason=super_admin_not_grantable_in_organization",
             authenticated_user.id, user_id, organization.id
         );
-        return Err(DomainError {
-            source: None,
-            error_kind: DomainErrorKind::Validation(
-                "SuperAdmin cannot be granted within an organization.".into(),
-            ),
-        }
-        .into());
+        return Err(Error::validation(
+            "SuperAdmin cannot be granted within an organization.",
+        ));
     }
 
     // 404 rather than 403: an invisible user must look exactly like a missing one.
@@ -193,13 +188,9 @@ pub(crate) async fn update_role(
              reason=super_admin_not_grantable_in_organization",
             authenticated_user.id, user_id, organization.id
         );
-        return Err(DomainError {
-            source: None,
-            error_kind: DomainErrorKind::Validation(
-                "SuperAdmin cannot be granted within an organization.".into(),
-            ),
-        }
-        .into());
+        return Err(Error::validation(
+            "SuperAdmin cannot be granted within an organization.",
+        ));
     }
 
     if user_id == authenticated_user.id {

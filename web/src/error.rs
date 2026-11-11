@@ -72,6 +72,14 @@ impl IntoResponse for Error {
 }
 
 impl Error {
+    /// A 422 refusal carrying `message`.
+    pub(crate) fn validation(message: impl Into<String>) -> Error {
+        Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Validation(message.into()),
+        })
+    }
+
     fn handle_domain_error(&self, domain_error: &DomainError) -> Response {
         match domain_error.error_kind {
             DomainErrorKind::Internal(ref internal_error_kind) => {

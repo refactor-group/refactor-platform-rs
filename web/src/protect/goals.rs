@@ -4,9 +4,9 @@ use axum::{
     extract::{Path, Query, Request, State},
     http::StatusCode,
     middleware::Next,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
-use domain::{coaching_relationship, coaching_session, goal, Id};
+use domain::{coaching_relationship, coaching_session, goal, users, Id};
 use log::*;
 use serde::Deserialize;
 
@@ -127,8 +127,8 @@ pub(crate) async fn by_coaching_session_id(
 /// Authorizes the batch session-goals endpoint.
 ///
 /// If `coaching_relationship_id` is provided, verifies the user belongs to that relationship.
-/// If `coaching_session_ids` is provided, looks up the first session's relationship
-/// and verifies membership.
+/// If `coaching_session_ids` is provided, verifies the user belongs to every session's
+/// relationship.
 pub(crate) async fn batch_by_session(
     State(app_state): State<AppState>,
     AuthenticatedUser(user): AuthenticatedUser,
@@ -136,21 +136,12 @@ pub(crate) async fn batch_by_session(
     request: Request,
     next: Next,
 ) -> impl IntoResponse {
-    // Determine the coaching_relationship_id to authorize against
-    let relationship_id = if let Some(rel_id) = params.coaching_relationship_id {
-        rel_id
-    } else if let Some(first_session_id) = params.coaching_session_ids.first() {
-        match coaching_session::find_by_id(app_state.db_conn_ref(), *first_session_id).await {
-            Ok(session) => session.coaching_relationship_id,
-            Err(e) => {
-                let domain_err: domain::error::Error = e.into();
-                error!("Error finding session for batch authorization: {domain_err:?}");
-                return crate::error::domain_error_into_response(domain_err);
-            }
-        }
-    } else {
-        // No filter provided — will be caught by the handler as 400
-        return next.run(request).await;
+    let Some(relationship_id) = params.coaching_relationship_id else {
+        // Session ids, or no filter at all, which the handler refuses with a 400.
+        return match authorize_sessions(&app_state, &user, &params.coaching_session_ids).await {
+            Ok(()) => next.run(request).await,
+            Err(rejection) => *rejection,
+        };
     };
 
     let relationship_result: Result<_, domain::error::Error> =
@@ -172,3 +163,34 @@ pub(crate) async fn batch_by_session(
         }
     }
 }
+
+/// Admits `user` only if every session's relationship grants them access.
+async fn authorize_sessions(
+    app_state: &AppState,
+    user: &users::Model,
+    coaching_session_ids: &[Id],
+) -> Result<(), Box<Response>> {
+    for coaching_session_id in coaching_session_ids {
+        let (_, relationship) = coaching_session::find_by_id_with_coaching_relationship(
+            app_state.db_conn_ref(),
+            *coaching_session_id,
+        )
+        .await
+        .map_err(|e| {
+            error!("Error finding session for batch authorization: {e:?}");
+            Box::new(crate::error::domain_error_into_response(e))
+        })?;
+
+        if !relationship.grants_access_to(user) {
+            return Err(Box::new(
+                (StatusCode::FORBIDDEN, "FORBIDDEN").into_response(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "goals_tests.rs"]
+mod tests;

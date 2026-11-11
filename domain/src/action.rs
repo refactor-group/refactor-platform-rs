@@ -353,3 +353,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "action_sqlite_tests.rs"]
+mod sqlite_tests;

@@ -9,3 +9,8 @@ pub(crate) mod password_controller;
 #[cfg(feature = "mock")]
 #[path = "coaching_session_controller_tests.rs"]
 mod coaching_session_controller_tests;
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "action_controller_tests.rs"]
+mod action_controller_tests;

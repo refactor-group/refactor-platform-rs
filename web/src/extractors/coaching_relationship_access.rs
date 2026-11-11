@@ -5,7 +5,7 @@ use axum::{
     extract::{FromRef, FromRequestParts, Path},
     http::{request::Parts, StatusCode},
 };
-use domain::{coaching_relationship as CoachingRelationshipApi, coaching_relationships, Id};
+use domain::{coaching_relationship as CoachingRelationshipApi, coaching_relationships, users, Id};
 
 use crate::{
     extractors::{authenticated_user::AuthenticatedUser, RejectionType},
@@ -87,4 +87,42 @@ where
 
         Ok(CoachingRelationshipAccess(relationship))
     }
+}
+
+/// Loads the relationship and admits `user` only if it grants them access.
+pub(crate) async fn authorize_relationship(
+    state: &AppState,
+    user: &users::Model,
+    coaching_relationship_id: Id,
+) -> Result<coaching_relationships::Model, RejectionType> {
+    debug!("Checking coaching relationship access for relationship_id={coaching_relationship_id}");
+
+    let relationship =
+        CoachingRelationshipApi::find_by_id(state.db_conn_ref(), coaching_relationship_id)
+            .await
+            .map_err(|e| {
+                error!("Error finding coaching relationship {coaching_relationship_id}: {e:?}");
+                (StatusCode::NOT_FOUND, "NOT FOUND".to_string())
+            })?;
+
+    if !relationship.grants_access_to(user) {
+        return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
+    }
+
+    Ok(relationship)
+}
+
+/// `authorize_relationship`, then admits only the relationship's coach.
+pub(crate) async fn authorize_relationship_coach(
+    state: &AppState,
+    user: &users::Model,
+    coaching_relationship_id: Id,
+) -> Result<coaching_relationships::Model, RejectionType> {
+    let relationship = authorize_relationship(state, user, coaching_relationship_id).await?;
+
+    if relationship.coach_id != user.id {
+        return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
+    }
+
+    Ok(relationship)
 }

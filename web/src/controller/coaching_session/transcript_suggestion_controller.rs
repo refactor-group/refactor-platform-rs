@@ -5,7 +5,6 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono::Utc;
-use domain::error::{DomainErrorKind, Error as DomainError};
 use domain::transcript_suggestion::review::{self, ActionEdits, Scan};
 use domain::transcript_suggestion::Status;
 use log::*;
@@ -302,7 +301,7 @@ fn supported_target(param: Option<&str>) -> Result<(), Error> {
     param
         .filter(|target| *target != ACTION_TARGET)
         .map_or(Ok(()), |target| {
-            Err(validation(format!(
+            Err(Error::validation(format!(
                 "'{target}' is not a supported target. Expected: {ACTION_TARGET}."
             )))
         })
@@ -313,17 +312,10 @@ fn listed_status(param: Option<&str>) -> Result<Status, Error> {
     match param {
         None | Some("pending") => Ok(Status::Pending),
         Some("dismissed") => Ok(Status::Dismissed),
-        Some(other) => Err(validation(format!(
+        Some(other) => Err(Error::validation(format!(
             "'{other}' is not a supported status. Expected: pending or dismissed."
         ))),
     }
-}
-
-fn validation(message: String) -> Error {
-    Error::Domain(DomainError {
-        source: None,
-        error_kind: DomainErrorKind::Validation(message),
-    })
 }
 
 #[cfg(test)]
