@@ -82,6 +82,7 @@ Rows the scenarios need. Put the word `kumquat` in every body and session title 
 | `R3` | Relationship COACH to REMOVED, O1 |
 | `S1`, `S2`, `S3` | One future session in R1, R2, R3 respectively |
 | `SR1` | Series in R1 created by COACH (its sessions are `SR1-*`) |
+| `SR3` | Series in R3 created by COACH before REMOVED is removed (its sessions are `SR3-*`); after phase M a series can't be created for a removed coachee |
 | `A1` | Action in S1 assigned to COACH |
 | `A2` | Action in S1 assigned to COACHEE |
 | `A3` | Action in S1, unassigned |
@@ -133,7 +134,7 @@ for p in coach coachee other_coach member admin outsider super removed; do
 done
 
 # Then export the fixture ids, e.g.
-# O1=... O2=... R1=... R2=... R3=... S1=... S2=... S3=... SR1=...
+# O1=... O2=... R1=... R2=... R3=... S1=... S2=... S3=... SR1=... SR3=...
 # A1=... A2=... A3=... A4=... A5=... A6=... G1=... G2=... N1=... AG1=...
 # T1=... T2=... IMG1=... TR1=... SG1=... SG2=...
 # COACH_ID=... COACHEE_ID=... MEMBER_ID=... REMOVED_ID=...
