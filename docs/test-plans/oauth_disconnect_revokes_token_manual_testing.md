@@ -32,15 +32,12 @@ The provider's own permissions page is the only evidence that counts.
 **Pass:** the app is gone from the permissions page, and the connection no longer
 appears in Settings > Integrations.
 
-**Result: PASS, verified 2026-08-11.** The grant was removed from the Google
-account permissions page after disconnecting.
-
 ## 3. Scenario B: Zoom disconnect revokes the grant
 
 Same shape as Scenario A, against Zoom's app management page
 (https://marketplace.zoom.us > Manage > Added Apps).
 
-**Result: BLOCKED. Zoom OAuth is not configured in any environment.**
+**Blocked: Zoom OAuth is not configured in any environment.**
 
 `GET /oauth/zoom/authorize` returns 500 because `create_zoom_provider` needs
 `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET` and `ZOOM_REDIRECT_URI`, and none of the
@@ -77,8 +74,6 @@ a connected-but-broken state.
 **Pass:** the app reports success, the connection is gone from
 Settings > Integrations, the row is gone from `oauth_connections`, and the log
 carries a `Failed to revoke` or `Cannot revoke` warning.
-
-**Result: NOT YET RUN.**
 
 ## 5. Known limitation
 

@@ -202,7 +202,7 @@ are failing tests. **Missed** means the bug would have shipped. Re-run this audi
 change to the purge, its queries or this harness: plant each change by hand, confirm the
 tier goes red, restore.
 
-#### 2026-09-24 (SeaORM 2.0.3, foreign keys on)
+Expected outcome (SeaORM 2.0.3, foreign keys on):
 
 | # | Planted bug | Mock suite | SQLite tier |
 |---|---|---|---|
@@ -219,26 +219,6 @@ tier goes red, restore.
 | M11 | Scan cap removed | caught (1) | caught (1) |
 | M12 | Scan order reversed (newest first) | caught (1) | caught (1) |
 
-The results match the 2026-09-23 run on SeaORM 1.1, except that M9 now fails two SQLite
-tests instead of one; both runs catch it.
-
-#### 2026-09-23 (SeaORM 1.1, foreign keys off)
-
-| # | Planted bug | Mock suite | SQLite tier |
-|---|---|---|---|
-| M1 | Purge ignores the grace period (`cutoff = now`) | **missed** | caught (2) |
-| M2 | Grace sign flipped (`now + grace`) | **missed** | caught (2) |
-| M3 | Scan cutoff comparison reversed (`lt` to `gt`) | caught (1) | caught (4) |
-| M4 | Claim drops its still-due check | caught (1) | caught (1) |
-| M5 | Claim drops `FOR UPDATE` | caught (2) | missed: SQLite has no locks |
-| M6 | Claim runs on the pool, outside the transaction | **missed** | caught (4) |
-| M7 | Row deleted before its object | caught (2) | not flagged: the rollback keeps the row, so nothing is lost |
-| M8 | Session-key filter inverted (`is_in` to `is_not_in`) | **missed** | caught (1) |
-| M9 | Restore leaves `deleted_at` set | **missed** | caught (1) |
-| M10 | Removal writes a timestamp 30 days in the past | **missed** | caught (1) |
-| M11 | Scan cap removed | caught (1) | caught (1) |
-| M12 | Scan order reversed (newest first) | caught (1) | caught (1) |
-
-In both runs every planted bug is caught by at least one suite. The two tiers are
+Every planted bug is caught by at least one suite. The two tiers are
 complementary, not redundant: M5 is guarded only by the mock, and M1, M2, M6, M8, M9 and
 M10 only by SQLite. Deleting either suite reopens real ways to destroy a user's images.

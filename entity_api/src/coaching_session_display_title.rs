@@ -6,11 +6,14 @@
 //! the canonical topic ordering and the `include=goal` source so the composed
 //! title matches the single-session page by construction.
 
+use std::collections::HashMap;
+
+use futures::try_join;
+use sea_orm::{entity::prelude::*, ConnectionTrait, QueryOrder};
+use utoipa::ToSchema;
+
 use super::error::Error;
 use entity::{coaching_session_topics, coaching_sessions, Id};
-use sea_orm::{entity::prelude::*, ConnectionTrait, QueryOrder};
-use std::collections::HashMap;
-use utoipa::ToSchema;
 
 /// Relationship-scoped list read shape: a base session plus its composed
 /// `display_title`. Unlike the enriched read it carries no caller-scoped fields
@@ -107,8 +110,12 @@ pub async fn batch_load_display_titles(
     sessions: &[coaching_sessions::Model],
 ) -> Result<HashMap<Id, Option<String>>, Error> {
     let session_ids: Vec<Id> = sessions.iter().map(|s| s.id).collect();
-    let first_topic_bodies = batch_load_first_topic_bodies(db, &session_ids).await?;
-    let first_goal_titles = batch_load_first_goal_titles(db, &session_ids).await?;
+    // The tiers are independent, so on a pooled connection they overlap instead
+    // of running back to back (a transaction serializes them on its one connection).
+    let (first_topic_bodies, first_goal_titles) = try_join!(
+        batch_load_first_topic_bodies(db, &session_ids),
+        batch_load_first_goal_titles(db, &session_ids),
+    )?;
 
     Ok(sessions
         .iter()
