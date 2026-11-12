@@ -25,7 +25,9 @@ before the baseline. Their expected results already show the phase M rule:
 - Creating, rescheduling or resending a session or series is refused (409,
   `details.reason` `coachee_not_a_member`) when the coachee is no longer a member; assigning an
   action to someone who is no longer a member is refused (`assignee_not_a_member`). Cancelling
-  and deleting stay allowed. Rows for these land with phase M.
+  and deleting stay allowed (SES-33 to SES-36, SER-17 to SER-21, ACT-37, ACT-38, TRN-28).
+- Deleting an account with coaching history is refused (409 `user_has_coaching_history`,
+  ORG-08); removing the person from the organization is the way out.
 
 Two behaviors are confirmed as intended and recorded as they are: a coachee's Actions page
 (batch and per-relationship lists) shows only their own and unassigned actions, while every
@@ -102,6 +104,7 @@ Rows the scenarios need. Put the word `kumquat` in every body and session title 
 | `TR1` | Completed transcription of S1 |
 | `SG1` | Suggested action in S1 assigned to COACH only |
 | `SG2` | Suggested action in S1 assigned to COACHEE |
+| `SG3` | Suggested action in S3 assigned to REMOVED (needs a completed transcription of S3) |
 
 ## 3. Setup and curl helpers
 
@@ -179,12 +182,13 @@ How to read the tables:
 | REL-09 | GET /organizations/O1/coaching_relationships/R1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403 | `web/src/extractors/coaching_relationship_access.rs:84` | ADMIN and SUPER list R1 (REL-05, REL-06) but cannot read it |
 | REL-10 | GET /organizations/O2/coaching_relationships/R1 | COACH | 404 | `web/src/extractors/coaching_relationship_access.rs:78` | Path org must match the relationship's |
 | REL-11 | GET /organizations/O1/coaching_relationships/R3 | REMOVED | 403 | `web/src/extractors/coaching_relationship_access.rs:84` | Participant, no longer a member |
-| REL-12 | GET /organizations/O1/coaching_relationships/R3 | COACH | 200, R3 | `web/src/extractors/coaching_relationship_access.rs:84` | Coach keeps access after the coachee is removed |
+| REL-12 | GET /organizations/O1/coaching_relationships/R3 | COACH | 200, R3 | `web/src/extractors/coaching_relationship_access.rs:84` | Coach keeps access after the coachee is removed. [membership] `coach_is_member` true, `coachee_is_member` false |
 | REL-13 | GET /users/{COACHEE_ID}/coaching-relationships | COACHEE | 200, R1 R2 | `web/src/protect/users/mod.rs:26`; `entity_api/src/coaching_relationship.rs:543` | [rows] self only. `role=coach`: empty; `role=coachee`: R1 R2 |
 | REL-14 | GET /users/{COACHEE_ID}/coaching-relationships | COACH, MEMBER, ADMIN, SUPER | 403 | `web/src/protect/users/mod.rs:26` | Self only, no admin bypass |
 | REL-15 | POST /organizations/O1/coaching_relationships `{coach_id: COACH, coachee_id: MEMBER}` | ADMIN, SUPER | 200 (201), new relationship | `web/src/extractors/organization_admin_access.rs:42`; `entity_api/src/coaching_relationship.rs:70` | Same pair again returns the existing row. Both people must be O1 members |
 | REL-16 | POST /organizations/O1/coaching_relationships | COACH, COACHEE, MEMBER, OUTSIDER | 403 | `web/src/extractors/organization_admin_access.rs:48` | |
 | REL-17 | GET /users/{REMOVED_ID}/coaching-relationships | REMOVED | 200, empty list | `web/src/protect/users/mod.rs:26`; `entity_api/src/coaching_relationship.rs:543` | [membership] self list leaves out R3; was 200, R3 |
+| REL-18 | GET /organizations/O1/coaching_relationships | ADMIN | 200; R3 has `coach_is_member` true and `coachee_is_member` false, R1 and R2 have both true | `entity_api/src/coaching_relationship.rs:236` | [membership] Both fields are on every relationship object: org list, single read, `GET /users/{id}/coaching-relationships`, the create response (both true), and `include=relationship` on session reads |
 
 ### 4.2 Sessions (`SES`)
 
@@ -207,7 +211,7 @@ How to read the tables:
 | SES-15 | PUT /coaching_sessions/S1 | COACH | 200 (204) | `web/src/protect/coaching_sessions.rs:129` | Coach only. A date change queues JOB-02 |
 | SES-16 | PUT /coaching_sessions/S1 | COACHEE | 403 | `web/src/protect/coaching_sessions.rs:129` | |
 | SES-17 | PUT /coaching_sessions/S1 | non-participants | 403 | `web/src/protect/coaching_sessions.rs:129` | Unknown session: 404 |
-| SES-18 | PUT /coaching_sessions/S3 | COACH | 200 (204) | `web/src/protect/coaching_sessions.rs:129` | Coach still a member after the coachee left |
+| SES-18 | PUT /coaching_sessions/S3 | COACH | 200 (204) | `web/src/protect/coaching_sessions.rs:129` | Coach still a member after the coachee left. [membership] Only when `date` and `duration_minutes` are unchanged, see SES-34 |
 | SES-19 | PATCH /coaching_sessions/S1/title | COACH, COACHEE | 200, S1 with new title | `web/src/extractors/coaching_session_access.rs:108` | Either participant |
 | SES-20 | PATCH /coaching_sessions/S1/title | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:108` | |
 | SES-21 | DELETE /coaching_sessions/S1 | COACH | 200 (204) | `web/src/protect/coaching_sessions.rs:129` | Sends MAIL-03 |
@@ -222,6 +226,10 @@ How to read the tables:
 | SES-30 | GET /users/{REMOVED_ID}/coaching_sessions | REMOVED | 200, empty list | `web/src/protect/users/coaching_sessions.rs:20` | [membership] self list leaves out S3; was 200, S3 |
 | SES-31 | GET /users/{COACHEE_ID}/coaching_sessions/counts | COACHEE | 200, counts over S1 S2 SR1-* | `web/src/protect/users/coaching_sessions.rs:20`; `entity_api/src/coaching_session.rs:877` | [rows] |
 | SES-32 | GET /users/{COACHEE_ID}/coaching_sessions/nearest?coaching_relationship_ids=R1,R2 | COACHEE | 200, nearest of R1 and of R2 | `web/src/protect/users/coaching_sessions.rs:20`; `entity_api/src/coaching_session.rs:1206` | [rows] a relationship the user is not in contributes nothing |
+| SES-33 | POST /coaching_sessions `{coaching_relationship_id: R3}` | COACH | 409 `coachee_not_a_member`, nothing written, no email | `domain/src/coaching_session.rs:102` | [membership] `details: {reason, organization_id, user_id}` |
+| SES-34 | PUT /coaching_sessions/S3 changing `date` or `duration_minutes` | COACH | 409 `coachee_not_a_member`, S3 unchanged | `domain/src/coaching_session.rs:390` | [membership] Other edits succeed (SES-18) |
+| SES-35 | POST /coaching_sessions/S3/resend_invite | COACH | 409 `coachee_not_a_member`, no email | `domain/src/coaching_session.rs:565` | [membership] |
+| SES-36 | DELETE /coaching_sessions/S3 | COACH | 200 (204) | `web/src/protect/coaching_sessions.rs:129` | [membership] Deleting stays allowed. Sends MAIL-03 to both COACH and REMOVED. Run after SES-34 and SES-35 |
 
 ### 4.3 Series (`SER`)
 
@@ -243,6 +251,11 @@ How to read the tables:
 | SER-14 | POST /coaching_session_series/SR1/resend_invite | COACH | 204 | `web/src/extractors/coaching_session_series_access.rs:110` | Sends MAIL-09 |
 | SER-15 | POST /coaching_session_series/SR1/resend_invite | COACHEE, non-participants | 403 | `web/src/extractors/coaching_session_series_access.rs:110` | |
 | SER-16 | POST /coaching_session_series `{coaching_relationship_id: R1}` | COACH after removal from O1 | 403 | `web/src/controller/coaching_session_series_controller.rs:60`; `web/src/extractors/coaching_relationship_access.rs:123` | [tightened] Run last, or on a disposable relationship: remove the coach from O1 first |
+| SER-17 | POST /coaching_session_series `{coaching_relationship_id: R3}` | COACH | 409 `coachee_not_a_member`, nothing written, no email | `domain/src/coaching_session_series.rs:103` | [membership] |
+| SER-18 | PUT /coaching_session_series/SR3 | COACH | 409 `coachee_not_a_member`, SR3 unchanged | `domain/src/coaching_session_series.rs:257` | [membership] |
+| SER-19 | POST /coaching_session_series/SR3/reschedule | COACH | 409 `coachee_not_a_member`, SR3 unchanged | `domain/src/coaching_session_series.rs:645` | [membership] |
+| SER-20 | POST /coaching_session_series/SR3/resend_invite | COACH | 409 `coachee_not_a_member`, no email | `domain/src/coaching_session_series.rs:913` | [membership] |
+| SER-21 | DELETE /coaching_session_series/SR3 | COACH | 204 | `web/src/extractors/coaching_session_series_access.rs:110` | [membership] Cancelling stays allowed. Sends MAIL-08 to both COACH and REMOVED. Run after SER-18 to SER-20 |
 
 ### 4.4 Notes (`NOTE`)
 
@@ -316,6 +329,8 @@ How to read the tables:
 | ACT-34 | PUT /actions/A1, PUT /actions/A1/status, DELETE /actions/A1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, A1 unchanged | `web/src/extractors/action_access.rs:50` | [tightened] |
 | ACT-35 | GET, PUT, DELETE A6; POST `{coaching_session_id: S3}` | REMOVED | 403 | `web/src/extractors/action_access.rs:50`; `web/src/controller/action_controller.rs:106` | [tightened] |
 | ACT-36 | POST /actions `{coaching_session_id: S1, assignee_ids: [MEMBER_ID]}`; PUT /actions/A3 adding MEMBER_ID | COACH | 422, nothing written, no email | `web/src/controller/action_controller.rs:61` (via `validate_links`, `:110`, `:244`) | [tightened] Assignees must be the relationship's coach or coachee |
+| ACT-37 | POST /actions `{coaching_session_id: S3, assignee_ids: [REMOVED_ID]}` | COACH | 409 `assignee_not_a_member`, nothing written, no email | `web/src/controller/action_controller.rs:75`; `domain/src/coaching_relationship.rs:105` | [membership] `details: {reason, organization_id, user_id}` |
+| ACT-38 | PUT /actions/A6 editing the body, REMOVED still assigned | COACH | 200, A6 updated, no email | `web/src/controller/action_controller.rs:75` | [membership] Only newly added assignees are checked |
 
 ### 4.7 Goals (`GOAL`)
 
@@ -407,6 +422,7 @@ How to read the tables:
 | TRN-25 | GET /coaching_session_images/IMG1 | COACH, COACHEE | 302 to storage, or 200 bytes | `web/src/extractors/coaching_session_image_access.rs:54` | |
 | TRN-26 | DELETE, POST restore /coaching_session_images/IMG1 | COACH, COACHEE | 200, IMG1 | `web/src/extractors/coaching_session_image_access.rs:54` | Either participant, not only the uploader |
 | TRN-27 | GET, DELETE /coaching_session_images/IMG1 | non-participants | 403 | `web/src/extractors/coaching_session_image_access.rs:54` | Unknown image: 404 |
+| TRN-28 | POST /coaching_sessions/S3/transcript_suggestions/SG3/accept | COACH | 409 `assignee_not_a_member`, no action written, no email | `domain/src/transcript_suggestion/review.rs:339` | [membership] |
 
 ### 4.10 Meeting links and OAuth-dependent flows (`MEET`)
 
@@ -468,8 +484,9 @@ Organization membership changes decide `grants_access_to`; these rows create or 
 | ORG-03 | POST /organizations/O1/users/{user}/role `{role: User, coach_id: COACH}` | ADMIN, SUPER | 200 (201), membership plus relationship | `web/src/controller/organization/user/role_controller.rs:80`; `domain/src/user_role.rs:77` | Target must be administrable by the caller, else 404. Sends MAIL-13 |
 | ORG-04 | DELETE /organizations/O1/users/{REMOVED_ID}/role | ADMIN, SUPER | 200 (204) | `web/src/extractors/organization_admin_access.rs:42`; `domain/src/user_role.rs:107` | R3 is kept; REMOVED loses every `grants_access_to` route |
 | ORG-05 | DELETE /organizations/O1/users/{user}/role | COACH, COACHEE, MEMBER, OUTSIDER | 403 | `web/src/extractors/organization_admin_access.rs:48` | |
-| ORG-06 | DELETE /organizations/O1/users/{user} (single-org user) | ADMIN, SUPER | 200 (204) | `web/src/extractors/organization_admin_access.rs:42`; `domain/src/user.rs:237` | Deletes the account and every relationship it is in. Multi-org user: 409 |
+| ORG-06 | DELETE /organizations/O1/users/{user} (single-org user, no relationship with a session) | ADMIN, SUPER | 200 (204) | `web/src/extractors/organization_admin_access.rs:42`; `domain/src/user.rs:237` | Deletes the account and every relationship it is in (their goals and series go too). Multi-org user: 409. With coaching history: ORG-08 |
 | ORG-07 | DELETE /organizations/O1/users/{ADMIN_ID} | ADMIN | 403 | `web/src/controller/organization/user_controller.rs:188` | Cannot delete self |
+| ORG-08 | DELETE /organizations/O1/users/{COACHEE_ID} | ADMIN, SUPER | 409 `user_has_coaching_history`, `details: {reason, user_id, relationship_count: 2}`; nothing deleted | `domain/src/user.rs:244`, `:253` | [membership] R1 and R2 have sessions. A session created mid-delete gets the same 409 without `relationship_count`. Remove from the organization instead (ORG-04) |
 
 ### 4.15 Real-time events (`SSE`)
 

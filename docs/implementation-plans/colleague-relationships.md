@@ -32,7 +32,7 @@ access, different fields).
 ## Phases
 
 Each phase is its own PR; phase 1 is two (migration and backfill, then code). Order: S, 0, M,
-0b, 0c, 1, 2, 3, 3b, 4, 4b, E, 5, 6. Phases S and 0 can run in parallel.
+0b, 0c, 1, 2, 3, 3b, 4, 4b, E, 5, 6. Phases S and 0 can run in parallel. Done: S (#476), 0 (#480), M (#481).
 
 **S. Relationship authorization fixes.** Its own security PR, ahead of the colleague work, so
 the phase 0b baseline records the corrected behavior. Notes, agreements, actions, goals and
@@ -71,11 +71,18 @@ emails go only to participants still in the org, as reschedule and reminder emai
 No active-member operation involves someone who isn't a current member: creating, rescheduling
 or resending a session or series is refused (409, `details.reason` `coachee_not_a_member`) when
 the coachee has left, and so is assigning an action to anyone who has left
-(`assignee_not_a_member`); cancelling and deleting stay allowed.
+(`assignee_not_a_member`); cancelling and deleting stay allowed. Cancellations go to both
+participants regardless of membership, so a removed member's calendar is cleaned up. Deleting
+an account with coaching history is refused (409 `user_has_coaching_history`); removing the
+person from the organization is the way out.
 The access matrix marks these rows `[membership]`. The frontend confirms the rule and updates
 its test plan before the PR merges.
 
-**0b. Baseline tests.** Every coach/coachee row of the matrix becomes a test that sends a real
+**0b. Baseline tests.** Starts with a read-only coverage audit: each matrix row is mapped to
+any existing test that already checks it (the phase S and M tests cover many), as covered,
+partly covered or missing. An existing test counted as coverage joins the frozen set. Later
+handoffs only fill the gaps, and every new test is shown to
+fail when its rule is broken. Every coach/coachee row of the matrix becomes a test that sends a real
 request through the router as each caller and asserts status codes and returned ids (never
 full bodies, so phase 6 shape changes don't touch frozen files), plus email and reminder
 recipients. Rows that depend on which rows a query selects use the SQLite tier. Includes every `[tightened]` and `[membership]` row, so the phase S and M rules are locked in
@@ -214,6 +221,9 @@ history is intact and the new coach has authority.
 - Columns keep `coach_id`/`coachee_id` until the separate rename.
 
 - Kind switch: no email; open pages refresh.
+- A removed member is inactive in that org; their data is kept and returns when they are
+  re-added. Read-only access (#482) is a separate state: it needs its own write check beside
+  `is_member`, never a reuse of it, or a read-only user would pass write checks.
 
 - Colleague suggestion due dates: each assignee's own timezone; unassigned use the scheduler's.
 
