@@ -20,6 +20,7 @@ fn sending(server: &ServerGuard) -> Config {
         "test",
         "--resend-api-key=test_api_key",
         "--session-scheduled-email-template-id=session_scheduled_tpl",
+        "--recurring-sessions-scheduled-email-template-id=series_scheduled_tpl",
         &format!("--session-cancelled-email-template-id={SESSION_CANCELLED}"),
         "--recurring-sessions-rescheduled-email-template-id=series_rescheduled_tpl",
         "--recurring-sessions-cancelled-email-template-id=series_cancel_tpl",
@@ -328,6 +329,54 @@ async fn a_series_edit_cancels_an_orphan_for_a_coachee_holding_no_role() {
         assert_eq!(
             sent.templates_to(&seeded.coachee.email),
             vec![SESSION_CANCELLED.to_string()]
+        );
+    })
+    .await;
+}
+
+/// MAIL-04: a session resend skips a coach holding no role. The router refuses that coach,
+/// so only a call made here reaches the member filter.
+#[tokio::test]
+async fn session_resend_with_the_coach_holding_no_role_reaches_only_the_coachee() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed(&db).await;
+        seeded.grant_role(&db, seeded.coachee.id).await;
+        let mut server = Server::new_async().await;
+        let sent = Sent::default();
+        let _mock = sent.capture(&mut server).await;
+
+        crate::coaching_session::resend_invite(&db, &sending(&server), seeded.session.id)
+            .await
+            .expect("the resend succeeds");
+
+        assert_eq!(
+            sent.addressees(),
+            BTreeSet::from([seeded.coachee.email.clone()])
+        );
+    })
+    .await;
+}
+
+/// MAIL-09: a series resend skips a coach holding no role.
+#[tokio::test]
+async fn series_resend_with_the_coach_holding_no_role_reaches_only_the_coachee() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed(&db).await;
+        seeded.grant_role(&db, seeded.coachee.id).await;
+        let (series, _) = seeded.series(&db).await;
+        let mut server = Server::new_async().await;
+        let sent = Sent::default();
+        let _mock = sent.capture(&mut server).await;
+
+        crate::coaching_session_series::resend_invite(&db, &sending(&server), series.id)
+            .await
+            .expect("the resend succeeds");
+
+        assert_eq!(
+            sent.addressees(),
+            BTreeSet::from([seeded.coachee.email.clone()])
         );
     })
     .await;
