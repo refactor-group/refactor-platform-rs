@@ -311,3 +311,7 @@ fn header_value(value: &str) -> Result<HeaderValue, Error> {
 #[cfg(feature = "mock")]
 #[path = "image_controller_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "image_controller_sqlite_tests.rs"]
+mod sqlite_tests;

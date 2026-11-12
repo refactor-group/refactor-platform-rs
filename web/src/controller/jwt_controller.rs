@@ -49,3 +49,7 @@ pub async fn generate_collab_token(
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), jwt)))
 }
+
+#[cfg(test)]
+#[path = "jwt_controller_sqlite_tests.rs"]
+mod sqlite_tests;

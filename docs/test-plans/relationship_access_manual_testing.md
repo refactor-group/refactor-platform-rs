@@ -528,3 +528,278 @@ Check with two browsers or `curl -N -b /tmp/<jar>.jar -H "$VER" $BASE/sse`.
 | MAIL-12 | Welcome (magic link): ORG-01 and `POST /organizations/{id}/users/{user}/resend-invite` | The new user; `coach_first_name` is whoever sent the invite | `domain/src/emails.rs:249`, `:297` | |
 | MAIL-13 | Added to organization: ORG-03 | The attached user | `domain/src/emails.rs:319` | |
 | MAIL-14 | Password reset: `POST /password-reset/request` | The account owner | `domain/src/password_reset.rs:236`; not relationship-related | |
+
+## 6. Automated checks
+
+Where each row is checked: a route test on in-memory SQLite (a `*_sqlite_tests.rs`
+file beside the module that serves the route, which names the row in a `/// <ID>` doc comment),
+a frozen `domain` test, or by hand with the reason.
+
+| Row | Checked by |
+|---|---|
+| REL-01 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_coach_lists_only_their_own_relationships` |
+| REL-02 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_coachee_lists_only_their_own_relationships` |
+| REL-03 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::another_coach_lists_only_their_relationship` |
+| REL-04 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_member_in_no_relationship_lists_none` |
+| REL-05 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::an_admin_lists_every_relationship_in_the_org` |
+| REL-06 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_super_admin_lists_every_relationship_in_the_org` |
+| REL-07 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::non_members_cannot_list_the_orgs_relationships` |
+| REL-08 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::participants_read_their_relationship_with_names` |
+| REL-09 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::non_participants_cannot_read_a_relationship` |
+| REL-10 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_relationship_under_another_org_is_not_found` |
+| REL-11 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_removed_coachee_cannot_read_their_relationship` |
+| REL-12 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_coach_keeps_a_relationship_whose_coachee_left` |
+| REL-13 | `web/src/controller/user/coaching_relationships_controller_sqlite_tests.rs::a_coachee_lists_their_own_relationships_by_role` |
+| REL-14 | `web/src/controller/user/coaching_relationships_controller_sqlite_tests.rs::only_the_user_lists_their_own_relationships` |
+| REL-15 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::admins_create_a_relationship_once_per_pair` |
+| REL-16 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::non_admins_cannot_create_a_relationship` |
+| REL-17 | `web/src/controller/user/coaching_relationships_controller_sqlite_tests.rs::a_removed_coachee_lists_none_of_their_own_relationships`; `domain/src/coaching_relationship_sqlite_tests.rs::a_users_own_relationships_skip_an_org_they_left` |
+| REL-18 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::an_admin_sees_who_is_still_a_member` |
+| SES-01 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::participants_list_the_relationships_sessions` |
+| SES-02 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::non_participants_cannot_list_the_relationships_sessions` |
+| SES-03 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_removed_coachee_cannot_list_their_relationships_sessions` |
+| SES-04 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::participants_read_a_session_with_its_organization` |
+| SES-05 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::non_participants_cannot_read_a_session` |
+| SES-06 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_removed_coachee_cannot_read_their_session` |
+| SES-07 | by hand: the view upsert is Postgres-only SQL |
+| SES-08 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::non_participants_cannot_mark_a_session_viewed` |
+| SES-09 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coach_creates_a_session_with_its_notes_document` |
+| SES-10 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coachee_cannot_create_a_session` |
+| SES-11 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::members_outside_the_relationship_cannot_create_a_session` |
+| SES-12 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::admins_cannot_create_a_session` |
+| SES-13 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::an_outsider_cannot_create_a_session` |
+| SES-14 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_removed_coachee_cannot_create_a_session` |
+| SES-15 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coach_updates_a_session` |
+| SES-16 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coachee_cannot_update_a_session` |
+| SES-17 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::non_participants_cannot_update_a_session` |
+| SES-18 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coach_retitles_a_session_whose_coachee_left` |
+| SES-19 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::either_participant_retitles_a_session` |
+| SES-20 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::non_participants_cannot_retitle_a_session` |
+| SES-21 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coach_deletes_a_content_free_session` |
+| SES-22 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coachee_cannot_delete_a_session` |
+| SES-23 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::non_participants_cannot_delete_a_session` |
+| SES-24 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coach_resends_a_sessions_invite` |
+| SES-25 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coachee_cannot_resend_a_sessions_invite` |
+| SES-26 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::non_participants_cannot_resend_a_sessions_invite` |
+| SES-27 | `web/src/controller/user/coaching_session_controller_sqlite_tests.rs::a_coach_lists_their_own_sessions` |
+| SES-28 | `web/src/controller/user/coaching_session_controller_sqlite_tests.rs::a_coachee_lists_their_own_sessions` |
+| SES-29 | `web/src/controller/user/coaching_session_controller_sqlite_tests.rs::only_the_user_lists_their_own_sessions` |
+| SES-30 | `web/src/controller/user/coaching_session_controller_sqlite_tests.rs::a_removed_coachee_lists_none_of_their_own_sessions`; `domain/src/coaching_session_sqlite_tests.rs::a_users_own_sessions_skip_an_org_they_left` |
+| SES-31 | by hand: the monthly counts are Postgres-only SQL |
+| SES-32 | `web/src/controller/user/coaching_session_controller_sqlite_tests.rs::a_coachee_reads_the_nearest_session_of_each_relationship`; `domain/src/coaching_session_sqlite_tests.rs::relationships_the_caller_is_not_in_add_nothing`, `domain/src/coaching_session_sqlite_tests.rs::each_relationship_keeps_its_own_window`, `domain/src/coaching_session_sqlite_tests.rs::only_participants_read_the_window` |
+| SES-33 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::scheduling_with_a_coachee_who_left_is_refused` |
+| SES-34 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::moving_a_session_whose_coachee_left_is_refused` |
+| SES-35 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::resending_to_a_coachee_who_left_is_refused` |
+| SES-36 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coach_deletes_a_session_whose_coachee_left` |
+| SES-37 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::deleting_a_session_with_content_is_refused` |
+| SER-01 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_coach_creates_a_series_with_its_sessions` |
+| SER-02 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_coachee_cannot_create_a_series` |
+| SER-03 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::non_participants_cannot_create_a_series` |
+| SER-04 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::participants_list_the_relationships_series` |
+| SER-05 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::non_participants_cannot_list_the_relationships_series` |
+| SER-06 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::participants_read_a_series_with_its_sessions` |
+| SER-07 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::non_participants_cannot_read_a_series` |
+| SER-08 | by hand: the series update takes Postgres advisory locks |
+| SER-09 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::only_the_coach_reschedules_a_series` |
+| SER-10 | by hand: reschedule takes Postgres advisory locks |
+| SER-11 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::only_the_coach_reschedules_following_sessions` |
+| SER-12 | by hand: the series delete takes Postgres advisory locks |
+| SER-13 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::only_the_coach_deletes_a_series` |
+| SER-14 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_coach_resends_a_series_invite` |
+| SER-15 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::only_the_coach_resends_a_series_invite` |
+| SER-16 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_coach_removed_from_the_org_cannot_create_a_series` |
+| SER-17 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_series_with_a_coachee_who_left_is_refused` |
+| SER-18 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::rescheduling_a_series_whose_coachee_left_is_refused` |
+| SER-19 | by hand: reschedule takes Postgres advisory locks before the membership check |
+| SER-20 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::resending_a_series_to_a_coachee_who_left_is_refused` |
+| SER-21 | by hand: the series delete takes Postgres advisory locks |
+| NOTE-01 | `web/src/controller/note_controller_sqlite_tests.rs::participants_list_the_sessions_notes` |
+| NOTE-02 | `web/src/controller/note_controller_sqlite_tests.rs::non_participants_cannot_list_the_sessions_notes` |
+| NOTE-03 | `web/src/controller/note_controller_sqlite_tests.rs::a_removed_coachee_cannot_list_their_sessions_notes` |
+| NOTE-04 | `web/src/controller/note_controller_sqlite_tests.rs::participants_read_the_note` |
+| NOTE-05 | `web/src/controller/note_controller_sqlite_tests.rs::participants_create_a_note_in_the_session` |
+| NOTE-06 | `web/src/controller/note_controller_sqlite_tests.rs::participants_update_the_note` |
+| NOTE-07 | `web/src/controller/note_controller_sqlite_tests.rs::non_participants_cannot_read_the_note` |
+| NOTE-08 | `web/src/controller/note_controller_sqlite_tests.rs::non_participants_cannot_create_a_note_in_the_session` |
+| NOTE-09 | `web/src/controller/note_controller_sqlite_tests.rs::non_participants_cannot_update_the_note` |
+| NOTE-10 | `web/src/controller/note_controller_sqlite_tests.rs::a_removed_coachee_cannot_reach_their_sessions_notes` |
+| AGR-01 | `web/src/controller/agreement_controller_sqlite_tests.rs::participants_list_the_sessions_agreements` |
+| AGR-02 | `web/src/controller/agreement_controller_sqlite_tests.rs::non_participants_cannot_list_the_sessions_agreements` |
+| AGR-03 | `web/src/controller/agreement_controller_sqlite_tests.rs::a_removed_coachee_cannot_list_their_sessions_agreements` |
+| AGR-04 | `web/src/controller/agreement_controller_sqlite_tests.rs::participants_read_the_agreement` |
+| AGR-05 | `web/src/controller/agreement_controller_sqlite_tests.rs::participants_create_an_agreement_in_the_session` |
+| AGR-06 | `web/src/controller/agreement_controller_sqlite_tests.rs::participants_update_the_agreement` |
+| AGR-07 | `web/src/controller/agreement_controller_sqlite_tests.rs::participants_delete_the_agreement` |
+| AGR-08 | `web/src/controller/agreement_controller_sqlite_tests.rs::non_participants_cannot_read_the_agreement` |
+| AGR-09 | `web/src/controller/agreement_controller_sqlite_tests.rs::non_participants_cannot_create_an_agreement_in_the_session` |
+| AGR-10 | `web/src/controller/agreement_controller_sqlite_tests.rs::non_participants_cannot_change_the_agreement` |
+| AGR-11 | `web/src/controller/agreement_controller_sqlite_tests.rs::a_removed_coachee_cannot_reach_their_sessions_agreements` |
+| ACT-01 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::a_coach_lists_actions_per_relationship` |
+| ACT-02 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::a_coachee_lists_only_own_and_unassigned_actions_per_relationship` |
+| ACT-03 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::another_coach_lists_only_their_relationships_actions` |
+| ACT-04 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::members_in_no_relationship_list_no_actions` |
+| ACT-05 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::non_members_cannot_list_the_orgs_actions` |
+| ACT-06 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::a_coachee_who_coaches_no_one_cannot_scope_to_the_coach` |
+| ACT-07 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::a_coach_lists_the_relationships_actions` |
+| ACT-08 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::a_coachee_lists_only_own_and_unassigned_relationship_actions` |
+| ACT-09 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::a_coachee_scopes_relationship_actions_only_to_themselves` |
+| ACT-10 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::non_participants_cannot_list_the_relationships_actions` |
+| ACT-11 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::an_outsider_cannot_list_the_relationships_actions` |
+| ACT-12 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::a_removed_coachee_cannot_list_their_relationships_actions` |
+| ACT-13 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::a_coach_lists_actions_of_a_relationship_whose_coachee_left` |
+| ACT-14 | `web/src/controller/action_controller_sqlite_tests.rs::a_coach_lists_the_sessions_actions` |
+| ACT-15 | `web/src/controller/action_controller_sqlite_tests.rs::a_coachee_lists_every_action_of_the_session` |
+| ACT-16 | `web/src/controller/action_controller_sqlite_tests.rs::non_participants_cannot_list_the_sessions_actions` |
+| ACT-17 | `web/src/controller/action_controller_sqlite_tests.rs::a_removed_coachee_cannot_list_their_sessions_actions` |
+| ACT-18 | `web/src/controller/user/action_controller_sqlite_tests.rs::a_coachee_lists_every_action_of_their_sessions`; `domain/src/action_sqlite_tests.rs::the_user_sees_every_relationship_they_are_in` |
+| ACT-19 | `web/src/controller/user/action_controller_sqlite_tests.rs::a_coachee_lists_the_actions_assigned_to_them`; `domain/src/action_sqlite_tests.rs::the_user_sees_every_assignment_of_theirs` |
+| ACT-20 | `web/src/controller/user/action_controller_sqlite_tests.rs::a_coach_lists_their_own_actions` |
+| ACT-21 | `web/src/controller/user/action_controller_sqlite_tests.rs::a_removed_coachee_lists_none_of_their_own_actions` |
+| ACT-22 | `web/src/controller/user/action_controller_sqlite_tests.rs::a_coach_lists_only_their_relationships_actions_for_the_coachee`; `domain/src/action_sqlite_tests.rs::a_coach_sees_only_their_relationships_with_the_user` |
+| ACT-23 | `web/src/controller/user/action_controller_sqlite_tests.rs::a_coach_lists_only_their_relationships_assignments_of_the_coachee`; `domain/src/action_sqlite_tests.rs::a_coach_sees_only_assignments_from_their_relationships` |
+| ACT-24 | `web/src/controller/user/action_controller_sqlite_tests.rs::another_coach_lists_only_their_relationships_actions_for_the_coachee`; `domain/src/action_sqlite_tests.rs::another_coach_sees_only_their_own_relationship` |
+| ACT-25 | `web/src/controller/user/action_controller_sqlite_tests.rs::members_who_do_not_coach_the_user_cannot_list_their_actions` |
+| ACT-26 | `web/src/controller/user/action_controller_sqlite_tests.rs::a_coachee_cannot_list_their_coachs_actions` |
+| ACT-26b | `web/src/controller/user/action_controller_sqlite_tests.rs::a_coach_removed_from_the_org_cannot_list_their_coachees_actions` |
+| ACT-27 | `web/src/controller/action_controller_sqlite_tests.rs::participants_read_the_action` |
+| ACT-28 | `web/src/controller/action_controller_sqlite_tests.rs::participants_create_an_action_assigned_to_the_coachee` |
+| ACT-29 | `web/src/controller/action_controller_sqlite_tests.rs::participants_update_the_action` |
+| ACT-30 | `web/src/controller/action_controller_sqlite_tests.rs::participants_update_the_action_status` |
+| ACT-31 | `web/src/controller/action_controller_sqlite_tests.rs::participants_delete_the_action` |
+| ACT-32 | `web/src/controller/action_controller_sqlite_tests.rs::non_participants_cannot_read_the_action` |
+| ACT-33 | `web/src/controller/action_controller_sqlite_tests.rs::non_participants_cannot_create_an_action_in_the_session` |
+| ACT-34 | `web/src/controller/action_controller_sqlite_tests.rs::non_participants_cannot_change_the_action` |
+| ACT-35 | `web/src/controller/action_controller_sqlite_tests.rs::a_removed_coachee_cannot_reach_their_sessions_actions` |
+| ACT-36 | `web/src/controller/action_controller_sqlite_tests.rs::assignees_outside_the_relationship_are_refused` |
+| ACT-37 | `web/src/controller/action_controller_sqlite_tests.rs::assigning_a_coachee_who_left_is_refused` |
+| ACT-38 | `web/src/controller/action_controller_sqlite_tests.rs::a_coach_edits_an_action_still_assigned_to_a_coachee_who_left` |
+| ACT-39 | `web/src/controller/action_controller_sqlite_tests.rs::adding_a_coachee_who_left_as_an_assignee_is_refused` |
+| ACT-40 | `web/src/controller/action_controller_sqlite_tests.rs::a_goal_from_another_relationship_is_refused` |
+| GOAL-01 | `web/src/controller/goal_controller_sqlite_tests.rs::participants_list_the_relationships_goals` |
+| GOAL-02 | `web/src/controller/goal_controller_sqlite_tests.rs::non_participants_cannot_list_the_relationships_goals` |
+| GOAL-03 | `web/src/controller/goal_controller_sqlite_tests.rs::a_removed_coachee_cannot_list_their_relationships_goals` |
+| GOAL-04 | `web/src/controller/goal_controller_sqlite_tests.rs::participants_read_the_goal` |
+| GOAL-05 | `web/src/controller/goal_controller_sqlite_tests.rs::non_participants_cannot_read_the_goal` |
+| GOAL-06 | `web/src/controller/goal_controller_sqlite_tests.rs::participants_update_the_goal` |
+| GOAL-07 | `web/src/controller/goal_controller_sqlite_tests.rs::participants_delete_the_goal` |
+| GOAL-08 | `web/src/controller/goal_controller_sqlite_tests.rs::non_participants_cannot_change_the_goal` |
+| GOAL-09 | `web/src/controller/goal_controller_sqlite_tests.rs::participants_list_the_goals_sessions` |
+| GOAL-10 | `web/src/controller/goal_controller_sqlite_tests.rs::participants_create_a_goal_in_the_relationship` |
+| GOAL-11 | `web/src/controller/coaching_session/goal_controller_sqlite_tests.rs::participants_list_the_sessions_goals` |
+| GOAL-12 | `web/src/controller/coaching_session/goal_controller_sqlite_tests.rs::non_participants_cannot_list_the_sessions_goals` |
+| GOAL-13 | `web/src/controller/coaching_session/goal_controller_sqlite_tests.rs::participants_link_a_goal_to_another_session_of_the_relationship` |
+| GOAL-14 | `web/src/controller/coaching_session/goal_controller_sqlite_tests.rs::participants_unlink_a_goal_from_the_session` |
+| GOAL-15 | `web/src/controller/coaching_session/goal_controller_sqlite_tests.rs::participants_read_goals_per_session_of_the_relationship` |
+| GOAL-16 | `web/src/controller/coaching_session/goal_controller_sqlite_tests.rs::non_participants_cannot_read_goals_per_session_of_the_relationship` |
+| GOAL-17 | `web/src/controller/coaching_session/goal_controller_sqlite_tests.rs::every_batch_session_must_be_the_callers` |
+| GOAL-18 | `web/src/controller/coaching_session/goal_controller_sqlite_tests.rs::non_participants_cannot_batch_read_the_sessions_goals` |
+| GOAL-19 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::participants_read_the_relationships_goal_progress` |
+| GOAL-20 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::goal_progress_refuses_a_non_participant_assignee` |
+| GOAL-21 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::non_participants_cannot_read_the_relationships_goal_progress` |
+| GOAL-22 | `web/src/controller/user/goal_controller_sqlite_tests.rs::a_coach_lists_the_goals_they_created` |
+| GOAL-23 | `web/src/controller/user/goal_controller_sqlite_tests.rs::a_coachee_who_created_no_goal_lists_none` |
+| GOAL-24 | `web/src/controller/user/goal_controller_sqlite_tests.rs::only_the_user_lists_their_own_goals` |
+| GOAL-25 | `web/src/controller/goal_controller_sqlite_tests.rs::non_participants_cannot_create_a_goal_in_the_relationship` |
+| GOAL-26 | `web/src/controller/coaching_session/goal_controller_sqlite_tests.rs::non_participants_cannot_change_the_sessions_goal_links` |
+| GOAL-27 | `web/src/controller/coaching_session/goal_controller_sqlite_tests.rs::linking_a_goal_from_another_relationship_is_refused` |
+| GOAL-28 | `web/src/controller/goal_controller_sqlite_tests.rs::a_created_in_session_from_another_relationship_is_refused` |
+| TOP-01 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::participants_list_the_sessions_topics` |
+| TOP-02 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::non_participants_cannot_list_the_sessions_topics` |
+| TOP-03 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::participants_add_a_topic_authored_by_themselves` |
+| TOP-04 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::non_participants_cannot_add_a_topic` |
+| TOP-05 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::participants_reorder_the_sessions_topics` |
+| TOP-06 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::a_coach_edits_the_coachees_topic` |
+| TOP-07 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::a_coachee_edits_the_coachs_topic` |
+| TOP-08 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::non_participants_cannot_edit_a_topic` |
+| TOP-09 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::a_coach_deletes_the_coachees_topic` |
+| TOP-10 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::a_coachee_deletes_their_own_topic` |
+| TOP-11 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::a_coachee_cannot_delete_the_coachs_topic` |
+| TOP-12 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::non_participants_cannot_delete_a_topic` |
+| TOP-16 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::participants_set_a_topics_status` |
+| TOP-17 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::non_participants_cannot_set_a_topics_status` |
+| TOP-18 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::only_the_author_undoes_a_topics_delete` |
+| TOP-19 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::the_author_undoes_a_topics_delete` |
+| TOP-20 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::participants_undo_a_topics_defer` |
+| TOP-21 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::non_participants_cannot_undo_a_topic_change` |
+| TRN-01 | `web/src/controller/coaching_session/transcription_controller_sqlite_tests.rs::participants_read_the_latest_transcription` |
+| TRN-02 | `web/src/controller/coaching_session/transcription_controller_sqlite_tests.rs::non_participants_cannot_read_the_latest_transcription` |
+| TRN-03 | `web/src/controller/coaching_session/transcription_controller_sqlite_tests.rs::participants_download_only_the_coachs_lines` |
+| TRN-04 | `web/src/controller/coaching_session/transcription_controller_sqlite_tests.rs::non_participants_cannot_read_a_transcription` |
+| TRN-05 | `web/src/controller/coaching_session/transcription_segment_controller_sqlite_tests.rs::participants_read_the_transcriptions_segments` |
+| TRN-06 | `web/src/controller/coaching_session/transcription_segment_controller_sqlite_tests.rs::non_participants_cannot_read_the_transcriptions_segments` |
+| TRN-07 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::participants_list_the_sessions_suggestions` |
+| TRN-08 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::non_participants_cannot_list_the_sessions_suggestions` |
+| TRN-09 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::participants_read_and_start_a_scan` (the POST runs on a fresh unscanned R1 session; S1's finished scan answers 409) |
+| TRN-10 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::non_participants_cannot_read_or_start_a_scan` |
+| TRN-11 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::a_coach_accepts_a_coach_only_suggestion` |
+| TRN-12 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::a_coachee_cannot_accept_a_coach_only_suggestion` |
+| TRN-13 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::a_coachee_accepts_their_own_suggestion` |
+| TRN-14 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::non_participants_cannot_accept_a_suggestion` |
+| TRN-15 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::a_coach_dismisses_and_restores_a_coach_only_suggestion` |
+| TRN-16 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::a_coachee_cannot_dismiss_or_restore_a_coach_only_suggestion` |
+| TRN-17 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::non_participants_cannot_dismiss_or_restore_a_suggestion` |
+| TRN-18 | `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::participants_read_the_latest_recording` |
+| TRN-19 | by hand: Recall base URL is hard-coded |
+| TRN-20 | by hand: stopping the bot needs Recall, whose base URL is hard-coded |
+| TRN-21 | `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::non_participants_cannot_reach_the_sessions_recording` |
+| TRN-22 | `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::a_removed_coachee_cannot_reach_their_sessions_recording` |
+| TRN-23 | `web/src/controller/coaching_session/image_controller_sqlite_tests.rs::participants_upload_a_note_image` |
+| TRN-24 | `web/src/controller/coaching_session/image_controller_sqlite_tests.rs::non_participants_cannot_upload_a_note_image` |
+| TRN-25 | `web/src/controller/coaching_session/image_controller_sqlite_tests.rs::participants_read_a_note_image` |
+| TRN-26 | `web/src/controller/coaching_session/image_controller_sqlite_tests.rs::either_participant_deletes_and_restores_a_note_image` |
+| TRN-27 | `web/src/controller/coaching_session/image_controller_sqlite_tests.rs::non_participants_cannot_read_or_delete_a_note_image` |
+| TRN-28 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::accepting_for_a_coachee_who_left_is_refused` |
+| MEET-01 | by hand: first-read hydration takes `pg_advisory_xact_lock` and creates the link with the provider |
+| MEET-02 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::only_the_coachs_create_attaches_a_meeting_link` (a reused R1 link; a new provider link needs Google or Zoom) |
+| MEET-03 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coach_sets_the_sessions_meeting_link` |
+| MEET-04 | by hand: Recall base URL is hard-coded |
+| MEET-05 | `web/src/controller/oauth_controller_sqlite_tests.rs::every_caller_reaches_only_their_own_connections` |
+| SRCH-01 | by hand: full-text search |
+| SRCH-02 | by hand: full-text search |
+| SRCH-03 | by hand: full-text search |
+| SRCH-04 | `web/src/controller/search_controller_sqlite_tests.rs::members_outside_every_relationship_find_nothing` |
+| SRCH-05 | by hand: full-text search |
+| SRCH-06 | `web/src/controller/search_controller_sqlite_tests.rs::a_removed_coachee_finds_nothing` |
+| SRCH-07 | by hand: full-text search |
+| SRCH-08 | `web/src/controller/search_controller_sqlite_tests.rs::a_relationship_filter_never_widens_a_members_search` |
+| SRCH-09 | by hand: full-text search |
+| SRCH-10 | by hand: full-text search |
+| JWT-01 | `web/src/controller/jwt_controller_sqlite_tests.rs::participants_get_a_token_for_the_sessions_document` |
+| JWT-02 | `web/src/controller/jwt_controller_sqlite_tests.rs::non_participants_get_no_token` |
+| JWT-03 | `web/src/controller/jwt_controller_sqlite_tests.rs::a_removed_coachee_gets_no_token` |
+| USR-01 | `web/src/controller/user/coaching_session_controller_sqlite_tests.rs::a_coachees_sessions_include_their_relationships` |
+| USR-02 | `web/src/controller/user/coaching_relationships_controller_sqlite_tests.rs::a_coachee_coaches_no_one` |
+| USR-03 | `web/src/controller/user/coaching_relationships_controller_sqlite_tests.rs::a_coach_lists_the_relationships_they_coach` |
+| ORG-01 | `web/src/controller/organization/user_controller_sqlite_tests.rs::admins_add_a_member_with_a_coach` |
+| ORG-02 | `web/src/controller/organization/user_controller_sqlite_tests.rs::non_admins_cannot_add_a_member` |
+| ORG-03 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::admins_attach_a_member_with_a_coach` |
+| ORG-04 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::admins_remove_a_member_and_keep_their_relationship` |
+| ORG-05 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::non_admins_cannot_remove_a_members_role` |
+| ORG-06 | `web/src/controller/organization/user_controller_sqlite_tests.rs::admins_delete_a_member_without_coaching_history` |
+| ORG-07 | `web/src/controller/organization/user_controller_sqlite_tests.rs::an_admin_cannot_delete_themselves` |
+| ORG-08 | `web/src/controller/organization/user_controller_sqlite_tests.rs::deleting_a_member_with_coaching_history_is_refused` |
+| SSE-01 | `web/src/sse/handler_sqlite_tests.rs::every_caller_opens_an_event_stream` |
+| SSE-02 | `web/src/sse/handler_sqlite_tests.rs::both_participants_hear_of_an_action_assigned_to_the_coach` |
+| SSE-03 | `web/src/sse/handler_sqlite_tests.rs::a_removed_coachee_hears_nothing_of_their_relationship` |
+| SSE-04 | `web/src/sse/handler_sqlite_tests.rs::both_participants_hear_of_a_goal_change` |
+| SSE-05 | `web/src/sse/handler_sqlite_tests.rs::both_participants_hear_that_suggestions_changed` (through a scan start, which shares the sweep's `extract::notify`); `domain/src/transcript_suggestion/extract_sqlite_tests.rs::every_completed_run_announces_once_with_or_without_suggestions` |
+| SSE-06 | `web/src/sse/handler_sqlite_tests.rs::both_participants_hear_of_a_recording_update` |
+| JOB-01 | by hand: raw Postgres SQL; SQL shape in `entity_api/src/coaching_session.rs::tests::claim_due_reminders_skips_former_organization_members`, `entity_api/src/coaching_session.rs::tests::claim_due_reminders_membership_mirrors_is_member`, `entity_api/src/coaching_session.rs::tests::claim_due_reminders_skips_sessions_booked_on_short_notice` |
+| JOB-02 | `domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_due_change_is_emailed_and_settled`, `domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_coachee_no_longer_in_the_organization_is_not_emailed` |
+| JOB-03 | `domain/src/transcript_suggestion/prompt_tests.rs::render_writes_the_session_existing_actions_and_transcript`; events as SSE-05 |
+| JOB-04 | `domain/src/jobs/coaching_session_image_purge_sqlite_tests.rs` (no recipients) |
+| JOB-05 | `domain/src/password_reset.rs::tests::sweep_old_attempts_returns_deleted_count` (no recipients) |
+| MAIL-01 | `domain/src/emails_tests.rs::relationship_emails_reach_only_current_members`; `domain/src/emails_sqlite_tests.rs::session_scheduled_with_the_coachee_holding_no_role_reaches_only_the_coach` |
+| MAIL-02 | `domain/src/emails_tests.rs::test_send_session_rescheduled_email`; `domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_coachee_no_longer_in_the_organization_is_not_emailed` |
+| MAIL-03 | `domain/src/emails_sqlite_tests.rs::single_cancel_with_the_coachee_holding_no_role_reaches_both`, `domain/src/emails_sqlite_tests.rs::single_cancel_with_the_coach_holding_no_role_reaches_both`, `domain/src/emails_sqlite_tests.rs::a_series_edit_cancels_an_orphan_for_a_coachee_holding_no_role` |
+| MAIL-04 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_session_resend_mails_both_members`, `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coach_who_left_cannot_resend_a_sessions_invite`; `domain/src/emails_sqlite_tests.rs::session_resend_with_the_coach_holding_no_role_reaches_only_the_coachee`; `web/src/controller/resend_invite_tests.rs::session_resend_bumps_a_one_off`, `web/src/controller/resend_invite_tests.rs::resend_with_a_removed_coach_mails_only_the_coachee`, `web/src/controller/resend_invite_tests.rs::resend_to_a_removed_coachee_is_refused` |
+| MAIL-05 | `domain/src/emails_tests.rs::relationship_emails_reach_only_current_members`; `domain/src/coaching_session_series.rs::tests::m5_08_series_create_invites_only_current_members` |
+| MAIL-06 | `domain/src/emails_tests.rs::relationship_emails_reach_only_current_members`; `domain/src/coaching_session_series.rs::tests::m5_09_series_reschedule_emails_only_current_members` |
+| MAIL-07 | `domain/src/emails_tests.rs::relationship_emails_reach_only_current_members`; `domain/src/coaching_session_series.rs::tests::m5_10_reschedule_following_emails_only_current_members` |
+| MAIL-08 | `domain/src/emails_sqlite_tests.rs::series_cancel_with_the_coachee_holding_no_role_reaches_both` |
+| MAIL-09 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_series_resend_mails_both_members`, `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_coach_who_left_cannot_resend_a_series_invite`; `domain/src/emails_sqlite_tests.rs::series_resend_with_the_coach_holding_no_role_reaches_only_the_coachee`; `web/src/controller/resend_invite_tests.rs::series_resend_bumps_the_series_and_raises_its_members`, `web/src/controller/resend_invite_tests.rs::resend_with_a_removed_coach_mails_only_the_coachee`, `web/src/controller/resend_invite_tests.rs::resend_to_a_removed_coachee_is_refused` |
+| MAIL-10 | `domain/src/emails_tests.rs::test_send_session_reminder_email_goes_only_to_the_coachee` |
+| MAIL-11 | `domain/src/emails_tests.rs::action_assigned_reaches_only_current_members` |
+| MAIL-12 | `domain/src/emails_tests.rs::test_send_welcome_email_success` |
+| MAIL-13 | `domain/src/emails_added_to_organization_tests.rs::send_added_to_organization_email_wire_contract` |
+| MAIL-14 | `domain/src/emails_tests.rs::test_send_password_reset_email_wire_contract` |

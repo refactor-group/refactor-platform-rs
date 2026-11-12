@@ -1,4 +1,5 @@
-//! Real-time events (`SSE`): who each change reaches, read from the callers' open streams.
+//! Real-time events (`SSE`): who each change reaches, read from the callers' open streams on
+//! SQLite.
 
 use std::collections::BTreeSet;
 
@@ -11,7 +12,7 @@ use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 use serde_json::{json, Value};
 
-use super::harness::{Baseline, Listener, Reply};
+use crate::test_utils::sqlite::{Listener, Reply, TestApp};
 
 /// A goal body in `relationship`.
 fn goal(relationship: Id) -> Value {
@@ -42,21 +43,21 @@ fn carried(received: &[(String, Value)], event: &str, field: &str) -> BTreeSet<I
 }
 
 /// Opens COACH's and COACHEE's streams.
-async fn participants_listening(baseline: &mut Baseline) -> [(Caller, Listener); 2] {
+async fn participants_listening(app: &mut TestApp) -> [(Caller, Listener); 2] {
     [
-        (Caller::Coach, baseline.listen(Caller::Coach).await),
-        (Caller::Coachee, baseline.listen(Caller::Coachee).await),
+        (Caller::Coach, app.listen(Caller::Coach).await),
+        (Caller::Coachee, app.listen(Caller::Coachee).await),
     ]
 }
 
 /// SSE-01
 #[tokio::test]
-async fn sse_01_every_caller_opens_an_event_stream() {
+async fn every_caller_opens_an_event_stream() {
     within_time_limit(async {
-        let mut baseline = Baseline::new().await;
+        let mut app = TestApp::new().await;
 
         for caller in Caller::ALL {
-            let (status, headers) = baseline.open(caller, "/sse").await;
+            let (status, headers) = app.open(caller, "/sse").await;
 
             assert_eq!(status, StatusCode::OK, "{caller:?}");
             assert_eq!(
@@ -73,13 +74,13 @@ async fn sse_01_every_caller_opens_an_event_stream() {
 
 /// SSE-02
 #[tokio::test]
-async fn sse_02_both_participants_hear_of_an_action_assigned_to_the_coach() {
+async fn both_participants_hear_of_an_action_assigned_to_the_coach() {
     within_time_limit(async {
-        let mut baseline = Baseline::new().await;
-        let (s1, coach) = (baseline.world.s1, baseline.world.user(Caller::Coach));
-        let mut listeners = participants_listening(&mut baseline).await;
+        let mut app = TestApp::new().await;
+        let (s1, coach) = (app.world.s1, app.world.user(Caller::Coach));
+        let mut listeners = participants_listening(&mut app).await;
 
-        let reply = baseline
+        let reply = app
             .send(
                 Caller::Coach,
                 Method::POST,
@@ -109,24 +110,24 @@ async fn sse_02_both_participants_hear_of_an_action_assigned_to_the_coach() {
 
 /// SSE-03
 #[tokio::test]
-async fn sse_03_a_removed_coachee_hears_nothing_of_their_relationship() {
+async fn a_removed_coachee_hears_nothing_of_their_relationship() {
     within_time_limit(async {
-        let mut baseline = Baseline::new().await;
-        let world = &baseline.world;
+        let mut app = TestApp::new().await;
+        let world = &app.world;
         let (r3, s3, sr3_first) = (world.r3, world.s3, world.sr3_sessions[0]);
-        let mut coach = baseline.listen(Caller::Coach).await;
-        let mut removed = baseline.listen(Caller::Removed).await;
+        let mut coach = app.listen(Caller::Coach).await;
+        let mut removed = app.listen(Caller::Removed).await;
 
         let action = Some(json!({
             "coaching_session_id": s3,
             "body": "Action kumquat",
             "status": "InProgress",
         }));
-        let reply = baseline
+        let reply = app
             .send(Caller::Coach, Method::POST, "/actions", action)
             .await;
         assert_eq!(reply.status, StatusCode::OK, "action");
-        let reply = baseline
+        let reply = app
             .send(Caller::Coach, Method::POST, "/goals", Some(goal(r3)))
             .await;
         assert_eq!(reply.status, StatusCode::OK, "goal");
@@ -148,7 +149,7 @@ async fn sse_03_a_removed_coachee_hears_nothing_of_their_relationship() {
                 json!({ "body": "Topic kumquat" }),
             ),
         ] {
-            let reply = baseline
+            let reply = app
                 .send(Caller::Coach, method.clone(), &path, Some(body))
                 .await;
             assert_eq!(reply.status, StatusCode::OK, "{method} {path}");
@@ -175,18 +176,18 @@ async fn sse_03_a_removed_coachee_hears_nothing_of_their_relationship() {
 
 /// SSE-04
 #[tokio::test]
-async fn sse_04_both_participants_hear_of_a_goal_change() {
+async fn both_participants_hear_of_a_goal_change() {
     within_time_limit(async {
-        let mut baseline = Baseline::new().await;
-        let r1 = baseline.world.r1;
-        let mut listeners = participants_listening(&mut baseline).await;
+        let mut app = TestApp::new().await;
+        let r1 = app.world.r1;
+        let mut listeners = participants_listening(&mut app).await;
 
-        let reply = baseline
+        let reply = app
             .send(Caller::Coach, Method::POST, "/goals", Some(goal(r1)))
             .await;
         assert_eq!(reply.status, StatusCode::OK);
         let new_goal = created_id(&reply);
-        let reply = baseline
+        let reply = app
             .send(
                 Caller::Coach,
                 Method::PUT,
@@ -212,21 +213,21 @@ async fn sse_04_both_participants_hear_of_a_goal_change() {
 
 /// SSE-05
 #[tokio::test]
-async fn sse_05_both_participants_hear_that_suggestions_changed() {
+async fn both_participants_hear_that_suggestions_changed() {
     within_time_limit(async {
-        let mut baseline = Baseline::new().await;
-        let world = &baseline.world;
+        let mut app = TestApp::new().await;
+        let world = &app.world;
         let (r1, coach, coachee) = (
             world.r1,
             world.user(Caller::Coach),
             world.user(Caller::Coachee),
         );
-        let session = seed_content_free_session(baseline.db(), r1).await;
-        seed_unscanned_transcription(baseline.db(), session, coach, coachee).await;
-        let mut listeners = participants_listening(&mut baseline).await;
+        let session = seed_content_free_session(app.db(), r1).await;
+        seed_unscanned_transcription(app.db(), session, coach, coachee).await;
+        let mut listeners = participants_listening(&mut app).await;
 
         // Starting a scan announces through the same participant lookup as the sweep.
-        let reply = baseline
+        let reply = app
             .send(
                 Caller::Coach,
                 Method::POST,
@@ -249,14 +250,14 @@ async fn sse_05_both_participants_hear_that_suggestions_changed() {
 
 /// SSE-06
 #[tokio::test]
-async fn sse_06_both_participants_hear_of_a_recording_update() {
+async fn both_participants_hear_of_a_recording_update() {
     within_time_limit(async {
-        let mut baseline = Baseline::new().await;
-        let s1 = baseline.world.s1;
-        let bot_id = seed_active_recording(baseline.db(), s1).await;
-        let mut listeners = participants_listening(&mut baseline).await;
+        let mut app = TestApp::new().await;
+        let s1 = app.world.s1;
+        let bot_id = seed_active_recording(app.db(), s1).await;
+        let mut listeners = participants_listening(&mut app).await;
 
-        let status = baseline
+        let status = app
             .webhook("bot.in_call_recording", json!({ "bot": { "id": bot_id } }))
             .await;
         assert_eq!(status, StatusCode::OK);

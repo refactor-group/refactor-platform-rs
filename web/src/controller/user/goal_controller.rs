@@ -60,3 +60,7 @@ pub async fn index(
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), goals)))
 }
+
+#[cfg(test)]
+#[path = "goal_controller_sqlite_tests.rs"]
+mod sqlite_tests;

@@ -421,3 +421,7 @@ mod tests {
 #[cfg(feature = "mock")]
 #[path = "coaching_session_series_create_tests.rs"]
 mod coaching_session_series_create_tests;
+
+#[cfg(test)]
+#[path = "coaching_session_series_controller_sqlite_tests.rs"]
+mod sqlite_tests;

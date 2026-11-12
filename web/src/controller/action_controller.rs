@@ -398,3 +398,7 @@ pub async fn delete(
     .await?;
     Ok(Json(json!({"id": id})))
 }
+
+#[cfg(test)]
+#[path = "action_controller_sqlite_tests.rs"]
+mod sqlite_tests;

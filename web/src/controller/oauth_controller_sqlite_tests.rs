@@ -1,0 +1,85 @@
+//! Meeting provider connections (`MEET`) through `/oauth/connections`, on SQLite as each
+//! access-matrix caller.
+
+use std::collections::BTreeSet;
+
+use axum::http::{Method, StatusCode};
+use domain::test_utils::sqlite::access_world::{connected_users, seed_google_connection};
+use domain::test_utils::sqlite::{within_time_limit, Caller};
+use serde_json::{json, Value};
+
+use crate::test_utils::sqlite::{ids, TestApp};
+
+/// The connected account emails `caller` lists.
+async fn listed_emails(app: &mut TestApp, caller: Caller) -> BTreeSet<String> {
+    let reply = app
+        .send(caller, Method::GET, "/oauth/connections", None)
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{caller:?}");
+    reply.body["data"]
+        .as_array()
+        .expect("a list of connections")
+        .iter()
+        .filter_map(|connection| connection["email"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// MEET-05
+#[tokio::test]
+async fn every_caller_reaches_only_their_own_connections() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (coach, other_coach) = (
+            app.world.user(Caller::Coach),
+            app.world.user(Caller::OtherCoach),
+        );
+        seed_google_connection(app.db(), coach, "coach@google.test").await;
+        seed_google_connection(app.db(), other_coach, "other@google.test").await;
+
+        for caller in Caller::ALL {
+            let own: BTreeSet<String> = match caller {
+                Caller::Coach => ["coach@google.test".to_string()].into(),
+                Caller::OtherCoach => ["other@google.test".to_string()].into(),
+                _ => BTreeSet::new(),
+            };
+            assert_eq!(listed_emails(&mut app, caller).await, own, "{caller:?}");
+
+            let reply = app
+                .send(caller, Method::GET, "/oauth/connections/google", None)
+                .await;
+            let expected = match own.first() {
+                Some(email) => (StatusCode::OK, json!(email)),
+                None => (StatusCode::NOT_FOUND, Value::Null),
+            };
+            assert_eq!(
+                (reply.status, reply.body["data"]["email"].clone()),
+                expected,
+                "{caller:?}"
+            );
+        }
+
+        // A caller with no connection deletes nothing of anyone else's.
+        let reply = app
+            .send(
+                Caller::Member,
+                Method::DELETE,
+                "/oauth/connections/google",
+                None,
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND);
+        assert_eq!(connected_users(app.db()).await, ids([coach, other_coach]));
+
+        let reply = app
+            .send(
+                Caller::Coach,
+                Method::DELETE,
+                "/oauth/connections/google",
+                None,
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(connected_users(app.db()).await, ids([other_coach]));
+    })
+    .await;
+}

@@ -18,7 +18,9 @@ use axum_login::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use domain::gateway::object_storage::{self, ObjectStore};
-use domain::test_utils::sqlite::access_world::{IMG1_BYTES, IMG1_CONTENT_TYPE, PASSWORD};
+use domain::test_utils::sqlite::access_world::{
+    remove_roles, IMG1_BYTES, IMG1_CONTENT_TYPE, PASSWORD,
+};
 use domain::test_utils::sqlite::{
     database, mirror_migration_defaults, seed_access_world, AccessWorld, Caller,
 };
@@ -42,10 +44,10 @@ const API_VERSION: &str = "1.0.0";
 const JSON: (&str, &str) = ("content-type", "application/json");
 
 /// The key Recall webhooks are signed with.
-const WEBHOOK_KEY: &[u8] = b"access-baseline-webhook-key";
+const WEBHOOK_KEY: &[u8] = b"access-test-webhook-key";
 
 /// The matrix's "non-participants" for R1 and S1 data, all members of O1 except OUTSIDER.
-pub(super) const NON_PARTICIPANTS: [Caller; 5] = [
+pub(crate) const NON_PARTICIPANTS: [Caller; 5] = [
     Caller::Member,
     Caller::OtherCoach,
     Caller::Admin,
@@ -53,8 +55,8 @@ pub(super) const NON_PARTICIPANTS: [Caller; 5] = [
     Caller::Outsider,
 ];
 
-/// A set of fixture ids, for comparing with what a row returned.
-pub(super) fn ids<const N: usize>(fixture_ids: [Id; N]) -> BTreeSet<Id> {
+/// A set of fixture ids, for comparing with what a request returned.
+pub(crate) fn ids<const N: usize>(fixture_ids: [Id; N]) -> BTreeSet<Id> {
     fixture_ids.into_iter().collect()
 }
 
@@ -65,20 +67,20 @@ const TIPTAP_DOCUMENT: &str = r"^/api/documents/[^/?]+\?format=json$";
 const RESEND_SEND: &str = "/emails";
 
 /// One seeded world behind the production router, with a session cookie per caller.
-pub(super) struct Baseline {
+pub(crate) struct TestApp {
     app: Router,
     db: Arc<DatabaseConnection>,
-    pub(super) world: AccessWorld,
+    pub(crate) world: AccessWorld,
     cookies: HashMap<Caller, String>,
     stand_ins: StandIns,
 }
 
 /// A response: transport status, the raw body, and the body parsed (a JSON string when it is
 /// not JSON).
-pub(super) struct Reply {
-    pub(super) status: StatusCode,
-    pub(super) bytes: Bytes,
-    pub(super) body: Value,
+pub(crate) struct Reply {
+    pub(crate) status: StatusCode,
+    pub(crate) bytes: Bytes,
+    pub(crate) body: Value,
 }
 
 /// Tiptap, Resend and AssemblyAI answered by one local server, and a local object store.
@@ -167,7 +169,7 @@ struct StoreRoot(PathBuf);
 
 impl StoreRoot {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("access-baseline-{}", Id::new_v4()));
+        let path = std::env::temp_dir().join(format!("access-test-{}", Id::new_v4()));
         std::fs::create_dir_all(&path).expect("the object store root is created");
         Self(path)
     }
@@ -181,13 +183,13 @@ impl Drop for StoreRoot {
 
 impl Reply {
     /// Ids of the envelope's `data`: the object's own id, or each element's.
-    pub(super) fn ids(&self) -> BTreeSet<Id> {
+    pub(crate) fn ids(&self) -> BTreeSet<Id> {
         ids_in(&self.body["data"])
     }
 }
 
 /// Ids under each key of an object keyed by id, such as actions or goals per relationship.
-pub(super) fn ids_by_key(value: &Value) -> BTreeMap<Id, BTreeSet<Id>> {
+pub(crate) fn ids_by_key(value: &Value) -> BTreeMap<Id, BTreeSet<Id>> {
     value
         .as_object()
         .expect("an object keyed by id")
@@ -197,7 +199,7 @@ pub(super) fn ids_by_key(value: &Value) -> BTreeMap<Id, BTreeSet<Id>> {
 }
 
 /// The `id` of an object, or of every object in an array.
-pub(super) fn ids_in(value: &Value) -> BTreeSet<Id> {
+pub(crate) fn ids_in(value: &Value) -> BTreeSet<Id> {
     let id_of = |item: &Value| item["id"].as_str().and_then(|id| id.parse().ok());
     match value {
         Value::Array(items) => items.iter().filter_map(id_of).collect(),
@@ -205,8 +207,8 @@ pub(super) fn ids_in(value: &Value) -> BTreeSet<Id> {
     }
 }
 
-impl Baseline {
-    pub(super) async fn new() -> Self {
+impl TestApp {
+    pub(crate) async fn new() -> Self {
         let db = database().await;
         mirror_migration_defaults(&db).await;
         let db = Arc::new(db);
@@ -222,13 +224,13 @@ impl Baseline {
         }
     }
 
-    pub(super) fn db(&self) -> &DatabaseConnection {
+    pub(crate) fn db(&self) -> &DatabaseConnection {
         &self.db
     }
 
     /// Expects exactly `hits` Tiptap document calls with `method` from here on; check with
     /// `assert_async`.
-    pub(super) async fn expect_tiptap(&mut self, method: &str, hits: usize) -> Mock {
+    pub(crate) async fn expect_tiptap(&mut self, method: &str, hits: usize) -> Mock {
         tiptap_document(&mut self.stand_ins.server, method)
             .expect(hits)
             .create_async()
@@ -236,7 +238,7 @@ impl Baseline {
     }
 
     /// Expects exactly `hits` emails sent from here on; check with `assert_async`.
-    pub(super) async fn expect_emails(&mut self, hits: usize) -> Mock {
+    pub(crate) async fn expect_emails(&mut self, hits: usize) -> Mock {
         resend_send(&mut self.stand_ins.server, &self.stand_ins.emailed)
             .expect(hits)
             .create_async()
@@ -244,7 +246,7 @@ impl Baseline {
     }
 
     /// The addresses mailed since the last call, sorted.
-    pub(super) fn take_emailed(&mut self) -> Vec<String> {
+    pub(crate) fn take_emailed(&mut self) -> Vec<String> {
         let mut emailed = std::mem::take(
             &mut *self
                 .stand_ins
@@ -256,8 +258,8 @@ impl Baseline {
         emailed
     }
 
-    /// One matrix row: the status and the ids `data` returned.
-    pub(super) async fn expect(
+    /// One request: the status and the ids `data` returned.
+    pub(crate) async fn expect(
         &mut self,
         caller: Caller,
         method: Method,
@@ -269,7 +271,7 @@ impl Baseline {
     }
 
     /// Sends a request as `caller`, signing in first if needed.
-    pub(super) async fn send(
+    pub(crate) async fn send(
         &mut self,
         caller: Caller,
         method: Method,
@@ -281,7 +283,7 @@ impl Baseline {
     }
 
     /// Sends a request as `caller` with `headers` and a raw `body`.
-    pub(super) async fn send_with(
+    pub(crate) async fn send_with(
         &mut self,
         caller: Caller,
         method: Method,
@@ -297,7 +299,7 @@ impl Baseline {
     }
 
     /// Opens `caller`'s event stream; the returned listener reads what reaches it.
-    pub(super) async fn listen(&mut self, caller: Caller) -> Listener {
+    pub(crate) async fn listen(&mut self, caller: Caller) -> Listener {
         let cookie = self.cookie(caller).await;
         let response = self
             .respond(Some(&cookie), Method::GET, "/sse", &[], Body::empty())
@@ -307,7 +309,7 @@ impl Baseline {
     }
 
     /// Delivers a Recall webhook, signed as Recall signs it; no one is signed in.
-    pub(super) async fn webhook(&mut self, event: &str, data: Value) -> StatusCode {
+    pub(crate) async fn webhook(&mut self, event: &str, data: Value) -> StatusCode {
         let body = json!({ "event": event, "data": data }).to_string();
         let id = format!("msg_{}", Id::new_v4());
         let timestamp = chrono::Utc::now().timestamp().to_string();
@@ -334,11 +336,11 @@ impl Baseline {
 }
 
 /// A caller's open event stream.
-pub(super) struct Listener(BodyDataStream);
+pub(crate) struct Listener(BodyDataStream);
 
 impl Listener {
     /// The events already sent to this stream, as `(event type, data)`.
-    pub(super) async fn received(&mut self) -> Vec<(String, Value)> {
+    pub(crate) async fn received(&mut self) -> Vec<(String, Value)> {
         let mut events = Vec::new();
         while let Ok(Some(chunk)) =
             tokio::time::timeout(StdDuration::from_millis(100), self.0.next()).await
@@ -361,7 +363,7 @@ impl Listener {
     }
 
     /// The types of the events already sent to this stream.
-    pub(super) async fn received_types(&mut self) -> Vec<String> {
+    pub(crate) async fn received_types(&mut self) -> Vec<String> {
         self.received()
             .await
             .into_iter()
@@ -384,10 +386,10 @@ async fn read_reply(response: Response) -> Reply {
     }
 }
 
-impl Baseline {
+impl TestApp {
     /// GETs a streaming route as `caller`: the status and headers only. The body is never
     /// read, since a stream like `/sse` never ends.
-    pub(super) async fn open(&mut self, caller: Caller, path: &str) -> (StatusCode, HeaderMap) {
+    pub(crate) async fn open(&mut self, caller: Caller, path: &str) -> (StatusCode, HeaderMap) {
         let cookie = self.cookie(caller).await;
         let response = self
             .respond(Some(&cookie), Method::GET, path, &[], Body::empty())
@@ -442,12 +444,12 @@ fn config(server_url: &str, store_root: &StoreRoot) -> Config {
     let store_root = store_root.0.to_string_lossy();
     Config::from_args([
         "refactor-platform-rs",
-        "--tiptap-jwt-signing-key=access-baseline-signing-key",
-        "--tiptap-app-id=access-baseline",
+        "--tiptap-jwt-signing-key=access-test-signing-key",
+        "--tiptap-app-id=access-test",
         &format!("--tiptap-url={server_url}"),
-        "--tiptap-auth-key=access-baseline-tiptap-key",
+        "--tiptap-auth-key=access-test-tiptap-key",
         &format!("--resend-base-url={server_url}"),
-        "--resend-api-key=access-baseline-resend-key",
+        "--resend-api-key=access-test-resend-key",
         "--frontend-base-url=https://app.access.test",
         "--session-scheduled-email-template-id=session-scheduled",
         "--recurring-sessions-scheduled-email-template-id=recurring-sessions-scheduled",
@@ -456,7 +458,7 @@ fn config(server_url: &str, store_root: &StoreRoot) -> Config {
         "--session-cancelled-email-template-id=session-cancelled",
         "--recurring-sessions-cancelled-email-template-id=recurring-sessions-cancelled",
         "--action-assigned-email-template-id=action-assigned",
-        "--assembly-ai-api-key=access-baseline-assembly-ai-key",
+        "--assembly-ai-api-key=access-test-assembly-ai-key",
         &format!("--assembly-ai-llm-base-url={server_url}"),
         &format!(
             "--recall-ai-webhook-secret=whsec_{}",
@@ -525,4 +527,57 @@ async fn login(app: &Router, caller: Caller) -> String {
         .and_then(|cookie| cookie.to_str().ok())
         .expect("login sets a session cookie")
         .to_string()
+}
+
+/// `field` of every object in `value`, as ids.
+pub(crate) fn field_ids(value: &Value, field: &str) -> BTreeSet<Id> {
+    value
+        .as_array()
+        .expect("an array")
+        .iter()
+        .filter_map(|item| item[field].as_str().and_then(|id| id.parse().ok()))
+        .collect()
+}
+
+/// COACH resends the invite at `path`; exactly COACH and COACHEE are mailed.
+pub(crate) async fn assert_resend_mails_both(path: impl Fn(&TestApp) -> String) {
+    let mut app = TestApp::new().await;
+    let path = path(&app);
+    app.take_emailed();
+
+    let reply = app.send(Caller::Coach, Method::POST, &path, None).await;
+
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    let mut expected = vec![Caller::Coach.email(), Caller::Coachee.email()];
+    expected.sort();
+    assert_eq!(app.take_emailed(), expected);
+}
+
+/// COACH, holding no O1 role, resends the invite at `path`; refused, and nobody is mailed.
+pub(crate) async fn assert_removed_coach_resend_refused(path: impl Fn(&TestApp) -> String) {
+    let mut app = TestApp::new().await;
+    let path = path(&app);
+    let (coach, o1) = (app.world.user(Caller::Coach), app.world.o1);
+    remove_roles(app.db(), coach, o1).await;
+    app.take_emailed();
+
+    let reply = app.send(Caller::Coach, Method::POST, &path, None).await;
+
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    assert_eq!(app.take_emailed(), Vec::<String>::new());
+}
+
+/// TRN-02, TRN-04 and TRN-06: every non-participant is refused each transcription read.
+pub(crate) async fn assert_transcription_reads_refused(suffix: impl Fn(&TestApp) -> String) {
+    let mut app = TestApp::new().await;
+    let path = format!(
+        "/coaching_sessions/{}/transcriptions{}",
+        app.world.s1,
+        suffix(&app)
+    );
+
+    for caller in NON_PARTICIPANTS {
+        let (status, _) = app.expect(caller, Method::GET, &path, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{caller:?}");
+    }
 }

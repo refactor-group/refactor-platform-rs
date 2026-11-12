@@ -1,4 +1,5 @@
-//! Series (`SER`).
+//! Series (`SER`) and their invite resends (`MAIL`) through `/coaching_session_series`, on
+//! SQLite as each access-matrix caller. Recipients are read from the Resend stand-in.
 
 use std::collections::BTreeSet;
 
@@ -11,7 +12,15 @@ use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 use serde_json::{json, Value};
 
-use super::harness::{ids, ids_in, Baseline, NON_PARTICIPANTS};
+use crate::test_utils::sqlite::{
+    assert_removed_coach_resend_refused, assert_resend_mails_both, ids, ids_in, TestApp,
+    NON_PARTICIPANTS,
+};
+
+/// SR1's invite resend path.
+fn series_resend(app: &TestApp) -> String {
+    format!("/coaching_session_series/{}/resend_invite", app.world.sr1)
+}
 
 /// Every non-participant of R1, plus the coachee.
 const COACHEE_AND_NON_PARTICIPANTS: [Caller; 6] = [
@@ -57,18 +66,18 @@ fn reschedule_following_body(session: Id) -> Value {
 /// Asserts each caller's series create in `relationship` is answered `expected`, with no
 /// series or session written, no document created and no email sent.
 async fn assert_create_refused(
-    baseline: &mut Baseline,
+    app: &mut TestApp,
     callers: &[Caller],
     relationship: Id,
     expected: StatusCode,
 ) {
-    let series = relationship_series(baseline.db(), relationship).await;
-    let sessions = relationship_sessions(baseline.db(), relationship).await;
-    let documents = baseline.expect_tiptap("POST", 0).await;
-    let emails = baseline.expect_emails(0).await;
+    let series = relationship_series(app.db(), relationship).await;
+    let sessions = relationship_sessions(app.db(), relationship).await;
+    let documents = app.expect_tiptap("POST", 0).await;
+    let emails = app.expect_emails(0).await;
 
     for &caller in callers {
-        let reply = baseline
+        let reply = app
             .send(
                 caller,
                 Method::POST,
@@ -84,12 +93,12 @@ async fn assert_create_refused(
             );
         }
         assert_eq!(
-            relationship_series(baseline.db(), relationship).await,
+            relationship_series(app.db(), relationship).await,
             series,
             "{caller:?}"
         );
         assert_eq!(
-            relationship_sessions(baseline.db(), relationship).await,
+            relationship_sessions(app.db(), relationship).await,
             sessions,
             "{caller:?}"
         );
@@ -102,22 +111,22 @@ async fn assert_create_refused(
 /// the series, its sessions and its documents as they were and sending no email.
 async fn assert_series_write_refused(
     callers: &[Caller],
-    series: impl Fn(&Baseline) -> (Id, Id),
+    series: impl Fn(&TestApp) -> (Id, Id),
     method: Method,
     suffix: &str,
     body: impl Fn(Id) -> Option<Value>,
     expected: StatusCode,
 ) {
-    let mut baseline = Baseline::new().await;
-    let (series, first_session) = series(&baseline);
+    let mut app = TestApp::new().await;
+    let (series, first_session) = series(&app);
     let path = format!("/coaching_session_series/{series}{suffix}");
-    let before = series_state(baseline.db(), series).await;
-    let documents_created = baseline.expect_tiptap("POST", 0).await;
-    let documents_deleted = baseline.expect_tiptap("DELETE", 0).await;
-    let emails = baseline.expect_emails(0).await;
+    let before = series_state(app.db(), series).await;
+    let documents_created = app.expect_tiptap("POST", 0).await;
+    let documents_deleted = app.expect_tiptap("DELETE", 0).await;
+    let emails = app.expect_emails(0).await;
 
     for &caller in callers {
-        let reply = baseline
+        let reply = app
             .send(caller, method.clone(), &path, body(first_session))
             .await;
         assert_eq!(reply.status, expected, "{caller:?}");
@@ -128,11 +137,7 @@ async fn assert_series_write_refused(
             );
         }
         assert!(before.is_some(), "{caller:?}");
-        assert_eq!(
-            series_state(baseline.db(), series).await,
-            before,
-            "{caller:?}"
-        );
+        assert_eq!(series_state(app.db(), series).await, before, "{caller:?}");
     }
     documents_created.assert_async().await;
     documents_deleted.assert_async().await;
@@ -140,25 +145,37 @@ async fn assert_series_write_refused(
 }
 
 /// SR1 and its first session.
-fn sr1(baseline: &Baseline) -> (Id, Id) {
-    (baseline.world.sr1, baseline.world.sr1_sessions[0])
+fn sr1(app: &TestApp) -> (Id, Id) {
+    (app.world.sr1, app.world.sr1_sessions[0])
 }
 
 /// SR3 and its first session.
-fn sr3(baseline: &Baseline) -> (Id, Id) {
-    (baseline.world.sr3, baseline.world.sr3_sessions[0])
+fn sr3(app: &TestApp) -> (Id, Id) {
+    (app.world.sr3, app.world.sr3_sessions[0])
+}
+
+/// MAIL-09
+#[tokio::test]
+async fn a_series_resend_mails_both_members() {
+    within_time_limit(assert_resend_mails_both(series_resend)).await;
+}
+
+/// MAIL-09
+#[tokio::test]
+async fn a_coach_who_left_cannot_resend_a_series_invite() {
+    within_time_limit(assert_removed_coach_resend_refused(series_resend)).await;
 }
 
 /// SER-01
 #[tokio::test]
-async fn ser_01_a_coach_creates_a_series_with_its_sessions() {
+async fn a_coach_creates_a_series_with_its_sessions() {
     within_time_limit(async {
-        let mut baseline = Baseline::new().await;
-        let r1 = baseline.world.r1;
-        let series_before = relationship_series(baseline.db(), r1).await;
-        let sessions_before = relationship_sessions(baseline.db(), r1).await;
+        let mut app = TestApp::new().await;
+        let r1 = app.world.r1;
+        let series_before = relationship_series(app.db(), r1).await;
+        let sessions_before = relationship_sessions(app.db(), r1).await;
 
-        let reply = baseline
+        let reply = app
             .send(
                 Caller::Coach,
                 Method::POST,
@@ -173,7 +190,7 @@ async fn ser_01_a_coach_creates_a_series_with_its_sessions() {
         let sessions = ids_in(&reply.body["data"]["sessions"]);
         assert_eq!(series.len(), 1);
         assert_eq!(sessions.len(), 2);
-        let series_after = relationship_series(baseline.db(), r1).await;
+        let series_after = relationship_series(app.db(), r1).await;
         assert_eq!(
             series_after
                 .difference(&series_before)
@@ -181,7 +198,7 @@ async fn ser_01_a_coach_creates_a_series_with_its_sessions() {
                 .collect::<BTreeSet<_>>(),
             series
         );
-        let sessions_after = relationship_sessions(baseline.db(), r1).await;
+        let sessions_after = relationship_sessions(app.db(), r1).await;
         assert_eq!(
             sessions_after
                 .difference(&sessions_before)
@@ -195,37 +212,37 @@ async fn ser_01_a_coach_creates_a_series_with_its_sessions() {
 
 /// SER-02
 #[tokio::test]
-async fn ser_02_a_coachee_cannot_create_a_series() {
+async fn a_coachee_cannot_create_a_series() {
     within_time_limit(async {
-        let mut baseline = Baseline::new().await;
-        let r1 = baseline.world.r1;
-        assert_create_refused(&mut baseline, &[Caller::Coachee], r1, StatusCode::FORBIDDEN).await;
+        let mut app = TestApp::new().await;
+        let r1 = app.world.r1;
+        assert_create_refused(&mut app, &[Caller::Coachee], r1, StatusCode::FORBIDDEN).await;
     })
     .await;
 }
 
 /// SER-03
 #[tokio::test]
-async fn ser_03_non_participants_cannot_create_a_series() {
+async fn non_participants_cannot_create_a_series() {
     within_time_limit(async {
-        let mut baseline = Baseline::new().await;
-        let r1 = baseline.world.r1;
-        assert_create_refused(&mut baseline, &NON_PARTICIPANTS, r1, StatusCode::FORBIDDEN).await;
+        let mut app = TestApp::new().await;
+        let r1 = app.world.r1;
+        assert_create_refused(&mut app, &NON_PARTICIPANTS, r1, StatusCode::FORBIDDEN).await;
     })
     .await;
 }
 
 /// SER-04
 #[tokio::test]
-async fn ser_04_participants_list_the_relationships_series() {
+async fn participants_list_the_relationships_series() {
     within_time_limit(async {
-        let mut baseline = Baseline::new().await;
-        let (r1, sr1) = (baseline.world.r1, baseline.world.sr1);
+        let mut app = TestApp::new().await;
+        let (r1, sr1) = (app.world.r1, app.world.sr1);
         let path = format!("/coaching_session_series?coaching_relationship_id={r1}");
 
         for caller in [Caller::Coach, Caller::Coachee] {
             assert_eq!(
-                baseline.expect(caller, Method::GET, &path, None).await,
+                app.expect(caller, Method::GET, &path, None).await,
                 (StatusCode::OK, ids([sr1])),
                 "{caller:?}"
             );
@@ -236,16 +253,16 @@ async fn ser_04_participants_list_the_relationships_series() {
 
 /// SER-05
 #[tokio::test]
-async fn ser_05_non_participants_cannot_list_the_relationships_series() {
+async fn non_participants_cannot_list_the_relationships_series() {
     within_time_limit(async {
-        let mut baseline = Baseline::new().await;
+        let mut app = TestApp::new().await;
         let path = format!(
             "/coaching_session_series?coaching_relationship_id={}",
-            baseline.world.r1
+            app.world.r1
         );
 
         for caller in NON_PARTICIPANTS {
-            let (status, _) = baseline.expect(caller, Method::GET, &path, None).await;
+            let (status, _) = app.expect(caller, Method::GET, &path, None).await;
             assert_eq!(status, StatusCode::FORBIDDEN, "{caller:?}");
         }
     })
@@ -254,16 +271,16 @@ async fn ser_05_non_participants_cannot_list_the_relationships_series() {
 
 /// SER-06
 #[tokio::test]
-async fn ser_06_participants_read_a_series_with_its_sessions() {
+async fn participants_read_a_series_with_its_sessions() {
     within_time_limit(async {
-        let mut baseline = Baseline::new().await;
-        let world = &baseline.world;
+        let mut app = TestApp::new().await;
+        let world = &app.world;
         let sr1 = world.sr1;
         let sessions = ids(world.sr1_sessions);
         let path = format!("/coaching_session_series/{sr1}");
 
         for caller in [Caller::Coach, Caller::Coachee] {
-            let reply = baseline.send(caller, Method::GET, &path, None).await;
+            let reply = app.send(caller, Method::GET, &path, None).await;
 
             assert_eq!(reply.status, StatusCode::OK, "{caller:?}");
             assert_eq!(
@@ -283,13 +300,13 @@ async fn ser_06_participants_read_a_series_with_its_sessions() {
 
 /// SER-07
 #[tokio::test]
-async fn ser_07_non_participants_cannot_read_a_series() {
+async fn non_participants_cannot_read_a_series() {
     within_time_limit(async {
-        let mut baseline = Baseline::new().await;
-        let path = format!("/coaching_session_series/{}", baseline.world.sr1);
+        let mut app = TestApp::new().await;
+        let path = format!("/coaching_session_series/{}", app.world.sr1);
 
         for caller in NON_PARTICIPANTS {
-            let (status, _) = baseline.expect(caller, Method::GET, &path, None).await;
+            let (status, _) = app.expect(caller, Method::GET, &path, None).await;
             assert_eq!(status, StatusCode::FORBIDDEN, "{caller:?}");
         }
     })
@@ -298,7 +315,7 @@ async fn ser_07_non_participants_cannot_read_a_series() {
 
 /// SER-09
 #[tokio::test]
-async fn ser_09_only_the_coach_reschedules_a_series() {
+async fn only_the_coach_reschedules_a_series() {
     within_time_limit(assert_series_write_refused(
         &COACHEE_AND_NON_PARTICIPANTS,
         sr1,
@@ -312,7 +329,7 @@ async fn ser_09_only_the_coach_reschedules_a_series() {
 
 /// SER-11
 #[tokio::test]
-async fn ser_11_only_the_coach_reschedules_following_sessions() {
+async fn only_the_coach_reschedules_following_sessions() {
     within_time_limit(assert_series_write_refused(
         &COACHEE_AND_NON_PARTICIPANTS,
         sr1,
@@ -326,7 +343,7 @@ async fn ser_11_only_the_coach_reschedules_following_sessions() {
 
 /// SER-13
 #[tokio::test]
-async fn ser_13_only_the_coach_deletes_a_series() {
+async fn only_the_coach_deletes_a_series() {
     within_time_limit(assert_series_write_refused(
         &COACHEE_AND_NON_PARTICIPANTS,
         sr1,
@@ -340,16 +357,14 @@ async fn ser_13_only_the_coach_deletes_a_series() {
 
 /// SER-14
 #[tokio::test]
-async fn ser_14_a_coach_resends_a_series_invite() {
+async fn a_coach_resends_a_series_invite() {
     within_time_limit(async {
-        let mut baseline = Baseline::new().await;
-        let sr1 = baseline.world.sr1;
-        let (_, before, _) = series_state(baseline.db(), sr1)
-            .await
-            .expect("SR1 is seeded");
-        let invites = baseline.expect_emails(2).await;
+        let mut app = TestApp::new().await;
+        let sr1 = app.world.sr1;
+        let (_, before, _) = series_state(app.db(), sr1).await.expect("SR1 is seeded");
+        let invites = app.expect_emails(2).await;
 
-        let reply = baseline
+        let reply = app
             .send(
                 Caller::Coach,
                 Method::POST,
@@ -359,7 +374,7 @@ async fn ser_14_a_coach_resends_a_series_invite() {
             .await;
 
         assert_eq!(reply.status, StatusCode::NO_CONTENT);
-        let (_, after, _) = series_state(baseline.db(), sr1).await.expect("SR1 is kept");
+        let (_, after, _) = series_state(app.db(), sr1).await.expect("SR1 is kept");
         assert_eq!(after, before + 1);
         invites.assert_async().await;
     })
@@ -368,7 +383,7 @@ async fn ser_14_a_coach_resends_a_series_invite() {
 
 /// SER-15
 #[tokio::test]
-async fn ser_15_only_the_coach_resends_a_series_invite() {
+async fn only_the_coach_resends_a_series_invite() {
     within_time_limit(assert_series_write_refused(
         &COACHEE_AND_NON_PARTICIPANTS,
         sr1,
@@ -382,30 +397,30 @@ async fn ser_15_only_the_coach_resends_a_series_invite() {
 
 /// SER-16
 #[tokio::test]
-async fn ser_16_a_coach_removed_from_the_org_cannot_create_a_series() {
+async fn a_coach_removed_from_the_org_cannot_create_a_series() {
     within_time_limit(async {
-        let mut baseline = Baseline::new().await;
-        let (r1, o1) = (baseline.world.r1, baseline.world.o1);
-        remove_roles(baseline.db(), baseline.world.user(Caller::Coach), o1).await;
-        assert_create_refused(&mut baseline, &[Caller::Coach], r1, StatusCode::FORBIDDEN).await;
+        let mut app = TestApp::new().await;
+        let (r1, o1) = (app.world.r1, app.world.o1);
+        remove_roles(app.db(), app.world.user(Caller::Coach), o1).await;
+        assert_create_refused(&mut app, &[Caller::Coach], r1, StatusCode::FORBIDDEN).await;
     })
     .await;
 }
 
 /// SER-17
 #[tokio::test]
-async fn ser_17_a_series_with_a_coachee_who_left_is_refused() {
+async fn a_series_with_a_coachee_who_left_is_refused() {
     within_time_limit(async {
-        let mut baseline = Baseline::new().await;
-        let r3 = baseline.world.r3;
-        assert_create_refused(&mut baseline, &[Caller::Coach], r3, StatusCode::CONFLICT).await;
+        let mut app = TestApp::new().await;
+        let r3 = app.world.r3;
+        assert_create_refused(&mut app, &[Caller::Coach], r3, StatusCode::CONFLICT).await;
     })
     .await;
 }
 
 /// SER-18
 #[tokio::test]
-async fn ser_18_rescheduling_a_series_whose_coachee_left_is_refused() {
+async fn rescheduling_a_series_whose_coachee_left_is_refused() {
     within_time_limit(assert_series_write_refused(
         &[Caller::Coach],
         sr3,
@@ -419,7 +434,7 @@ async fn ser_18_rescheduling_a_series_whose_coachee_left_is_refused() {
 
 /// SER-20
 #[tokio::test]
-async fn ser_20_resending_a_series_to_a_coachee_who_left_is_refused() {
+async fn resending_a_series_to_a_coachee_who_left_is_refused() {
     within_time_limit(assert_series_write_refused(
         &[Caller::Coach],
         sr3,

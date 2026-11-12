@@ -231,3 +231,7 @@ pub async fn goal_progress(
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), progress)))
 }
+
+#[cfg(test)]
+#[path = "coaching_relationship_controller_sqlite_tests.rs"]
+mod sqlite_tests;

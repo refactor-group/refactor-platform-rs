@@ -94,3 +94,7 @@ pub async fn index(
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), actions)))
 }
+
+#[cfg(test)]
+#[path = "action_controller_sqlite_tests.rs"]
+mod sqlite_tests;

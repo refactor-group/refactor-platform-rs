@@ -326,3 +326,7 @@ mod tests;
 #[cfg(feature = "mock")]
 #[path = "transcript_suggestion_route_tests.rs"]
 mod route_tests;
+
+#[cfg(test)]
+#[path = "transcript_suggestion_controller_sqlite_tests.rs"]
+mod sqlite_tests;

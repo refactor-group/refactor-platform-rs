@@ -62,3 +62,7 @@ pub async fn index(
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), relationships)))
 }
+
+#[cfg(test)]
+#[path = "coaching_relationships_controller_sqlite_tests.rs"]
+mod sqlite_tests;

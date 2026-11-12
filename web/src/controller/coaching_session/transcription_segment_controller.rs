@@ -51,3 +51,7 @@ pub async fn index(
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), segments)))
 }
+
+#[cfg(test)]
+#[path = "transcription_segment_controller_sqlite_tests.rs"]
+mod sqlite_tests;

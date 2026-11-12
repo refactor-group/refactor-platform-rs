@@ -13,7 +13,7 @@ items, which `domain/tests/` could not.
 |---|---|---|---|
 | `mock` | `domain`'s tests with the `mock` feature | `recording_publisher`, `both_participants_are_members` | mock database tests (the default) |
 | `sqlite` | `domain`'s tests, or `test-sqlite` | `database`, `within_time_limit`, `seed_user`, `seed_organization`, `seed_coaching_session`, `seed_note`, `seed_action`, `seed_agreement`, `seed_topic`, `seed_lapsed_membership`, `foreign_key_violation` (with `mock`) | SQLite tier tests |
-| `sqlite::access_world` | as `sqlite` | `seed_access_world` (the access matrix's fixture), `mirror_migration_defaults` (in `sqlite`) | `web`'s access baseline (`web/src/baseline/`) |
+| `sqlite::access_world` | as `sqlite` | `seed_access_world` (the access matrix's fixture), `mirror_migration_defaults` (in `sqlite`) | `web`'s SQLite route tests (`web/src/test_utils/sqlite.rs`) |
 
 ## Which kind of test
 
