@@ -1,7 +1,9 @@
-//! Search (`SRCH`), the collaboration token (`JWT`) and users (`USR`).
+//! Search (`SRCH`), the collaboration token (`JWT`), users (`USR`) and real-time events
+//! (`SSE`).
 
 use std::collections::BTreeSet;
 
+use axum::http::header::CONTENT_TYPE;
 use axum::http::{Method, StatusCode};
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 
@@ -61,6 +63,28 @@ async fn usr_02_a_coachee_coaches_no_one() {
                 .await,
             (StatusCode::OK, BTreeSet::new())
         );
+    })
+    .await;
+}
+
+/// SSE-01
+#[tokio::test]
+async fn sse_01_every_caller_opens_an_event_stream() {
+    within_time_limit(async {
+        let mut baseline = Baseline::new().await;
+
+        for caller in Caller::ALL {
+            let (status, headers) = baseline.open(caller, "/sse").await;
+
+            assert_eq!(status, StatusCode::OK, "{caller:?}");
+            assert_eq!(
+                headers
+                    .get(CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok()),
+                Some("text/event-stream"),
+                "{caller:?}"
+            );
+        }
     })
     .await;
 }

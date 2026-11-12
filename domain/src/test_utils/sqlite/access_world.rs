@@ -1,22 +1,33 @@
 //! The relationship access matrix's fixture (section 2 of
 //! `docs/test-plans/relationship_access_manual_testing.md`), seeded into SQLite.
 //!
-//! Not seeded yet: IMG1, TR1 and SG1 to SG3.
+//! S4 and S5 are left out of the shared world: tests seed them with
+//! [`seed_content_free_session`], so no list row includes them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
-use chrono::{NaiveDateTime, TimeDelta, Timelike, Utc};
+use chrono::{DateTime, NaiveDateTime, TimeDelta, Timelike, Utc};
+use entity::meeting_recording::MeetingRecordingStatus;
 use entity::roles::Role;
 use entity::status::Status;
 use entity::topic_status::Status as TopicStatus;
+use entity::transcript_analysis::Status as AnalysisStatus;
+use entity::transcript_participant::MatchSource;
+use entity::transcript_suggestion::Status as SuggestionStatus;
+use entity::transcript_suggestion_target::Target;
+use entity::transcription::TranscriptionStatus;
 use entity::{
-    actions, actions_users, agreements, coaching_relationships, coaching_session_series,
-    coaching_session_topics, coaching_sessions, coaching_sessions_goals, goals, notes, user_roles,
-    users, Id,
+    actions, actions_users, agreements, coaching_relationships, coaching_session_images,
+    coaching_session_series, coaching_session_topics, coaching_sessions, coaching_sessions_goals,
+    goals, meeting_recording, notes, transcript_analysis, transcript_participant,
+    transcript_segment, transcript_suggestion, transcription, user_roles, users, Id,
 };
 use entity_api::user::generate_hash;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
+
+use crate::action::ActionWithAssignees;
+use crate::transcript_suggestion::ActionProposal;
 
 use super::seed_organization;
 
@@ -25,6 +36,12 @@ pub const PASSWORD: &str = "kumquat-password";
 
 /// The search rows look for this word, which every seeded body and title holds.
 const SEARCH_WORD: &str = "kumquat";
+
+/// IMG1's stored bytes: a PNG signature.
+pub const IMG1_BYTES: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+/// IMG1's content type.
+pub const IMG1_CONTENT_TYPE: &str = "image/png";
 
 /// The matrix's cast, by fixture name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -95,6 +112,15 @@ pub struct AccessWorld {
     pub ag1: Id,
     pub t1: Id,
     pub t2: Id,
+    pub img1: Id,
+    /// Where IMG1's bytes live in the object store; the store itself is the caller's.
+    pub img1_storage_key: String,
+    pub tr1: Id,
+    /// The completed transcription of S3 that SG3 comes from; the matrix leaves it unnamed.
+    pub tr3: Id,
+    pub sg1: Id,
+    pub sg2: Id,
+    pub sg3: Id,
 }
 
 impl AccessWorld {
@@ -155,6 +181,13 @@ pub async fn seed_access_world(db: &DatabaseConnection) -> AccessWorld {
     let ag1 = seed_agreement(db, s1, coach).await;
     let t1 = seed_topic(db, s1, coach, 0).await;
     let t2 = seed_topic(db, s1, id(Caller::Coachee), 1).await;
+    let (img1, img1_storage_key) = seed_image(db, s1, coach).await;
+
+    let tr1 = seed_transcript(db, s1, coach, id(Caller::Coachee)).await;
+    let tr3 = seed_transcript(db, s3, coach, id(Caller::Removed)).await;
+    let sg1 = seed_suggestion(db, s1, &tr1, vec![coach]).await;
+    let sg2 = seed_suggestion(db, s1, &tr1, vec![id(Caller::Coachee)]).await;
+    let sg3 = seed_suggestion(db, s3, &tr3, vec![id(Caller::Removed)]).await;
 
     AccessWorld {
         users,
@@ -183,7 +216,26 @@ pub async fn seed_access_world(db: &DatabaseConnection) -> AccessWorld {
         ag1,
         t1,
         t2,
+        img1,
+        img1_storage_key,
+        tr1: tr1.transcription,
+        tr3: tr3.transcription,
+        sg1,
+        sg2,
+        sg3,
     }
+}
+
+/// A future session with no notes, actions or agreements, like the matrix's S4 (in R1) and
+/// S5 (in R3). Seed it per test so list rows never see it.
+pub async fn seed_content_free_session(db: &DatabaseConnection, relationship_id: Id) -> Id {
+    seed_session(
+        db,
+        relationship_id,
+        None,
+        whole_seconds(Utc::now() + TimeDelta::days(4)),
+    )
+    .await
 }
 
 /// Whether `user_id` holds any role in `organization_id`.
@@ -207,6 +259,81 @@ pub async fn session_schedule(
         .await
         .expect("the session reads")
         .map(|session| (session.date, session.duration_minutes))
+}
+
+/// The session's relationship, or `None` once it is deleted.
+pub async fn session_relationship(db: &DatabaseConnection, session_id: Id) -> Option<Id> {
+    coaching_sessions::Entity::find_by_id(session_id)
+        .one(db)
+        .await
+        .expect("the session reads")
+        .map(|session| session.coaching_relationship_id)
+}
+
+/// The session's calendar SEQUENCE, or `None` once it is deleted.
+pub async fn session_ical_sequence(db: &DatabaseConnection, session_id: Id) -> Option<i32> {
+    coaching_sessions::Entity::find_by_id(session_id)
+        .one(db)
+        .await
+        .expect("the session reads")
+        .map(|session| session.ical_sequence)
+}
+
+/// Ids of the session's notes, agreements and actions.
+pub async fn session_content(db: &DatabaseConnection, session_id: Id) -> BTreeSet<Id> {
+    let notes = notes::Entity::find()
+        .filter(notes::Column::CoachingSessionId.eq(session_id))
+        .all(db)
+        .await
+        .expect("the notes read")
+        .into_iter()
+        .map(|note| note.id);
+    let agreements = agreements::Entity::find()
+        .filter(agreements::Column::CoachingSessionId.eq(session_id))
+        .all(db)
+        .await
+        .expect("the agreements read")
+        .into_iter()
+        .map(|agreement| agreement.id);
+    let actions = actions::Entity::find()
+        .filter(actions::Column::CoachingSessionId.eq(session_id))
+        .all(db)
+        .await
+        .expect("the actions read")
+        .into_iter()
+        .map(|action| action.id);
+    notes.chain(agreements).chain(actions).collect()
+}
+
+/// The action's assignees, or `None` when there is no such action.
+pub async fn action_assignees(db: &DatabaseConnection, action_id: Id) -> Option<BTreeSet<Id>> {
+    actions::Entity::find_by_id(action_id)
+        .one(db)
+        .await
+        .expect("the action reads")?;
+    Some(
+        actions_users::Entity::find()
+            .filter(actions_users::Column::ActionId.eq(action_id))
+            .all(db)
+            .await
+            .expect("the assignments read")
+            .into_iter()
+            .map(|assignment| assignment.user_id)
+            .collect(),
+    )
+}
+
+/// The suggestion's status and the entity accepting it created.
+pub async fn suggestion_outcome(
+    db: &DatabaseConnection,
+    suggestion_id: Id,
+) -> (SuggestionStatus, Option<Id>) {
+    transcript_suggestion::Entity::find_by_id(suggestion_id)
+        .one(db)
+        .await
+        .expect("the suggestion reads")
+        .map(|suggestion| (suggestion.status, suggestion.created_entity_id))
+        .expect("the suggestion exists")
 }
 
 /// Argon2 is slow by design; one hash serves every person in every test.
@@ -471,5 +598,204 @@ async fn seed_topic(db: &DatabaseConnection, session_id: Id, author: Id, display
     .insert(db)
     .await
     .expect("the topic is seeded")
+    .id
+}
+
+/// A note image row in `session_id`; the bytes are the caller's to store at the key.
+async fn seed_image(db: &DatabaseConnection, session_id: Id, uploader: Id) -> (Id, String) {
+    let now = Utc::now();
+    let id = Id::new_v4();
+    let storage_key = format!("coaching-sessions/{session_id}/images/{id}.png");
+    coaching_session_images::ActiveModel {
+        id: Set(id),
+        coaching_session_id: Set(session_id),
+        uploaded_by_id: Set(uploader),
+        storage_key: Set(storage_key.clone()),
+        mime_type: Set(IMG1_CONTENT_TYPE.to_string()),
+        byte_size: Set(i64::try_from(IMG1_BYTES.len()).expect("a small image")),
+        width: Set(Some(1)),
+        height: Set(Some(1)),
+        deleted_at: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the image is seeded");
+    (id, storage_key)
+}
+
+/// A completed transcription and the completed action scan over it.
+struct Transcript {
+    transcription: Id,
+    analysis: Id,
+    /// The coachee's line, which every suggestion quotes.
+    coachee_segment: Id,
+}
+
+/// A completed recording and transcription of `session_id`, one attributed line from each
+/// participant, and a completed action scan.
+async fn seed_transcript(
+    db: &DatabaseConnection,
+    session_id: Id,
+    coach: Id,
+    coachee: Id,
+) -> Transcript {
+    let now = Utc::now();
+    let recording = meeting_recording::ActiveModel {
+        id: Set(Id::new_v4()),
+        coaching_session_id: Set(session_id),
+        bot_id: Set(format!("bot-{session_id}")),
+        status: Set(MeetingRecordingStatus::Completed),
+        video_url: Set(None),
+        audio_url: Set(None),
+        duration_seconds: Set(None),
+        started_at: Set(None),
+        ended_at: Set(None),
+        error_message: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the recording is seeded");
+
+    let transcription = transcription::ActiveModel {
+        id: Set(Id::new_v4()),
+        coaching_session_id: Set(session_id),
+        meeting_recording_id: Set(recording.id),
+        external_id: Set(format!("ext-{}", recording.id)),
+        recall_recording_id: Set(None),
+        status: Set(TranscriptionStatus::Completed),
+        language_code: Set(None),
+        speaker_count: Set(Some(2)),
+        word_count: Set(None),
+        duration_seconds: Set(None),
+        confidence: Set(None),
+        error_message: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the transcription is seeded")
+    .id;
+
+    let mut segments = Vec::new();
+    for (index, (user_id, text)) in [
+        (coach, format!("What will you do next, {SEARCH_WORD}?")),
+        (coachee, format!("I will send the {SEARCH_WORD} plan.")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let provider_id = format!("{}", 100 * (index + 1));
+        let participant = transcript_participant::ActiveModel {
+            id: Set(Id::new_v4()),
+            transcription_id: Set(transcription),
+            provider_participant_id: Set(provider_id.clone()),
+            display_name: Set(None),
+            is_host: Set(Some(false)),
+            platform: Set(None),
+            platform_account_id: Set(None),
+            extra_data: Set(None),
+            user_id: Set(Some(user_id)),
+            match_source: Set(Some(MatchSource::Account)),
+            created_at: Set(now.into()),
+        }
+        .insert(db)
+        .await
+        .expect("the participant is seeded");
+        let start_ms = i32::try_from(index).expect("two lines") * 4000;
+        let segment = transcript_segment::ActiveModel {
+            id: Set(Id::new_v4()),
+            transcription_id: Set(transcription),
+            participant_id: Set(Some(participant.id)),
+            speaker_label: Set(provider_id),
+            text: Set(text),
+            start_ms: Set(start_ms),
+            end_ms: Set(start_ms + 3000),
+            confidence: Set(None),
+            sentiment: Set(None),
+            created_at: Set(now.into()),
+        }
+        .insert(db)
+        .await
+        .expect("the segment is seeded");
+        segments.push(segment.id);
+    }
+
+    let analysis = transcript_analysis::ActiveModel {
+        id: Set(Id::new_v4()),
+        transcription_id: Set(transcription),
+        target: Set(Target::Action),
+        status: Set(AnalysisStatus::Completed),
+        attempts: Set(1),
+        claimed_at: Set(None),
+        error_message: Set(None),
+        model: Set(None),
+        input_tokens: Set(None),
+        output_tokens: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the analysis is seeded")
+    .id;
+
+    Transcript {
+        transcription,
+        analysis,
+        coachee_segment: segments[1],
+    }
+}
+
+/// A pending action suggestion from `transcript`, assigned to `assignee_ids`.
+async fn seed_suggestion(
+    db: &DatabaseConnection,
+    session_id: Id,
+    transcript: &Transcript,
+    assignee_ids: Vec<Id>,
+) -> Id {
+    let now = Utc::now();
+    let placeholder = DateTime::<Utc>::UNIX_EPOCH.fixed_offset();
+    let proposal = ActionProposal {
+        action: ActionWithAssignees {
+            action: actions::Model {
+                id: Id::nil(),
+                coaching_session_id: session_id,
+                goal_id: None,
+                user_id: Id::nil(),
+                body: Some(format!("Send the {SEARCH_WORD} plan")),
+                due_by: None,
+                status: Status::NotStarted,
+                status_changed_at: placeholder,
+                created_at: placeholder,
+                updated_at: placeholder,
+            },
+            assignee_ids,
+        },
+        due_phrase: None,
+    };
+    transcript_suggestion::ActiveModel {
+        id: Set(Id::new_v4()),
+        coaching_session_id: Set(session_id),
+        transcript_analysis_id: Set(transcript.analysis),
+        target: Set(Target::Action),
+        proposal: Set(serde_json::to_value(proposal).expect("the proposal serializes")),
+        segment_id: Set(transcript.coachee_segment),
+        quote: Set(format!("send the {SEARCH_WORD} plan")),
+        duplicate_of_id: Set(None),
+        status: Set(SuggestionStatus::Pending),
+        resolved_by: Set(None),
+        resolved_at: Set(None),
+        created_entity_id: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the suggestion is seeded")
     .id
 }

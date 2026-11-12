@@ -12,3 +12,4 @@ mod goal_and_topic_rows;
 mod other_rows;
 mod relationship_rows;
 mod session_rows;
+mod transcript_rows;
