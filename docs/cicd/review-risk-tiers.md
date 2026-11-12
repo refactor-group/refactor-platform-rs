@@ -24,7 +24,8 @@ When a high-tier change has no second person available, say so in the PR's Risk 
 
 `.github/CODEOWNERS` lists the paths. The reasons:
 
-- **Authentication and authorization**: `web/src/extractors/`, `web/src/protect/`, `web/src/middleware/`, `web/src/router.rs`, `domain/src/jwt/`, OAuth and password reset code, `meeting-auth/`. A mistake here exposes private coaching data.
+- **Authentication and authorization**: `web/src/extractors/`, `web/src/protect/`, `web/src/middleware/`, `web/src/router.rs`, `domain/src/jwt/`, OAuth and password reset code, `meeting-auth/`, and the collab server's `auth.rs` and `rest.rs`. A mistake here exposes private coaching data.
+- **Real-time delivery**: `web/src/sse/`, `sse/`. These decide which user receives which event.
 - **Migrations**: `migration/`. A revert does not undo a schema change.
 - **CI, deploy, and runtime**: `.github/`, `Dockerfile`, `entrypoint.sh`, compose files, `nginx/`. These run with production secrets or decide what reaches production.
 - **Agent and reviewer instructions**: `.claude/`, `AGENTS.md`, `REVIEW.md`. Weakening these weakens every later review.

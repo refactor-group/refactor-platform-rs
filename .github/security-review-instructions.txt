@@ -21,6 +21,11 @@ Transcripts sent to a language model (domain/src/transcript_suggestion/):
 - A transcript from one coaching relationship must never enter a prompt, context, or response for another.
 - Transcript text and provider API keys must not be logged. A change to which provider or model receives transcript text must be visible in the PR description.
 
+Throttling (web/src/middleware/throttle.rs, docs/architecture/throttling.md):
+- Unauthenticated and abuse-prone routes carry a per-IP throttle, and password reset and user lookup also limit per resource. The two defend different attacks, so one does not replace the other.
+- A route moved out of a throttled group, a loosened policy, a new unauthenticated route with no throttle, or a limit keyed on something the attacker can vary per request is a finding.
+- Do not report the mere absence of rate limiting on authenticated routes.
+
 Also check:
 - Secrets, tokens, transcript text, or note contents written to logs or returned in error responses.
 - Webhook handlers that act before verifying the signature.

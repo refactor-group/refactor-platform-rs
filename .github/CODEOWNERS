@@ -25,6 +25,11 @@
 /domain/src/password_reset.rs       @jhodapp
 /meeting-auth/                      @jhodapp
 /docs-collab-server/src/auth.rs     @jhodapp
+/docs-collab-server/src/rest.rs     @jhodapp
+
+# Real-time delivery: who receives which event
+/web/src/sse/                       @jhodapp
+/sse/                               @jhodapp
 
 # Agent and reviewer instructions
 /.claude/                           @jhodapp

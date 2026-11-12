@@ -212,8 +212,9 @@ jobs:
             4. Verify. For each candidate, launch a separate subagent that
                tries to disprove it by tracing the real code path. Keep only
                findings with a concrete exploit: who the attacker is, what they
-               send, and what they gain. Drop denial of service, rate limiting,
-               and theoretical issues with no demonstrated path.
+               send, and what they gain. Drop generic denial of service and
+               theoretical issues with no demonstrated path. A change that
+               removes or weakens existing throttling is a finding, not noise.
 
             5. Post. One inline comment per confirmed finding using
                `mcp__github_inline_comment__create_inline_comment` with
