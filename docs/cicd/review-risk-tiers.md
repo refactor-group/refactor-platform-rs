@@ -37,6 +37,10 @@ Also high, wherever the code lives:
 - A backfill, data repair, or migration that drops or rewrites existing rows.
 - An upgrade of a dependency that handles auth, crypto, sessions, or the database.
 
+## Asking for a review
+
+Claude reviews a pull request once, when it opens ready for review or leaves draft. Later pushes are not reviewed on their own. To ask for another round, or to review a draft, add the `claude-review` label; the workflow removes it when the run starts, so asking again is adding it again. A later round covers only what changed since the last one.
+
 ## After merge
 
 The author watches the deploy and owns the fix. When something gets through, name the layer that should have caught it in the fix PR's description, then fix that layer: a test, a lint, a line in `REVIEW.md`, or a tier change here.

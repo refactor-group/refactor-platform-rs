@@ -3,11 +3,14 @@ name: Claude Review
 # pull_request_target runs this file as it exists on main, so a PR cannot
 # rewrite the workflow to reach the token. The token itself lives in the
 # `claude-review` environment, which only main may use.
+#
+# A PR is reviewed once, when it opens ready or leaves draft. Later pushes are
+# not reviewed; add the `claude-review` label to ask for another round.
 on:
   pull_request_target:
     branches:
       - main
-    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    types: [opened, ready_for_review, labeled]
 
 concurrency:
   # An unrelated label must not cancel a review that is running.
@@ -30,8 +33,7 @@ env:
   REVIEW_SETTINGS: '{"disableAllHooks": true, "claudeMdExcludes": ["**/pr-head/**"]}'
 
 jobs:
-  # Drafts are skipped to save subscription quota; add the `claude-review`
-  # label to review one anyway. Fork PRs must never run: under
+  # The label reviews a draft too. Fork PRs must never run: under
   # pull_request_target they would otherwise receive the token.
   gate:
     name: Should review
@@ -41,12 +43,18 @@ jobs:
       github.actor != 'dependabot[bot]' &&
       (
         (github.event.action == 'labeled' && github.event.label.name == 'claude-review') ||
-        (github.event.action != 'labeled' &&
-          (!github.event.pull_request.draft ||
-            contains(github.event.pull_request.labels.*.name, 'claude-review')))
+        (github.event.action != 'labeled' && !github.event.pull_request.draft)
       )
     steps:
       - run: echo "Reviewing PR ${{ github.event.pull_request.number }}"
+
+      # With the label gone, asking again is one click: add it back.
+      - name: Clear the request label
+        if: github.event.action == 'labeled'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X DELETE "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/claude-review"
 
   code-review:
     name: Code Review
