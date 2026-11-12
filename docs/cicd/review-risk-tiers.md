@@ -16,9 +16,9 @@ How much human attention a pull request needs before it merges. Most changes her
 |---|---|---|
 | **Low** | Docs, comments, release notes, tests and test tooling with no production code. | CI, AI review, and security review green with every thread resolved. The author confirms that and need not read every line. |
 | **Medium** | Ordinary product changes: controllers, domain logic, queries, additive migrations. | Low, plus the author reads the whole diff and the evidence (test output, review findings) and can say what the checks would not catch. |
-| **High** | Any path in `.github/CODEOWNERS`, anything listed under "Always high" below. | Medium, plus a deep local review (`/code-review high` and `/security-review`), a filled-in "How to Revert", and a second person: the code owner, or another maintainer when the author is the code owner. |
+| **High** | Any path in `.github/CODEOWNERS`, anything listed under "Always high" below. | Medium, plus a deep local review (`/code-review high` and `/security-review`) and a filled-in "How to Revert". The author reads every line, not just the diff summary. When the author is not the code owner, the code owner also reads and approves it. |
 
-When a high-tier change has no second person available, say so in the PR's Risk section and attach a manual test result. That is an exception to record, not a routine path.
+A code owner's own high-tier change needs no second person. The deep review and the revert plan carry that weight, so do not skip either.
 
 ## Always high
 
