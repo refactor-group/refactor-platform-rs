@@ -65,7 +65,7 @@ async fn a_relationship_filter_never_widens_a_members_search() {
         let mut app = TestApp::new().await;
         let path = format!(
             "/search?q=kumquat&types=actions&coaching_relationship_id={}",
-            app.world.r1
+            app.fixture.r1
         );
         assert_no_hits(&mut app, &[Caller::Member], &path).await;
     })

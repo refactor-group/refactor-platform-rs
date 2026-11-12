@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{Method, StatusCode};
-use domain::test_utils::sqlite::access_world::{
+use domain::test_utils::sqlite::fixture::{
     seed_active_recording, seed_content_free_session, seed_unscanned_transcription,
 };
 use domain::test_utils::sqlite::{within_time_limit, Caller};
@@ -80,7 +80,7 @@ async fn every_caller_opens_an_event_stream() {
 async fn both_participants_hear_of_an_action_assigned_to_the_coach() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (s1, coach) = (app.world.s1, app.world.user(Caller::Coach));
+        let (s1, coach) = (app.fixture.s1, app.fixture.user(Caller::Coach));
         let mut listeners = participants_listening(&mut app).await;
 
         let reply = app
@@ -116,8 +116,8 @@ async fn both_participants_hear_of_an_action_assigned_to_the_coach() {
 async fn a_removed_coachee_hears_nothing_of_their_relationship() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
-        let (r3, s3, sr3_first) = (world.r3, world.s3, world.sr3_sessions[0]);
+        let fixture = &app.fixture;
+        let (r3, s3, sr3_first) = (fixture.r3, fixture.s3, fixture.sr3_sessions[0]);
         let mut coach = app.listen(Caller::Coach).await;
         let mut removed = app.listen(Caller::Removed).await;
 
@@ -182,7 +182,7 @@ async fn a_removed_coachee_hears_nothing_of_their_relationship() {
 async fn both_participants_hear_of_a_goal_change() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let r1 = app.world.r1;
+        let r1 = app.fixture.r1;
         let mut listeners = participants_listening(&mut app).await;
 
         let reply = app
@@ -219,11 +219,11 @@ async fn both_participants_hear_of_a_goal_change() {
 async fn both_participants_hear_that_suggestions_changed() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
+        let fixture = &app.fixture;
         let (r1, coach, coachee) = (
-            world.r1,
-            world.user(Caller::Coach),
-            world.user(Caller::Coachee),
+            fixture.r1,
+            fixture.user(Caller::Coach),
+            fixture.user(Caller::Coachee),
         );
         let session = seed_content_free_session(app.db(), r1).await;
         seed_unscanned_transcription(app.db(), session, coach, coachee).await;
@@ -256,7 +256,7 @@ async fn both_participants_hear_that_suggestions_changed() {
 async fn both_participants_hear_of_a_recording_update() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s1 = app.world.s1;
+        let s1 = app.fixture.s1;
         let bot_id = seed_active_recording(app.db(), s1).await;
         let mut listeners = participants_listening(&mut app).await;
 

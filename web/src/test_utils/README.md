@@ -9,7 +9,7 @@ the module it covers: mock tests in `<module>_tests.rs`, SQLite tests in
 
 | Module | Provides | For |
 |---|---|---|
-| `sqlite` | `TestApp` (the production route table on in-memory SQLite, seeded with `domain`'s `seed_access_world`, signed in per `Caller`, with local Tiptap, Resend, AssemblyAI and object store stand-ins), `Reply`, `Listener`, `NON_PARTICIPANTS`, the id helpers (`ids`, `ids_in`, `ids_by_key`, `field_ids`) and the assertions more than one test file uses | route tests in `*_sqlite_tests.rs` |
+| `sqlite` | `TestApp` (the production route table on in-memory SQLite, seeded with `domain`'s `seed_fixture`, signed in per `Caller`, with local Tiptap, Resend, AssemblyAI and object store stand-ins), `Reply`, `Listener`, `NON_PARTICIPANTS`, the id helpers (`ids`, `ids_in`, `ids_by_key`, `field_ids`) and the assertions more than one test file uses | route tests in `*_sqlite_tests.rs` |
 
 ## Which kind of test
 
@@ -25,7 +25,7 @@ cannot prove: `docs/test-plans/sqlite_integration_testing.md`.
 
 ## The people and the database
 
-Each `TestApp` starts a fresh in-memory SQLite database holding one coaching world: two
+Each `TestApp` starts a fresh in-memory SQLite database holding the fixture: two
 organizations, three coaching relationships, their sessions, a series, actions, goals, notes,
 agreements, topics, a transcript with suggested actions and a note image. A test signs in as
 one of these people (`Caller`):
@@ -42,7 +42,7 @@ one of these people (`Caller`):
 | Removed | Was the coach's coachee, then was removed from the organization |
 
 So "everyone else is refused" means each person who shouldn't reach the record is tried
-in turn. `domain/src/test_utils/sqlite/access_world.rs` seeds this world.
+in turn. `domain/src/test_utils/sqlite/fixture.rs` seeds the fixture.
 
 Each route test names the access-matrix row it checks in a one-line doc comment
 (`/// ACT-32`); `docs/test-plans/relationship_access_manual_testing.md`, section 6, maps

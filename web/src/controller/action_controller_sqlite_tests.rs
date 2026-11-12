@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use axum::http::{Method, StatusCode};
 use domain::status::Status;
-use domain::test_utils::sqlite::access_world::{action_assignees, action_state, session_content};
+use domain::test_utils::sqlite::read_back::{action_assignees, action_state, session_content};
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 use serde_json::{json, Value};
@@ -43,10 +43,10 @@ fn assert_assignee_not_a_member(app: &TestApp, body: &Value) {
     assert_eq!(details["reason"], "assignee_not_a_member", "{body}");
     assert_eq!(
         details["user_id"],
-        json!(app.world.user(Caller::Removed)),
+        json!(app.fixture.user(Caller::Removed)),
         "{body}"
     );
-    assert_eq!(details["organization_id"], json!(app.world.o1), "{body}");
+    assert_eq!(details["organization_id"], json!(app.fixture.o1), "{body}");
 }
 
 /// ACT-14
@@ -54,9 +54,9 @@ fn assert_assignee_not_a_member(app: &TestApp, body: &Value) {
 async fn a_coach_lists_the_sessions_actions() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
-        let path = format!("/actions?coaching_session_id={}", world.s1);
-        let expected = ids([world.a1, world.a2, world.a3]);
+        let fixture = &app.fixture;
+        let path = format!("/actions?coaching_session_id={}", fixture.s1);
+        let expected = ids([fixture.a1, fixture.a2, fixture.a3]);
 
         assert_eq!(
             app.expect(Caller::Coach, Method::GET, &path, None).await,
@@ -71,9 +71,9 @@ async fn a_coach_lists_the_sessions_actions() {
 async fn a_coachee_lists_every_action_of_the_session() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
-        let path = format!("/actions?coaching_session_id={}", world.s1);
-        let expected = ids([world.a1, world.a2, world.a3]);
+        let fixture = &app.fixture;
+        let path = format!("/actions?coaching_session_id={}", fixture.s1);
+        let expected = ids([fixture.a1, fixture.a2, fixture.a3]);
 
         assert_eq!(
             app.expect(Caller::Coachee, Method::GET, &path, None).await,
@@ -88,7 +88,7 @@ async fn a_coachee_lists_every_action_of_the_session() {
 async fn non_participants_cannot_list_the_sessions_actions() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let path = format!("/actions?coaching_session_id={}", app.world.s1);
+        let path = format!("/actions?coaching_session_id={}", app.fixture.s1);
 
         for caller in NON_PARTICIPANTS {
             let (status, _) = app.expect(caller, Method::GET, &path, None).await;
@@ -103,7 +103,7 @@ async fn non_participants_cannot_list_the_sessions_actions() {
 async fn a_removed_coachee_cannot_list_their_sessions_actions() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let path = format!("/actions?coaching_session_id={}", app.world.s3);
+        let path = format!("/actions?coaching_session_id={}", app.fixture.s3);
 
         let (status, _) = app.expect(Caller::Removed, Method::GET, &path, None).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
@@ -116,7 +116,7 @@ async fn a_removed_coachee_cannot_list_their_sessions_actions() {
 async fn participants_read_the_action() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let a1 = app.world.a1;
+        let a1 = app.fixture.a1;
 
         for caller in [Caller::Coach, Caller::Coachee] {
             assert_eq!(
@@ -135,8 +135,8 @@ async fn participants_read_the_action() {
 async fn participants_create_an_action_assigned_to_the_coachee() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s1 = app.world.s1;
-        let coachee = app.world.user(Caller::Coachee);
+        let s1 = app.fixture.s1;
+        let coachee = app.fixture.user(Caller::Coachee);
 
         for caller in [Caller::Coach, Caller::Coachee] {
             let before = session_content(app.db(), s1).await;
@@ -175,7 +175,7 @@ async fn participants_create_an_action_assigned_to_the_coachee() {
 async fn participants_update_the_action() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (s1, a1) = (app.world.s1, app.world.a1);
+        let (s1, a1) = (app.fixture.s1, app.fixture.a1);
 
         for (caller, text) in [(Caller::Coach, "By coach"), (Caller::Coachee, "By coachee")] {
             let body = json!({
@@ -205,7 +205,7 @@ async fn participants_update_the_action_status() {
     within_time_limit(async {
         for caller in [Caller::Coach, Caller::Coachee] {
             let mut app = TestApp::new().await;
-            let a1 = app.world.a1;
+            let a1 = app.fixture.a1;
 
             assert_eq!(
                 app.expect(
@@ -231,7 +231,7 @@ async fn participants_delete_the_action() {
     within_time_limit(async {
         for caller in [Caller::Coach, Caller::Coachee] {
             let mut app = TestApp::new().await;
-            let a1 = app.world.a1;
+            let a1 = app.fixture.a1;
 
             let reply = app
                 .send(caller, Method::DELETE, &format!("/actions/{a1}"), None)
@@ -250,7 +250,7 @@ async fn participants_delete_the_action() {
 async fn non_participants_cannot_read_the_action() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let a1 = app.world.a1;
+        let a1 = app.fixture.a1;
 
         for caller in NON_PARTICIPANTS {
             let (status, _) = app
@@ -276,8 +276,8 @@ async fn non_participants_cannot_read_the_action() {
 async fn non_participants_cannot_create_an_action_in_the_session() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s1 = app.world.s1;
-        let coachee = app.world.user(Caller::Coachee);
+        let s1 = app.fixture.s1;
+        let coachee = app.fixture.user(Caller::Coachee);
         let before = session_content(app.db(), s1).await;
         let emails = app.expect_emails(0).await;
 
@@ -312,8 +312,8 @@ async fn non_participants_cannot_create_an_action_in_the_session() {
 async fn non_participants_cannot_change_the_action() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (s1, a1) = (app.world.s1, app.world.a1);
-        let coach = app.world.user(Caller::Coach);
+        let (s1, a1) = (app.fixture.s1, app.fixture.a1);
+        let coach = app.fixture.user(Caller::Coach);
         let before = action_snapshot(&app, a1).await;
 
         for caller in NON_PARTICIPANTS {
@@ -348,8 +348,8 @@ async fn non_participants_cannot_change_the_action() {
 async fn a_removed_coachee_cannot_reach_their_sessions_actions() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (s3, a6) = (app.world.s3, app.world.a6);
-        let removed = app.world.user(Caller::Removed);
+        let (s3, a6) = (app.fixture.s3, app.fixture.a6);
+        let removed = app.fixture.user(Caller::Removed);
         let before = action_snapshot(&app, a6).await;
         let content = session_content(app.db(), s3).await;
         let path = format!("/actions/{a6}");
@@ -376,8 +376,8 @@ async fn a_removed_coachee_cannot_reach_their_sessions_actions() {
 async fn assignees_outside_the_relationship_are_refused() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (s1, a3) = (app.world.s1, app.world.a3);
-        let member = app.world.user(Caller::Member);
+        let (s1, a3) = (app.fixture.s1, app.fixture.a3);
+        let member = app.fixture.user(Caller::Member);
         let content = session_content(app.db(), s1).await;
         let a3_before = action_snapshot(&app, a3).await;
         let emails = app.expect_emails(0).await;
@@ -413,8 +413,8 @@ async fn assignees_outside_the_relationship_are_refused() {
 async fn assigning_a_coachee_who_left_is_refused() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s3 = app.world.s3;
-        let removed = app.world.user(Caller::Removed);
+        let s3 = app.fixture.s3;
+        let removed = app.fixture.user(Caller::Removed);
         let content = session_content(app.db(), s3).await;
         let emails = app.expect_emails(0).await;
 
@@ -440,8 +440,8 @@ async fn assigning_a_coachee_who_left_is_refused() {
 async fn a_coach_edits_an_action_still_assigned_to_a_coachee_who_left() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (s3, a6) = (app.world.s3, app.world.a6);
-        let removed = app.world.user(Caller::Removed);
+        let (s3, a6) = (app.fixture.s3, app.fixture.a6);
+        let removed = app.fixture.user(Caller::Removed);
         let emails = app.expect_emails(0).await;
         let body = json!({
             "coaching_session_id": s3,
@@ -478,8 +478,8 @@ async fn a_coach_edits_an_action_still_assigned_to_a_coachee_who_left() {
 async fn adding_a_coachee_who_left_as_an_assignee_is_refused() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (s3, a7) = (app.world.s3, app.world.a7);
-        let removed = app.world.user(Caller::Removed);
+        let (s3, a7) = (app.fixture.s3, app.fixture.a7);
+        let removed = app.fixture.user(Caller::Removed);
         let before = action_snapshot(&app, a7).await;
         let emails = app.expect_emails(0).await;
 
@@ -505,7 +505,7 @@ async fn adding_a_coachee_who_left_as_an_assignee_is_refused() {
 async fn a_goal_from_another_relationship_is_refused() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (s1, g2) = (app.world.s1, app.world.g2);
+        let (s1, g2) = (app.fixture.s1, app.fixture.g2);
         let content = session_content(app.db(), s1).await;
         let mut body = action(s1, &[]);
         body["goal_id"] = json!(g2);

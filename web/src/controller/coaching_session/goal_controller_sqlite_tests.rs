@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use axum::http::{Method, StatusCode};
-use domain::test_utils::sqlite::access_world::session_goals;
+use domain::test_utils::sqlite::read_back::session_goals;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 use serde_json::json;
@@ -42,8 +42,8 @@ async fn batch_goals(
 async fn participants_list_the_sessions_goals() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let path = format!("/coaching_sessions/{}/goals", app.world.s1);
-        let expected = ids([app.world.g1]);
+        let path = format!("/coaching_sessions/{}/goals", app.fixture.s1);
+        let expected = ids([app.fixture.g1]);
 
         for caller in [Caller::Coach, Caller::Coachee] {
             assert_eq!(
@@ -61,7 +61,7 @@ async fn participants_list_the_sessions_goals() {
 async fn non_participants_cannot_list_the_sessions_goals() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let path = format!("/coaching_sessions/{}/goals", app.world.s1);
+        let path = format!("/coaching_sessions/{}/goals", app.fixture.s1);
 
         for caller in NON_PARTICIPANTS {
             let (status, _) = app.expect(caller, Method::GET, &path, None).await;
@@ -77,7 +77,7 @@ async fn participants_link_a_goal_to_another_session_of_the_relationship() {
     within_time_limit(async {
         for caller in [Caller::Coach, Caller::Coachee] {
             let mut app = TestApp::new().await;
-            let (session, g1) = (app.world.sr1_sessions[0], app.world.g1);
+            let (session, g1) = (app.fixture.sr1_sessions[0], app.fixture.g1);
             assert_eq!(session_goals(app.db(), session).await, BTreeSet::new());
 
             let reply = app
@@ -107,7 +107,7 @@ async fn participants_unlink_a_goal_from_the_session() {
     within_time_limit(async {
         for caller in [Caller::Coach, Caller::Coachee] {
             let mut app = TestApp::new().await;
-            let (s1, g1) = (app.world.s1, app.world.g1);
+            let (s1, g1) = (app.fixture.s1, app.fixture.g1);
 
             let reply = app
                 .send(
@@ -135,12 +135,12 @@ async fn participants_unlink_a_goal_from_the_session() {
 async fn participants_read_goals_per_session_of_the_relationship() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
-        let query = format!("coaching_relationship_id={}", world.r1);
+        let fixture = &app.fixture;
+        let query = format!("coaching_relationship_id={}", fixture.r1);
         let expected = BTreeMap::from([
-            (world.s1, ids([world.g1])),
-            (world.sr1_sessions[0], BTreeSet::new()),
-            (world.sr1_sessions[1], BTreeSet::new()),
+            (fixture.s1, ids([fixture.g1])),
+            (fixture.sr1_sessions[0], BTreeSet::new()),
+            (fixture.sr1_sessions[1], BTreeSet::new()),
         ]);
 
         for caller in [Caller::Coach, Caller::Coachee] {
@@ -159,7 +159,7 @@ async fn participants_read_goals_per_session_of_the_relationship() {
 async fn non_participants_cannot_read_goals_per_session_of_the_relationship() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let query = format!("coaching_relationship_id={}", app.world.r1);
+        let query = format!("coaching_relationship_id={}", app.fixture.r1);
 
         for caller in NON_PARTICIPANTS {
             let (status, _) = batch_goals(&mut app, caller, &query).await;
@@ -174,7 +174,7 @@ async fn non_participants_cannot_read_goals_per_session_of_the_relationship() {
 async fn every_batch_session_must_be_the_callers() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (s1, s2, g1) = (app.world.s1, app.world.s2, app.world.g1);
+        let (s1, s2, g1) = (app.fixture.s1, app.fixture.s2, app.fixture.g1);
 
         for query in [
             format!("coaching_session_ids={s1},{s2}"),
@@ -202,7 +202,7 @@ async fn every_batch_session_must_be_the_callers() {
 async fn non_participants_cannot_batch_read_the_sessions_goals() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let query = format!("coaching_session_ids={}", app.world.s1);
+        let query = format!("coaching_session_ids={}", app.fixture.s1);
 
         for caller in NON_PARTICIPANTS {
             let (status, _) = batch_goals(&mut app, caller, &query).await;
@@ -217,7 +217,7 @@ async fn non_participants_cannot_batch_read_the_sessions_goals() {
 async fn non_participants_cannot_change_the_sessions_goal_links() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (s1, s3, g1) = (app.world.s1, app.world.s3, app.world.g1);
+        let (s1, s3, g1) = (app.fixture.s1, app.fixture.s3, app.fixture.g1);
         let s1_links = session_goals(app.db(), s1).await;
         let s3_links = session_goals(app.db(), s3).await;
 
@@ -253,7 +253,7 @@ async fn non_participants_cannot_change_the_sessions_goal_links() {
 async fn linking_a_goal_from_another_relationship_is_refused() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (s1, g2) = (app.world.s1, app.world.g2);
+        let (s1, g2) = (app.fixture.s1, app.fixture.g2);
         let links = session_goals(app.db(), s1).await;
 
         let (status, _) = app

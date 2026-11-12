@@ -9,9 +9,11 @@
 use std::collections::BTreeSet;
 
 use axum::http::{Method, StatusCode};
-use domain::test_utils::sqlite::access_world::{
-    action_assignees, seed_content_free_session, seed_unscanned_transcription, session_content,
-    suggestion_outcome, transcription_scanned,
+use domain::test_utils::sqlite::fixture::{
+    seed_content_free_session, seed_unscanned_transcription,
+};
+use domain::test_utils::sqlite::read_back::{
+    action_assignees, session_content, suggestion_outcome, transcription_scanned,
 };
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::transcript_suggestion::Status;
@@ -24,18 +26,18 @@ use crate::test_utils::sqlite::{ids, TestApp, NON_PARTICIPANTS};
 fn suggestions(app: &TestApp, suffix: &str) -> String {
     format!(
         "/coaching_sessions/{}/transcript_suggestions{suffix}",
-        app.world.s1
+        app.fixture.s1
     )
 }
 
 /// The suggestion statuses and S1's content, to check a refusal changed nothing.
 async fn suggestion_state(app: &TestApp) -> (Vec<(Status, Option<Id>)>, BTreeSet<Id>) {
-    let world = &app.world;
+    let fixture = &app.fixture;
     let mut outcomes = Vec::new();
-    for suggestion in [world.sg1, world.sg2, world.sg3] {
+    for suggestion in [fixture.sg1, fixture.sg2, fixture.sg3] {
         outcomes.push(suggestion_outcome(app.db(), suggestion).await);
     }
-    (outcomes, session_content(app.db(), world.s1).await)
+    (outcomes, session_content(app.db(), fixture.s1).await)
 }
 
 /// TRN-07
@@ -44,7 +46,7 @@ async fn participants_list_the_sessions_suggestions() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
         let path = suggestions(&app, "");
-        let expected = ids([app.world.sg1, app.world.sg2]);
+        let expected = ids([app.fixture.sg1, app.fixture.sg2]);
 
         for caller in [Caller::Coach, Caller::Coachee] {
             assert_eq!(
@@ -78,11 +80,11 @@ async fn participants_read_and_start_a_scan() {
     within_time_limit(async {
         for caller in [Caller::Coach, Caller::Coachee] {
             let mut app = TestApp::new().await;
-            let world = &app.world;
+            let fixture = &app.fixture;
             let (r1, coach, coachee) = (
-                world.r1,
-                world.user(Caller::Coach),
-                world.user(Caller::Coachee),
+                fixture.r1,
+                fixture.user(Caller::Coach),
+                fixture.user(Caller::Coachee),
             );
             let scan = suggestions(&app, "/scan");
 
@@ -121,11 +123,11 @@ async fn participants_read_and_start_a_scan() {
 async fn non_participants_cannot_read_or_start_a_scan() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
+        let fixture = &app.fixture;
         let (s1, coach, coachee) = (
-            world.s1,
-            world.user(Caller::Coach),
-            world.user(Caller::Coachee),
+            fixture.s1,
+            fixture.user(Caller::Coach),
+            fixture.user(Caller::Coachee),
         );
         // A scannable transcript of S1, so a refusal is all that stops a scan.
         let transcription = seed_unscanned_transcription(app.db(), s1, coach, coachee).await;
@@ -147,8 +149,8 @@ async fn non_participants_cannot_read_or_start_a_scan() {
 async fn a_coach_accepts_a_coach_only_suggestion() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
-        let (s1, sg1, coach) = (world.s1, world.sg1, world.user(Caller::Coach));
+        let fixture = &app.fixture;
+        let (s1, sg1, coach) = (fixture.s1, fixture.sg1, fixture.user(Caller::Coach));
         let before = session_content(app.db(), s1).await;
 
         let reply = app
@@ -182,7 +184,7 @@ async fn a_coach_accepts_a_coach_only_suggestion() {
 async fn a_coachee_cannot_accept_a_coach_only_suggestion() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (s1, sg1) = (app.world.s1, app.world.sg1);
+        let (s1, sg1) = (app.fixture.s1, app.fixture.sg1);
         let before = session_content(app.db(), s1).await;
 
         let reply = app
@@ -209,12 +211,12 @@ async fn a_coachee_cannot_accept_a_coach_only_suggestion() {
 async fn a_coachee_accepts_their_own_suggestion() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
+        let fixture = &app.fixture;
         let (s1, sg2, coach, coachee) = (
-            world.s1,
-            world.sg2,
-            world.user(Caller::Coach),
-            world.user(Caller::Coachee),
+            fixture.s1,
+            fixture.sg2,
+            fixture.user(Caller::Coach),
+            fixture.user(Caller::Coachee),
         );
         let path = suggestions(&app, &format!("/{sg2}/accept"));
         let before = session_content(app.db(), s1).await;
@@ -265,7 +267,7 @@ async fn a_coachee_accepts_their_own_suggestion() {
 async fn non_participants_cannot_accept_a_suggestion() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let path = suggestions(&app, &format!("/{}/accept", app.world.sg1));
+        let path = suggestions(&app, &format!("/{}/accept", app.fixture.sg1));
         let before = suggestion_state(&app).await;
 
         for caller in NON_PARTICIPANTS {
@@ -282,7 +284,7 @@ async fn non_participants_cannot_accept_a_suggestion() {
 async fn a_coach_dismisses_and_restores_a_coach_only_suggestion() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let sg1 = app.world.sg1;
+        let sg1 = app.fixture.sg1;
 
         for (verb, status) in [("dismiss", Status::Dismissed), ("restore", Status::Pending)] {
             let path = suggestions(&app, &format!("/{sg1}/{verb}"));
@@ -304,7 +306,7 @@ async fn a_coach_dismisses_and_restores_a_coach_only_suggestion() {
 async fn a_coachee_cannot_dismiss_or_restore_a_coach_only_suggestion() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (sg1, sg2) = (app.world.sg1, app.world.sg2);
+        let (sg1, sg2) = (app.fixture.sg1, app.fixture.sg2);
         let before = suggestion_state(&app).await;
 
         for verb in ["dismiss", "restore"] {
@@ -331,7 +333,7 @@ async fn a_coachee_cannot_dismiss_or_restore_a_coach_only_suggestion() {
 async fn non_participants_cannot_dismiss_or_restore_a_suggestion() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let sg1 = app.world.sg1;
+        let sg1 = app.fixture.sg1;
         let before = suggestion_state(&app).await;
 
         for caller in NON_PARTICIPANTS {
@@ -351,7 +353,7 @@ async fn non_participants_cannot_dismiss_or_restore_a_suggestion() {
 async fn accepting_for_a_coachee_who_left_is_refused() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (s3, sg3) = (app.world.s3, app.world.sg3);
+        let (s3, sg3) = (app.fixture.s3, app.fixture.sg3);
         let before = session_content(app.db(), s3).await;
         let emails = app.expect_emails(0).await;
 

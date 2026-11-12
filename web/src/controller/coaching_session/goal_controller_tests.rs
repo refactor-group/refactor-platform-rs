@@ -13,7 +13,7 @@ use serde_json::json;
 
 use super::create;
 use crate::extractors::relationship_access_test_support::{
-    self as support, assert_refusal, json_body, Caller, World,
+    self as support, assert_refusal, json_body, Caller, Fixture,
 };
 use crate::AppState;
 
@@ -24,7 +24,7 @@ fn routes() -> Router<AppState> {
     )
 }
 
-fn goal_in(w: &World, coaching_relationship_id: Id) -> goals::Model {
+fn goal_in(w: &Fixture, coaching_relationship_id: Id) -> goals::Model {
     let now = Utc::now();
     goals::Model {
         id: Id::new_v4(),
@@ -42,7 +42,7 @@ fn goal_in(w: &World, coaching_relationship_id: Id) -> goals::Model {
     }
 }
 
-fn link(w: &World, goal_id: Id) -> coaching_sessions_goals::Model {
+fn link(w: &Fixture, goal_id: Id) -> coaching_sessions_goals::Model {
     let now = Utc::now().fixed_offset();
     coaching_sessions_goals::Model {
         id: Id::new_v4(),
@@ -54,14 +54,14 @@ fn link(w: &World, goal_id: Id) -> coaching_sessions_goals::Model {
 }
 
 /// The participants who still belong to the relationship's organization.
-fn members(w: &World) -> Vec<BTreeMap<String, Value>> {
+fn members(w: &Fixture) -> Vec<BTreeMap<String, Value>> {
     [w.coach.id, w.coachee.id]
         .into_iter()
         .map(|user_id| BTreeMap::from([("user_id".to_string(), user_id.into())]))
         .collect()
 }
 
-fn goals_uri(w: &World) -> String {
+fn goals_uri(w: &Fixture) -> String {
     format!("/coaching_sessions/{}/goals", w.session.id)
 }
 
@@ -82,7 +82,7 @@ async fn assert_refused(
 
 #[tokio::test]
 async fn goal_13_coach_links_a_goal_of_the_relationship() {
-    let w = support::world();
+    let w = support::fixture();
     let goal = goal_in(&w, w.relationship.id);
     let link = link(&w, goal.id);
     let db = Arc::new(
@@ -113,7 +113,7 @@ async fn goal_13_coach_links_a_goal_of_the_relationship() {
 
 #[tokio::test]
 async fn goal_27b_link_of_an_unknown_goal_is_not_found() {
-    let w = support::world();
+    let w = support::fixture();
     assert_refused(
         "GOAL-27b",
         w.reaching_session(Caller::Coach)

@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 
 use axum::http::{Method, StatusCode};
-use domain::test_utils::sqlite::access_world::{
+use domain::test_utils::sqlite::read_back::{
     holds_role, relationships_between, user_exists, user_with_email,
 };
 use domain::test_utils::sqlite::{within_time_limit, Caller};
@@ -40,7 +40,7 @@ async fn admins_add_a_member_with_a_coach() {
     within_time_limit(async {
         for caller in [Caller::Admin, Caller::Super] {
             let mut app = TestApp::new().await;
-            let (o1, coach) = (app.world.o1, app.world.user(Caller::Coach));
+            let (o1, coach) = (app.fixture.o1, app.fixture.user(Caller::Coach));
 
             let reply = app
                 .send(
@@ -73,7 +73,7 @@ async fn admins_add_a_member_with_a_coach() {
 async fn non_admins_cannot_add_a_member() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (o1, coach) = (app.world.o1, app.world.user(Caller::Coach));
+        let (o1, coach) = (app.fixture.o1, app.fixture.user(Caller::Coach));
 
         for caller in [
             Caller::Coach,
@@ -106,7 +106,7 @@ async fn admins_delete_a_member_without_coaching_history() {
     within_time_limit(async {
         for caller in [Caller::Admin, Caller::Super] {
             let mut app = TestApp::new().await;
-            let (o1, member) = (app.world.o1, app.world.user(Caller::Member));
+            let (o1, member) = (app.fixture.o1, app.fixture.user(Caller::Member));
 
             let reply = app
                 .send(
@@ -130,7 +130,7 @@ async fn admins_delete_a_member_without_coaching_history() {
 async fn an_admin_cannot_delete_themselves() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (o1, admin) = (app.world.o1, app.world.user(Caller::Admin));
+        let (o1, admin) = (app.fixture.o1, app.fixture.user(Caller::Admin));
 
         let (status, _) = app
             .expect(
@@ -153,10 +153,13 @@ async fn an_admin_cannot_delete_themselves() {
 async fn deleting_a_member_with_coaching_history_is_refused() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
-        let (o1, coachee) = (world.o1, world.user(Caller::Coachee));
-        let (coach, other_coach) = (world.user(Caller::Coach), world.user(Caller::OtherCoach));
-        let relationships = ids([world.r1, world.r2]);
+        let fixture = &app.fixture;
+        let (o1, coachee) = (fixture.o1, fixture.user(Caller::Coachee));
+        let (coach, other_coach) = (
+            fixture.user(Caller::Coach),
+            fixture.user(Caller::OtherCoach),
+        );
+        let relationships = ids([fixture.r1, fixture.r2]);
 
         for caller in [Caller::Admin, Caller::Super] {
             let reply = app

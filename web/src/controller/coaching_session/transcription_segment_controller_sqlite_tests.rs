@@ -6,7 +6,7 @@
 //! `web/src/test_utils/README.md` describes the people and the database.
 
 use axum::http::{Method, StatusCode};
-use domain::test_utils::sqlite::access_world::transcription_segments;
+use domain::test_utils::sqlite::read_back::transcription_segments;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 
 use crate::test_utils::sqlite::{assert_transcription_reads_refused, TestApp};
@@ -16,7 +16,7 @@ use crate::test_utils::sqlite::{assert_transcription_reads_refused, TestApp};
 async fn participants_read_the_transcriptions_segments() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (s1, tr1) = (app.world.s1, app.world.tr1);
+        let (s1, tr1) = (app.fixture.s1, app.fixture.tr1);
         let path = format!("/coaching_sessions/{s1}/transcriptions/{tr1}/transcription_segments");
         let expected = transcription_segments(app.db(), tr1).await;
         assert_eq!(expected.len(), 2);
@@ -36,7 +36,7 @@ async fn participants_read_the_transcriptions_segments() {
 #[tokio::test]
 async fn non_participants_cannot_read_the_transcriptions_segments() {
     within_time_limit(assert_transcription_reads_refused(|b| {
-        format!("/{}/transcription_segments", b.world.tr1)
+        format!("/{}/transcription_segments", b.fixture.tr1)
     }))
     .await;
 }

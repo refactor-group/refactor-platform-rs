@@ -17,7 +17,7 @@ use crate::test_utils::sqlite::{ids, TestApp};
 /// Asserts `caller`'s own session list is `expected`.
 async fn assert_own_sessions(caller: Caller, expected: impl Fn(&TestApp) -> BTreeSet<Id>) {
     let mut app = TestApp::new().await;
-    let user = app.world.user(caller);
+    let user = app.fixture.user(caller);
     let expected = expected(&app);
 
     assert_eq!(
@@ -37,14 +37,14 @@ async fn assert_own_sessions(caller: Caller, expected: impl Fn(&TestApp) -> BTre
 #[tokio::test]
 async fn a_coach_lists_their_own_sessions() {
     within_time_limit(assert_own_sessions(Caller::Coach, |b| {
-        let world = &b.world;
+        let fixture = &b.fixture;
         ids([
-            world.s1,
-            world.s3,
-            world.sr1_sessions[0],
-            world.sr1_sessions[1],
-            world.sr3_sessions[0],
-            world.sr3_sessions[1],
+            fixture.s1,
+            fixture.s3,
+            fixture.sr1_sessions[0],
+            fixture.sr1_sessions[1],
+            fixture.sr3_sessions[0],
+            fixture.sr3_sessions[1],
         ])
     }))
     .await;
@@ -54,12 +54,12 @@ async fn a_coach_lists_their_own_sessions() {
 #[tokio::test]
 async fn a_coachee_lists_their_own_sessions() {
     within_time_limit(assert_own_sessions(Caller::Coachee, |b| {
-        let world = &b.world;
+        let fixture = &b.fixture;
         ids([
-            world.s1,
-            world.s2,
-            world.sr1_sessions[0],
-            world.sr1_sessions[1],
+            fixture.s1,
+            fixture.s2,
+            fixture.sr1_sessions[0],
+            fixture.sr1_sessions[1],
         ])
     }))
     .await;
@@ -70,7 +70,7 @@ async fn a_coachee_lists_their_own_sessions() {
 async fn only_the_user_lists_their_own_sessions() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let coachee = app.world.user(Caller::Coachee);
+        let coachee = app.fixture.user(Caller::Coachee);
 
         for suffix in ["", "/counts", "/nearest"] {
             let path = format!("/users/{coachee}/coaching_sessions{suffix}");
@@ -88,7 +88,7 @@ async fn only_the_user_lists_their_own_sessions() {
 async fn a_removed_coachee_lists_none_of_their_own_sessions() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let removed = app.world.user(Caller::Removed);
+        let removed = app.fixture.user(Caller::Removed);
 
         assert_eq!(
             app.expect(
@@ -109,10 +109,10 @@ async fn a_removed_coachee_lists_none_of_their_own_sessions() {
 async fn a_coachee_reads_the_nearest_session_of_each_relationship() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
-        let coachee = world.user(Caller::Coachee);
-        let (r1, r2, r3) = (world.r1, world.r2, world.r3);
-        let expected = ids([world.s1, world.s2]);
+        let fixture = &app.fixture;
+        let coachee = fixture.user(Caller::Coachee);
+        let (r1, r2, r3) = (fixture.r1, fixture.r2, fixture.r3);
+        let expected = ids([fixture.s1, fixture.s2]);
         let around = Utc::now().format("%Y-%m-%dT%H:%M:%S");
 
         // R3 is not the coachee's, so it adds nothing.
@@ -136,13 +136,13 @@ async fn a_coachee_reads_the_nearest_session_of_each_relationship() {
 async fn a_coachees_sessions_include_their_relationships() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
-        let coachee = world.user(Caller::Coachee);
+        let fixture = &app.fixture;
+        let coachee = fixture.user(Caller::Coachee);
         let expected = ids([
-            world.s1,
-            world.s2,
-            world.sr1_sessions[0],
-            world.sr1_sessions[1],
+            fixture.s1,
+            fixture.s2,
+            fixture.sr1_sessions[0],
+            fixture.sr1_sessions[1],
         ]);
         let path = format!("/users/{coachee}/coaching_sessions?include=relationship");
 

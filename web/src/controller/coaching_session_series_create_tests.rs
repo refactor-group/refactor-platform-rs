@@ -14,7 +14,7 @@ use crate::controller::coaching_session_controller::coaching_session_create_test
     config, no_outbound_posts, reaching_relationship, tomorrow,
 };
 use crate::extractors::relationship_access_test_support::{
-    self as support, json_body, Caller, World,
+    self as support, json_body, Caller, Fixture,
 };
 use crate::AppState;
 
@@ -22,7 +22,7 @@ fn routes() -> Router<AppState> {
     Router::new().route("/coaching_session_series", post(create))
 }
 
-fn create_body(w: &World) -> serde_json::Value {
+fn create_body(w: &Fixture) -> serde_json::Value {
     json!({
         "coaching_relationship_id": w.relationship.id,
         "start_at": tomorrow(),
@@ -33,7 +33,7 @@ fn create_body(w: &World) -> serde_json::Value {
 
 #[tokio::test]
 async fn m3_02_coach_cannot_schedule_a_series_with_a_coachee_no_longer_in_the_organization() {
-    let w = support::world();
+    let w = support::fixture();
     let mut server = Server::new_async().await;
     let outbound = no_outbound_posts(&mut server).await;
     let db = Arc::new(

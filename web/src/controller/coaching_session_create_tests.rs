@@ -16,7 +16,7 @@ use service::config::Config;
 
 use super::create;
 use crate::extractors::relationship_access_test_support::{
-    self as support, assert_refusal, json_body, Caller, World,
+    self as support, assert_refusal, json_body, Caller, Fixture,
 };
 use crate::AppState;
 
@@ -63,7 +63,7 @@ pub(crate) async fn no_outbound_posts(server: &mut ServerGuard) -> Mock {
         .await
 }
 
-pub(crate) fn organization(w: &World) -> organizations::Model {
+pub(crate) fn organization(w: &Fixture) -> organizations::Model {
     let now = Utc::now();
     organizations::Model {
         id: w.organization_id,
@@ -78,12 +78,12 @@ pub(crate) fn organization(w: &World) -> organizations::Model {
 }
 
 /// The participants who still belong to the relationship's organization.
-fn members(w: &World) -> Vec<BTreeMap<String, Value>> {
+fn members(w: &Fixture) -> Vec<BTreeMap<String, Value>> {
     support::members(&[w.coach.id, w.coachee.id])
 }
 
 /// `caller` signed in, with R1 queued for the relationship check.
-pub(crate) fn reaching_relationship(w: &World, caller: Caller) -> MockDatabase {
+pub(crate) fn reaching_relationship(w: &Fixture, caller: Caller) -> MockDatabase {
     w.signed_in(caller)
         .append_query_results([vec![w.relationship.clone()]])
 }
@@ -116,7 +116,7 @@ async fn assert_refused(
 
 #[tokio::test]
 async fn ses_09_coach_creates_a_session_in_the_relationship() {
-    let w = support::world();
+    let w = support::fixture();
     let mut server = Server::new_async().await;
     let document = server
         .mock("POST", Matcher::Regex("^/api/documents/".to_string()))
@@ -158,7 +158,7 @@ async fn ses_09_coach_creates_a_session_in_the_relationship() {
 
 #[tokio::test]
 async fn ses_14b_removed_coach_cannot_create_a_session() {
-    let w = support::world();
+    let w = support::fixture();
     assert_refused(
         "SES-14b",
         reaching_relationship(&w, Caller::Removed),
@@ -171,7 +171,7 @@ async fn ses_14b_removed_coach_cannot_create_a_session() {
 
 #[tokio::test]
 async fn ses_14c_unknown_relationship_is_not_found() {
-    let w = support::world();
+    let w = support::fixture();
     assert_refused(
         "SES-14c",
         w.signed_in(Caller::Coach)
@@ -185,7 +185,7 @@ async fn ses_14c_unknown_relationship_is_not_found() {
 
 #[tokio::test]
 async fn m3_01_coach_cannot_schedule_with_a_coachee_no_longer_in_the_organization() {
-    let w = support::world();
+    let w = support::fixture();
     let mut server = Server::new_async().await;
     let outbound = no_outbound_posts(&mut server).await;
     let db = Arc::new(

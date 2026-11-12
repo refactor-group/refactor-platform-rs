@@ -62,7 +62,7 @@ fn role_as(role: users::Role, user_id: Id, organization_id: Option<Id>) -> user_
 }
 
 /// A relationship with one session, plus callers outside it.
-pub(crate) struct World {
+pub(crate) struct Fixture {
     pub(crate) organization_id: Id,
     pub(crate) coach: users::Model,
     pub(crate) coachee: users::Model,
@@ -71,7 +71,7 @@ pub(crate) struct World {
     pub(crate) session: coaching_sessions::Model,
 }
 
-pub(crate) fn world() -> World {
+pub(crate) fn fixture() -> Fixture {
     let now = Utc::now();
     let organization_id = Id::new_v4();
     let coach = user("coach@example.com");
@@ -102,7 +102,7 @@ pub(crate) fn world() -> World {
         hydrated_at: Some(now.into()),
         notice_given_at: now.into(),
     };
-    World {
+    Fixture {
         organization_id,
         coach,
         coachee,
@@ -122,7 +122,7 @@ pub(crate) enum Caller {
     SuperAdmin,
 }
 
-impl World {
+impl Fixture {
     fn caller(&self, caller: Caller) -> &users::Model {
         match caller {
             Caller::Coach | Caller::Removed => &self.coach,

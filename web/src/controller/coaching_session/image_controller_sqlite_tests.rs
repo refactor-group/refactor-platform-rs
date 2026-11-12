@@ -8,7 +8,8 @@
 
 use axum::body::Body;
 use axum::http::{Method, StatusCode};
-use domain::test_utils::sqlite::access_world::{image_deleted, session_images, IMG1_BYTES};
+use domain::test_utils::sqlite::fixture::IMG1_BYTES;
+use domain::test_utils::sqlite::read_back::{image_deleted, session_images};
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 
@@ -55,7 +56,7 @@ async fn upload(app: &mut TestApp, caller: Caller, session: Id) -> Reply {
 async fn participants_upload_a_note_image() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s1 = app.world.s1;
+        let s1 = app.fixture.s1;
 
         for caller in [Caller::Coach, Caller::Coachee] {
             let before = session_images(app.db(), s1).await;
@@ -83,7 +84,7 @@ async fn participants_upload_a_note_image() {
 async fn non_participants_cannot_upload_a_note_image() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s1 = app.world.s1;
+        let s1 = app.fixture.s1;
         let before = session_images(app.db(), s1).await;
 
         for caller in NON_PARTICIPANTS {
@@ -100,7 +101,7 @@ async fn non_participants_cannot_upload_a_note_image() {
 async fn participants_read_a_note_image() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let path = format!("/coaching_session_images/{}", app.world.img1);
+        let path = format!("/coaching_session_images/{}", app.fixture.img1);
 
         // The local store cannot presign, so it serves the bytes rather than a redirect.
         for caller in [Caller::Coach, Caller::Coachee] {
@@ -118,7 +119,7 @@ async fn participants_read_a_note_image() {
 async fn either_participant_deletes_and_restores_a_note_image() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let img1 = app.world.img1;
+        let img1 = app.fixture.img1;
 
         // IMG1 was uploaded by COACH, so COACHEE acts on an image they did not upload.
         for caller in [Caller::Coach, Caller::Coachee] {
@@ -148,7 +149,7 @@ async fn either_participant_deletes_and_restores_a_note_image() {
 async fn non_participants_cannot_read_or_delete_a_note_image() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let img1 = app.world.img1;
+        let img1 = app.fixture.img1;
         let path = format!("/coaching_session_images/{img1}");
 
         for caller in NON_PARTICIPANTS {

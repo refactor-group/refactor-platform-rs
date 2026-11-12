@@ -8,7 +8,8 @@
 use std::collections::BTreeSet;
 
 use axum::http::{Method, StatusCode};
-use domain::test_utils::sqlite::access_world::{connected_users, seed_google_connection};
+use domain::test_utils::sqlite::fixture::seed_google_connection;
+use domain::test_utils::sqlite::read_back::connected_users;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use serde_json::{json, Value};
 
@@ -34,8 +35,8 @@ async fn every_caller_reaches_only_their_own_connections() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
         let (coach, other_coach) = (
-            app.world.user(Caller::Coach),
-            app.world.user(Caller::OtherCoach),
+            app.fixture.user(Caller::Coach),
+            app.fixture.user(Caller::OtherCoach),
         );
         seed_google_connection(app.db(), coach, "coach@google.test").await;
         seed_google_connection(app.db(), other_coach, "other@google.test").await;

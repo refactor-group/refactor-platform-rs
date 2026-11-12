@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use axum::http::{Method, StatusCode};
-use domain::test_utils::sqlite::access_world::relationships_between;
+use domain::test_utils::sqlite::read_back::relationships_between;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 use serde_json::json;
@@ -20,14 +20,14 @@ use crate::test_utils::sqlite::{field_ids, ids, TestApp, NON_PARTICIPANTS};
 fn goal_progress(app: &TestApp, query: &str) -> String {
     format!(
         "/organizations/{}/coaching_relationships/{}/goal_progress{query}",
-        app.world.o1, app.world.r1
+        app.fixture.o1, app.fixture.r1
     )
 }
 
 /// Asserts one caller's list of O1's relationships.
 async fn assert_org_list(caller: Caller, expected: impl Fn(&TestApp) -> BTreeSet<Id>) {
     let mut app = TestApp::new().await;
-    let path = format!("/organizations/{}/coaching_relationships", app.world.o1);
+    let path = format!("/organizations/{}/coaching_relationships", app.fixture.o1);
     let expected = expected(&app);
 
     assert_eq!(
@@ -42,8 +42,8 @@ async fn assert_org_list(caller: Caller, expected: impl Fn(&TestApp) -> BTreeSet
 async fn participants_read_the_relationships_goal_progress() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let g1 = app.world.g1;
-        let coachee = app.world.user(Caller::Coachee);
+        let g1 = app.fixture.g1;
+        let coachee = app.fixture.user(Caller::Coachee);
         let queries = [
             String::new(),
             "?assignee=coach".to_string(),
@@ -72,7 +72,7 @@ async fn participants_read_the_relationships_goal_progress() {
 async fn goal_progress_refuses_a_non_participant_assignee() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let member = app.world.user(Caller::Member);
+        let member = app.fixture.user(Caller::Member);
         let path = goal_progress(&app, &format!("?assignee={member}"));
 
         let (status, _) = app.expect(Caller::Coach, Method::GET, &path, None).await;
@@ -100,7 +100,7 @@ async fn non_participants_cannot_read_the_relationships_goal_progress() {
 #[tokio::test]
 async fn a_coach_lists_only_their_own_relationships() {
     within_time_limit(assert_org_list(Caller::Coach, |b| {
-        ids([b.world.r1, b.world.r3])
+        ids([b.fixture.r1, b.fixture.r3])
     }))
     .await;
 }
@@ -110,9 +110,9 @@ async fn a_coach_lists_only_their_own_relationships() {
 async fn a_coachee_lists_only_their_own_relationships() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
-        let path = format!("/organizations/{}/coaching_relationships", world.o1);
-        let expected = ids([world.r1, world.r2]);
+        let fixture = &app.fixture;
+        let path = format!("/organizations/{}/coaching_relationships", fixture.o1);
+        let expected = ids([fixture.r1, fixture.r2]);
 
         assert_eq!(
             app.expect(Caller::Coachee, Method::GET, &path, None).await,
@@ -125,7 +125,7 @@ async fn a_coachee_lists_only_their_own_relationships() {
 /// REL-03
 #[tokio::test]
 async fn another_coach_lists_only_their_relationship() {
-    within_time_limit(assert_org_list(Caller::OtherCoach, |b| ids([b.world.r2]))).await;
+    within_time_limit(assert_org_list(Caller::OtherCoach, |b| ids([b.fixture.r2]))).await;
 }
 
 /// REL-04
@@ -138,7 +138,7 @@ async fn a_member_in_no_relationship_lists_none() {
 #[tokio::test]
 async fn an_admin_lists_every_relationship_in_the_org() {
     within_time_limit(assert_org_list(Caller::Admin, |b| {
-        ids([b.world.r1, b.world.r2, b.world.r3])
+        ids([b.fixture.r1, b.fixture.r2, b.fixture.r3])
     }))
     .await;
 }
@@ -147,7 +147,7 @@ async fn an_admin_lists_every_relationship_in_the_org() {
 #[tokio::test]
 async fn a_super_admin_lists_every_relationship_in_the_org() {
     within_time_limit(assert_org_list(Caller::Super, |b| {
-        ids([b.world.r1, b.world.r2, b.world.r3])
+        ids([b.fixture.r1, b.fixture.r2, b.fixture.r3])
     }))
     .await;
 }
@@ -157,7 +157,7 @@ async fn a_super_admin_lists_every_relationship_in_the_org() {
 async fn non_members_cannot_list_the_orgs_relationships() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let path = format!("/organizations/{}/coaching_relationships", app.world.o1);
+        let path = format!("/organizations/{}/coaching_relationships", app.fixture.o1);
 
         for caller in [Caller::Outsider, Caller::Removed] {
             let (status, _) = app.expect(caller, Method::GET, &path, None).await;
@@ -172,7 +172,7 @@ async fn non_members_cannot_list_the_orgs_relationships() {
 async fn participants_read_their_relationship_with_names() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (o1, r1) = (app.world.o1, app.world.r1);
+        let (o1, r1) = (app.fixture.o1, app.fixture.r1);
         let path = format!("/organizations/{o1}/coaching_relationships/{r1}");
 
         for caller in [Caller::Coach, Caller::Coachee] {
@@ -193,7 +193,7 @@ async fn participants_read_their_relationship_with_names() {
 async fn non_participants_cannot_read_a_relationship() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (o1, r1) = (app.world.o1, app.world.r1);
+        let (o1, r1) = (app.fixture.o1, app.fixture.r1);
         let path = format!("/organizations/{o1}/coaching_relationships/{r1}");
 
         for caller in NON_PARTICIPANTS {
@@ -209,7 +209,7 @@ async fn non_participants_cannot_read_a_relationship() {
 async fn a_relationship_under_another_org_is_not_found() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (o2, r1) = (app.world.o2, app.world.r1);
+        let (o2, r1) = (app.fixture.o2, app.fixture.r1);
         let path = format!("/organizations/{o2}/coaching_relationships/{r1}");
 
         let (status, _) = app.expect(Caller::Coach, Method::GET, &path, None).await;
@@ -223,7 +223,7 @@ async fn a_relationship_under_another_org_is_not_found() {
 async fn a_removed_coachee_cannot_read_their_relationship() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (o1, r3) = (app.world.o1, app.world.r3);
+        let (o1, r3) = (app.fixture.o1, app.fixture.r3);
         let path = format!("/organizations/{o1}/coaching_relationships/{r3}");
 
         let (status, _) = app.expect(Caller::Removed, Method::GET, &path, None).await;
@@ -237,7 +237,7 @@ async fn a_removed_coachee_cannot_read_their_relationship() {
 async fn a_coach_keeps_a_relationship_whose_coachee_left() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (o1, r3) = (app.world.o1, app.world.r3);
+        let (o1, r3) = (app.fixture.o1, app.fixture.r3);
         let path = format!("/organizations/{o1}/coaching_relationships/{r3}");
 
         let reply = app.send(Caller::Coach, Method::GET, &path, None).await;
@@ -257,10 +257,10 @@ async fn admins_create_a_relationship_once_per_pair() {
         for caller in [Caller::Admin, Caller::Super] {
             let mut app = TestApp::new().await;
             let (coach, member) = (
-                app.world.user(Caller::Coach),
-                app.world.user(Caller::Member),
+                app.fixture.user(Caller::Coach),
+                app.fixture.user(Caller::Member),
             );
-            let path = format!("/organizations/{}/coaching_relationships", app.world.o1);
+            let path = format!("/organizations/{}/coaching_relationships", app.fixture.o1);
             let body = json!({ "coach_id": coach, "coachee_id": member });
 
             let created = app
@@ -291,10 +291,10 @@ async fn non_admins_cannot_create_a_relationship() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
         let (coach, member) = (
-            app.world.user(Caller::Coach),
-            app.world.user(Caller::Member),
+            app.fixture.user(Caller::Coach),
+            app.fixture.user(Caller::Member),
         );
-        let path = format!("/organizations/{}/coaching_relationships", app.world.o1);
+        let path = format!("/organizations/{}/coaching_relationships", app.fixture.o1);
         let body = json!({ "coach_id": coach, "coachee_id": member });
 
         for caller in [
@@ -322,12 +322,12 @@ async fn non_admins_cannot_create_a_relationship() {
 async fn an_admin_sees_who_is_still_a_member() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
-        let path = format!("/organizations/{}/coaching_relationships", world.o1);
+        let fixture = &app.fixture;
+        let path = format!("/organizations/{}/coaching_relationships", fixture.o1);
         let expected = BTreeMap::from([
-            (world.r1, (true, true)),
-            (world.r2, (true, true)),
-            (world.r3, (true, false)),
+            (fixture.r1, (true, true)),
+            (fixture.r2, (true, true)),
+            (fixture.r3, (true, false)),
         ]);
 
         let reply = app.send(Caller::Admin, Method::GET, &path, None).await;

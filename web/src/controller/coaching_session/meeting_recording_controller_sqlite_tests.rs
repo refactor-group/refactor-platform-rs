@@ -7,7 +7,7 @@
 //! `web/src/test_utils/README.md` describes the people and the database.
 
 use axum::http::{Method, StatusCode};
-use domain::test_utils::sqlite::access_world::session_recordings;
+use domain::test_utils::sqlite::read_back::session_recordings;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 use serde_json::json;
@@ -43,7 +43,7 @@ async fn assert_recording_refused(callers: &[Caller], session: impl Fn(&TestApp)
 async fn participants_read_the_latest_recording() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s1 = app.world.s1;
+        let s1 = app.fixture.s1;
         let path = format!("/coaching_sessions/{s1}/meeting_recording");
         let expected = session_recordings(app.db(), s1).await;
         assert_eq!(expected.len(), 1);
@@ -62,11 +62,17 @@ async fn participants_read_the_latest_recording() {
 /// TRN-21
 #[tokio::test]
 async fn non_participants_cannot_reach_the_sessions_recording() {
-    within_time_limit(assert_recording_refused(&NON_PARTICIPANTS, |b| b.world.s1)).await;
+    within_time_limit(assert_recording_refused(&NON_PARTICIPANTS, |b| {
+        b.fixture.s1
+    }))
+    .await;
 }
 
 /// TRN-22
 #[tokio::test]
 async fn a_removed_coachee_cannot_reach_their_sessions_recording() {
-    within_time_limit(assert_recording_refused(&[Caller::Removed], |b| b.world.s3)).await;
+    within_time_limit(assert_recording_refused(&[Caller::Removed], |b| {
+        b.fixture.s3
+    }))
+    .await;
 }

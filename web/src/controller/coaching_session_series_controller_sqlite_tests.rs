@@ -12,8 +12,9 @@ use std::collections::BTreeSet;
 
 use axum::http::{Method, StatusCode};
 use chrono::{TimeDelta, Utc};
-use domain::test_utils::sqlite::access_world::{
-    relationship_series, relationship_sessions, remove_roles, series_state,
+use domain::test_utils::sqlite::fixture::remove_roles;
+use domain::test_utils::sqlite::read_back::{
+    relationship_series, relationship_sessions, series_state,
 };
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
@@ -26,7 +27,7 @@ use crate::test_utils::sqlite::{
 
 /// SR1's invite resend path.
 fn series_resend(app: &TestApp) -> String {
-    format!("/coaching_session_series/{}/resend_invite", app.world.sr1)
+    format!("/coaching_session_series/{}/resend_invite", app.fixture.sr1)
 }
 
 /// Every non-participant of R1, plus the coachee.
@@ -153,12 +154,12 @@ async fn assert_series_write_refused(
 
 /// SR1 and its first session.
 fn sr1(app: &TestApp) -> (Id, Id) {
-    (app.world.sr1, app.world.sr1_sessions[0])
+    (app.fixture.sr1, app.fixture.sr1_sessions[0])
 }
 
 /// SR3 and its first session.
 fn sr3(app: &TestApp) -> (Id, Id) {
-    (app.world.sr3, app.world.sr3_sessions[0])
+    (app.fixture.sr3, app.fixture.sr3_sessions[0])
 }
 
 /// MAIL-09
@@ -178,7 +179,7 @@ async fn a_coach_who_left_cannot_resend_a_series_invite() {
 async fn a_coach_creates_a_series_with_its_sessions() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let r1 = app.world.r1;
+        let r1 = app.fixture.r1;
         let series_before = relationship_series(app.db(), r1).await;
         let sessions_before = relationship_sessions(app.db(), r1).await;
 
@@ -222,7 +223,7 @@ async fn a_coach_creates_a_series_with_its_sessions() {
 async fn a_coachee_cannot_create_a_series() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let r1 = app.world.r1;
+        let r1 = app.fixture.r1;
         assert_create_refused(&mut app, &[Caller::Coachee], r1, StatusCode::FORBIDDEN).await;
     })
     .await;
@@ -233,7 +234,7 @@ async fn a_coachee_cannot_create_a_series() {
 async fn non_participants_cannot_create_a_series() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let r1 = app.world.r1;
+        let r1 = app.fixture.r1;
         assert_create_refused(&mut app, &NON_PARTICIPANTS, r1, StatusCode::FORBIDDEN).await;
     })
     .await;
@@ -244,7 +245,7 @@ async fn non_participants_cannot_create_a_series() {
 async fn participants_list_the_relationships_series() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (r1, sr1) = (app.world.r1, app.world.sr1);
+        let (r1, sr1) = (app.fixture.r1, app.fixture.sr1);
         let path = format!("/coaching_session_series?coaching_relationship_id={r1}");
 
         for caller in [Caller::Coach, Caller::Coachee] {
@@ -265,7 +266,7 @@ async fn non_participants_cannot_list_the_relationships_series() {
         let mut app = TestApp::new().await;
         let path = format!(
             "/coaching_session_series?coaching_relationship_id={}",
-            app.world.r1
+            app.fixture.r1
         );
 
         for caller in NON_PARTICIPANTS {
@@ -281,9 +282,9 @@ async fn non_participants_cannot_list_the_relationships_series() {
 async fn participants_read_a_series_with_its_sessions() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
-        let sr1 = world.sr1;
-        let sessions = ids(world.sr1_sessions);
+        let fixture = &app.fixture;
+        let sr1 = fixture.sr1;
+        let sessions = ids(fixture.sr1_sessions);
         let path = format!("/coaching_session_series/{sr1}");
 
         for caller in [Caller::Coach, Caller::Coachee] {
@@ -310,7 +311,7 @@ async fn participants_read_a_series_with_its_sessions() {
 async fn non_participants_cannot_read_a_series() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let path = format!("/coaching_session_series/{}", app.world.sr1);
+        let path = format!("/coaching_session_series/{}", app.fixture.sr1);
 
         for caller in NON_PARTICIPANTS {
             let (status, _) = app.expect(caller, Method::GET, &path, None).await;
@@ -367,7 +368,7 @@ async fn only_the_coach_deletes_a_series() {
 async fn a_coach_resends_a_series_invite() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let sr1 = app.world.sr1;
+        let sr1 = app.fixture.sr1;
         let (_, before, _) = series_state(app.db(), sr1).await.expect("SR1 is seeded");
         let invites = app.expect_emails(2).await;
 
@@ -407,8 +408,8 @@ async fn only_the_coach_resends_a_series_invite() {
 async fn a_coach_removed_from_the_org_cannot_create_a_series() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (r1, o1) = (app.world.r1, app.world.o1);
-        remove_roles(app.db(), app.world.user(Caller::Coach), o1).await;
+        let (r1, o1) = (app.fixture.r1, app.fixture.o1);
+        remove_roles(app.db(), app.fixture.user(Caller::Coach), o1).await;
         assert_create_refused(&mut app, &[Caller::Coach], r1, StatusCode::FORBIDDEN).await;
     })
     .await;
@@ -419,7 +420,7 @@ async fn a_coach_removed_from_the_org_cannot_create_a_series() {
 async fn a_series_with_a_coachee_who_left_is_refused() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let r3 = app.world.r3;
+        let r3 = app.fixture.r3;
         assert_create_refused(&mut app, &[Caller::Coach], r3, StatusCode::CONFLICT).await;
     })
     .await;

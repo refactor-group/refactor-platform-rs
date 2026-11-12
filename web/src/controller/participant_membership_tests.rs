@@ -18,7 +18,7 @@ use crate::controller::coaching_session_controller::coaching_session_create_test
 use crate::controller::organization::coaching_relationship_controller;
 use crate::controller::user::coaching_session_controller as user_coaching_session_controller;
 use crate::extractors::relationship_access_test_support::{
-    self as support, json_body, Caller, World,
+    self as support, json_body, Caller, Fixture,
 };
 use crate::router::ApiDoc;
 use crate::{protect, AppState};
@@ -58,7 +58,7 @@ fn routes(db: &Arc<sea_orm::DatabaseConnection>) -> Router<AppState> {
         )
 }
 
-fn read_uri(w: &World) -> String {
+fn read_uri(w: &Fixture) -> String {
     format!(
         "/organizations/{}/coaching_relationships/{}",
         w.organization_id, w.relationship.id
@@ -66,7 +66,7 @@ fn read_uri(w: &World) -> String {
 }
 
 /// The relationship's row as the names-joined read returns it, with `members` holding a role.
-fn listed_row(w: &World, members: &[Id]) -> BTreeMap<String, Value> {
+fn listed_row(w: &Fixture, members: &[Id]) -> BTreeMap<String, Value> {
     let r = &w.relationship;
     let name = |n: &str| Value::from(n.to_string());
     BTreeMap::from([
@@ -92,7 +92,7 @@ fn listed_row(w: &World, members: &[Id]) -> BTreeMap<String, Value> {
 }
 
 /// The relationship's model row with its membership columns, `members` holding a role.
-fn included_row(w: &World, members: &[Id]) -> BTreeMap<String, Value> {
+fn included_row(w: &Fixture, members: &[Id]) -> BTreeMap<String, Value> {
     let r = &w.relationship;
     BTreeMap::from([
         ("id".to_string(), r.id.into()),
@@ -122,7 +122,7 @@ fn member_rows(user_ids: &[Id]) -> Vec<BTreeMap<String, Value>> {
 }
 
 /// The coach GETs the relationship, with `members` holding a role; returns `data`.
-async fn read_as_coach(w: &World, members: &[Id]) -> serde_json::Value {
+async fn read_as_coach(w: &Fixture, members: &[Id]) -> serde_json::Value {
     let db = Arc::new(
         w.signed_in(Caller::Coach)
             .append_query_results([vec![w.relationship.clone()]])
@@ -136,7 +136,7 @@ async fn read_as_coach(w: &World, members: &[Id]) -> serde_json::Value {
 
 #[tokio::test]
 async fn m4_05_an_included_relationship_marks_a_removed_coachee() {
-    let w = support::world();
+    let w = support::fixture();
     let db = Arc::new(
         w.signed_in(Caller::Coach)
             .append_query_results([vec![w.session.clone()]])
@@ -173,7 +173,7 @@ async fn m4_05_an_included_relationship_marks_a_removed_coachee() {
 
 /// The coach POSTs a session, with `members` the membership rows.
 async fn create_as_coach(
-    w: &World,
+    w: &Fixture,
     members: Vec<BTreeMap<String, Value>>,
     created: Option<&coaching_sessions::Model>,
 ) -> (StatusCode, serde_json::Value) {
@@ -218,7 +218,7 @@ async fn create_as_coach(
 
 #[tokio::test]
 async fn m4_07_the_field_agrees_with_the_create_refusal() {
-    let w = support::world();
+    let w = support::fixture();
 
     let removed = [w.coach.id];
     let data = read_as_coach(&w, &removed).await;

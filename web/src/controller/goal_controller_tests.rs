@@ -13,7 +13,7 @@ use serde_json::json;
 
 use super::create;
 use crate::extractors::relationship_access_test_support::{
-    self as support, json_body, Caller, World,
+    self as support, json_body, Caller, Fixture,
 };
 use crate::AppState;
 
@@ -38,7 +38,7 @@ fn create_body_from_session(coaching_relationship_id: Id, session_id: Id) -> ser
     body
 }
 
-fn goal_in(w: &World) -> goals::Model {
+fn goal_in(w: &Fixture) -> goals::Model {
     let now = Utc::now();
     goals::Model {
         id: Id::new_v4(),
@@ -57,7 +57,7 @@ fn goal_in(w: &World) -> goals::Model {
 }
 
 /// The participants who still belong to the relationship's organization.
-fn members(w: &World) -> Vec<BTreeMap<String, Value>> {
+fn members(w: &Fixture) -> Vec<BTreeMap<String, Value>> {
     [w.coach.id, w.coachee.id]
         .into_iter()
         .map(|user_id| BTreeMap::from([("user_id".to_string(), user_id.into())]))
@@ -65,14 +65,14 @@ fn members(w: &World) -> Vec<BTreeMap<String, Value>> {
 }
 
 /// `caller` signed in, with R1 queued for the relationship check.
-fn reaching_relationship(w: &World, caller: Caller) -> MockDatabase {
+fn reaching_relationship(w: &Fixture, caller: Caller) -> MockDatabase {
     w.signed_in(caller)
         .append_query_results([vec![w.relationship.clone()]])
 }
 
 #[tokio::test]
 async fn goal_28c_coach_creates_a_goal_from_a_session_of_the_relationship() {
-    let w = support::world();
+    let w = support::fixture();
     let goal = goals::Model {
         created_in_session_id: Some(w.session.id),
         status: domain::status::Status::InProgress,

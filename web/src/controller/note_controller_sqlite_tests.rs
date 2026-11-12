@@ -6,7 +6,8 @@
 //! `web/src/test_utils/README.md` describes the people and the database.
 
 use axum::http::{Method, StatusCode};
-use domain::test_utils::sqlite::access_world::{note_body, seed_note, session_content};
+use domain::test_utils::sqlite::fixture::seed_note;
+use domain::test_utils::sqlite::read_back::{note_body, session_content};
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 use serde_json::{json, Value};
@@ -23,9 +24,9 @@ fn note(session: Id) -> Value {
 async fn participants_list_the_sessions_notes() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
-        let path = format!("/notes?coaching_session_id={}", world.s1);
-        let expected = ids([world.n1]);
+        let fixture = &app.fixture;
+        let path = format!("/notes?coaching_session_id={}", fixture.s1);
+        let expected = ids([fixture.n1]);
 
         for caller in [Caller::Coach, Caller::Coachee] {
             assert_eq!(
@@ -43,7 +44,7 @@ async fn participants_list_the_sessions_notes() {
 async fn non_participants_cannot_list_the_sessions_notes() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let path = format!("/notes?coaching_session_id={}", app.world.s1);
+        let path = format!("/notes?coaching_session_id={}", app.fixture.s1);
 
         for caller in NON_PARTICIPANTS {
             let (status, _) = app.expect(caller, Method::GET, &path, None).await;
@@ -58,7 +59,7 @@ async fn non_participants_cannot_list_the_sessions_notes() {
 async fn a_removed_coachee_cannot_list_their_sessions_notes() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let path = format!("/notes?coaching_session_id={}", app.world.s3);
+        let path = format!("/notes?coaching_session_id={}", app.fixture.s3);
 
         let (status, _) = app.expect(Caller::Removed, Method::GET, &path, None).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
@@ -71,7 +72,7 @@ async fn a_removed_coachee_cannot_list_their_sessions_notes() {
 async fn participants_read_the_note() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let n1 = app.world.n1;
+        let n1 = app.fixture.n1;
 
         for caller in [Caller::Coach, Caller::Coachee] {
             assert_eq!(
@@ -90,7 +91,7 @@ async fn participants_read_the_note() {
 async fn participants_create_a_note_in_the_session() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s1 = app.world.s1;
+        let s1 = app.fixture.s1;
 
         for caller in [Caller::Coach, Caller::Coachee] {
             let before = session_content(app.db(), s1).await;
@@ -119,7 +120,7 @@ async fn participants_create_a_note_in_the_session() {
 async fn participants_update_the_note() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (s1, n1) = (app.world.s1, app.world.n1);
+        let (s1, n1) = (app.fixture.s1, app.fixture.n1);
 
         for (caller, text) in [(Caller::Coach, "By coach"), (Caller::Coachee, "By coachee")] {
             let body = json!({ "coaching_session_id": s1, "body": text });
@@ -144,7 +145,7 @@ async fn participants_update_the_note() {
 async fn non_participants_cannot_read_the_note() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let n1 = app.world.n1;
+        let n1 = app.fixture.n1;
 
         for caller in NON_PARTICIPANTS {
             let (status, _) = app
@@ -170,7 +171,7 @@ async fn non_participants_cannot_read_the_note() {
 async fn non_participants_cannot_create_a_note_in_the_session() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s1 = app.world.s1;
+        let s1 = app.fixture.s1;
         let before = session_content(app.db(), s1).await;
 
         for caller in NON_PARTICIPANTS {
@@ -198,7 +199,7 @@ async fn non_participants_cannot_create_a_note_in_the_session() {
 async fn non_participants_cannot_update_the_note() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (s1, n1) = (app.world.s1, app.world.n1);
+        let (s1, n1) = (app.fixture.s1, app.fixture.n1);
         let before = note_body(app.db(), n1).await;
 
         for caller in NON_PARTICIPANTS {
@@ -217,8 +218,8 @@ async fn non_participants_cannot_update_the_note() {
 async fn a_removed_coachee_cannot_reach_their_sessions_notes() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s3 = app.world.s3;
-        let n3 = seed_note(app.db(), s3, app.world.user(Caller::Coach)).await;
+        let s3 = app.fixture.s3;
+        let n3 = seed_note(app.db(), s3, app.fixture.user(Caller::Coach)).await;
         let body = note_body(app.db(), n3).await;
         let content = session_content(app.db(), s3).await;
         let path = format!("/notes/{n3}");

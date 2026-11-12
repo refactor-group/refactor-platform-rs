@@ -16,8 +16,8 @@ use crate::test_utils::sqlite::{ids, TestApp};
 async fn a_coach_lists_the_goals_they_created() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let coach = app.world.user(Caller::Coach);
-        let expected = ids([app.world.g1]);
+        let coach = app.fixture.user(Caller::Coach);
+        let expected = ids([app.fixture.g1]);
 
         assert_eq!(
             app.expect(
@@ -38,7 +38,7 @@ async fn a_coach_lists_the_goals_they_created() {
 async fn a_coachee_who_created_no_goal_lists_none() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let coachee = app.world.user(Caller::Coachee);
+        let coachee = app.fixture.user(Caller::Coachee);
 
         assert_eq!(
             app.expect(
@@ -59,7 +59,7 @@ async fn a_coachee_who_created_no_goal_lists_none() {
 async fn only_the_user_lists_their_own_goals() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let path = format!("/users/{}/goals", app.world.user(Caller::Coachee));
+        let path = format!("/users/{}/goals", app.fixture.user(Caller::Coachee));
 
         for caller in [Caller::Coach, Caller::Member, Caller::Admin, Caller::Super] {
             let (status, _) = app.expect(caller, Method::GET, &path, None).await;

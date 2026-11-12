@@ -7,7 +7,8 @@
 //! `web/src/test_utils/README.md` describes the people and the database.
 
 use axum::http::{Method, StatusCode};
-use domain::test_utils::sqlite::access_world::{holds_role, record_removal, relationships_between};
+use domain::test_utils::sqlite::fixture::record_removal;
+use domain::test_utils::sqlite::read_back::{holds_role, relationships_between};
 use domain::test_utils::sqlite::{seed_membership, within_time_limit, Caller};
 use serde_json::json;
 
@@ -19,10 +20,10 @@ async fn admins_attach_a_member_with_a_coach() {
     within_time_limit(async {
         for caller in [Caller::Admin, Caller::Super] {
             let mut app = TestApp::new().await;
-            let world = &app.world;
-            let (o1, coach) = (world.o1, world.user(Caller::Coach));
+            let fixture = &app.fixture;
+            let (o1, coach) = (fixture.o1, fixture.user(Caller::Coach));
             // A former O1 member, so ADMIN may see them.
-            let target = world.user(Caller::Removed);
+            let target = fixture.user(Caller::Removed);
             record_removal(app.db(), target, o1).await;
             let before = relationships_between(app.db(), coach, target).await;
 
@@ -55,9 +56,9 @@ async fn admins_remove_a_member_and_keep_their_relationship() {
     within_time_limit(async {
         for caller in [Caller::Admin, Caller::Super] {
             let mut app = TestApp::new().await;
-            let world = &app.world;
-            let (o1, r3, removed) = (world.o1, world.r3, world.user(Caller::Removed));
-            let coach = world.user(Caller::Coach);
+            let fixture = &app.fixture;
+            let (o1, r3, removed) = (fixture.o1, fixture.r3, fixture.user(Caller::Removed));
+            let coach = fixture.user(Caller::Coach);
             seed_membership(app.db(), removed, o1).await;
 
             let reply = app
@@ -87,7 +88,7 @@ async fn admins_remove_a_member_and_keep_their_relationship() {
 async fn non_admins_cannot_remove_a_members_role() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (o1, member) = (app.world.o1, app.world.user(Caller::Member));
+        let (o1, member) = (app.fixture.o1, app.fixture.user(Caller::Member));
         let path = format!("/organizations/{o1}/users/{member}/role");
 
         for caller in [

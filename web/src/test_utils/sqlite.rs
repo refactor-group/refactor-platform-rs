@@ -18,11 +18,9 @@ use axum_login::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use domain::gateway::object_storage::{self, ObjectStore};
-use domain::test_utils::sqlite::access_world::{
-    remove_roles, IMG1_BYTES, IMG1_CONTENT_TYPE, PASSWORD,
-};
+use domain::test_utils::sqlite::fixture::{remove_roles, IMG1_BYTES, IMG1_CONTENT_TYPE, PASSWORD};
 use domain::test_utils::sqlite::{
-    database, mirror_migration_defaults, seed_access_world, AccessWorld, Caller,
+    database, mirror_migration_defaults, seed_fixture, Caller, Fixture,
 };
 use domain::user::Backend;
 use domain::Id;
@@ -66,11 +64,11 @@ const TIPTAP_DOCUMENT: &str = r"^/api/documents/[^/?]+\?format=json$";
 /// Resend's send endpoint.
 const RESEND_SEND: &str = "/emails";
 
-/// One seeded world behind the production router, with a session cookie per caller.
+/// One seeded fixture behind the production router, with a session cookie per caller.
 pub(crate) struct TestApp {
     app: Router,
     db: Arc<DatabaseConnection>,
-    pub(crate) world: AccessWorld,
+    pub(crate) fixture: Fixture,
     cookies: HashMap<Caller, String>,
     stand_ins: StandIns,
 }
@@ -212,13 +210,13 @@ impl TestApp {
         let db = database().await;
         mirror_migration_defaults(&db).await;
         let db = Arc::new(db);
-        let world = seed_access_world(&db).await;
+        let fixture = seed_fixture(&db).await;
         let stand_ins = StandIns::start().await;
-        store_img1(&stand_ins, &world).await;
+        store_img1(&stand_ins, &fixture).await;
         Self {
             app: app(&db, &stand_ins),
             db,
-            world,
+            fixture,
             cookies: HashMap::new(),
             stand_ins,
         }
@@ -470,12 +468,12 @@ fn config(server_url: &str, store_root: &StoreRoot) -> Config {
 }
 
 /// Puts IMG1's bytes in the store at its storage key.
-async fn store_img1(stand_ins: &StandIns, world: &AccessWorld) {
+async fn store_img1(stand_ins: &StandIns, fixture: &Fixture) {
     let source = stand_ins.store_root.0.join("img1-upload");
     std::fs::write(&source, IMG1_BYTES).expect("IMG1's upload is written");
     stand_ins
         .store
-        .put(&world.img1_storage_key, &source, IMG1_CONTENT_TYPE)
+        .put(&fixture.img1_storage_key, &source, IMG1_CONTENT_TYPE)
         .await
         .expect("IMG1 is stored");
 }
@@ -557,7 +555,7 @@ pub(crate) async fn assert_resend_mails_both(path: impl Fn(&TestApp) -> String) 
 pub(crate) async fn assert_removed_coach_resend_refused(path: impl Fn(&TestApp) -> String) {
     let mut app = TestApp::new().await;
     let path = path(&app);
-    let (coach, o1) = (app.world.user(Caller::Coach), app.world.o1);
+    let (coach, o1) = (app.fixture.user(Caller::Coach), app.fixture.o1);
     remove_roles(app.db(), coach, o1).await;
     app.take_emailed();
 
@@ -572,7 +570,7 @@ pub(crate) async fn assert_transcription_reads_refused(suffix: impl Fn(&TestApp)
     let mut app = TestApp::new().await;
     let path = format!(
         "/coaching_sessions/{}/transcriptions{}",
-        app.world.s1,
+        app.fixture.s1,
         suffix(&app)
     );
 

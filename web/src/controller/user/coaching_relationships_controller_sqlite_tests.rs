@@ -16,9 +16,9 @@ use crate::test_utils::sqlite::{ids, TestApp};
 async fn a_coachee_lists_their_own_relationships_by_role() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
-        let coachee = world.user(Caller::Coachee);
-        let both = ids([world.r1, world.r2]);
+        let fixture = &app.fixture;
+        let coachee = fixture.user(Caller::Coachee);
+        let both = ids([fixture.r1, fixture.r2]);
         let path = format!("/users/{coachee}/coaching-relationships");
 
         for (query, expected) in [
@@ -47,7 +47,7 @@ async fn a_coachee_lists_their_own_relationships_by_role() {
 async fn only_the_user_lists_their_own_relationships() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let coachee = app.world.user(Caller::Coachee);
+        let coachee = app.fixture.user(Caller::Coachee);
         let path = format!("/users/{coachee}/coaching-relationships");
 
         for caller in [Caller::Coach, Caller::Member, Caller::Admin, Caller::Super] {
@@ -63,7 +63,7 @@ async fn only_the_user_lists_their_own_relationships() {
 async fn a_removed_coachee_lists_none_of_their_own_relationships() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let removed = app.world.user(Caller::Removed);
+        let removed = app.fixture.user(Caller::Removed);
 
         assert_eq!(
             app.expect(
@@ -84,7 +84,7 @@ async fn a_removed_coachee_lists_none_of_their_own_relationships() {
 async fn a_coachee_coaches_no_one() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let coachee = app.world.user(Caller::Coachee);
+        let coachee = app.fixture.user(Caller::Coachee);
         let path = format!("/users/{coachee}/coaching-relationships?role=coach");
 
         assert_eq!(
@@ -100,9 +100,9 @@ async fn a_coachee_coaches_no_one() {
 async fn a_coach_lists_the_relationships_they_coach() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
-        let coach = world.user(Caller::Coach);
-        let expected = ids([world.r1, world.r3]);
+        let fixture = &app.fixture;
+        let coach = fixture.user(Caller::Coach);
+        let expected = ids([fixture.r1, fixture.r3]);
         let path = format!("/users/{coach}/coaching-relationships?role=coach");
 
         assert_eq!(

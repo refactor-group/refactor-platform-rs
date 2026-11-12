@@ -23,22 +23,22 @@ use crate::extractors::relationship_access_test_support::{
 use crate::AppState;
 
 /// The shared relationship and session, with one action in the session.
-struct World {
-    base: support::World,
+struct Fixture {
+    base: support::Fixture,
     action: actions::Model,
 }
 
-impl Deref for World {
-    type Target = support::World;
+impl Deref for Fixture {
+    type Target = support::Fixture;
 
-    fn deref(&self) -> &support::World {
+    fn deref(&self) -> &support::Fixture {
         &self.base
     }
 }
 
-fn world() -> World {
+fn fixture() -> Fixture {
     let now = Utc::now();
-    let base = support::world();
+    let base = support::fixture();
     let action = actions::Model {
         id: Id::new_v4(),
         coaching_session_id: base.session.id,
@@ -51,10 +51,10 @@ fn world() -> World {
         created_at: now.into(),
         updated_at: now.into(),
     };
-    World { base, action }
+    Fixture { base, action }
 }
 
-impl World {
+impl Fixture {
     /// `caller` signed in, with the action and its session queued for `ActionAccess`.
     fn reaching_action(&self, caller: Caller) -> MockDatabase {
         self.signed_in(caller)
@@ -135,7 +135,7 @@ async fn assert_refused(
 
 #[tokio::test]
 async fn act_27_coach_reads_the_action() {
-    let w = world();
+    let w = fixture();
     let db = Arc::new(
         w.reaching_action(Caller::Coach)
             .append_query_results([vec![assignment_row(w.action.id, w.coachee.id)]])
@@ -161,7 +161,7 @@ async fn act_27_coach_reads_the_action() {
 
 #[tokio::test]
 async fn act_28_coach_creates_an_action_assigned_to_the_coachee() {
-    let w = world();
+    let w = fixture();
     let db = Arc::new(
         w.reaching_session(Caller::Coach)
             .append_query_results([support::members(&[w.coachee.id])])
@@ -193,7 +193,7 @@ async fn act_28_coach_creates_an_action_assigned_to_the_coachee() {
 
 #[tokio::test]
 async fn m3_09_update_keeps_a_removed_coachee_already_assigned() {
-    let w = world();
+    let w = fixture();
     let db = Arc::new(
         w.reaching_action(Caller::Coach)
             .append_query_results([vec![assignment_row(w.action.id, w.coachee.id)]])
@@ -223,7 +223,7 @@ async fn m3_09_update_keeps_a_removed_coachee_already_assigned() {
 
 #[tokio::test]
 async fn act_30_coach_updates_the_action_status() {
-    let w = world();
+    let w = fixture();
     let on_hold = actions::Model {
         status: domain::status::Status::OnHold,
         ..w.action.clone()
@@ -252,7 +252,7 @@ async fn act_30_coach_updates_the_action_status() {
 
 #[tokio::test]
 async fn act_30b_unknown_status_value_is_refused() {
-    let w = world();
+    let w = fixture();
     assert_refused(
         "ACT-30b",
         w.reaching_action(Caller::Coach),

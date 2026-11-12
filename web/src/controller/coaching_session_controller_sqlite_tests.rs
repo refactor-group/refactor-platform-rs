@@ -10,10 +10,10 @@ use std::collections::BTreeSet;
 
 use axum::http::{Method, StatusCode};
 use chrono::{TimeDelta, Utc};
-use domain::test_utils::sqlite::access_world::{
-    relationship_sessions, seed_content_free_session, session_content, session_ical_sequence,
-    session_meeting_url, session_relationship, session_schedule, session_title, session_viewers,
-    set_google_meeting_url,
+use domain::test_utils::sqlite::fixture::{seed_content_free_session, set_google_meeting_url};
+use domain::test_utils::sqlite::read_back::{
+    relationship_sessions, session_content, session_ical_sequence, session_meeting_url,
+    session_relationship, session_schedule, session_title, session_viewers,
 };
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
@@ -25,7 +25,7 @@ use crate::test_utils::sqlite::{
 
 /// S1's invite resend path.
 fn session_resend(app: &TestApp) -> String {
-    format!("/coaching_sessions/{}/resend_invite", app.world.s1)
+    format!("/coaching_sessions/{}/resend_invite", app.fixture.s1)
 }
 
 /// R1's Google Meet link, which a new R1 session reuses.
@@ -93,7 +93,7 @@ async fn assert_create_refused(
 /// schedule and title as they were.
 async fn assert_s1_write_refused(callers: &[Caller], method: Method, suffix: &str, body: Value) {
     let mut app = TestApp::new().await;
-    let s1 = app.world.s1;
+    let s1 = app.fixture.s1;
     let path = format!("/coaching_sessions/{s1}{suffix}");
     let schedule = session_schedule(app.db(), s1).await;
     let title = session_title(app.db(), s1).await;
@@ -120,7 +120,7 @@ async fn retitle_body(app: &TestApp, session: Id) -> Value {
 /// and its document in place.
 async fn assert_delete_refused(callers: &[Caller]) {
     let mut app = TestApp::new().await;
-    let s4 = seed_content_free_session(app.db(), app.world.r1).await;
+    let s4 = seed_content_free_session(app.db(), app.fixture.r1).await;
     let schedule = session_schedule(app.db(), s4).await;
     let documents_deleted = app.expect_tiptap("DELETE", 0).await;
 
@@ -197,7 +197,7 @@ async fn a_coach_who_left_cannot_resend_a_sessions_invite() {
 async fn only_the_coachs_create_attaches_a_meeting_link() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (r1, r3, s1) = (app.world.r1, app.world.r3, app.world.s1);
+        let (r1, r3, s1) = (app.fixture.r1, app.fixture.r3, app.fixture.s1);
         set_google_meeting_url(app.db(), s1, R1_LINK).await;
 
         // SES-10 to SES-14: refused, with no session, document or link written.
@@ -257,7 +257,7 @@ async fn only_the_coachs_create_attaches_a_meeting_link() {
 async fn a_coach_sets_the_sessions_meeting_link() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s1 = app.world.s1;
+        let s1 = app.fixture.s1;
         let (date, _) = session_schedule(app.db(), s1).await.expect("S1 is seeded");
 
         let reply = app
@@ -284,12 +284,12 @@ async fn a_coach_sets_the_sessions_meeting_link() {
 async fn participants_list_the_relationships_sessions() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
+        let fixture = &app.fixture;
         let path = format!(
             "/coaching_sessions?coaching_relationship_id={}&{DATE_RANGE}",
-            world.r1
+            fixture.r1
         );
-        let expected = ids([world.s1, world.sr1_sessions[0], world.sr1_sessions[1]]);
+        let expected = ids([fixture.s1, fixture.sr1_sessions[0], fixture.sr1_sessions[1]]);
 
         for caller in [Caller::Coach, Caller::Coachee] {
             assert_eq!(
@@ -309,7 +309,7 @@ async fn non_participants_cannot_list_the_relationships_sessions() {
         let mut app = TestApp::new().await;
         let path = format!(
             "/coaching_sessions?coaching_relationship_id={}&{DATE_RANGE}",
-            app.world.r1
+            app.fixture.r1
         );
 
         for caller in NON_PARTICIPANTS {
@@ -327,7 +327,7 @@ async fn a_removed_coachee_cannot_list_their_relationships_sessions() {
         let mut app = TestApp::new().await;
         let path = format!(
             "/coaching_sessions?coaching_relationship_id={}&{DATE_RANGE}",
-            app.world.r3
+            app.fixture.r3
         );
 
         let (status, _) = app.expect(Caller::Removed, Method::GET, &path, None).await;
@@ -341,7 +341,7 @@ async fn a_removed_coachee_cannot_list_their_relationships_sessions() {
 async fn participants_read_a_session_with_its_organization() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (o1, s1) = (app.world.o1, app.world.s1);
+        let (o1, s1) = (app.fixture.o1, app.fixture.s1);
 
         for caller in [Caller::Coach, Caller::Coachee] {
             let reply = app
@@ -370,7 +370,7 @@ async fn participants_read_a_session_with_its_organization() {
 async fn non_participants_cannot_read_a_session() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let path = format!("/coaching_sessions/{}", app.world.s1);
+        let path = format!("/coaching_sessions/{}", app.fixture.s1);
 
         for caller in NON_PARTICIPANTS {
             let (status, _) = app.expect(caller, Method::GET, &path, None).await;
@@ -385,7 +385,7 @@ async fn non_participants_cannot_read_a_session() {
 async fn a_removed_coachee_cannot_read_their_session() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let path = format!("/coaching_sessions/{}", app.world.s3);
+        let path = format!("/coaching_sessions/{}", app.fixture.s3);
 
         let (status, _) = app.expect(Caller::Removed, Method::GET, &path, None).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
@@ -398,7 +398,7 @@ async fn a_removed_coachee_cannot_read_their_session() {
 async fn non_participants_cannot_mark_a_session_viewed() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s1 = app.world.s1;
+        let s1 = app.fixture.s1;
         let path = format!("/coaching_sessions/{s1}/view");
 
         for caller in NON_PARTICIPANTS {
@@ -419,7 +419,7 @@ async fn non_participants_cannot_mark_a_session_viewed() {
 async fn a_coach_creates_a_session_with_its_notes_document() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let r1 = app.world.r1;
+        let r1 = app.fixture.r1;
         let date = (Utc::now() + TimeDelta::days(5))
             .format("%Y-%m-%dT%H:%M:%S")
             .to_string();
@@ -451,7 +451,7 @@ async fn a_coach_creates_a_session_with_its_notes_document() {
 async fn a_coachee_cannot_create_a_session() {
     within_time_limit(assert_create_refused(
         &[Caller::Coachee],
-        |b| b.world.r1,
+        |b| b.fixture.r1,
         StatusCode::FORBIDDEN,
     ))
     .await;
@@ -462,7 +462,7 @@ async fn a_coachee_cannot_create_a_session() {
 async fn members_outside_the_relationship_cannot_create_a_session() {
     within_time_limit(assert_create_refused(
         &[Caller::Member, Caller::OtherCoach],
-        |b| b.world.r1,
+        |b| b.fixture.r1,
         StatusCode::FORBIDDEN,
     ))
     .await;
@@ -473,7 +473,7 @@ async fn members_outside_the_relationship_cannot_create_a_session() {
 async fn admins_cannot_create_a_session() {
     within_time_limit(assert_create_refused(
         &[Caller::Admin, Caller::Super],
-        |b| b.world.r1,
+        |b| b.fixture.r1,
         StatusCode::FORBIDDEN,
     ))
     .await;
@@ -484,7 +484,7 @@ async fn admins_cannot_create_a_session() {
 async fn an_outsider_cannot_create_a_session() {
     within_time_limit(assert_create_refused(
         &[Caller::Outsider],
-        |b| b.world.r1,
+        |b| b.fixture.r1,
         StatusCode::FORBIDDEN,
     ))
     .await;
@@ -495,7 +495,7 @@ async fn an_outsider_cannot_create_a_session() {
 async fn a_removed_coachee_cannot_create_a_session() {
     within_time_limit(assert_create_refused(
         &[Caller::Removed],
-        |b| b.world.r3,
+        |b| b.fixture.r3,
         StatusCode::FORBIDDEN,
     ))
     .await;
@@ -506,7 +506,7 @@ async fn a_removed_coachee_cannot_create_a_session() {
 async fn a_coach_updates_a_session() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s1 = app.world.s1;
+        let s1 = app.fixture.s1;
         let body = retitle_body(&app, s1).await;
 
         let reply = app
@@ -553,7 +553,7 @@ async fn non_participants_cannot_update_a_session() {
 async fn a_coach_retitles_a_session_whose_coachee_left() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s3 = app.world.s3;
+        let s3 = app.fixture.s3;
         let schedule = session_schedule(app.db(), s3).await;
         let body = retitle_body(&app, s3).await;
 
@@ -582,7 +582,7 @@ async fn a_coach_retitles_a_session_whose_coachee_left() {
 async fn either_participant_retitles_a_session() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s1 = app.world.s1;
+        let s1 = app.fixture.s1;
         let path = format!("/coaching_sessions/{s1}/title");
 
         for caller in [Caller::Coach, Caller::Coachee] {
@@ -626,7 +626,7 @@ async fn non_participants_cannot_retitle_a_session() {
 async fn a_coach_deletes_a_content_free_session() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s4 = seed_content_free_session(app.db(), app.world.r1).await;
+        let s4 = seed_content_free_session(app.db(), app.fixture.r1).await;
         let document_deleted = app.expect_tiptap("DELETE", 1).await;
 
         let reply = app
@@ -663,7 +663,7 @@ async fn non_participants_cannot_delete_a_session() {
 async fn a_coach_resends_a_sessions_invite() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s1 = app.world.s1;
+        let s1 = app.fixture.s1;
         let before = session_ical_sequence(app.db(), s1)
             .await
             .expect("S1 is seeded");
@@ -690,7 +690,7 @@ async fn a_coach_resends_a_sessions_invite() {
 async fn a_coachee_cannot_resend_a_sessions_invite() {
     within_time_limit(assert_resend_refused(
         &[Caller::Coachee],
-        |b| b.world.s1,
+        |b| b.fixture.s1,
         StatusCode::FORBIDDEN,
     ))
     .await;
@@ -701,7 +701,7 @@ async fn a_coachee_cannot_resend_a_sessions_invite() {
 async fn non_participants_cannot_resend_a_sessions_invite() {
     within_time_limit(assert_resend_refused(
         &NON_PARTICIPANTS,
-        |b| b.world.s1,
+        |b| b.fixture.s1,
         StatusCode::FORBIDDEN,
     ))
     .await;
@@ -712,7 +712,7 @@ async fn non_participants_cannot_resend_a_sessions_invite() {
 async fn scheduling_with_a_coachee_who_left_is_refused() {
     within_time_limit(assert_create_refused(
         &[Caller::Coach],
-        |b| b.world.r3,
+        |b| b.fixture.r3,
         StatusCode::CONFLICT,
     ))
     .await;
@@ -723,7 +723,7 @@ async fn scheduling_with_a_coachee_who_left_is_refused() {
 async fn moving_a_session_whose_coachee_left_is_refused() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s3 = app.world.s3;
+        let s3 = app.fixture.s3;
         let before = session_schedule(app.db(), s3).await;
         let (date, _) = before.expect("S3 is seeded");
         let moved = (date + TimeDelta::days(1))
@@ -751,7 +751,7 @@ async fn moving_a_session_whose_coachee_left_is_refused() {
 async fn resending_to_a_coachee_who_left_is_refused() {
     within_time_limit(assert_resend_refused(
         &[Caller::Coach],
-        |b| b.world.s3,
+        |b| b.fixture.s3,
         StatusCode::CONFLICT,
     ))
     .await;
@@ -762,7 +762,7 @@ async fn resending_to_a_coachee_who_left_is_refused() {
 async fn a_coach_deletes_a_session_whose_coachee_left() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s5 = seed_content_free_session(app.db(), app.world.r3).await;
+        let s5 = seed_content_free_session(app.db(), app.fixture.r3).await;
 
         let reply = app
             .send(
@@ -785,9 +785,10 @@ async fn a_coach_deletes_a_session_whose_coachee_left() {
 async fn deleting_a_session_with_content_is_refused() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
-        let s1 = world.s1;
-        let content: BTreeSet<Id> = ids([world.n1, world.ag1, world.a1, world.a2, world.a3]);
+        let fixture = &app.fixture;
+        let s1 = fixture.s1;
+        let content: BTreeSet<Id> =
+            ids([fixture.n1, fixture.ag1, fixture.a1, fixture.a2, fixture.a3]);
         let schedule = session_schedule(app.db(), s1).await;
         let documents_deleted = app.expect_tiptap("DELETE", 0).await;
         let emails = app.expect_emails(0).await;

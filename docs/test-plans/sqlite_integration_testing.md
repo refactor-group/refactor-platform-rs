@@ -132,10 +132,11 @@ extractor cannot break one.
   `<module>_sqlite_tests.rs` beside the controller or handler module that serves the route,
   pulled in with `#[cfg(test)] #[path = "<module>_sqlite_tests.rs"] mod sqlite_tests;`. Each
   names its matrix row in a one-line doc comment, such as `/// ACT-32`.
-- **Fixture:** `domain/src/test_utils/sqlite/access_world.rs` seeds the matrix's section 2
-  cast. `mirror_migration_defaults` copies the column defaults and unique indexes that exist
-  only in the migrations; without it every create through the API fails. It is a hand-made
-  copy, so a migration that adds a default an API create relies on must be mirrored there.
+- **Fixture:** `domain/src/test_utils/sqlite/fixture.rs` seeds the matrix's section 2
+  cast; `read_back.rs` beside it reads rows back for assertions. `mirror_migration_defaults`
+  copies the column defaults and unique indexes that exist only in the migrations; without
+  it every create through the API fails. It is a hand-made copy, so a migration that adds a
+  default an API create relies on must be mirrored there.
 - **External services:** Tiptap, Resend and the AssemblyAI model point at a local `mockito`
   server through their existing base-URL settings; images use the local object store.
 - **Coverage:** the matrix's section 6 names, for every row, the test that checks it, or why

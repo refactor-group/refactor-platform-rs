@@ -22,8 +22,8 @@ const COACHEE_LINE: &str = "I will send the kumquat plan.";
 async fn participants_read_the_latest_transcription() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let path = format!("/coaching_sessions/{}/transcriptions", app.world.s1);
-        let expected = ids([app.world.tr1]);
+        let path = format!("/coaching_sessions/{}/transcriptions", app.fixture.s1);
+        let expected = ids([app.fixture.tr1]);
 
         for caller in [Caller::Coach, Caller::Coachee] {
             assert_eq!(
@@ -47,10 +47,10 @@ async fn non_participants_cannot_read_the_latest_transcription() {
 async fn participants_download_only_the_coachs_lines() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let world = &app.world;
+        let fixture = &app.fixture;
         let path = format!(
             "/coaching_sessions/{}/transcriptions/{}?speaker=coach",
-            world.s1, world.tr1
+            fixture.s1, fixture.tr1
         );
 
         for caller in [Caller::Coach, Caller::Coachee] {
@@ -77,13 +77,13 @@ async fn participants_download_only_the_coachs_lines() {
 #[tokio::test]
 async fn non_participants_cannot_read_a_transcription() {
     within_time_limit(async {
-        assert_transcription_reads_refused(|b| format!("/{}", b.world.tr1)).await;
+        assert_transcription_reads_refused(|b| format!("/{}", b.fixture.tr1)).await;
 
         // The matrix's note: TR1 under a session it is not in is not found.
         let mut app = TestApp::new().await;
         let path = format!(
             "/coaching_sessions/{}/transcriptions/{}",
-            app.world.s3, app.world.tr1
+            app.fixture.s3, app.fixture.tr1
         );
         let (status, _) = app.expect(Caller::Coach, Method::GET, &path, None).await;
         assert_eq!(status, StatusCode::NOT_FOUND);

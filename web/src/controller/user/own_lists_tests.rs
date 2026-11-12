@@ -16,7 +16,7 @@ use crate::controller::user::goal_controller;
 use crate::controller::user::{coaching_relationships_controller, coaching_session_controller};
 use crate::extractors::authenticated_user::AuthenticatedUser;
 use crate::extractors::compare_api_version::CompareApiVersion;
-use crate::extractors::relationship_access_test_support::{self as support, Caller, World};
+use crate::extractors::relationship_access_test_support::{self as support, Caller, Fixture};
 use crate::{protect, AppState};
 
 /// Marks a WHERE clause that holds the caller to orgs they still belong to.
@@ -73,7 +73,13 @@ fn statements(db: &DatabaseConnection) -> Vec<String> {
 }
 
 /// `caller` GETs their own `path?query`; returns the WHERE clause of the query on `table`.
-async fn own_list_where(w: &World, caller: Caller, path: &str, query: &str, table: &str) -> String {
+async fn own_list_where(
+    w: &Fixture,
+    caller: Caller,
+    path: &str,
+    query: &str,
+    table: &str,
+) -> String {
     let user = match caller {
         Caller::SuperAdmin => &w.super_admin,
         _ => &w.coachee,
@@ -102,7 +108,7 @@ async fn own_list_where(w: &World, caller: Caller, path: &str, query: &str, tabl
 
 /// Asserts the org filter is on `route`'s query for a member and off for a SuperAdmin.
 async fn assert_held_to_member_orgs(path: &str, query: &str, table: &str) {
-    let w = support::world();
+    let w = support::fixture();
     let member = own_list_where(&w, Caller::Coachee, path, query, table).await;
     assert!(member.contains(ORG_FILTER), "member: {member}");
     let super_admin = own_list_where(&w, Caller::SuperAdmin, path, query, table).await;
@@ -124,7 +130,7 @@ async fn own_sessions_are_held_to_member_orgs() {
 
 #[tokio::test]
 async fn own_nearest_sessions_are_held_to_member_orgs() {
-    let relationship_id = support::world().relationship.id;
+    let relationship_id = support::fixture().relationship.id;
     let query = format!(
         "coaching_relationship_id={relationship_id}&around=2026-11-12T14:00:00Z&before=2&after=3"
     );
@@ -149,14 +155,14 @@ async fn own_goals_are_held_to_member_orgs() {
 /// A handler's own parts for the coachee asking about the coach's id, against a database
 /// that answers nothing.
 struct Foreign {
-    w: World,
+    w: Fixture,
     db: Arc<DatabaseConnection>,
 }
 
 impl Foreign {
     fn new() -> Self {
         Self {
-            w: support::world(),
+            w: support::fixture(),
             db: Arc::new(MockDatabase::new(DatabaseBackend::Postgres).into_connection()),
         }
     }

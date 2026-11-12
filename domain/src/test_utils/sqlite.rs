@@ -28,9 +28,10 @@ use sea_orm::{
     EntityTrait, QueryResult, Set, Statement,
 };
 
-pub mod access_world;
+pub mod fixture;
+pub mod read_back;
 
-pub use access_world::{seed_access_world, AccessWorld, Caller};
+pub use fixture::{seed_fixture, Caller, Fixture};
 
 /// Ceiling on one SQLite test. Per-acquire timeouts still add up across many rows.
 const TEST_TIME_LIMIT: Duration = Duration::from_secs(5 * 60);

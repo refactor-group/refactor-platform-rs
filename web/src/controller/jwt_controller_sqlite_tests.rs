@@ -21,7 +21,7 @@ fn token_path(session: Id) -> String {
 async fn participants_get_a_token_for_the_sessions_document() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s1 = app.world.s1;
+        let s1 = app.fixture.s1;
 
         for caller in [Caller::Coach, Caller::Coachee] {
             let reply = app.send(caller, Method::GET, &token_path(s1), None).await;
@@ -39,7 +39,7 @@ async fn participants_get_a_token_for_the_sessions_document() {
 async fn non_participants_get_no_token() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s1 = app.world.s1;
+        let s1 = app.fixture.s1;
 
         for caller in NON_PARTICIPANTS {
             let (status, _) = app.expect(caller, Method::GET, &token_path(s1), None).await;
@@ -60,7 +60,7 @@ async fn non_participants_get_no_token() {
 async fn a_removed_coachee_gets_no_token() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let s3 = app.world.s3;
+        let s3 = app.fixture.s3;
 
         let (status, _) = app
             .expect(Caller::Removed, Method::GET, &token_path(s3), None)
