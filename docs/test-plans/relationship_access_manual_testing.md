@@ -223,7 +223,7 @@ How to read the tables:
 | SES-24 | POST /coaching_sessions/S1/resend_invite | COACH | 204 | `web/src/protect/coaching_sessions.rs:129` | 409 when past or a series member. Sends MAIL-04 |
 | SES-25 | POST /coaching_sessions/S1/resend_invite | COACHEE | 403 | `web/src/protect/coaching_sessions.rs:129` | |
 | SES-26 | POST /coaching_sessions/S1/resend_invite | non-participants | 403 | `web/src/protect/coaching_sessions.rs:129` | |
-| SES-27 | GET /users/{COACH_ID}/coaching_sessions | COACH | 200, S1 S3 SR1-* | `web/src/protect/users/coaching_sessions.rs:20`; `entity_api/src/coaching_session.rs:1159` | [rows] self only. `include=relationship` adds `coach`/`coachee` |
+| SES-27 | GET /users/{COACH_ID}/coaching_sessions | COACH | 200, S1 S3 SR1-* SR3-* | `web/src/protect/users/coaching_sessions.rs:20`; `entity_api/src/coaching_session.rs:1159` | [rows] self only. `include=relationship` adds `coach`/`coachee` |
 | SES-28 | GET /users/{COACHEE_ID}/coaching_sessions | COACHEE | 200, S1 S2 SR1-* | same as SES-27 | [rows] |
 | SES-29 | GET /users/{COACHEE_ID}/coaching_sessions | COACH, MEMBER, ADMIN, SUPER | 403 | `web/src/protect/users/coaching_sessions.rs:20` | Same gate for `/counts` and `/nearest` |
 | SES-30 | GET /users/{REMOVED_ID}/coaching_sessions | REMOVED | 200, empty list | `web/src/protect/users/coaching_sessions.rs:20` | [membership] self list leaves out S3; was 200, S3 |
