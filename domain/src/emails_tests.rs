@@ -5015,11 +5015,9 @@ fn snapshot_of_a_stored_late_month_series_still_builds() {
 #[derive(Clone, Copy, Debug)]
 enum RelationshipEmail {
     SessionScheduled,
-    SessionCancelled,
     SeriesScheduled,
     SeriesRescheduled,
     SeriesFollowing,
-    SeriesCancelled,
 }
 
 /// A coach and coachee in one organization, with an upcoming session and series.
@@ -5166,10 +5164,6 @@ async fn send_relationship_email(
             )
             .await;
         }
-        RelationshipEmail::SessionCancelled => {
-            let db = f.loads(|db| db).into_connection();
-            notify_session_cancelled(&db, &config, &f.session).await;
-        }
         RelationshipEmail::SeriesScheduled => {
             let db = f.party_loads(goals).into_connection();
             notify_recurring_sessions_scheduled(
@@ -5217,10 +5211,6 @@ async fn send_relationship_email(
                 .await,
             );
         }
-        RelationshipEmail::SeriesCancelled => {
-            let db = f.loads(|db| db).into_connection();
-            notify_recurring_sessions_cancelled(&db, &config, &f.series, &sessions).await;
-        }
     }
     (capture.captured(), told)
 }
@@ -5229,11 +5219,6 @@ async fn send_relationship_email(
 const COACH_TO: &str = "\"Alex Smith\" <alex@example.com>";
 #[cfg(feature = "mock")]
 const COACHEE_TO: &str = "\"Jane Doe\" <jane@example.com>";
-
-#[cfg(feature = "mock")]
-fn addressed(to: &[&str]) -> BTreeSet<String> {
-    to.iter().map(|to| to.to_string()).collect()
-}
 
 /// Every relationship email but a cancellation reaches only the participants still in the
 /// organization, and one with nobody left sends nothing without failing.
@@ -5261,71 +5246,6 @@ async fn relationship_emails_reach_only_current_members() {
             assert_eq!(mailed, expected, "{email:?} with members {members:?}");
         }
     }
-}
-
-/// Cancellations reach both participants whoever is still a member, so a removed member's
-/// calendar is cleaned up.
-#[cfg(feature = "mock")]
-#[tokio::test]
-async fn cancellations_reach_both_participants_regardless_of_membership() {
-    let f = MembershipFixture::new();
-    let both = addressed(&[COACH_TO, COACHEE_TO]);
-    let rows = [
-        vec![f.coach.id, f.coachee.id],
-        vec![f.coach.id],
-        vec![f.coachee.id],
-        vec![],
-    ];
-
-    for email in [
-        RelationshipEmail::SessionCancelled,
-        RelationshipEmail::SeriesCancelled,
-    ] {
-        for members in &rows {
-            let (mailed, _) = send_relationship_email(email, &f, members).await;
-            assert_eq!(mailed, both, "{email:?} with members {members:?}");
-        }
-    }
-}
-
-/// M7-01
-#[cfg(feature = "mock")]
-#[tokio::test]
-async fn m7_01_single_cancel_with_the_coachee_removed_reaches_both() {
-    let f = MembershipFixture::new();
-    let (mailed, _) =
-        send_relationship_email(RelationshipEmail::SessionCancelled, &f, &[f.coach.id]).await;
-    assert_eq!(mailed, addressed(&[COACH_TO, COACHEE_TO]));
-}
-
-/// M7-02
-#[cfg(feature = "mock")]
-#[tokio::test]
-async fn m7_02_single_cancel_with_the_coach_removed_reaches_both() {
-    let f = MembershipFixture::new();
-    let (mailed, _) =
-        send_relationship_email(RelationshipEmail::SessionCancelled, &f, &[f.coachee.id]).await;
-    assert_eq!(mailed, addressed(&[COACH_TO, COACHEE_TO]));
-}
-
-/// M7-03
-#[cfg(feature = "mock")]
-#[tokio::test]
-async fn m7_03_series_cancel_with_the_coachee_removed_reaches_both() {
-    let f = MembershipFixture::new();
-    let (mailed, _) =
-        send_relationship_email(RelationshipEmail::SeriesCancelled, &f, &[f.coach.id]).await;
-    assert_eq!(mailed, addressed(&[COACH_TO, COACHEE_TO]));
-}
-
-/// M7-05: scheduling stays members-only.
-#[cfg(feature = "mock")]
-#[tokio::test]
-async fn m7_05_session_scheduled_with_the_coachee_removed_reaches_only_the_coach() {
-    let f = MembershipFixture::new();
-    let (mailed, _) =
-        send_relationship_email(RelationshipEmail::SessionScheduled, &f, &[f.coach.id]).await;
-    assert_eq!(mailed, addressed(&[COACH_TO]));
 }
 
 /// One Resend request: its addressee, template, and decoded `.ics` attachments.

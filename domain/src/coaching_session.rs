@@ -584,7 +584,8 @@ pub async fn resend_invite(db: &DatabaseConnection, config: &Config, id: Id) -> 
 }
 
 /// A resend is only done once the coachee has it. Missing the coach is not a failure: the
-/// coach is the one asking. A coachee removed after the membership check gets its 409.
+/// coach is the one asking. An `Audience` that leaves the coachee out of `member_ids` gets
+/// the not-a-member 409.
 pub(crate) fn ensure_coachee_reached(
     delivered: &emails::Delivered,
     relationship: &coaching_relationships::Model,
@@ -2123,7 +2124,7 @@ mod tests {
         }
     }
 
-    /// M7-06: a coachee removed after the resend's check gets the same 409 as the check.
+    /// M7-06: a coachee the `Audience` skips as not a member gets the same 409 as the check.
     #[test]
     fn m7_06_a_coachee_skipped_as_not_a_member_is_the_resend_409() {
         let relationship = test_coaching_relationship(Id::new_v4(), Id::new_v4());

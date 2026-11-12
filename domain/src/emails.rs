@@ -29,6 +29,10 @@ mod added_to_organization_tests;
 #[path = "emails_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "emails_sqlite_tests.rs"]
+mod sqlite_tests;
+
 /// Trait for email notifications that need common config prerequisites.
 ///
 /// Implementors declare which template ID to use and a human-readable name
