@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration as StdDuration;
 
 use axum::body::{to_bytes, Body, BodyDataStream, Bytes};
@@ -87,6 +87,8 @@ pub(super) struct Reply {
 /// its key set, and the server keeps a stray model call off the network.
 struct StandIns {
     server: ServerGuard,
+    /// Every address Resend was asked to mail, in send order.
+    emailed: Emailed,
     config: Config,
     store: Arc<dyn ObjectStore>,
     store_root: StoreRoot,
@@ -101,7 +103,8 @@ impl StandIns {
                 .create_async()
                 .await;
         }
-        resend_send(&mut server)
+        let emailed = Emailed::default();
+        resend_send(&mut server, &emailed)
             .expect_at_least(0)
             .create_async()
             .await;
@@ -110,6 +113,7 @@ impl StandIns {
         let store = object_storage::from_config(&config).expect("the local object store builds");
         Self {
             server,
+            emailed,
             config,
             store,
             store_root,
@@ -124,13 +128,38 @@ fn tiptap_document(server: &mut ServerGuard, method: &str) -> Mock {
         .with_status(200)
 }
 
-/// A Resend send, answered with the id Resend returns.
-fn resend_send(server: &mut ServerGuard) -> Mock {
+/// The recipient addresses of every email sent.
+type Emailed = Arc<Mutex<Vec<String>>>;
+
+/// A Resend send, answered with the id Resend returns, recording its recipients.
+fn resend_send(server: &mut ServerGuard, emailed: &Emailed) -> Mock {
+    let emailed = emailed.clone();
     server
         .mock("POST", RESEND_SEND)
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(r#"{"id":"stand-in"}"#)
+        .with_body_from_request(move |request| {
+            let body: Value = request
+                .body()
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(bytes).ok())
+                .unwrap_or_default();
+            let to = body["to"].as_array().cloned().unwrap_or_default();
+            emailed
+                .lock()
+                .expect("the recipient log locks")
+                .extend(to.iter().filter_map(Value::as_str).map(address));
+            br#"{"id":"stand-in"}"#.to_vec()
+        })
+}
+
+/// The bare address of a recipient, written `"Name" <address>` or as the address alone.
+fn address(recipient: &str) -> String {
+    recipient
+        .rsplit_once('<')
+        .and_then(|(_, rest)| rest.strip_suffix('>'))
+        .unwrap_or(recipient)
+        .to_string()
 }
 
 /// A scratch directory for the local object store, removed when dropped.
@@ -208,10 +237,23 @@ impl Baseline {
 
     /// Expects exactly `hits` emails sent from here on; check with `assert_async`.
     pub(super) async fn expect_emails(&mut self, hits: usize) -> Mock {
-        resend_send(&mut self.stand_ins.server)
+        resend_send(&mut self.stand_ins.server, &self.stand_ins.emailed)
             .expect(hits)
             .create_async()
             .await
+    }
+
+    /// The addresses mailed since the last call, sorted.
+    pub(super) fn take_emailed(&mut self) -> Vec<String> {
+        let mut emailed = std::mem::take(
+            &mut *self
+                .stand_ins
+                .emailed
+                .lock()
+                .expect("the recipient log locks"),
+        );
+        emailed.sort();
+        emailed
     }
 
     /// One matrix row: the status and the ids `data` returned.

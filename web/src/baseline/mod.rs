@@ -270,12 +270,12 @@
 //! | MAIL-01 | `d/emails_tests.rs::relationship_emails_reach_only_current_members`; `d/emails_sqlite_tests.rs::session_scheduled_with_the_coachee_holding_no_role_reaches_only_the_coach` |
 //! | MAIL-02 | `d/emails_tests.rs::test_send_session_rescheduled_email`; `d/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_coachee_no_longer_in_the_organization_is_not_emailed` |
 //! | MAIL-03 | `d/emails_sqlite_tests.rs::single_cancel_with_the_coachee_holding_no_role_reaches_both`, `::single_cancel_with_the_coach_holding_no_role_reaches_both`, `::a_series_edit_cancels_an_orphan_for_a_coachee_holding_no_role` |
-//! | MAIL-04 | `w/controller/resend_invite_tests.rs::session_resend_bumps_a_one_off`, `::resend_with_a_removed_coach_mails_only_the_coachee`, `::resend_to_a_removed_coachee_is_refused` |
+//! | MAIL-04 | `mail_rows::mail_04_a_session_resend_mails_both_members`; `w/controller/resend_invite_tests.rs::session_resend_bumps_a_one_off`, `::resend_with_a_removed_coach_mails_only_the_coachee`, `::resend_to_a_removed_coachee_is_refused` |
 //! | MAIL-05 | `d/emails_tests.rs::relationship_emails_reach_only_current_members`; `d/coaching_session_series.rs::tests::m5_08_series_create_invites_only_current_members` |
 //! | MAIL-06 | `d/emails_tests.rs::relationship_emails_reach_only_current_members`; `d/coaching_session_series.rs::tests::m5_09_series_reschedule_emails_only_current_members` |
 //! | MAIL-07 | `d/emails_tests.rs::relationship_emails_reach_only_current_members`; `d/coaching_session_series.rs::tests::m5_10_reschedule_following_emails_only_current_members` |
 //! | MAIL-08 | `d/emails_sqlite_tests.rs::series_cancel_with_the_coachee_holding_no_role_reaches_both` |
-//! | MAIL-09 | `w/controller/resend_invite_tests.rs::series_resend_bumps_the_series_and_raises_its_members`, `::resend_with_a_removed_coach_mails_only_the_coachee`, `::resend_to_a_removed_coachee_is_refused` |
+//! | MAIL-09 | `mail_rows::mail_09_a_series_resend_mails_both_members`; `w/controller/resend_invite_tests.rs::series_resend_bumps_the_series_and_raises_its_members`, `::resend_with_a_removed_coach_mails_only_the_coachee`, `::resend_to_a_removed_coachee_is_refused` |
 //! | MAIL-10 | `d/emails_tests.rs::test_send_session_reminder_email_goes_only_to_the_coachee` |
 //! | MAIL-11 | `d/emails_tests.rs::action_assigned_reaches_only_current_members` |
 //! | MAIL-12 | `d/emails_tests.rs::test_send_welcome_email_success` |
@@ -288,6 +288,7 @@ mod action_rows;
 mod agreement_rows;
 mod goal_rows;
 mod jwt_rows;
+mod mail_rows;
 mod meeting_rows;
 mod note_rows;
 mod organization_rows;
