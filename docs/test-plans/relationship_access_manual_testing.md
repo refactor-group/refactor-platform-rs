@@ -354,7 +354,7 @@ How to read the tables:
 | GOAL-10 | POST /goals `{coaching_relationship_id: R1}` | COACH, COACHEE | 200 (201), new goal | `web/src/controller/goal_controller.rs:81` | [tightened] Non-participants: GOAL-25 |
 | GOAL-11 | GET /coaching_sessions/S1/goals | COACH, COACHEE | 200, G1 | `web/src/protect/goals.rs:114` | [rows] |
 | GOAL-12 | GET /coaching_sessions/S1/goals | non-participants | 403 | `web/src/protect/goals.rs:114` | |
-| GOAL-13 | POST /coaching_sessions/S1/goals `{goal_id: G1}` | COACH, COACHEE | 200 (201), link | `web/src/controller/coaching_session/goal_controller.rs:47` | [tightened] Non-participants: GOAL-26 |
+| GOAL-13 | POST /coaching_sessions/SR1-1/goals `{goal_id: G1}` (an R1 session G1 isn't linked to yet) | COACH, COACHEE | 200 (201), link | `web/src/controller/coaching_session/goal_controller.rs:47` | [tightened] Non-participants: GOAL-26 |
 | GOAL-14 | DELETE /coaching_sessions/S1/goals/G1 | COACH, COACHEE | 200, `{goal_id}` | `web/src/controller/coaching_session/goal_controller.rs:97` | [tightened] Non-participants: GOAL-26 |
 | GOAL-15 | GET /coaching_sessions/goals?coaching_relationship_id=R1 | COACH, COACHEE | 200, `session_goals` S1 [G1], SR1-* [] | `web/src/protect/goals.rs:154` | [rows] |
 | GOAL-16 | GET /coaching_sessions/goals?coaching_relationship_id=R1 | non-participants | 403 | `web/src/protect/goals.rs:154` | |
