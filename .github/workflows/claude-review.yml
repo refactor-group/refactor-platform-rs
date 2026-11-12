@@ -95,7 +95,7 @@ jobs:
           settings: ${{ env.REVIEW_SETTINGS }}
           # No skills or commands: the reviewer needs none, and a PR could supply its own.
           claude_args: |
-            --model claude-fable-5-2
+            --model claude-opus-5-5
             --disable-slash-commands
             --allowedTools "${{ env.REVIEW_TOOLS }}"
           prompt: |
@@ -190,7 +190,11 @@ jobs:
                **Pre-existing**. Then one `gh pr comment` whose first line is
                `<!-- claude-review:code sha=${{ github.event.pull_request.head.sha }} important=<n> -->`
                with <n> replaced by the number of Important findings in this
-               round, followed by the summary REVIEW.md asks for.
+               round, whose second line is `**Claude Code review**`, followed
+               by the summary REVIEW.md asks for. End every inline comment
+               with the line `_Claude Code review_`. Comments post from a
+               shared bot account, so these labels are how a reader knows who
+               wrote them.
 
             8. Convergence. Count the summaries, this one included, whose
                marker has important greater than 0. If there are three or more
@@ -208,6 +212,7 @@ jobs:
           MARKER: "claude-review:code sha=${{ github.event.pull_request.head.sha }}"
         run: |
           jq -r '.. | objects | select(has("permission_denials")) | .permission_denials[]? | "denied: \(.tool_name) \(.tool_input.command // (.tool_input | tostring) | .[0:300])"' "$EXECUTION_FILE" || true
+          jq -r '.[]? | select(.type == "result") | "result: is_error=\(.is_error) \(.result // "" | tostring | .[0:600])"' "$EXECUTION_FILE" || true
           gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json comments | jq -e --arg marker "$MARKER" --arg started "$REVIEW_STARTED" 'any(.comments[]; (.body | contains($marker)) and .createdAt >= $started)' > /dev/null
 
   security-review:
@@ -256,7 +261,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           settings: ${{ env.REVIEW_SETTINGS }}
           claude_args: |
-            --model claude-fable-5-2
+            --model claude-opus-5-5
             --disable-slash-commands
             --allowedTools "${{ env.REVIEW_TOOLS }}"
           prompt: |
@@ -324,7 +329,12 @@ jobs:
                **Security (medium)**. Then one `gh pr comment` whose first line
                is
                `<!-- claude-review:security sha=${{ github.event.pull_request.head.sha }} -->`
+               whose second line is `**Claude Code security review**`,
                followed by a count of findings, or "No security findings."
+               End every inline comment with the line
+               `_Claude Code security review_`. Comments post from a shared
+               bot account, so these labels are how a reader knows who wrote
+               them.
 
       # A review that posted no summary must not pass as green.
       - name: Confirm the summary was posted
@@ -335,4 +345,5 @@ jobs:
           MARKER: "claude-review:security sha=${{ github.event.pull_request.head.sha }}"
         run: |
           jq -r '.. | objects | select(has("permission_denials")) | .permission_denials[]? | "denied: \(.tool_name) \(.tool_input.command // (.tool_input | tostring) | .[0:300])"' "$EXECUTION_FILE" || true
+          jq -r '.[]? | select(.type == "result") | "result: is_error=\(.is_error) \(.result // "" | tostring | .[0:600])"' "$EXECUTION_FILE" || true
           gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json comments | jq -e --arg marker "$MARKER" --arg started "$REVIEW_STARTED" 'any(.comments[]; (.body | contains($marker)) and .createdAt >= $started)' > /dev/null
