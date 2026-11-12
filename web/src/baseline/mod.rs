@@ -7,7 +7,7 @@
 //!
 //! Where each row is checked. `d/` is `domain/src/`; a bare `file::test` is in this module.
 //!
-//! Group A (REL, SES, SER, USR, ORG):
+//! Group A (REL, SES, SER, USR, ORG) and group B (NOTE, AGR, ACT, GOAL):
 //!
 //! | Row | Where it is checked |
 //! |---|---|
@@ -55,7 +55,7 @@
 //! | SES-24 | `session_rows::ses_24_a_coach_resends_a_sessions_invite` |
 //! | SES-25 | `session_rows::ses_25_a_coachee_cannot_resend_a_sessions_invite` |
 //! | SES-26 | `session_rows::ses_26_non_participants_cannot_resend_a_sessions_invite` |
-//! | SES-27 | none: the matrix leaves out SR3-*, which the route returns |
+//! | SES-27 | `session_rows::ses_27_a_coach_lists_their_own_sessions` |
 //! | SES-28 | `session_rows::ses_28_a_coachee_lists_their_own_sessions` |
 //! | SES-29 | `session_rows::ses_29_only_the_user_lists_their_own_sessions` |
 //! | SES-30 | `d/coaching_session_sqlite_tests.rs::a_users_own_sessions_skip_an_org_they_left` |
@@ -98,15 +98,108 @@
 //! | ORG-06 | `organization_rows::org_06_admins_delete_a_member_without_coaching_history` |
 //! | ORG-07 | `organization_rows::org_07_an_admin_cannot_delete_themselves` |
 //! | ORG-08 | `organization_rows::org_08_deleting_a_member_with_coaching_history_is_refused` |
+//! | NOTE-01 | `note_rows::note_01_participants_list_the_sessions_notes` |
+//! | NOTE-02 | `note_rows::note_02_non_participants_cannot_list_the_sessions_notes` |
+//! | NOTE-03 | `note_rows::note_03_a_removed_coachee_cannot_list_their_sessions_notes` |
+//! | NOTE-04 | `note_rows::note_04_participants_read_the_note` |
+//! | NOTE-05 | `note_rows::note_05_participants_create_a_note_in_the_session` |
+//! | NOTE-06 | `note_rows::note_06_participants_update_the_note` |
+//! | NOTE-07 | `note_rows::note_07_non_participants_cannot_read_the_note` |
+//! | NOTE-08 | `note_rows::note_08_non_participants_cannot_create_a_note_in_the_session` |
+//! | NOTE-09 | `note_rows::note_09_non_participants_cannot_update_the_note` |
+//! | NOTE-10 | `note_rows::note_10_a_removed_coachee_cannot_reach_their_sessions_notes` |
+//! | AGR-01 | `agreement_rows::agr_01_participants_list_the_sessions_agreements` |
+//! | AGR-02 | `agreement_rows::agr_02_non_participants_cannot_list_the_sessions_agreements` |
+//! | AGR-03 | `agreement_rows::agr_03_a_removed_coachee_cannot_list_their_sessions_agreements` |
+//! | AGR-04 | `agreement_rows::agr_04_participants_read_the_agreement` |
+//! | AGR-05 | `agreement_rows::agr_05_participants_create_an_agreement_in_the_session` |
+//! | AGR-06 | `agreement_rows::agr_06_participants_update_the_agreement` |
+//! | AGR-07 | `agreement_rows::agr_07_participants_delete_the_agreement` |
+//! | AGR-08 | `agreement_rows::agr_08_non_participants_cannot_read_the_agreement` |
+//! | AGR-09 | `agreement_rows::agr_09_non_participants_cannot_create_an_agreement_in_the_session` |
+//! | AGR-10 | `agreement_rows::agr_10_non_participants_cannot_change_the_agreement` |
+//! | AGR-11 | `agreement_rows::agr_11_a_removed_coachee_cannot_reach_their_sessions_agreements` |
+//! | ACT-01 | `action_rows::act_01_a_coach_lists_actions_per_relationship` |
+//! | ACT-02 | `action_rows::act_02_a_coachee_lists_only_own_and_unassigned_actions_per_relationship` |
+//! | ACT-03 | `action_rows::act_03_another_coach_lists_only_their_relationships_actions` |
+//! | ACT-04 | `action_rows::act_04_members_in_no_relationship_list_no_actions` |
+//! | ACT-05 | `action_rows::act_05_non_members_cannot_list_the_orgs_actions` |
+//! | ACT-06 | `action_rows::act_06_a_coachee_who_coaches_no_one_cannot_scope_to_the_coach` |
+//! | ACT-07 | `action_rows::act_07_a_coach_lists_the_relationships_actions` |
+//! | ACT-08 | `action_rows::act_08_a_coachee_lists_only_own_and_unassigned_relationship_actions` |
+//! | ACT-09 | `action_rows::act_09_a_coachee_scopes_relationship_actions_only_to_themselves` |
+//! | ACT-10 | `action_rows::act_10_non_participants_cannot_list_the_relationships_actions` |
+//! | ACT-11 | `action_rows::act_11_an_outsider_cannot_list_the_relationships_actions` |
+//! | ACT-12 | `action_rows::act_12_a_removed_coachee_cannot_list_their_relationships_actions` |
+//! | ACT-13 | `action_rows::act_13_a_coach_lists_actions_of_a_relationship_whose_coachee_left` |
+//! | ACT-14 | `action_rows::act_14_a_coach_lists_the_sessions_actions` |
+//! | ACT-15 | `action_rows::act_15_a_coachee_lists_every_action_of_the_session` |
+//! | ACT-16 | `action_rows::act_16_non_participants_cannot_list_the_sessions_actions` |
+//! | ACT-17 | `action_rows::act_17_a_removed_coachee_cannot_list_their_sessions_actions` |
+//! | ACT-18 | `d/action_sqlite_tests.rs::the_user_sees_every_relationship_they_are_in` |
+//! | ACT-19 | `d/action_sqlite_tests.rs::the_user_sees_every_assignment_of_theirs` |
+//! | ACT-20 | `action_rows::act_20_a_coach_lists_their_own_actions` |
+//! | ACT-21 | `action_rows::act_21_a_removed_coachee_lists_none_of_their_own_actions` |
+//! | ACT-22 | `d/action_sqlite_tests.rs::a_coach_sees_only_their_relationships_with_the_user` |
+//! | ACT-23 | `d/action_sqlite_tests.rs::a_coach_sees_only_assignments_from_their_relationships` |
+//! | ACT-24 | `d/action_sqlite_tests.rs::another_coach_sees_only_their_own_relationship` |
+//! | ACT-25 | `action_rows::act_25_members_who_do_not_coach_the_user_cannot_list_their_actions` |
+//! | ACT-26 | `action_rows::act_26_a_coachee_cannot_list_their_coachs_actions` |
+//! | ACT-26b | `action_rows::act_26b_a_coach_removed_from_the_org_cannot_list_their_coachees_actions` |
+//! | ACT-27 | `action_rows::act_27_participants_read_the_action` |
+//! | ACT-28 | `action_rows::act_28_participants_create_an_action_assigned_to_the_coachee` |
+//! | ACT-29 | `action_rows::act_29_participants_update_the_action` |
+//! | ACT-30 | `action_rows::act_30_participants_update_the_action_status` |
+//! | ACT-31 | `action_rows::act_31_participants_delete_the_action` |
+//! | ACT-32 | `action_rows::act_32_non_participants_cannot_read_the_action` |
+//! | ACT-33 | `action_rows::act_33_non_participants_cannot_create_an_action_in_the_session` |
+//! | ACT-34 | `action_rows::act_34_non_participants_cannot_change_the_action` |
+//! | ACT-35 | `action_rows::act_35_a_removed_coachee_cannot_reach_their_sessions_actions` |
+//! | ACT-36 | `action_rows::act_36_assignees_outside_the_relationship_are_refused` |
+//! | ACT-37 | `action_rows::act_37_assigning_a_coachee_who_left_is_refused` |
+//! | ACT-38 | `action_rows::act_38_a_coach_edits_an_action_still_assigned_to_a_coachee_who_left` |
+//! | ACT-39 | `action_rows::act_39_adding_a_coachee_who_left_as_an_assignee_is_refused` |
+//! | ACT-40 | `action_rows::act_40_a_goal_from_another_relationship_is_refused` |
+//! | GOAL-01 | `goal_rows::goal_01_participants_list_the_relationships_goals` |
+//! | GOAL-02 | `goal_rows::goal_02_non_participants_cannot_list_the_relationships_goals` |
+//! | GOAL-03 | `goal_rows::goal_03_a_removed_coachee_cannot_list_their_relationships_goals` |
+//! | GOAL-04 | `goal_rows::goal_04_participants_read_the_goal` |
+//! | GOAL-05 | `goal_rows::goal_05_non_participants_cannot_read_the_goal` |
+//! | GOAL-06 | `goal_rows::goal_06_participants_update_the_goal` |
+//! | GOAL-07 | `goal_rows::goal_07_participants_delete_the_goal` |
+//! | GOAL-08 | `goal_rows::goal_08_non_participants_cannot_change_the_goal` |
+//! | GOAL-09 | `goal_rows::goal_09_participants_list_the_goals_sessions` |
+//! | GOAL-10 | `goal_rows::goal_10_participants_create_a_goal_in_the_relationship` |
+//! | GOAL-11 | `goal_rows::goal_11_participants_list_the_sessions_goals` |
+//! | GOAL-12 | `goal_rows::goal_12_non_participants_cannot_list_the_sessions_goals` |
+//! | GOAL-13 | none: G1 is already linked to S1, so the link answers 409 |
+//! | GOAL-14 | `goal_rows::goal_14_participants_unlink_a_goal_from_the_session` |
+//! | GOAL-15 | `goal_rows::goal_15_participants_read_goals_per_session_of_the_relationship` |
+//! | GOAL-16 | `goal_rows::goal_16_non_participants_cannot_read_goals_per_session_of_the_relationship` |
+//! | GOAL-17 | `goal_rows::goal_17_every_batch_session_must_be_the_callers` |
+//! | GOAL-18 | `goal_rows::goal_18_non_participants_cannot_batch_read_the_sessions_goals` |
+//! | GOAL-19 | `goal_rows::goal_19_participants_read_the_relationships_goal_progress` |
+//! | GOAL-20 | `goal_rows::goal_20_goal_progress_refuses_a_non_participant_assignee` |
+//! | GOAL-21 | `goal_rows::goal_21_non_participants_cannot_read_the_relationships_goal_progress` |
+//! | GOAL-22 | `goal_rows::goal_22_a_coach_lists_the_goals_they_created` |
+//! | GOAL-23 | `goal_rows::goal_23_a_coachee_who_created_no_goal_lists_none` |
+//! | GOAL-24 | `goal_rows::goal_24_only_the_user_lists_their_own_goals` |
+//! | GOAL-25 | `goal_rows::goal_25_non_participants_cannot_create_a_goal_in_the_relationship` |
+//! | GOAL-26 | `goal_rows::goal_26_non_participants_cannot_change_the_sessions_goal_links` |
+//! | GOAL-27 | `goal_rows::goal_27_linking_a_goal_from_another_relationship_is_refused` |
+//! | GOAL-28 | `goal_rows::goal_28_a_created_in_session_from_another_relationship_is_refused` |
 
 mod harness;
 
-mod content_rows;
-mod goal_and_topic_rows;
+mod action_rows;
+mod agreement_rows;
+mod goal_rows;
+mod note_rows;
 mod organization_rows;
 mod other_rows;
 mod relationship_rows;
 mod series_rows;
 mod session_rows;
+mod topic_rows;
 mod transcript_rows;
 mod user_rows;

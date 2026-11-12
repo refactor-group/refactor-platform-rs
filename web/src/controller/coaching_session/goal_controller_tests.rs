@@ -1,36 +1,27 @@
-//! The session goal link routes through the router, sign-in and access check, against a mock
-//! database: only a participant may link or unlink, and only a goal of the session's
-//! relationship may be linked.
+//! The session goal link route through the router, sign-in and access check, against a mock
+//! database: a participant links a goal of the relationship, and an unknown goal is not found.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use axum::{
-    routing::{delete as delete_route, post},
-    Router,
-};
+use axum::{routing::post, Router};
 use chrono::Utc;
 use domain::{coaching_sessions_goals, goals, Id};
-use sea_orm::{MockDatabase, MockExecResult, Value};
+use sea_orm::{MockDatabase, Value};
 use serde_json::json;
 
-use super::{create, delete};
+use super::create;
 use crate::extractors::relationship_access_test_support::{
     self as support, assert_refusal, json_body, Caller, World,
 };
 use crate::AppState;
 
 fn routes() -> Router<AppState> {
-    Router::new()
-        .route(
-            "/coaching_sessions/:coaching_session_id/goals",
-            post(create),
-        )
-        .route(
-            "/coaching_sessions/:coaching_session_id/goals/:id",
-            delete_route(delete),
-        )
+    Router::new().route(
+        "/coaching_sessions/:coaching_session_id/goals",
+        post(create),
+    )
 }
 
 fn goal_in(w: &World, coaching_relationship_id: Id) -> goals::Model {
@@ -72,10 +63,6 @@ fn members(w: &World) -> Vec<BTreeMap<String, Value>> {
 
 fn goals_uri(w: &World) -> String {
     format!("/coaching_sessions/{}/goals", w.session.id)
-}
-
-fn goal_uri(w: &World, goal_id: Id) -> String {
-    format!("/coaching_sessions/{}/goals/{goal_id}", w.session.id)
 }
 
 /// Sends the request and asserts the refusal `expected` with nothing written.
@@ -125,39 +112,6 @@ async fn goal_13_coach_links_a_goal_of_the_relationship() {
 }
 
 #[tokio::test]
-async fn goal_26_member_cannot_link_a_goal_to_the_session() {
-    let w = support::world();
-    let goal = goal_in(&w, w.relationship.id);
-    assert_refused(
-        "GOAL-26",
-        w.reaching_session(Caller::Member),
-        &w.member.email,
-        "POST",
-        &goals_uri(&w),
-        Some(json!({ "goal_id": goal.id })),
-        StatusCode::FORBIDDEN,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn goal_27_link_refuses_a_goal_from_another_relationship() {
-    let w = support::world();
-    let other_goal = goal_in(&w, Id::new_v4());
-    assert_refused(
-        "GOAL-27",
-        w.reaching_session(Caller::Coach)
-            .append_query_results([vec![other_goal.clone()]]),
-        &w.coach.email,
-        "POST",
-        &goals_uri(&w),
-        Some(json!({ "goal_id": other_goal.id })),
-        StatusCode::UNPROCESSABLE_ENTITY,
-    )
-    .await;
-}
-
-#[tokio::test]
 async fn goal_27b_link_of_an_unknown_goal_is_not_found() {
     let w = support::world();
     assert_refused(
@@ -169,48 +123,6 @@ async fn goal_27b_link_of_an_unknown_goal_is_not_found() {
         &goals_uri(&w),
         Some(json!({ "goal_id": Id::new_v4() })),
         StatusCode::NOT_FOUND,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn goal_14_coachee_unlinks_a_goal_from_the_session() {
-    let w = support::world();
-    let goal = goal_in(&w, w.relationship.id);
-    let db = Arc::new(
-        w.reaching_session(Caller::Coachee)
-            .append_query_results([vec![(link(&w, goal.id), w.relationship.clone())]])
-            .append_exec_results([MockExecResult {
-                last_insert_id: 0,
-                rows_affected: 1,
-            }])
-            .append_query_results([members(&w)])
-            .into_connection(),
-    );
-    let response = support::send(
-        routes(),
-        &db,
-        &w.coachee.email,
-        "DELETE",
-        &goal_uri(&w, goal.id),
-        None,
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK, "GOAL-14");
-}
-
-#[tokio::test]
-async fn goal_26b_outsider_cannot_unlink_a_goal_from_the_session() {
-    let w = support::world();
-    let goal = goal_in(&w, w.relationship.id);
-    assert_refused(
-        "GOAL-26b",
-        w.reaching_session(Caller::Outsider),
-        &w.outsider.email,
-        "DELETE",
-        &goal_uri(&w, goal.id),
-        None,
-        StatusCode::FORBIDDEN,
     )
     .await;
 }

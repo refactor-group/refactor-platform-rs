@@ -618,6 +618,23 @@ async fn ses_26_non_participants_cannot_resend_a_sessions_invite() {
     .await;
 }
 
+/// SES-27
+#[tokio::test]
+async fn ses_27_a_coach_lists_their_own_sessions() {
+    within_time_limit(assert_own_sessions(Caller::Coach, |b| {
+        let world = &b.world;
+        ids([
+            world.s1,
+            world.s3,
+            world.sr1_sessions[0],
+            world.sr1_sessions[1],
+            world.sr3_sessions[0],
+            world.sr3_sessions[1],
+        ])
+    }))
+    .await;
+}
+
 /// SES-28
 #[tokio::test]
 async fn ses_28_a_coachee_lists_their_own_sessions() {

@@ -1,7 +1,7 @@
 //! The app's real route table on in-memory SQLite, signed in as any fixture caller, with
 //! local stand-ins for the external services it calls.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -145,6 +145,16 @@ impl Reply {
     pub(super) fn ids(&self) -> BTreeSet<Id> {
         ids_in(&self.body["data"])
     }
+}
+
+/// Ids under each key of an object keyed by id, such as actions or goals per relationship.
+pub(super) fn ids_by_key(value: &Value) -> BTreeMap<Id, BTreeSet<Id>> {
+    value
+        .as_object()
+        .expect("an object keyed by id")
+        .iter()
+        .map(|(key, items)| (key.parse().expect("an id key"), ids_in(items)))
+        .collect()
 }
 
 /// The `id` of an object, or of every object in an array.

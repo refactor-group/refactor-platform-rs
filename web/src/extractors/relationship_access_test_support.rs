@@ -66,8 +66,6 @@ pub(crate) struct World {
     pub(crate) organization_id: Id,
     pub(crate) coach: users::Model,
     pub(crate) coachee: users::Model,
-    pub(crate) member: users::Model,
-    pub(crate) outsider: users::Model,
     pub(crate) super_admin: users::Model,
     pub(crate) relationship: coaching_relationships::Model,
     pub(crate) session: coaching_sessions::Model,
@@ -108,8 +106,6 @@ pub(crate) fn world() -> World {
         organization_id,
         coach,
         coachee,
-        member: user("member@example.com"),
-        outsider: user("outsider@example.com"),
         super_admin: user("super@example.com"),
         relationship,
         session,
@@ -120,10 +116,6 @@ pub(crate) fn world() -> World {
 pub(crate) enum Caller {
     Coach,
     Coachee,
-    /// In the relationship's organization, not in the relationship.
-    Member,
-    /// In another organization only.
-    Outsider,
     /// The coach, with no role in the relationship's organization.
     Removed,
     /// A SuperAdmin, not in the relationship.
@@ -135,8 +127,6 @@ impl World {
         match caller {
             Caller::Coach | Caller::Removed => &self.coach,
             Caller::Coachee => &self.coachee,
-            Caller::Member => &self.member,
-            Caller::Outsider => &self.outsider,
             Caller::SuperAdmin => &self.super_admin,
         }
     }
@@ -151,9 +141,8 @@ impl World {
                     .append_query_results([vec![(user.clone(), None::<user_roles::Model>)]])
                     .append_query_results([vec![(user, None::<user_roles::Model>)]])
             }
-            Caller::Outsider => role(user.id, Id::new_v4()),
             Caller::SuperAdmin => role_as(users::Role::SuperAdmin, user.id, None),
-            Caller::Coach | Caller::Coachee | Caller::Member => role(user.id, self.organization_id),
+            Caller::Coach | Caller::Coachee => role(user.id, self.organization_id),
         };
         db.append_query_results([vec![(user.clone(), role.clone())]])
             .append_query_results([vec![(user, role)]])

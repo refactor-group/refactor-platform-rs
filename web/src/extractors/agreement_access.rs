@@ -50,8 +50,3 @@ where
         Ok(AgreementAccess { agreement })
     }
 }
-
-#[cfg(test)]
-#[cfg(feature = "mock")]
-#[path = "agreement_access_tests.rs"]
-mod tests;

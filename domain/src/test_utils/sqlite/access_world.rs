@@ -466,6 +466,72 @@ pub async fn suggestion_outcome(
         .expect("the suggestion exists")
 }
 
+/// The note's body, or `None` once it is deleted.
+pub async fn note_body(db: &DatabaseConnection, note_id: Id) -> Option<Option<String>> {
+    notes::Entity::find_by_id(note_id)
+        .one(db)
+        .await
+        .expect("the note reads")
+        .map(|note| note.body)
+}
+
+/// The agreement's body, or `None` once it is deleted.
+pub async fn agreement_body(db: &DatabaseConnection, agreement_id: Id) -> Option<Option<String>> {
+    agreements::Entity::find_by_id(agreement_id)
+        .one(db)
+        .await
+        .expect("the agreement reads")
+        .map(|agreement| agreement.body)
+}
+
+/// The action's body and status, or `None` once it is deleted.
+pub async fn action_state(
+    db: &DatabaseConnection,
+    action_id: Id,
+) -> Option<(Option<String>, Status)> {
+    actions::Entity::find_by_id(action_id)
+        .one(db)
+        .await
+        .expect("the action reads")
+        .map(|action| (action.body, action.status))
+}
+
+/// The goal's title, body and status, or `None` once it is deleted.
+pub async fn goal_state(
+    db: &DatabaseConnection,
+    goal_id: Id,
+) -> Option<(Option<String>, Option<String>, Status)> {
+    goals::Entity::find_by_id(goal_id)
+        .one(db)
+        .await
+        .expect("the goal reads")
+        .map(|goal| (goal.title, goal.body, goal.status))
+}
+
+/// Ids of every goal in the relationship.
+pub async fn relationship_goals(db: &DatabaseConnection, relationship_id: Id) -> BTreeSet<Id> {
+    goals::Entity::find()
+        .filter(goals::Column::CoachingRelationshipId.eq(relationship_id))
+        .all(db)
+        .await
+        .expect("the goals read")
+        .into_iter()
+        .map(|goal| goal.id)
+        .collect()
+}
+
+/// Ids of the goals linked to the session.
+pub async fn session_goals(db: &DatabaseConnection, session_id: Id) -> BTreeSet<Id> {
+    coaching_sessions_goals::Entity::find()
+        .filter(coaching_sessions_goals::Column::CoachingSessionId.eq(session_id))
+        .all(db)
+        .await
+        .expect("the goal links read")
+        .into_iter()
+        .map(|link| link.goal_id)
+        .collect()
+}
+
 /// Argon2 is slow by design; one hash serves every person in every test.
 fn password_hash() -> String {
     static HASH: OnceLock<String> = OnceLock::new();
@@ -677,7 +743,8 @@ async fn seed_action(
     id
 }
 
-async fn seed_note(db: &DatabaseConnection, session_id: Id, author: Id) -> Id {
+/// A note in `session_id`. Beyond N1, seed it per test so list rows never see it.
+pub async fn seed_note(db: &DatabaseConnection, session_id: Id, author: Id) -> Id {
     let now = Utc::now();
     notes::ActiveModel {
         id: Set(Id::new_v4()),
@@ -693,7 +760,8 @@ async fn seed_note(db: &DatabaseConnection, session_id: Id, author: Id) -> Id {
     .id
 }
 
-async fn seed_agreement(db: &DatabaseConnection, session_id: Id, author: Id) -> Id {
+/// An agreement in `session_id`. Beyond AG1, seed it per test so list rows never see it.
+pub async fn seed_agreement(db: &DatabaseConnection, session_id: Id, author: Id) -> Id {
     let now = Utc::now();
     agreements::ActiveModel {
         id: Set(Id::new_v4()),
