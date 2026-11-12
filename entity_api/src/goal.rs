@@ -70,6 +70,30 @@ pub async fn create(
     Ok(goal_active_model.save(db).await?.try_into_model()?)
 }
 
+/// `status_changed_at` records when the status last changed, so keeping the status leaves it alone.
+fn status_changed_at(
+    goal: &Model,
+    next_status: &Status,
+) -> ActiveValue<Option<DateTimeWithTimeZone>> {
+    if &goal.status == next_status {
+        Unchanged(goal.status_changed_at)
+    } else {
+        Set(Some(chrono::Utc::now().into()))
+    }
+}
+
+/// `completed_at` is stamped on entering `Completed` and cleared on leaving it.
+fn completed_at(goal: &Model, next_status: &Status) -> ActiveValue<Option<DateTimeWithTimeZone>> {
+    match (
+        goal.status == Status::Completed,
+        next_status == &Status::Completed,
+    ) {
+        (false, true) => Set(Some(chrono::Utc::now().into())),
+        (true, false) => Set(None),
+        _ => Unchanged(goal.completed_at),
+    }
+}
+
 pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Model, Error> {
     let result = Entity::find_by_id(id).one(db).await?;
 
@@ -82,15 +106,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
                 check_in_progress_goal_limit(db, goal.coaching_relationship_id).await?;
             }
 
-            // Automatically update status_changed_at if the last status and new status differ:
-            let av_status_changed_at: ActiveValue<Option<DateTimeWithTimeZone>> =
-                if model.status != goal.status {
-                    debug!("Updating status_changed_at for Goal to now");
-                    Set(Some(chrono::Utc::now().into()))
-                } else {
-                    Unchanged(model.status_changed_at)
-                };
-
+            let av_status_changed_at = status_changed_at(&goal, &model.status);
             let active_model: ActiveModel = ActiveModel {
                 id: Unchanged(goal.id),
                 coaching_relationship_id: Unchanged(goal.coaching_relationship_id),
@@ -135,6 +151,8 @@ pub async fn update_status(
                 check_in_progress_goal_limit(db, goal.coaching_relationship_id).await?;
             }
 
+            let av_status_changed_at = status_changed_at(&goal, &status);
+            let av_completed_at = completed_at(&goal, &status);
             let active_model: ActiveModel = ActiveModel {
                 id: Unchanged(goal.id),
                 coaching_relationship_id: Unchanged(goal.coaching_relationship_id),
@@ -143,8 +161,8 @@ pub async fn update_status(
                 body: Unchanged(goal.body),
                 title: Unchanged(goal.title),
                 status: Set(status),
-                status_changed_at: Set(Some(chrono::Utc::now().into())),
-                completed_at: Unchanged(goal.completed_at),
+                status_changed_at: av_status_changed_at,
+                completed_at: av_completed_at,
                 target_date: Unchanged(goal.target_date),
                 updated_at: Set(chrono::Utc::now().into()),
                 created_at: Unchanged(goal.created_at),
