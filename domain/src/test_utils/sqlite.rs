@@ -21,7 +21,7 @@ use entity::{
     transcript_participant, transcript_segment, transcript_suggestion, transcription,
     user_lookup_attempts, user_role_changes, user_roles, users, Id,
 };
-#[cfg(feature = "mock")]
+#[cfg(all(test, feature = "mock"))]
 use sea_orm::DbErr;
 use sea_orm::{
     ActiveModelTrait, ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend,
@@ -404,12 +404,7 @@ pub async fn seed_agreement(db: &DatabaseConnection, session_id: Id, user_id: Id
 }
 
 /// Inserts a topic on `session_id`, soft-deleted when `deleted`, and returns its id.
-pub async fn seed_topic(
-    db: &DatabaseConnection,
-    session_id: Id,
-    user_id: Id,
-    deleted: bool,
-) -> Id {
+pub async fn seed_topic(db: &DatabaseConnection, session_id: Id, user_id: Id, deleted: bool) -> Id {
     let now = Utc::now();
     coaching_session_topics::ActiveModel {
         id: Set(Id::new_v4()),
@@ -431,7 +426,7 @@ pub async fn seed_topic(
 }
 
 /// A real SQLite foreign key violation, for a mock database to return.
-#[cfg(feature = "mock")]
+#[cfg(all(test, feature = "mock"))]
 pub(crate) async fn foreign_key_violation() -> DbErr {
     let db = database().await;
     let (session_id, user_id) = seed_coaching_session(&db).await;
