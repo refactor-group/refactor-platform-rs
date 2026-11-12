@@ -21,9 +21,11 @@ use entity::{
     transcript_participant, transcript_segment, transcript_suggestion, transcription,
     user_lookup_attempts, user_role_changes, user_roles, users, Id,
 };
+#[cfg(feature = "mock")]
+use sea_orm::DbErr;
 use sea_orm::{
-    ActiveModelTrait, ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbErr,
-    EntityTrait, Set,
+    ActiveModelTrait, ConnectOptions, ConnectionTrait, Database, DatabaseConnection, EntityTrait,
+    Set,
 };
 
 /// Ceiling on one SQLite test. Per-acquire timeouts still add up across many rows.
