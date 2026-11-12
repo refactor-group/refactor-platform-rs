@@ -80,6 +80,10 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends bubblewrap socat
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      # Lets the check below tell this run's summary from an earlier one.
+      - name: Note the start time
+        run: echo "REVIEW_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       - name: Review
         id: review
         uses: anthropics/claude-code-action@v1
@@ -110,8 +114,9 @@ jobs:
 
             To search the PR's code use the Grep and Glob tools under
             `pr-head/`; to read a file use the Read tool. Run one command
-            per Bash call: pipes, redirects, `cd`, command substitution, and
-            chained commands are denied.
+            per Bash call: pipes, `cd`, command substitution, chained
+            commands, and redirects other than the heredoc described below
+            are denied.
 
             Post each summary with a single `gh pr comment` command that
             carries the text in `--body`, or in a heredoc on `--body-file -`.
@@ -196,13 +201,14 @@ jobs:
 
       # A review that posted no summary must not pass as green.
       - name: Confirm the summary was posted
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
           MARKER: "claude-review:code sha=${{ github.event.pull_request.head.sha }}"
         run: |
           jq -r '.. | objects | select(has("permission_denials")) | .permission_denials[]? | "denied: \(.tool_name) \(.tool_input.command // (.tool_input | tostring) | .[0:300])"' "$EXECUTION_FILE" || true
-          gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json comments --jq '.comments[].body' | grep -qF "$MARKER"
+          gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json comments | jq -e --arg marker "$MARKER" --arg started "$REVIEW_STARTED" 'any(.comments[]; (.body | contains($marker)) and .createdAt >= $started)' > /dev/null
 
   security-review:
     name: Security Review
@@ -236,6 +242,10 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends bubblewrap socat
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      # Lets the check below tell this run's summary from an earlier one.
+      - name: Note the start time
+        run: echo "REVIEW_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       - name: Review
         id: review
         uses: anthropics/claude-code-action@v1
@@ -265,8 +275,9 @@ jobs:
 
             To search the PR's code use the Grep and Glob tools under
             `pr-head/`; to read a file use the Read tool. Run one command
-            per Bash call: pipes, redirects, `cd`, command substitution, and
-            chained commands are denied.
+            per Bash call: pipes, `cd`, command substitution, chained
+            commands, and redirects other than the heredoc described below
+            are denied.
 
             Post each summary with a single `gh pr comment` command that
             carries the text in `--body`, or in a heredoc on `--body-file -`.
@@ -317,10 +328,11 @@ jobs:
 
       # A review that posted no summary must not pass as green.
       - name: Confirm the summary was posted
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
           MARKER: "claude-review:security sha=${{ github.event.pull_request.head.sha }}"
         run: |
           jq -r '.. | objects | select(has("permission_denials")) | .permission_denials[]? | "denied: \(.tool_name) \(.tool_input.command // (.tool_input | tostring) | .[0:300])"' "$EXECUTION_FILE" || true
-          gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json comments --jq '.comments[].body' | grep -qF "$MARKER"
+          gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json comments | jq -e --arg marker "$MARKER" --arg started "$REVIEW_STARTED" 'any(.comments[]; (.body | contains($marker)) and .createdAt >= $started)' > /dev/null
