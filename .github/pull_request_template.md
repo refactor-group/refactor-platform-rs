@@ -10,7 +10,17 @@ _describe the intent of your changes here_
 * ...
 
 ### Testing Strategy
-_describe how you or someone else can test and verify the changes_
+_describe how you or someone else can test and verify the changes, and paste the evidence: the command you ran and its result_
+
+
+### Risk
+**Tier:** _low | medium | high, per `docs/cicd/review-risk-tiers.md`_
+
+_what could break, and who would notice first_
+
+
+### How to Revert
+_can the merge commit simply be reverted? call out anything a revert leaves behind: a migration, a backfill, a new env var, emails already sent_
 
 
 ### Concerns
