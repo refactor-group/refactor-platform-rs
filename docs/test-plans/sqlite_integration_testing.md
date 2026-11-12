@@ -182,7 +182,10 @@ default flag feature that pulls in no SQLite code.)
   notify filter for a member, a removed user, a user with a role only in another
   organization, a global super admin and an org admin, and a session read with
   `include=relationship` marks a removed coachee
-  (`domain/src/coaching_session_sqlite_tests.rs`).
+  (`domain/src/coaching_session_sqlite_tests.rs`). Session and series cancellations, and
+  the cancel for a standalone session a series edit replaces, reach a participant with no
+  role, while a scheduled invite on the same seed reaches only the member
+  (`domain/src/emails_sqlite_tests.rs`).
 - **Account delete with coaching history** (`domain/src/user_delete_sqlite_tests.rs`): an
   account in any relationship that has a session is refused with `user_has_coaching_history`
   and the count of such relationships, and nothing is deleted. An account whose relationships
