@@ -200,7 +200,8 @@ jobs:
                marker has important greater than 0. If there are three or more
                and no comment on the PR contains
                `<!-- claude-review:stalled -->`, post one more comment that
-               starts with that marker, names what keeps recurring, and asks
+               starts with that marker, has `**Claude Code review**` as its
+               second line, names what keeps recurring, and asks
                the author to reconsider the approach. Post it once per PR.
 
       # A review that posted no summary must not pass as green.
@@ -212,7 +213,7 @@ jobs:
           MARKER: "claude-review:code sha=${{ github.event.pull_request.head.sha }}"
         run: |
           jq -r '.. | objects | select(has("permission_denials")) | .permission_denials[]? | "denied: \(.tool_name) \(.tool_input.command // (.tool_input | tostring) | .[0:300])"' "$EXECUTION_FILE" || true
-          jq -r '.[]? | select(.type == "result") | "result: is_error=\(.is_error) \(.result // "" | tostring | .[0:600])"' "$EXECUTION_FILE" || true
+          jq -r '.[]? | select(.type == "result") | "result: subtype=\(.subtype) is_error=\(.is_error) \(.result // (.errors // []) | tostring | .[0:600])"' "$EXECUTION_FILE" || true
           gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json comments | jq -e --arg marker "$MARKER" --arg started "$REVIEW_STARTED" 'any(.comments[]; (.body | contains($marker)) and .createdAt >= $started)' > /dev/null
 
   security-review:
@@ -345,5 +346,5 @@ jobs:
           MARKER: "claude-review:security sha=${{ github.event.pull_request.head.sha }}"
         run: |
           jq -r '.. | objects | select(has("permission_denials")) | .permission_denials[]? | "denied: \(.tool_name) \(.tool_input.command // (.tool_input | tostring) | .[0:300])"' "$EXECUTION_FILE" || true
-          jq -r '.[]? | select(.type == "result") | "result: is_error=\(.is_error) \(.result // "" | tostring | .[0:600])"' "$EXECUTION_FILE" || true
+          jq -r '.[]? | select(.type == "result") | "result: subtype=\(.subtype) is_error=\(.is_error) \(.result // (.errors // []) | tostring | .[0:600])"' "$EXECUTION_FILE" || true
           gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json comments | jq -e --arg marker "$MARKER" --arg started "$REVIEW_STARTED" 'any(.comments[]; (.body | contains($marker)) and .createdAt >= $started)' > /dev/null
