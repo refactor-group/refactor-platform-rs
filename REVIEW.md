@@ -11,6 +11,9 @@ This backend holds private coaching notes, transcripts, and goals. In order of c
 3. **Something is sent that cannot be unsent.** Emails, calendar invites, and recording bots reach real people. Look for a wrong recipient, a duplicate send on retry, or a send that happens before the write it announces has committed.
 4. **It works locally and fails deployed.** A new env var missing from any passthrough layer listed in `.claude/CLAUDE.md`, or a `reqwest` client built without `.use_rustls_tls()`.
 5. **The API contract changes silently.** A changed request or response shape, enum casing, or status code with no matching `utoipa` annotation and no mention in the PR description. The consumer is a separate repository and will not fail this repo's CI.
+6. **A change happens and connected clients never hear of it.** Other writes to the same entity publish a `DomainEvent` and this one does not. Look hardest at writes that happen as a side effect: auto-linking, webhooks, background jobs. An event whose recipients are not derived from who may read the entity belongs under failure 1.
+7. **Suggestion behavior changes with no new baseline.** A change to `actions_prompt.md`, the model, or the verification or due-date code under `domain/src/transcript_suggestion/` needs the eval rerun and an updated `baseline.json` in the same PR. Its absence is the finding.
+8. **It is slow at real size.** A query per row inside a loop where one batched query would do, a list read with no bound, or a pooled connection held across a call to an external service. Name the loop and what makes it grow.
 
 ## Evidence
 
@@ -28,7 +31,7 @@ This backend holds private coaching notes, transcripts, and goals. In order of c
 
 - `Cargo.lock`
 - `docs/release-notes/`, `docs/implementation-plans/`
-- `domain/src/transcript_suggestion/eval/fixtures/baseline.json`
+- The contents of `domain/src/transcript_suggestion/eval/fixtures/baseline.json` (whether it was updated still matters, see failure 7)
 
 ## Summary
 

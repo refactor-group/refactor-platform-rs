@@ -5,6 +5,22 @@ Authorization is the highest-value target:
 - For every route added or changed in web/src/router.rs, identify the extractor or rule that guards it. A route with no guard is a finding even if no changed line looks vulnerable.
 - Check that the extractor loads the same resource the handler acts on, and that queries are scoped to the caller's coaching relationship or organization. An id taken from the path or body and used without that scoping is an insecure direct object reference.
 
+Collaborative documents (docs-collab-server):
+- domain/src/jwt/ mints a token whose scope is a wildcard document-name prefix, {org_slug}.{relationship_slug}.*. docs-collab-server/src/auth.rs verifies it, and docs-collab-server/src/rest.rs guards its REST endpoints with a shared secret.
+- A token must be minted only after the caller's access to the coaching session is checked, and its scope must never be wider than that session's relationship.
+- Prefix matching must not let one relationship's scope match another's document names, for example a slug that is a prefix of another slug.
+- Expiry must stay enforced and the algorithm pinned. The signing key and shared secret must never be logged or returned.
+
+Server-sent events:
+- GET /sse must stay behind user authentication, and nothing costly should be allocated for a connection before it is authenticated.
+- Recipients of an event must be derived from who may read the entity. An event is never broadcast, and its payload must hold only what each recipient may read.
+
+Transcripts sent to a language model (domain/src/transcript_suggestion/):
+- Transcript text is untrusted: anyone in a meeting can say anything, including text written to steer the model. The prompt must keep it separate from instructions.
+- Model output is untrusted too. It must be validated before it is stored or shown, must not choose an assignee or recipient outside the session's participants, and must never reach a query or command unescaped.
+- A transcript from one coaching relationship must never enter a prompt, context, or response for another.
+- Transcript text and provider API keys must not be logged. A change to which provider or model receives transcript text must be visible in the PR description.
+
 Also check:
 - Secrets, tokens, transcript text, or note contents written to logs or returned in error responses.
 - Webhook handlers that act before verifying the signature.

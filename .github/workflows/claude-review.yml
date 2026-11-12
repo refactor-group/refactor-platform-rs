@@ -124,7 +124,11 @@ jobs:
                d. Deploy and contract: env var passthrough, reqwest TLS, API
                   shape against the utoipa annotations, and anything that sends
                   email, invites, or bots.
-               e. Intent: what the diff does that the description does not say,
+               e. Real-time and performance: write paths that should publish
+                  a DomainEvent and do not, a query per row, unbounded reads.
+               f. Suggestions: changes to actions_prompt.md, the model, or the
+                  verification or due-date code with no updated baseline.json.
+               g. Intent: what the diff does that the description does not say,
                   and coding-standards rules that can be quoted exactly.
 
             5. Verify. For each candidate, launch a separate subagent whose job
@@ -200,8 +204,10 @@ jobs:
             3. Find. Launch parallel subagents, each reading whatever code it
                needs under `pr-head/`: one for authorization and access control
                on every changed route and query, one for injection, secrets, and data exposure
-               in logs and error responses, and one for authentication flows,
-               webhooks, and workflow or deploy changes.
+               in logs and error responses, one for authentication flows, SSE
+               connections and event recipients, collab tokens, webhooks, and
+               workflow or deploy changes, and one for transcript text sent to
+               a language model and how its output is used.
 
             4. Verify. For each candidate, launch a separate subagent that
                tries to disprove it by tracing the real code path. Keep only
