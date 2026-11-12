@@ -80,9 +80,15 @@ its test plan before the PR merges.
 
 **0b. Baseline tests.** Starts with a read-only coverage audit: each matrix row is mapped to
 any existing test that already checks it (the phase S and M tests cover many), as covered,
-partly covered or missing. An existing test counted as coverage joins the frozen set. Later
-handoffs only fill the gaps, and every new test is shown to
-fail when its rule is broken. Every coach/coachee row of the matrix becomes a test that sends a real
+partly covered or missing. Route rows are tested through the app's real route table
+(`router::define_routes`), so phase 0c, which moves checks between middleware and extractors,
+cannot touch them; an existing hand-mounted web test that checks the same row is replaced, not
+kept beside it. SQLite and email recipient tests already covering a row join the frozen set
+as they are. Search hits and reminder recipients run on Postgres-only SQL, so their rows are
+frozen as SQL-shape mock tests plus a visible-relationship SQLite test, and checked by hand.
+`PUT /actions/{id}/status` is fixed before the baseline (it answered 400 to every value).
+Later handoffs only fill the gaps, and every new test is shown to fail when its rule is
+broken. Every coach/coachee row of the matrix becomes a test that sends a real
 request through the router as each caller and asserts status codes and returned ids (never
 full bodies, so phase 6 shape changes don't touch frozen files), plus email and reminder
 recipients. Rows that depend on which rows a query selects use the SQLite tier. Includes every `[tightened]` and `[membership]` row, so the phase S and M rules are locked in
