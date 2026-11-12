@@ -110,10 +110,35 @@ one breaks the tier in a way that looks unrelated.
   `soft_delete`) fail on SQLite.
 
 SQLite is a dev-dependency only: the SQLite driver is enabled in `domain/Cargo.toml`'s
-dev-dependencies, and the production binary links none. Check with
+dev-dependencies, and the production binary links none. `web`'s tests reach the same support
+through `domain`'s `test-sqlite` feature, which `web` turns on only as a dev-dependency. Check with
 `cargo tree -p refactor_platform_rs -e normal,features -i sea-orm | grep sqlx-sqlite`,
 which must print nothing. (`sqlite-use-returning-for-3_35` does appear there; it is a
 default flag feature that pulls in no SQLite code.)
+
+## The access baseline
+
+`web/src/baseline/` is the frozen coach/coachee access baseline for rs#399
+(`docs/implementation-plans/colleague-relationships.md`, phase 0b). It sends real requests
+through the app's route table (`router::define_routes`, with production's sign-in layers) on
+this tier's database, as each caller in the access matrix's cast
+(`docs/test-plans/relationship_access_manual_testing.md`), and asserts only status codes,
+returned ids, what a write leaves in the table, and email recipients. It never uses
+`MockDatabase` and never builds its own routes, so moving a check between middleware and an
+extractor cannot break it.
+
+- **Fixture:** `domain/src/test_utils/sqlite/access_world.rs` seeds the matrix's section 2
+  cast. `mirror_migration_defaults` copies the column defaults and unique indexes that exist
+  only in the migrations; without it every create through the API fails. It is a hand-made
+  copy, so a migration that adds a default an API create relies on must be mirrored there.
+- **External services:** Tiptap, Resend and the AssemblyAI model point at a local `mockito`
+  server through their existing base-URL settings; images use the local object store.
+- **Coverage index:** the table at the top of `web/src/baseline/mod.rs` names, for every
+  matrix row, the test that checks it, or why it is checked by hand: Postgres-only SQL
+  (`NOW()`, `AT TIME ZONE`, advisory locks, full-text search) or Recall, whose base URL is
+  fixed.
+- **Frozen:** later rs#399 phases must keep the baseline and the domain tests it names
+  passing without editing them. Adding a matrix row adds a test; it never changes one.
 
 ## Current coverage
 
