@@ -20,7 +20,7 @@ use crate::extractors::{
     action_access::ActionAccess, authenticated_user::AuthenticatedUser,
     coaching_session_access::authorize_session, compare_api_version::CompareApiVersion,
 };
-use crate::params::action::{IndexParams, SortField};
+use crate::params::action::{IndexParams, SortField, UpdateStatusParams};
 use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
 
@@ -277,14 +277,16 @@ pub async fn update(
     params(
         ApiVersion,
         ("id" = Uuid, Path, description = "Id of action to update"),
-        ("value" = Option<String>, Query, description = "Status value to update"),
+        ("value" = String, Query, description = "New status: not_started, in_progress, completed, on_hold or wont_do"),
     ),
     responses(
         (status = 200, description = "Successfully Updated Action", body = domain::actions::Model),
+        (status = 400, description = "Missing value"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Action not found"),
         (status = 405, description = "Method not allowed"),
+        (status = 422, description = "Unknown status value"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -295,17 +297,20 @@ pub async fn update_status(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     ActionAccess { action, .. }: ActionAccess,
-    Query(status): Query<String>,
+    Query(params): Query<UpdateStatusParams>,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
     let id = action.id;
     debug!("PUT Update Action Status with id: {id}");
 
+    let status = Status::try_from(params.value.as_str())
+        .map_err(|_| Error::validation(format!("'{}' is not a known status.", params.value)))?;
+
     let action = ActionApi::update_status(
         app_state.db_conn_ref(),
         app_state.event_publisher.as_ref(),
         id,
-        Status::try_from(status.as_str()).unwrap_or_default(),
+        status,
     )
     .await?;
 

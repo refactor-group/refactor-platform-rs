@@ -504,11 +504,15 @@ async fn act_34_member_cannot_update_the_action() {
 #[tokio::test]
 async fn act_30_coach_updates_the_action_status() {
     let w = world();
+    let completed = actions::Model {
+        status: domain::status::Status::Completed,
+        ..w.action.clone()
+    };
     let db = Arc::new(
         w.reaching_action(Caller::Coach)
             // The locked read, then the UPDATE ... RETURNING.
             .append_query_results([vec![w.action.clone()]])
-            .append_query_results([vec![w.action.clone()]])
+            .append_query_results([vec![completed]])
             .into_connection(),
     );
     let response = send(
@@ -519,12 +523,25 @@ async fn act_30_coach_updates_the_action_status() {
         None,
     )
     .await;
-    // `Query<String>` cannot read `value=completed`, so the handler answers 400 past the check.
-    assert!(
-        ![StatusCode::FORBIDDEN, StatusCode::NOT_FOUND].contains(&response.status()),
-        "ACT-30: {}",
-        response.status()
-    );
+    assert_eq!(response.status(), StatusCode::OK, "ACT-30");
+    let body = json_body(response).await;
+    assert_eq!(body["data"]["id"], json!(w.action.id), "ACT-30");
+    assert_eq!(body["data"]["status"], json!("Completed"), "ACT-30");
+}
+
+#[tokio::test]
+async fn act_30b_unknown_status_value_is_refused() {
+    let w = world();
+    assert_refused(
+        "ACT-30b",
+        w.reaching_action(Caller::Coach),
+        &w.coach.email,
+        "PUT",
+        &format!("/actions/{}/status?value=finished", w.action.id),
+        None,
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
 }
 
 #[tokio::test]
