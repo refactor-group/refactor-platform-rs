@@ -447,51 +447,6 @@ pub async fn test_topic_update(
     Ok(result)
 }
 
-pub async fn test_topic_priority(
-    user1: &AuthenticatedUser,
-    user2: &AuthenticatedUser,
-    test_env: &TestEnvironment,
-    api_client: &ApiClient,
-    sse1: &mut Connection,
-    _sse2: &mut Connection,
-) -> Result<TestResult> {
-    let start = Instant::now();
-    println!(
-        "\n{}",
-        "=== TEST: Topic Priority (coachee sets, coach observes) ==="
-            .bright_cyan()
-            .bold()
-    );
-
-    // Coach creates the topic; the COACHEE (user2) sets priority (coachee-only
-    // endpoint); we assert the COACH (user1, the non-actor) receives the event.
-    let topic = api_client
-        .create_topic(
-            &user1.session_cookie,
-            &test_env.session_id,
-            "priority topic",
-        )
-        .await?;
-    let topic_id = topic["id"].as_str().unwrap_or_default().to_string();
-
-    sse1.drain(); // discard the create event on the coach's stream
-    println!("{} User 2 (coachee) setting priority=High...", "→".blue());
-    api_client
-        .set_topic_priority(
-            &user2.session_cookie,
-            &test_env.session_id,
-            &topic_id,
-            "High",
-        )
-        .await?;
-
-    let result = expect_topics_changed(sse1, &test_env.session_id, "topic_priority", start).await;
-    let _ = api_client
-        .delete_topic(&user1.session_cookie, &test_env.session_id, &topic_id)
-        .await;
-    Ok(result)
-}
-
 pub async fn test_topic_status(
     user1: &AuthenticatedUser,
     _user2: &AuthenticatedUser,

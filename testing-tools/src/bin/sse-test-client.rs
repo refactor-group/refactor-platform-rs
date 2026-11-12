@@ -49,8 +49,6 @@ enum ScenarioChoice {
     TopicCreate,
     /// Test topic body update -> topics_changed (requires coaching session)
     TopicUpdate,
-    /// Test topic priority set by coachee -> coach receives topics_changed
-    TopicPriority,
     /// Test topic status=Discussed by coach -> coachee receives topics_changed
     TopicStatus,
     /// Test topic delete -> topics_changed (requires coaching session)
@@ -252,22 +250,6 @@ async fn main() -> Result<()> {
                 .await?,
             );
         }
-        ScenarioChoice::TopicPriority => {
-            let env = test_env
-                .as_ref()
-                .expect("Test environment required for TopicPriority");
-            results.push(
-                scenarios::test_topic_priority(
-                    &user1,
-                    &user2,
-                    env,
-                    &api_client,
-                    &mut sse1,
-                    &mut sse2,
-                )
-                .await?,
-            );
-        }
         ScenarioChoice::TopicStatus => {
             let env = test_env
                 .as_ref()
@@ -419,17 +401,6 @@ async fn main() -> Result<()> {
             );
             results.push(
                 scenarios::test_topic_update(
-                    &user1,
-                    &user2,
-                    env,
-                    &api_client,
-                    &mut sse1,
-                    &mut sse2,
-                )
-                .await?,
-            );
-            results.push(
-                scenarios::test_topic_priority(
                     &user1,
                     &user2,
                     env,

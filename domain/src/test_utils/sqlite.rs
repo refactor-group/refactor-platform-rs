@@ -297,7 +297,6 @@ pub(crate) async fn seed_topic(
         body: Set("Agenda".to_string()),
         user_id: Set(user_id),
         display_order: Set(0),
-        priority: Set(None),
         status: Set(Default::default()),
         moved_from_session_id: Set(None),
         undo_snapshot: Set(None),

@@ -3,8 +3,8 @@ use crate::extractors::{
     authenticated_user::AuthenticatedUser,
     coaching_session_access::CoachingSessionAccess,
     coaching_session_topic_access::{
-        CoachingSessionTopicAccess, CoachingSessionTopicCoacheeAccess,
-        CoachingSessionTopicDeleteAccess, CoachingSessionTopicUndoAccess,
+        CoachingSessionTopicAccess, CoachingSessionTopicDeleteAccess,
+        CoachingSessionTopicUndoAccess,
     },
     compare_api_version::CompareApiVersion,
 };
@@ -24,8 +24,6 @@ use utoipa::ToSchema;
 #[schema(as = coaching_session::topic_controller::CreateParams)]
 pub struct CreateParams {
     pub body: String,
-    /// Optional initial priority. Omit for new topics; null until the coachee triages.
-    pub priority: Option<domain::topic_priority::Priority>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -37,11 +35,6 @@ pub struct UpdateParams {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ReorderParams {
     pub ordered_ids: Vec<Id>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct RatingParams {
-    pub priority: Option<domain::topic_priority::Priority>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -107,7 +100,6 @@ pub async fn create(
         session.id,
         params.body,
         user.id,
-        params.priority,
     )
     .await?;
 
@@ -222,43 +214,6 @@ pub async fn delete(
     )))
 }
 
-/// PATCH set a topic's priority (coachee only)
-#[utoipa::path(
-    patch,
-    path = "/coaching_sessions/{coaching_session_id}/topics/{topic_id}/rating",
-    params(
-        ApiVersion,
-        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
-        ("topic_id" = Uuid, Path, description = "Topic id"),
-    ),
-    request_body = RatingParams,
-    responses(
-        (status = 200, description = "Topic priority updated", body = domain::coaching_session_topics::Model),
-        (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Only the coachee may set a topic's priority"),
-        (status = 404, description = "Topic not found in this session"),
-    ),
-    security(("cookie_auth" = []))
-)]
-pub async fn set_rating(
-    CompareApiVersion(_v): CompareApiVersion,
-    CoachingSessionTopicCoacheeAccess(topic): CoachingSessionTopicCoacheeAccess,
-    State(app_state): State<AppState>,
-    Json(params): Json<RatingParams>,
-) -> Result<impl IntoResponse, Error> {
-    debug!("PATCH priority for topic {}", topic.id);
-
-    let updated = TopicApi::set_priority(
-        app_state.db_conn_ref(),
-        app_state.event_publisher.as_ref(),
-        topic.id,
-        params.priority,
-    )
-    .await?;
-
-    Ok(Json(ApiResponse::new(StatusCode::OK.into(), updated)))
-}
-
 /// PATCH set a topic's lifecycle status (either participant)
 #[utoipa::path(
     patch,
@@ -298,8 +253,8 @@ pub async fn set_status(
 /// Undo the most recent reversible change to a topic (a deferral or a deletion).
 ///
 /// Restores the topic to the state it held immediately before that change: its
-/// original session, status, priority, position, and timestamps are all brought
-/// back, so the reversal is a faithful no-op rather than a fresh write. The server
+/// original session, status, position, and timestamps are all brought back,
+/// so the reversal is a faithful no-op rather than a fresh write. The server
 /// decides what to reverse from the topic's own state, not from any request input:
 /// a deleted topic is un-deleted in place, a deferred or moved topic is returned to
 /// the session it came from, and a topic with nothing pending yields 422. Takes no

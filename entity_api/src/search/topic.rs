@@ -12,7 +12,6 @@ use sea_orm::{
 use super::{excerpt_title, Core, FtsQuery, Hit, HitType, Request, Source, TopicHit};
 use crate::error::Error;
 use entity::coaching_session_topics::{Column, Entity, Relation};
-use entity::topic_priority::Priority;
 use entity::topic_status::Status;
 use entity::{coaching_sessions, Id};
 
@@ -26,7 +25,6 @@ struct Row {
     score: f32,
     body: String,
     status: Status,
-    priority: Option<Priority>,
     coaching_session_id: Id,
     created_at: DateTimeWithTimeZone,
     updated_at: DateTimeWithTimeZone,
@@ -62,7 +60,6 @@ impl super::Searcher for Searcher {
             .select::<Entity>()
             .column(Column::Body)
             .column(Column::Status)
-            .column(Column::Priority)
             .column(Column::CoachingSessionId)
             .filter(Column::DeletedAt.is_null())
             // `user_id` means creator for topics.
@@ -92,7 +89,6 @@ impl super::Searcher for Searcher {
                     coaching_session_id: r.coaching_session_id,
                     coaching_relationship_id: r.coaching_relationship_id,
                     status: r.status,
-                    priority: r.priority,
                 })
             })
             .collect())

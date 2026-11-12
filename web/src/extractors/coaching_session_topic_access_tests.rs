@@ -6,7 +6,8 @@ use super::*;
 use axum::{body::Body, middleware::from_fn};
 use axum::{
     extract::Request,
-    routing::{delete, patch, post},
+    http::StatusCode,
+    routing::{delete, post},
     Router,
 };
 use axum_login::{
@@ -126,7 +127,6 @@ fn test_topic(
         body: "A topic".to_string(),
         user_id,
         display_order: 0,
-        priority: Some(domain::topic_priority::Priority::High),
         status: domain::topic_status::Status::Open,
         moved_from_session_id: None,
         undo_snapshot: None,
@@ -140,14 +140,6 @@ fn test_topic(
 // composed chain (session participant -> topic-belongs-to-session -> author-or-coach).
 async fn delete_route(
     CoachingSessionTopicDeleteAccess(_topic): CoachingSessionTopicDeleteAccess,
-) -> &'static str {
-    "extracted_success"
-}
-
-// Mounts the coachee extractor behind require_auth so a logged-in PATCH exercises the
-// coachee-only rating guard (coachee -> ok, coach -> 403).
-async fn coachee_route(
-    CoachingSessionTopicCoacheeAccess(_topic): CoachingSessionTopicCoacheeAccess,
 ) -> &'static str {
     "extracted_success"
 }
@@ -189,10 +181,6 @@ fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
                 .route(
                     "/coaching_sessions/:coaching_session_id/topics/:topic_id",
                     delete(delete_route),
-                )
-                .route(
-                    "/coaching_sessions/:coaching_session_id/topics/:topic_id/rating",
-                    patch(coachee_route),
                 )
                 .route(
                     "/coaching_sessions/:coaching_session_id/topics/:topic_id/undo",
@@ -375,91 +363,6 @@ async fn delete_extractor_404_when_topic_belongs_to_other_session() {
 
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn coachee_extractor_ok_when_user_is_coachee() {
-    let session_id = Id::new_v4();
-    let relationship_id = Id::new_v4();
-    let topic_id = Id::new_v4();
-    let user = create_test_user();
-    let role = test_role(user.id);
-
-    let db = Arc::new(
-        MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results([vec![(user.clone(), role.clone())]])
-            .append_query_results([vec![(user.clone(), role.clone())]])
-            // CoachingSessionTopicAccess: participant check (caller is the coachee) + topic load.
-            .append_query_results(vec![vec![(
-                test_session(session_id, relationship_id),
-                test_relationship(relationship_id, user.id),
-            )]])
-            .append_query_results(vec![vec![test_topic(topic_id, session_id, user.id)]])
-            // Coachee gate: re-resolve the relationship; caller IS the coachee -> rating allowed.
-            .append_query_results(vec![vec![(
-                test_session(session_id, relationship_id),
-                test_relationship(relationship_id, user.id),
-            )]])
-            .into_connection(),
-    );
-
-    let app = build_app(Arc::clone(&db));
-    let cookie = do_login(&app).await;
-
-    let req = Request::builder()
-        .uri(format!(
-            "/coaching_sessions/{session_id}/topics/{topic_id}/rating"
-        ))
-        .method("PATCH")
-        .header("cookie", cookie)
-        .body(Body::empty())
-        .unwrap();
-
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-}
-
-#[tokio::test]
-async fn coachee_extractor_403_when_user_is_coach() {
-    let session_id = Id::new_v4();
-    let relationship_id = Id::new_v4();
-    let topic_id = Id::new_v4();
-    let coachee_id = Id::new_v4();
-    let user = create_test_user();
-    let role = test_role(user.id);
-
-    let db = Arc::new(
-        MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results([vec![(user.clone(), role.clone())]])
-            .append_query_results([vec![(user.clone(), role.clone())]])
-            // CoachingSessionTopicAccess: caller is the coach (a participant) -> passes; topic loads.
-            .append_query_results(vec![vec![(
-                test_session(session_id, relationship_id),
-                test_relationship_with_coach(relationship_id, user.id, coachee_id),
-            )]])
-            .append_query_results(vec![vec![test_topic(topic_id, session_id, coachee_id)]])
-            // Coachee gate: re-resolve the relationship; caller is the coach, not the coachee -> 403.
-            .append_query_results(vec![vec![(
-                test_session(session_id, relationship_id),
-                test_relationship_with_coach(relationship_id, user.id, coachee_id),
-            )]])
-            .into_connection(),
-    );
-
-    let app = build_app(Arc::clone(&db));
-    let cookie = do_login(&app).await;
-
-    let req = Request::builder()
-        .uri(format!(
-            "/coaching_sessions/{session_id}/topics/{topic_id}/rating"
-        ))
-        .method("PATCH")
-        .header("cookie", cookie)
-        .body(Body::empty())
-        .unwrap();
-
-    let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
 
 /// Builds a soft-deleted topic (deleted_at set) authored by `user_id`.

@@ -1,11 +1,10 @@
 use super::error::{EntityApiErrorKind, Error};
 use entity::coaching_session_topics::{self, ActiveModel, Entity, Model, TopicSnapshot};
-use entity::topic_priority::Priority;
 use entity::topic_status::Status;
 use entity::Id;
 use sea_orm::{
     entity::prelude::*,
-    ActiveValue::{NotSet, Set, Unchanged},
+    ActiveValue::{Set, Unchanged},
     DatabaseConnection, QueryOrder, TransactionTrait, TryIntoModel,
 };
 use std::collections::HashSet;
@@ -35,7 +34,6 @@ pub async fn create(
     coaching_session_id: Id,
     body: String,
     user_id: Id,
-    priority: Option<Priority>,
 ) -> Result<Model, Error> {
     let existing = Entity::find()
         .filter(coaching_session_topics::Column::CoachingSessionId.eq(coaching_session_id))
@@ -49,7 +47,6 @@ pub async fn create(
         user_id: Set(user_id),
         body: Set(body),
         display_order: Set(next_display_order(&existing)),
-        priority: priority.map_or(NotSet, |p| Set(Some(p))),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -84,20 +81,6 @@ pub async fn update(db: &DatabaseConnection, id: Id, body: String) -> Result<Mod
     let mut active: ActiveModel = topic.into();
     active.body = Set(body);
     active.undo_snapshot = Set(None); // a body edit settles the undo window
-    active.updated_at = Set(chrono::Utc::now().into());
-    Ok(active.update(db).await?.try_into_model()?)
-}
-
-/// Coachee-set priority. `Some` sets it, `None` clears it; stamps updated_at.
-pub async fn set_priority(
-    db: &DatabaseConnection,
-    id: Id,
-    priority: Option<Priority>,
-) -> Result<Model, Error> {
-    let topic = find_by_id(db, id).await?;
-    let mut active: ActiveModel = topic.into();
-    active.priority = Set(priority);
-    active.undo_snapshot = Set(None); // settle the undo window
     active.updated_at = Set(chrono::Utc::now().into());
     Ok(active.update(db).await?.try_into_model()?)
 }
@@ -178,7 +161,6 @@ fn snapshot_for_undo(topic: &Model) -> TopicSnapshot {
         coaching_session_id: topic.coaching_session_id,
         body: topic.body.clone(),
         display_order: topic.display_order,
-        priority: topic.priority.clone(),
         status: topic.status.clone(),
         moved_from_session_id: topic.moved_from_session_id,
         deleted_at: topic.deleted_at,
@@ -232,7 +214,6 @@ pub async fn restore_from_snapshot(
     active.coaching_session_id = Set(snapshot.coaching_session_id);
     active.body = Set(snapshot.body);
     active.display_order = Set(snapshot.display_order);
-    active.priority = Set(snapshot.priority);
     active.status = Set(snapshot.status);
     active.moved_from_session_id = Set(snapshot.moved_from_session_id);
     active.deleted_at = Set(snapshot.deleted_at); // delete-undo: NULL un-deletes; defer-undo: stays NULL
