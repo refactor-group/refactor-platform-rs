@@ -777,6 +777,42 @@ impl Serialize for CoachingRelationshipWithUserNames {
 }
 
 #[cfg(test)]
+mod wire_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn schema_lists_exactly_the_serialized_keys() {
+        let now = Utc::now().fixed_offset();
+        let relationship = CoachingRelationshipWithUserNames {
+            id: Id::new_v4(),
+            coach_id: Id::new_v4(),
+            coachee_id: Id::new_v4(),
+            coach_first_name: String::new(),
+            coach_last_name: String::new(),
+            coachee_first_name: String::new(),
+            coachee_last_name: String::new(),
+            created_at: now,
+            updated_at: now,
+            membership: Membership::default(),
+        };
+        let serde_json::Value::Object(wire) =
+            serde_json::to_value(&relationship).expect("serializes")
+        else {
+            panic!("expected an object");
+        };
+        let RefOr::T(Schema::Object(schema)) = CoachingRelationshipWithUserNames::schema() else {
+            panic!("expected an object schema");
+        };
+        let keys: BTreeSet<&str> = wire.keys().map(String::as_str).collect();
+        let properties: BTreeSet<&str> = schema.properties.keys().map(String::as_str).collect();
+        let required: BTreeSet<&str> = schema.required.iter().map(String::as_str).collect();
+        assert_eq!(keys, properties);
+        assert_eq!(keys, required);
+    }
+}
+
+#[cfg(test)]
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;

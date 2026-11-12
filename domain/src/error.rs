@@ -148,6 +148,7 @@ impl Error {
         message: impl Into<String>,
         details: serde_json::Value,
     ) -> Self {
+        debug_assert!(details.is_object(), "409 details must be an object");
         let mut details = match details {
             serde_json::Value::Object(map) => map,
             _ => serde_json::Map::new(),
