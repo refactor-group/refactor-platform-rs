@@ -10,7 +10,6 @@ fn topic(session_id: Id, id: Id, order: i32) -> Model {
         body: "topic body".to_owned(),
         user_id: Id::new_v4(),
         display_order: order,
-        priority: Some(entity::topic_priority::Priority::High),
         status: entity::topic_status::Status::Open,
         moved_from_session_id: None,
         undo_snapshot: None,
@@ -20,7 +19,7 @@ fn topic(session_id: Id, id: Id, order: i32) -> Model {
     }
 }
 
-/// Topic with a chosen status, body, and priority (the fields carry-over reads).
+/// Topic with a chosen status and body (the fields carry-over reads).
 fn topic_with(session_id: Id, id: Id, order: i32, status: Status, body: &str) -> Model {
     Model {
         status,
@@ -96,8 +95,8 @@ fn display_order_is_never_serialized() {
     assert!(value.get("id").is_some());
     assert!(value.get("coaching_session_id").is_some());
     assert!(value.get("user_id").is_some());
-    // priority, status, and moved_from_session_id ARE on the wire.
-    assert!(value.get("priority").is_some());
+    // status and moved_from_session_id ARE on the wire.
+    assert!(value.get("priority").is_none());
     assert!(value.get("status").is_some());
     assert!(value.get("moved_from_session_id").is_some());
     // undo_snapshot and deleted_at are server-only (#[serde(skip)]).
@@ -118,7 +117,7 @@ async fn find_by_coaching_session_id_orders_by_display_order_then_created_at() {
         db.into_transaction_log(),
         [Transaction::from_sql_and_values(
             DatabaseBackend::Postgres,
-            r#"SELECT "coaching_session_topics"."id", "coaching_session_topics"."coaching_session_id", "coaching_session_topics"."body", "coaching_session_topics"."user_id", "coaching_session_topics"."display_order", CAST("coaching_session_topics"."priority" AS "text"), CAST("coaching_session_topics"."status" AS "text"), "coaching_session_topics"."moved_from_session_id", "coaching_session_topics"."undo_snapshot", "coaching_session_topics"."deleted_at", "coaching_session_topics"."created_at", "coaching_session_topics"."updated_at" FROM "refactor_platform"."coaching_session_topics" WHERE "coaching_session_topics"."coaching_session_id" = $1 AND "coaching_session_topics"."deleted_at" IS NULL ORDER BY "coaching_session_topics"."display_order" ASC, "coaching_session_topics"."created_at" ASC"#,
+            r#"SELECT "coaching_session_topics"."id", "coaching_session_topics"."coaching_session_id", "coaching_session_topics"."body", "coaching_session_topics"."user_id", "coaching_session_topics"."display_order", CAST("coaching_session_topics"."status" AS "text"), "coaching_session_topics"."moved_from_session_id", "coaching_session_topics"."undo_snapshot", "coaching_session_topics"."deleted_at", "coaching_session_topics"."created_at", "coaching_session_topics"."updated_at" FROM "refactor_platform"."coaching_session_topics" WHERE "coaching_session_topics"."coaching_session_id" = $1 AND "coaching_session_topics"."deleted_at" IS NULL ORDER BY "coaching_session_topics"."display_order" ASC, "coaching_session_topics"."created_at" ASC"#,
             [session_id.into()]
         )]
     );
@@ -175,7 +174,6 @@ async fn defer_move_snapshots_and_reparents() {
             coaching_session_id: origin_id,
             body: original.body.clone(),
             display_order: original.display_order,
-            priority: original.priority.clone(),
             status: Status::Discussed,
             moved_from_session_id: original.moved_from_session_id,
             deleted_at: None,
@@ -202,7 +200,6 @@ async fn defer_move_snapshots_and_reparents() {
             coaching_session_id: origin_id,
             body: original.body.clone(),
             display_order: original.display_order,
-            priority: original.priority.clone(),
             status: Status::Discussed,
             moved_from_session_id: original.moved_from_session_id,
             deleted_at: None,
@@ -255,7 +252,6 @@ async fn restore_from_snapshot_restores_snapshot() {
         coaching_session_id: origin_id,
         body: "topic body".to_owned(),
         display_order: 3,
-        priority: Some(entity::topic_priority::Priority::High),
         status: Status::Discussed,
         moved_from_session_id: None,
         deleted_at: None,
@@ -447,7 +443,6 @@ async fn move_deferred_to_session_clears_snapshot() {
         coaching_session_id: origin_id,
         body: "topic body".to_owned(),
         display_order: 5,
-        priority: Some(entity::topic_priority::Priority::High),
         status: Status::Discussed,
         moved_from_session_id: None,
         deleted_at: None,
@@ -504,7 +499,6 @@ async fn set_status_clears_snapshot() {
         coaching_session_id: Id::new_v4(),
         body: "topic body".to_owned(),
         display_order: 1,
-        priority: Some(entity::topic_priority::Priority::High),
         status: Status::Discussed,
         moved_from_session_id: None,
         deleted_at: None,

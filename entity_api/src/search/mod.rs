@@ -26,7 +26,6 @@ use crate::error::Error;
 use entity::coaching_relationships;
 use entity::coaching_relationships::Visibility;
 use entity::status::Status;
-use entity::topic_priority::Priority;
 use entity::topic_status::Status as TopicStatus;
 use entity::transcript_suggestion_target::Target;
 use entity::Id;
@@ -169,7 +168,6 @@ pub struct TopicHit {
     pub coaching_session_id: Id,
     pub coaching_relationship_id: Id,
     pub status: TopicStatus,
-    pub priority: Option<Priority>,
 }
 
 /// A pending AI-suggested item; no review status, since every hit is pending.

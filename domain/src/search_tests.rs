@@ -167,7 +167,6 @@ mod merge_tests {
             coaching_session_id: Id::new_v4(),
             coaching_relationship_id: Id::new_v4(),
             status: TopicStatus::Open,
-            priority: None,
         })
     }
 

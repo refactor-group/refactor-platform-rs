@@ -1,7 +1,7 @@
 use axum::{
     async_trait,
     extract::{FromRef, FromRequestParts},
-    http::{request::Parts, StatusCode},
+    http::request::Parts,
 };
 use domain::{coaching_session, coaching_session_topic, coaching_session_topics};
 
@@ -140,45 +140,6 @@ where
         }
 
         Ok(CoachingSessionTopicUndoAccess(topic))
-    }
-}
-
-/// Rating writes are coachee-only. Verifies the caller is the coachee of the path session's
-/// relationship (else 403), and that the `:topic_id` topic belongs to that session (else 404).
-pub(crate) struct CoachingSessionTopicCoacheeAccess(pub coaching_session_topics::Model);
-
-#[async_trait]
-impl<S> FromRequestParts<S> for CoachingSessionTopicCoacheeAccess
-where
-    AppState: FromRef<S>,
-    S: Send + Sync,
-{
-    type Rejection = RejectionType;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let app_state = AppState::from_ref(state);
-
-        // Composes the participant + topic-belongs-to-session check (collapses to 404), so a
-        // non-existent or out-of-session topic never reaches the coachee gate below.
-        let CoachingSessionTopicAccess(topic) =
-            CoachingSessionTopicAccess::from_request_parts(parts, state).await?;
-
-        let AuthenticatedUser(user) =
-            AuthenticatedUser::from_request_parts(parts, &app_state).await?;
-
-        // Coachee-only: a coach is a participant (so the compose above passed) but may not rate -> 403.
-        let (_session, relationship) = coaching_session::find_by_id_with_coaching_relationship(
-            app_state.db_conn_ref(),
-            topic.coaching_session_id,
-        )
-        .await
-        .map_err(|_| not_found())?;
-
-        if relationship.coachee_id != user.id {
-            return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
-        }
-
-        Ok(CoachingSessionTopicCoacheeAccess(topic))
     }
 }
 
