@@ -14,6 +14,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono_tz::Tz;
+use domain::search::visibility_for;
 use domain::{coaching_session as CoachingSessionApi, Id, QuerySort};
 use log::*;
 use serde::Serialize;
@@ -56,11 +57,12 @@ use utoipa::ToSchema;
 )]
 pub async fn index(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Path(user_id): Path<Id>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
+    super::ensure_self(&user, user_id)?;
     debug!("GET Coaching Sessions for User: {user_id}");
     debug!("Query Params: {params:?}");
 
@@ -88,7 +90,7 @@ pub async fn index(
     // Fetch sessions with optional includes and sorting at database level
     let enriched_sessions = CoachingSessionApi::find_by_user_with_includes(
         app_state.db_conn_ref(),
-        user_id,
+        &visibility_for(&user),
         CoachingSessionApi::SessionQueryOptions {
             coaching_relationship_id: params.coaching_relationship_id,
             organization_id: params.organization_id,
@@ -147,16 +149,17 @@ pub async fn index(
 )]
 pub async fn nearest(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Path(user_id): Path<Id>,
     Query(params): Query<NearestParams>,
 ) -> Result<impl IntoResponse, Error> {
+    super::ensure_self(&user, user_id)?;
     debug!("GET nearest Coaching Sessions for User: {user_id}, params: {params:?}");
 
     let sessions = CoachingSessionApi::find_nearest_by_user_with_includes(
         app_state.db_conn_ref(),
-        user_id,
+        &visibility_for(&user),
         params.compile()?,
         include_options(&params.include),
     )
@@ -201,11 +204,12 @@ pub(crate) struct CountsResponse {
 )]
 pub async fn counts(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Path(user_id): Path<Id>,
     Query(params): Query<CountsByMonthParams>,
 ) -> Result<impl IntoResponse, Error> {
+    super::ensure_self(&user, user_id)?;
     let params = params.with_user_id(user_id);
     debug!(
         "GET coaching session counts for user {user_id}, params: from={} to={} tz={} relationship={:?}",
@@ -227,7 +231,7 @@ pub async fn counts(
 
     let counts = CoachingSessionApi::find_counts_by_month_for_user(
         app_state.db_conn_ref(),
-        user_id,
+        &visibility_for(&user),
         params.from_date,
         params.to_date,
         tz.name(),

@@ -1,6 +1,6 @@
 //! A user's actions read through the router and `protect::users::actions`: a coach's query
-//! is held to their own relationship with the user in orgs they still belong to, a user's
-//! own query is not.
+//! is held to their own relationship with the user, a user's own query to their own
+//! relationships, both in orgs the reader still belongs to unless a SuperAdmin.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -18,8 +18,11 @@ use crate::{protect, AppState};
 /// Marks a WHERE clause that holds the relationship's coach to one user.
 const COACH_FILTER: &str = r#"AND "coaching_relationships"."coach_id" ="#;
 
-/// Marks a WHERE clause that holds the coach to orgs they still belong to.
+/// Marks a WHERE clause that holds the reader to orgs they still belong to.
 const ORG_FILTER: &str = r#""coaching_relationships"."organization_id" IN ("#;
+
+/// What an empty membership list renders as instead: a constant false (`$a = $b`).
+const NO_ORG: &str = " AND $";
 
 fn routes(db: &Arc<DatabaseConnection>) -> Router<AppState> {
     Router::new()
@@ -30,13 +33,13 @@ fn routes(db: &Arc<DatabaseConnection>) -> Router<AppState> {
         ))
 }
 
-/// One `actions_users` row for the coachee, so the assigned scope reaches its actions query.
-fn assignment(w: &World) -> BTreeMap<&'static str, Value> {
+/// One `actions_users` row for `user_id`, so the assigned scope reaches its actions query.
+fn assignment(user_id: Id) -> BTreeMap<&'static str, Value> {
     let now = Utc::now().fixed_offset();
     BTreeMap::from([
         ("id", Value::from(Id::new_v4())),
         ("action_id", Value::from(Id::new_v4())),
-        ("user_id", Value::from(w.coachee.id)),
+        ("user_id", Value::from(user_id)),
         ("created_at", Value::from(now)),
         ("updated_at", Value::from(now)),
     ])
@@ -63,11 +66,16 @@ fn statements(db: &DatabaseConnection) -> Vec<String> {
 
 /// GETs the coachee's actions as `email` and returns the actions query's WHERE clause.
 async fn actions_where(w: &World, db: MockDatabase, email: &str, query: &str) -> String {
+    user_actions_where(w.coachee.id, db, email, query).await
+}
+
+/// GETs `user_id`'s actions as `email` and returns the actions query's WHERE clause.
+async fn user_actions_where(user_id: Id, db: MockDatabase, email: &str, query: &str) -> String {
     let db = Arc::new(
         db.append_query_results([Vec::<actions::Model>::new()])
             .into_connection(),
     );
-    let uri = format!("/users/{}/actions{query}", w.coachee.id);
+    let uri = format!("/users/{user_id}/actions{query}");
     let response = support::send(routes(&db), &db, email, "GET", &uri, None).await;
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -95,7 +103,8 @@ async fn a_coach_reading_sessions_scope_is_held_to_their_relationship() {
 #[tokio::test]
 async fn a_coach_reading_assigned_scope_is_held_to_their_relationship() {
     let w = support::world();
-    let db = reaching_actions(&w, Caller::Coach).append_query_results([vec![assignment(&w)]]);
+    let db =
+        reaching_actions(&w, Caller::Coach).append_query_results([vec![assignment(w.coachee.id)]]);
     let clause = actions_where(&w, db, &w.coach.email, "?scope=assigned").await;
     assert!(
         clause.contains(r#""coaching_relationships"."coach_id" ="#),
@@ -156,12 +165,41 @@ async fn a_user_reading_their_own_sessions_scope_is_not_held_to_a_coach() {
     )
     .await;
     assert!(!clause.contains(COACH_FILTER), "{clause}");
+    assert!(clause.contains(ORG_FILTER), "{clause}");
 }
 
 #[tokio::test]
 async fn a_user_reading_their_own_assigned_scope_is_not_held_to_a_coach() {
     let w = support::world();
-    let db = reaching_actions(&w, Caller::Coachee).append_query_results([vec![assignment(&w)]]);
+    let db = reaching_actions(&w, Caller::Coachee)
+        .append_query_results([vec![assignment(w.coachee.id)]]);
     let clause = actions_where(&w, db, &w.coachee.email, "?scope=assigned").await;
-    assert!(!clause.contains("coaching_relationships"), "{clause}");
+    assert!(!clause.contains(COACH_FILTER), "{clause}");
+    assert!(clause.contains(ORG_FILTER), "{clause}");
+}
+
+#[tokio::test]
+async fn a_super_admin_reading_their_own_actions_is_not_held_to_member_orgs() {
+    let w = support::world();
+    let id = w.super_admin.id;
+    let sessions = user_actions_where(
+        id,
+        w.signed_in(Caller::SuperAdmin),
+        &w.super_admin.email,
+        "",
+    )
+    .await;
+    assert!(
+        !sessions.contains(ORG_FILTER) && !sessions.contains(NO_ORG),
+        "{sessions}"
+    );
+
+    let db = w
+        .signed_in(Caller::SuperAdmin)
+        .append_query_results([vec![assignment(id)]]);
+    let assigned = user_actions_where(id, db, &w.super_admin.email, "?scope=assigned").await;
+    assert!(
+        !assigned.contains(ORG_FILTER) && !assigned.contains(NO_ORG),
+        "{assigned}"
+    );
 }

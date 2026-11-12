@@ -1,7 +1,7 @@
 use crate::error::Error;
 use sea_orm::strum::IntoEnumIterator;
 use sea_orm::{
-    ColumnTrait, DatabaseConnection, EntityTrait, Order, QueryFilter, QueryOrder, Value,
+    ColumnTrait, DatabaseConnection, EntityTrait, Order, QueryFilter, QueryOrder, Select, Value,
 };
 use std::collections::HashMap;
 
@@ -237,12 +237,26 @@ where
     C: ColumnTrait + IntoEnumIterator,
     P: IntoQueryFilterMap + QuerySort<C>,
 {
+    find_by_within::<E, C, P>(db, E::find(), params).await
+}
+
+/// [`find_by`], narrowing `select` instead of every row of the entity.
+pub async fn find_by_within<E, C, P>(
+    db: &DatabaseConnection,
+    select: Select<E>,
+    params: P,
+) -> Result<Vec<E::Model>, Error>
+where
+    E: EntityTrait,
+    C: ColumnTrait + IntoEnumIterator,
+    P: IntoQueryFilterMap + QuerySort<C>,
+{
     // Extract sorting parameters before consuming params
     let sort_column = params.get_sort_column();
     let sort_order = params.get_sort_order();
     let query_filter_map = params.into_query_filter_map();
 
-    let mut query = E::find();
+    let mut query = select;
 
     // Apply filters by iterating through the entity's defined columns
     for column in C::iter() {

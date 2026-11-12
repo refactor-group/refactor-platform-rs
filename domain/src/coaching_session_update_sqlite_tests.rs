@@ -5,7 +5,10 @@ use chrono::{NaiveDateTime, TimeDelta, Timelike, Utc};
 use entity_api::{coaching_session_pending_reschedule, mutate};
 use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, IntoActiveModel, Set, Value};
 
-use crate::test_utils::sqlite::{database, seed_coaching_session, within_time_limit};
+use crate::error::{DomainErrorKind, EntityErrorKind, InternalErrorKind};
+use crate::test_utils::sqlite::{
+    database, organization_of, seed_coaching_session, seed_membership, within_time_limit,
+};
 use crate::{coaching_session_pending_reschedules, coaching_sessions, Id};
 
 #[derive(Debug)]
@@ -35,22 +38,33 @@ fn title(value: &str) -> Params {
     set("title", Value::String(Some(value.to_string())))
 }
 
-/// A session a week out, 60 minutes long; returns its id and start.
-async fn upcoming_session(db: &DatabaseConnection) -> (Id, NaiveDateTime) {
-    let (session_id, _) = seed_coaching_session(db).await;
+/// A session a week out, 60 minutes long, whose one participant holds no role in its
+/// organization; returns its id, start and participant.
+async fn upcoming_session_without_members(db: &DatabaseConnection) -> (Id, NaiveDateTime, Id) {
+    let (session_id, user_id) = seed_coaching_session(db).await;
     let start = (Utc::now() + TimeDelta::days(7))
         .naive_utc()
         .with_nanosecond(0)
         .expect("whole seconds");
-    let mut session = coaching_sessions::Entity::find_by_id(session_id)
+    let mut session = read(db, session_id).await.into_active_model();
+    session.date = Set(start);
+    session.update(db).await.expect("the session moves");
+    (session_id, start, user_id)
+}
+
+/// A session a week out, 60 minutes long; returns its id and start.
+async fn upcoming_session(db: &DatabaseConnection) -> (Id, NaiveDateTime) {
+    let (session_id, start, user_id) = upcoming_session_without_members(db).await;
+    seed_membership(db, user_id, organization_of(db, session_id).await).await;
+    (session_id, start)
+}
+
+async fn read(db: &DatabaseConnection, session_id: Id) -> coaching_sessions::Model {
+    coaching_sessions::Entity::find_by_id(session_id)
         .one(db)
         .await
         .expect("the session reads")
         .expect("the session exists")
-        .into_active_model();
-    session.date = Set(start);
-    session.update(db).await.expect("the session moves");
-    (session_id, start)
 }
 
 async fn edit(db: &DatabaseConnection, session_id: Id, params: Params) -> coaching_sessions::Model {
@@ -198,6 +212,81 @@ async fn an_edit_after_the_email_was_read_stays_pending_from_what_was_sent() {
             .await
             .expect("the newer edit stays pending");
         assert_eq!(row.announced_date, sent.date);
+    })
+    .await;
+}
+
+/// The `details` of a 409, or `None` for any other error.
+fn conflict_details(error: &crate::error::Error) -> Option<&serde_json::Value> {
+    match &error.error_kind {
+        DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Conflict {
+            details,
+            ..
+        })) => details.as_ref(),
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn moving_a_session_whose_coachee_left_the_organization_is_refused() {
+    within_time_limit(async {
+        let db = database().await;
+        let (session_id, start, coachee_id) = upcoming_session_without_members(&db).await;
+        let before = read(&db, session_id).await;
+
+        for params in [date(start + TimeDelta::hours(1)), duration(45)] {
+            let refused = crate::coaching_session::update(&db, session_id, params)
+                .await
+                .expect_err("a move is refused");
+
+            let details = conflict_details(&refused).expect("a 409 with details");
+            assert_eq!(details["reason"], "coachee_not_a_member");
+            assert_eq!(details["user_id"], serde_json::json!(coachee_id));
+            assert_eq!(
+                details["organization_id"],
+                serde_json::json!(organization_of(&db, session_id).await)
+            );
+            assert_eq!(read(&db, session_id).await, before);
+            assert_eq!(pending(&db, session_id).await, None);
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn retitling_a_session_whose_coachee_left_the_organization_still_saves() {
+    within_time_limit(async {
+        let db = database().await;
+        let (session_id, _, _) = upcoming_session_without_members(&db).await;
+
+        let retitled = edit(&db, session_id, title("Quarterly review")).await;
+
+        assert_eq!(retitled.title.as_deref(), Some("Quarterly review"));
+        assert_eq!(
+            read(&db, session_id).await.title.as_deref(),
+            Some("Quarterly review")
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn deleting_a_session_whose_coachee_left_the_organization_is_allowed() {
+    within_time_limit(async {
+        let db = database().await;
+        let (session_id, _, _) = upcoming_session_without_members(&db).await;
+
+        crate::coaching_session::delete(&db, &service::config::Config::default(), session_id)
+            .await
+            .expect("the delete succeeds");
+
+        assert_eq!(
+            coaching_sessions::Entity::find_by_id(session_id)
+                .one(&db)
+                .await
+                .expect("the session reads"),
+            None
+        );
     })
     .await;
 }

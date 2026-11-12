@@ -11,7 +11,7 @@ use entity_api::{
 use crate::{
     coaching_relationships,
     error::Error,
-    error::{DomainErrorKind, EntityErrorKind, InternalErrorKind},
+    error::{reason, DomainErrorKind, EntityErrorKind, InternalErrorKind},
     magic_link_token, magic_link_tokens, users, Actor, Id,
 };
 pub use entity_api::{
@@ -187,6 +187,9 @@ pub(crate) fn new_coaching_relationship(
 
 /// Deletes an account and every role it holds.
 ///
+/// Refused with a 409 while any of the account's relationships has a coaching
+/// session; relationships without one are deleted with it.
+///
 /// Returns the roles that were destroyed, so the caller can log them. Each is
 /// also written to the audit trail inside the transaction. A global SuperAdmin
 /// grant is among them, and that is the change most worth recording.
@@ -234,7 +237,24 @@ pub async fn delete(
         }
     }
 
-    coaching_relationship::delete_by_user_id(&txn, user_id).await?;
+    // Sessions block the relationship delete, and the shared history must survive.
+    let relationship_count =
+        coaching_relationship::count_with_sessions_by_user_id(&txn, user_id).await?;
+    if relationship_count > 0 {
+        return Err(coaching_history(user_id, Some(relationship_count)));
+    }
+
+    // A session created since the count still trips the foreign key. Postgres has aborted
+    // the transaction by then, so the count cannot be redone.
+    coaching_relationship::delete_by_user_id(&txn, user_id)
+        .await
+        .map_err(|err| {
+            if err.is_foreign_key_violation() {
+                coaching_history(user_id, None)
+            } else {
+                err.into()
+            }
+        })?;
     let destroyed_roles = user_role::delete_by_user_id(&txn, actor, user_id).await?;
     user::delete(&txn, user_id).await?;
 
@@ -248,6 +268,20 @@ pub async fn delete(
     Ok(destroyed_roles)
 }
 
+/// A 409 refusing to delete an account with coaching history; `relationship_count` is
+/// how many of its relationships have sessions, when known.
+fn coaching_history(user_id: Id, relationship_count: Option<u64>) -> Error {
+    let mut details = serde_json::json!({ "user_id": user_id });
+    if let Some(count) = relationship_count {
+        details["relationship_count"] = count.into();
+    }
+    Error::conflict_because(
+        reason::USER_HAS_COACHING_HISTORY,
+        "This person has coaching history, so remove them from the organization instead of deleting their account.",
+        details,
+    )
+}
+
 #[cfg(test)]
 #[cfg(feature = "mock")]
 #[path = "user_tests.rs"]
@@ -256,3 +290,7 @@ mod tests;
 #[cfg(test)]
 #[path = "user_sqlite_tests.rs"]
 mod sqlite_tests;
+
+#[cfg(test)]
+#[path = "user_delete_sqlite_tests.rs"]
+mod delete_sqlite_tests;

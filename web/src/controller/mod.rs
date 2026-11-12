@@ -41,6 +41,11 @@ mod resend_invite_tests;
 #[path = "reschedule_following_tests.rs"]
 mod reschedule_following_tests;
 
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "participant_membership_tests.rs"]
+mod participant_membership_tests;
+
 #[derive(Debug, Serialize)]
 struct ApiResponse<T: Serialize> {
     status_code: u16,

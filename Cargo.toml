@@ -26,6 +26,12 @@ log = "0.4.22"
 tokio = "1.44.2"
 openssl-sys = { version = "0.9.107", features = ["vendored"] }
 
+[profile.dev]
+# Keep file/line numbers in panic backtraces, much smaller target output
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 # Unoptimized argon2 makes every test login take seconds.
 [profile.dev.package.argon2]

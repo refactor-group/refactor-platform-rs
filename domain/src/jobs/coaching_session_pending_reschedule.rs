@@ -36,7 +36,7 @@ use log::*;
 use sea_orm::DatabaseConnection;
 use service::config::Config;
 
-use crate::emails::{self, RescheduleOutcome};
+use crate::emails::{self, Delivery, RescheduleOutcome};
 use crate::error::Error;
 use crate::jobs::{Context, FirstRun, Job, Outcome};
 use crate::Id;
@@ -122,7 +122,7 @@ impl Sweep {
         match emails::send_session_rescheduled(db, &ctx.config, &session, claimed.announced.date)
             .await
         {
-            Ok(RescheduleOutcome::Sent(delivered)) if delivered.coachee => {
+            Ok(RescheduleOutcome::Sent(delivered)) if delivered.coachee == Delivery::Sent => {
                 let handled = settle(db, claimed, current).await;
                 if let Err(e) = coaching_session::mark_notice_given(db, id).await {
                     warn!("[coaching-session-pending-reschedule] could not record notice for session {id}: {e:?}");

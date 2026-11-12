@@ -1,6 +1,8 @@
 use super::*;
 #[cfg(feature = "mock")]
 use crate::coaching_session::{Frequency, Recurrence};
+#[cfg(feature = "mock")]
+use crate::test_utils::mock::members;
 use crate::{coaching_sessions, organizations, users, Id};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -721,7 +723,20 @@ async fn test_send_session_scheduled_email_variables() {
         .create_async()
         .await;
 
-    let result = send_session_scheduled_email(&db, &config, &coach, &coachee, &session, &org).await;
+    let result = send_session_scheduled_email(
+        &db,
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+    )
+    .await;
     assert!(result.is_ok());
 
     // Sends are best-effort (errors are swallowed), so assert the mocks
@@ -804,14 +819,16 @@ async fn test_send_session_rescheduled_email() {
     let result = send_session_rescheduled_email(
         &db,
         &config,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &session,
         &org,
         previous_start,
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -955,14 +972,16 @@ async fn test_send_session_rescheduled_email_carries_both_when_variables_per_rec
     let result = send_session_rescheduled_email(
         &db,
         &config,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &session,
         &org,
         previous_start,
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1009,14 +1028,16 @@ async fn test_send_session_rescheduled_email_unmoved_start_renders_unchanged() {
     let result = send_session_rescheduled_email(
         &db,
         &config,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &session,
         &org,
         session.date,
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1064,14 +1085,16 @@ async fn test_send_session_rescheduled_email_moved_start_is_not_unchanged() {
     let result = send_session_rescheduled_email(
         &db,
         &config,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &session,
         &org,
         previous_start,
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1121,7 +1144,20 @@ async fn test_send_session_scheduled_email_omits_when_variables() {
         .create_async()
         .await;
 
-    let result = send_session_scheduled_email(&db, &config, &coach, &coachee, &session, &org).await;
+    let result = send_session_scheduled_email(
+        &db,
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+    )
+    .await;
     assert!(result.is_ok());
 
     mock.assert_async().await;
@@ -1187,14 +1223,16 @@ async fn test_send_session_rescheduled_email_omits_recurrence_variables() {
     let result = send_session_rescheduled_email(
         &db,
         &config,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &session,
         &org,
         previous_start,
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1238,14 +1276,16 @@ async fn test_send_occurrence_rescheduled_email_addresses_the_occurrence() {
     let result = send_session_rescheduled_email(
         &db,
         &config,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &session,
         &org,
         original_start,
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1466,9 +1506,20 @@ async fn test_send_session_cancelled_email() {
         .create_async()
         .await;
 
-    let result =
-        send_session_cancelled_email(&config, &coach, &coachee, &session, &org, anchor_tz(&coach))
-            .await;
+    let result = send_session_cancelled_email(
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+        anchor_tz(&coach),
+    )
+    .await;
     assert!(result.is_ok());
 
     // The send swallows errors, so the mock assertions are what give this test teeth.
@@ -1527,9 +1578,20 @@ async fn test_send_session_cancelled_email_omits_when_variables() {
         .create_async()
         .await;
 
-    let result =
-        send_session_cancelled_email(&config, &coach, &coachee, &session, &org, anchor_tz(&coach))
-            .await;
+    let result = send_session_cancelled_email(
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+        anchor_tz(&coach),
+    )
+    .await;
     assert!(result.is_ok());
 
     mock.assert_async().await;
@@ -1688,9 +1750,20 @@ async fn test_cancelling_a_legacy_series_member_addresses_it_by_its_own_uid() {
         .create_async()
         .await;
 
-    let result =
-        send_session_cancelled_email(&config, &coach, &coachee, &session, &org, anchor_tz(&coach))
-            .await;
+    let result = send_session_cancelled_email(
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+        anchor_tz(&coach),
+    )
+    .await;
     assert!(result.is_ok());
     mock.assert_async().await;
 
@@ -1741,8 +1814,13 @@ async fn test_scheduling_and_rescheduling_a_legacy_series_member_send_standalone
     let scheduled = send_session_scheduled_email(
         &mock_description_loaders(),
         &config,
-        &coach,
-        &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
         &session,
         &org,
     )
@@ -1752,14 +1830,16 @@ async fn test_scheduling_and_rescheduling_a_legacy_series_member_send_standalone
     let rescheduled = send_session_rescheduled_email(
         &mock_description_loaders(),
         &config,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &session,
         &org,
         session.date - chrono::Duration::days(1),
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(rescheduled.is_ok());
@@ -1898,7 +1978,15 @@ async fn test_scheduled_and_rescheduled_no_longer_short_circuit_a_legacy_series_
     session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
 
     let scheduled_db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-    notify_session_scheduled(&scheduled_db, &config, &session).await;
+    notify_session_scheduled(
+        &scheduled_db,
+        &config,
+        &session,
+        &test_relationship(),
+        &create_test_organization(),
+        &[],
+    )
+    .await;
     assert!(
         !scheduled_db.into_transaction_log().is_empty(),
         "scheduled must not skip a legacy series member"
@@ -1980,9 +2068,20 @@ async fn test_send_occurrence_cancelled_email_uses_session_template() {
         .create_async()
         .await;
 
-    let result =
-        send_session_cancelled_email(&config, &coach, &coachee, &session, &org, anchor_tz(&coach))
-            .await;
+    let result = send_session_cancelled_email(
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+        anchor_tz(&coach),
+    )
+    .await;
     assert!(result.is_ok());
 
     // The send swallows errors, so the mock assertions are what give this test teeth.
@@ -2049,7 +2148,20 @@ async fn test_send_session_scheduled_email_missing_template_id() {
     let session = create_test_session();
     let org = create_test_organization();
 
-    let result = send_session_scheduled_email(&db, &config, &coach, &coachee, &session, &org).await;
+    let result = send_session_scheduled_email(
+        &db,
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+    )
+    .await;
 
     assert!(result.is_err());
     if let Err(e) = result {
@@ -2881,7 +2993,18 @@ async fn test_send_recurring_sessions_scheduled_email_personalization() {
         .await;
 
     let result = send_recurring_sessions_scheduled_email(
-        &db, &config, &series, &coach, &coachee, &sessions, &org,
+        &db,
+        &config,
+        &series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &sessions,
+        &org,
     )
     .await;
     assert!(result.is_ok());
@@ -2967,9 +3090,12 @@ async fn test_send_recurring_sessions_rescheduled_email() {
         &config,
         &series,
         &create_test_series(),
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &SeriesSessions {
             current: &sessions,
@@ -3062,9 +3188,12 @@ async fn test_send_recurring_sessions_rescheduled_email_previous_when_comes_from
         &config,
         &series,
         &previous_series,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &SeriesSessions {
             current: &sessions,
@@ -3130,7 +3259,18 @@ async fn test_send_recurring_sessions_scheduled_email_carries_recurrence_summary
         .await;
 
     let result = send_recurring_sessions_scheduled_email(
-        &db, &config, &series, &coach, &coachee, &sessions, &org,
+        &db,
+        &config,
+        &series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &sessions,
+        &org,
     )
     .await;
     assert!(result.is_ok());
@@ -3196,9 +3336,12 @@ async fn test_send_recurring_sessions_rescheduled_email_previous_recurrence_from
         &config,
         &series,
         &previous_series,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &SeriesSessions {
             current: &sessions,
@@ -3266,9 +3409,12 @@ async fn test_send_recurring_sessions_rescheduled_email_unchanged_recurrence() {
         &config,
         &series,
         &previous_series,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &SeriesSessions {
             current: &sessions,
@@ -3301,6 +3447,7 @@ async fn test_notify_recurring_sessions_rescheduled_with_no_sessions_does_nothin
         PreviousSeries(&series),
         &[],
         ReplacedSessions(&[]),
+        &[],
     )
     .await;
 
@@ -3429,7 +3576,17 @@ async fn test_send_recurring_sessions_cancelled_email() {
         .await;
 
     let result = send_recurring_sessions_cancelled_email(
-        &config, &series, &coach, &coachee, &sessions, &org,
+        &config,
+        &series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &sessions,
+        &org,
     )
     .await;
     assert!(result.is_ok());
@@ -3481,9 +3638,12 @@ async fn test_rescheduling_a_series_clears_the_standalone_events_it_replaced() {
         &config,
         &series,
         &series,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &SeriesSessions {
             current: &current,
@@ -3592,9 +3752,12 @@ async fn test_a_split_reschedule_carries_the_new_and_the_shortened_series() {
         &mock_description_loaders(),
         &config,
         &split_off,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &SeriesSessions {
             current: &moved,
@@ -3619,7 +3782,10 @@ async fn test_a_split_reschedule_carries_the_new_and_the_shortened_series() {
     )
     .await
     .expect("the send runs");
-    assert!(delivered.coach && delivered.coachee);
+    assert_eq!(
+        (delivered.coach, delivered.coachee),
+        (Delivery::Sent, Delivery::Sent)
+    );
     mock.assert_async().await;
 
     let attachments = capture.captured();
@@ -3688,13 +3854,35 @@ async fn send_edited_series(
                 coach: &coach,
                 coachee: &coachee,
             };
-            let delivered =
-                send_series_invite_resend(&db, &config, &series, &participants, &rows, &rows, &org);
-            Some(delivered.await.unwrap())
+            let delivered = send_series_invite_resend(
+                &db,
+                &config,
+                &series,
+                &Audience {
+                    participants: &participants,
+                    member_ids: &[coach.id, coachee.id],
+                },
+                &rows,
+                &rows,
+                &org,
+            )
+            .await;
+            Some(delivered.unwrap())
         }
         SeriesSend::Scheduled => {
             send_recurring_sessions_scheduled_email(
-                &db, &config, &series, &coach, &coachee, &rows, &org,
+                &db,
+                &config,
+                &series,
+                &Audience {
+                    participants: &Participants {
+                        coach: &coach,
+                        coachee: &coachee,
+                    },
+                    member_ids: &[coach.id, coachee.id],
+                },
+                &rows,
+                &org,
             )
             .await
             .unwrap();
@@ -3713,7 +3901,10 @@ async fn series_resend_attaches_snapshot() {
     let (delivered, attachments) = send_edited_series(SeriesSend::Resend, 200).await;
 
     let delivered = delivered.unwrap();
-    assert_eq!((delivered.coachee, delivered.coach), (true, true));
+    assert_eq!(
+        (delivered.coachee, delivered.coach),
+        (Delivery::Sent, Delivery::Sent)
+    );
     assert_eq!(attachments.len(), 1);
     let ics = &attachments[0].1;
     assert!(ics.contains("METHOD:REQUEST"));
@@ -3728,7 +3919,10 @@ async fn series_resend_reports_coachee_failure() {
     let (delivered, _) = send_edited_series(SeriesSend::Resend, 400).await;
 
     let delivered = delivered.unwrap();
-    assert_eq!((delivered.coachee, delivered.coach), (false, true));
+    assert_eq!(
+        (delivered.coachee, delivered.coach),
+        (Delivery::Failed, Delivery::Sent)
+    );
 }
 
 #[cfg(feature = "mock")]
@@ -3780,7 +3974,7 @@ async fn test_a_reschedule_to_no_future_sessions_still_cancels_the_standalone_ev
     relationship.organization_id = org.id;
 
     let db = sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Postgres)
-        .append_query_results(vec![vec![relationship]])
+        .append_query_results(vec![vec![relationship.clone()]])
         .append_query_results(vec![vec![coach]])
         .append_query_results(vec![vec![coachee]])
         .append_query_results(vec![vec![org]])
@@ -3793,6 +3987,7 @@ async fn test_a_reschedule_to_no_future_sessions_still_cancels_the_standalone_ev
         PreviousSeries(&series),
         &[],
         ReplacedSessions(std::slice::from_ref(&orphan)),
+        &[],
     )
     .await;
 
@@ -3833,6 +4028,7 @@ async fn test_a_reschedule_to_no_future_sessions_stays_quiet_when_nothing_was_in
         PreviousSeries(&series),
         &[],
         ReplacedSessions(std::slice::from_ref(&never_invited)),
+        &[],
     )
     .await;
 
@@ -3992,7 +4188,17 @@ async fn test_cancelling_a_series_also_clears_a_legacy_members_standalone_event(
         .await;
 
     let result = send_recurring_sessions_cancelled_email(
-        &config, &series, &coach, &coachee, &sessions, &org,
+        &config,
+        &series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &sessions,
+        &org,
     )
     .await;
     assert!(result.is_ok());
@@ -4061,7 +4267,17 @@ async fn test_cancelling_a_native_series_carries_only_the_series_cancellation() 
         .await;
 
     let result = send_recurring_sessions_cancelled_email(
-        &config, &series, &coach, &coachee, &sessions, &org,
+        &config,
+        &series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &sessions,
+        &org,
     )
     .await;
     assert!(result.is_ok());
@@ -4109,7 +4325,17 @@ async fn test_send_recurring_sessions_cancelled_email_omits_recurrence_variables
         .await;
 
     let result = send_recurring_sessions_cancelled_email(
-        &config, &series, &coach, &coachee, &sessions, &org,
+        &config,
+        &series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &sessions,
+        &org,
     )
     .await;
     assert!(result.is_ok());
@@ -4183,7 +4409,18 @@ async fn test_send_recurring_sessions_scheduled_email_single_session() {
         .await;
 
     let result = send_recurring_sessions_scheduled_email(
-        &db, &config, &series, &coach, &coachee, &sessions, &org,
+        &db,
+        &config,
+        &series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &sessions,
+        &org,
     )
     .await;
     assert!(result.is_ok());
@@ -4210,7 +4447,18 @@ async fn test_send_recurring_sessions_scheduled_email_missing_template_id() {
     )];
 
     let result = send_recurring_sessions_scheduled_email(
-        &db, &config, &series, &coach, &coachee, &sessions, &org,
+        &db,
+        &config,
+        &series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &sessions,
+        &org,
     )
     .await;
 
@@ -4563,14 +4811,16 @@ async fn occurrence_reschedule_uses_the_stored_series_zone() {
     send_session_rescheduled_email(
         &db,
         &config,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &session,
         &create_test_organization(),
         slot,
-        &[coach.id, coachee.id],
     )
     .await
     .unwrap();
@@ -4616,7 +4866,7 @@ async fn occurrence_cancel_uses_the_stored_series_zone() {
         updated_at: chrono::Utc::now().into(),
     };
     let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results(vec![vec![relationship]])
+        .append_query_results(vec![vec![relationship.clone()]])
         .append_query_results(vec![vec![coach.clone()]])
         .append_query_results(vec![vec![coachee]])
         .append_query_results(vec![vec![org]])
@@ -4758,4 +5008,444 @@ fn snapshot_of_a_stored_late_month_series_still_builds() {
     assert!(ics.contains("RRULE:FREQ=MONTHLY;WKST=MO;COUNT=4"), "{ics}");
     assert!(!ics.contains("EXDATE"), "{ics}");
     assert!(!ics.contains("RECURRENCE-ID"), "{ics}");
+}
+
+/// The relationship emails sent from a notify entry point.
+#[cfg(feature = "mock")]
+#[derive(Clone, Copy, Debug)]
+enum RelationshipEmail {
+    SessionScheduled,
+    SeriesScheduled,
+    SeriesRescheduled,
+    SeriesFollowing,
+}
+
+/// A coach and coachee in one organization, with an upcoming session and series.
+#[cfg(feature = "mock")]
+struct MembershipFixture {
+    coach: users::Model,
+    coachee: users::Model,
+    org: organizations::Model,
+    relationship: coaching_relationships::Model,
+    session: coaching_sessions::Model,
+    series: coaching_session_series::Model,
+}
+
+#[cfg(feature = "mock")]
+impl MembershipFixture {
+    fn new() -> Self {
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let org = create_test_organization();
+        let relationship = coaching_relationships::Model {
+            organization_id: org.id,
+            coach_id: coach.id,
+            coachee_id: coachee.id,
+            ..test_relationship()
+        };
+        let session = coaching_sessions::Model {
+            coaching_relationship_id: relationship.id,
+            date: chrono::Utc::now().naive_utc() + chrono::Duration::days(7),
+            ..create_test_session()
+        };
+        let series = coaching_session_series::Model {
+            coaching_relationship_id: relationship.id,
+            ..snapshot_series(snapshot_start(), 1)
+        };
+        Self {
+            coach,
+            coachee,
+            org,
+            relationship,
+            session,
+            series,
+        }
+    }
+
+    fn sessions(&self) -> Vec<coaching_sessions::Model> {
+        snapshot_members(&self.series)
+            .into_iter()
+            .map(|session| coaching_sessions::Model {
+                coaching_relationship_id: self.relationship.id,
+                ..session
+            })
+            .collect()
+    }
+
+    /// The loads an entry point handed the relationship and organization makes, then `rest`.
+    fn participant_loads(&self, rest: impl FnOnce(MockDatabase) -> MockDatabase) -> MockDatabase {
+        rest(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results(vec![vec![self.coach.clone()]])
+                .append_query_results(vec![vec![self.coachee.clone()]]),
+        )
+    }
+
+    /// The loads an entry point handed the relationship makes, then `rest`.
+    fn party_loads(&self, rest: impl FnOnce(MockDatabase) -> MockDatabase) -> MockDatabase {
+        self.participant_loads(|db| rest(db.append_query_results(vec![vec![self.org.clone()]])))
+    }
+
+    /// The loads every other entry point makes, then `rest`.
+    fn loads(&self, rest: impl FnOnce(MockDatabase) -> MockDatabase) -> MockDatabase {
+        rest(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results(vec![vec![self.relationship.clone()]])
+                .append_query_results(vec![vec![self.coach.clone()]])
+                .append_query_results(vec![vec![self.coachee.clone()]])
+                .append_query_results(vec![vec![self.org.clone()]]),
+        )
+    }
+}
+
+/// Records who each Resend request was addressed to.
+#[cfg(feature = "mock")]
+#[derive(Clone, Default)]
+struct RecipientsCapture(Arc<Mutex<Vec<String>>>);
+
+#[cfg(feature = "mock")]
+impl RecipientsCapture {
+    fn recorder(&self) -> impl Fn(&mockito::Request) -> bool + Send + Sync + 'static {
+        let seen = self.0.clone();
+        move |request| {
+            let to = serde_json::from_slice::<serde_json::Value>(request.body().unwrap())
+                .ok()
+                .and_then(|body| body["to"][0].as_str().map(String::from))
+                .unwrap_or_default();
+            seen.lock().unwrap().push(to);
+            true
+        }
+    }
+
+    fn captured(&self) -> BTreeSet<String> {
+        self.0.lock().unwrap().iter().cloned().collect()
+    }
+}
+
+/// Sends `email` with `members` holding a role; returns who was mailed, and for the
+/// "this and following" reschedule, what it did for the coachee.
+#[cfg(feature = "mock")]
+async fn send_relationship_email(
+    email: RelationshipEmail,
+    f: &MembershipFixture,
+    members: &[Id],
+) -> (BTreeSet<String>, Option<Delivery>) {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = RecipientsCapture::default();
+    let _mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .create_async()
+        .await;
+    let sessions = f.sessions();
+    let goals =
+        |db: MockDatabase| db.append_query_results::<entity::goals::Model, _, _>(vec![vec![]]);
+
+    let mut told = None;
+    match email {
+        RelationshipEmail::SessionScheduled => {
+            let db = f.participant_loads(|db| {
+                db.append_query_results::<entity::coaching_session_topics::Model, _, _>(vec![
+                    vec![],
+                ])
+                .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+                .append_query_results::<entity::actions::Model, _, _>(vec![vec![]])
+            });
+            notify_session_scheduled(
+                &db.into_connection(),
+                &config,
+                &f.session,
+                &f.relationship,
+                &f.org,
+                members,
+            )
+            .await;
+        }
+        RelationshipEmail::SeriesScheduled => {
+            let db = f.party_loads(goals).into_connection();
+            notify_recurring_sessions_scheduled(
+                &db,
+                &config,
+                &f.series,
+                &sessions,
+                &f.relationship,
+                members,
+            )
+            .await;
+        }
+        RelationshipEmail::SeriesRescheduled => {
+            let db = f.loads(goals).into_connection();
+            notify_recurring_sessions_rescheduled(
+                &db,
+                &config,
+                &f.series,
+                PreviousSeries(&f.series),
+                &sessions,
+                ReplacedSessions(&[]),
+                members,
+            )
+            .await;
+        }
+        RelationshipEmail::SeriesFollowing => {
+            let db = f
+                .loads(|db| goals(db.append_query_results(vec![sessions.clone()])))
+                .into_connection();
+            told = Some(
+                notify_recurring_sessions_rescheduled_following(
+                    &db,
+                    &config,
+                    &FollowingRescheduleNotice {
+                        series: &f.series,
+                        sessions: &sessions,
+                        previous_series: PreviousSeries(&f.series),
+                        previous_start: sessions[0].date,
+                        replaced: ReplacedSessions(&[]),
+                        split_from: None,
+                        previous_overrides: &[],
+                        member_ids: members,
+                    },
+                )
+                .await,
+            );
+        }
+    }
+    (capture.captured(), told)
+}
+
+#[cfg(feature = "mock")]
+const COACH_TO: &str = "\"Alex Smith\" <alex@example.com>";
+#[cfg(feature = "mock")]
+const COACHEE_TO: &str = "\"Jane Doe\" <jane@example.com>";
+
+/// Every relationship email but a cancellation reaches only the participants still in the
+/// organization, and one with nobody left sends nothing without failing.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn relationship_emails_reach_only_current_members() {
+    let f = MembershipFixture::new();
+    let (coach, coachee) = (COACH_TO.to_string(), COACHEE_TO.to_string());
+    let rows = [
+        (vec![f.coach.id, f.coachee.id], vec![&coach, &coachee]),
+        (vec![f.coach.id], vec![&coach]),
+        (vec![f.coachee.id], vec![&coachee]),
+        (vec![], vec![]),
+    ];
+
+    for email in [
+        RelationshipEmail::SessionScheduled,
+        RelationshipEmail::SeriesScheduled,
+        RelationshipEmail::SeriesRescheduled,
+        RelationshipEmail::SeriesFollowing,
+    ] {
+        for (members, expected) in &rows {
+            let (mailed, _) = send_relationship_email(email, &f, members).await;
+            let expected: BTreeSet<String> = expected.iter().map(|to| to.to_string()).collect();
+            assert_eq!(mailed, expected, "{email:?} with members {members:?}");
+        }
+    }
+}
+
+/// One Resend request: its addressee, template, and decoded `.ics` attachments.
+#[cfg(feature = "mock")]
+#[derive(Clone, Debug)]
+struct Mail {
+    to: String,
+    template: String,
+    ics: Vec<String>,
+}
+
+/// Records every Resend request as a [`Mail`].
+#[cfg(feature = "mock")]
+#[derive(Clone, Default)]
+struct MailCapture(Arc<Mutex<Vec<Mail>>>);
+
+#[cfg(feature = "mock")]
+impl MailCapture {
+    fn recorder(&self) -> impl Fn(&mockito::Request) -> bool + Send + Sync + 'static {
+        let seen = self.0.clone();
+        move |request| {
+            let body = serde_json::from_slice::<serde_json::Value>(request.body().unwrap())
+                .unwrap_or_default();
+            let ics = body["attachments"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|attachment| {
+                    attachment["content"]
+                        .as_str()
+                        .and_then(|content| STANDARD.decode(content).ok())
+                        .and_then(|bytes| String::from_utf8(bytes).ok())
+                        .map(|ics| ics.replace("\r\n ", "").replace("\r\n\t", ""))
+                })
+                .collect();
+            seen.lock().unwrap().push(Mail {
+                to: body["to"][0].as_str().unwrap_or_default().to_string(),
+                template: body["template"]["id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                ics,
+            });
+            true
+        }
+    }
+
+    fn to(&self, recipient: &str) -> Vec<Mail> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|mail| mail.to == recipient)
+            .cloned()
+            .collect()
+    }
+}
+
+/// M7-04: a series edit that orphans a standalone event cancels it for a removed coachee on
+/// its own email, without sending them the reschedule.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn m7_04_a_series_edit_cancels_an_orphan_for_a_removed_coachee_without_the_reschedule() {
+    let f = MembershipFixture::new();
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = MailCapture::default();
+    let _mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .create_async()
+        .await;
+    let sessions = f.sessions();
+    let orphan = coaching_sessions::Model {
+        coaching_session_series_id: Some(f.series.id),
+        ical_recurrence_id: None,
+        ical_sequence: 1,
+        coaching_relationship_id: f.relationship.id,
+        ..create_test_session()
+    };
+    let db = f
+        .loads(|db| db.append_query_results::<entity::goals::Model, _, _>(vec![vec![]]))
+        .into_connection();
+
+    notify_recurring_sessions_rescheduled(
+        &db,
+        &config,
+        &f.series,
+        PreviousSeries(&f.series),
+        &sessions,
+        ReplacedSessions(std::slice::from_ref(&orphan)),
+        &[f.coach.id],
+    )
+    .await;
+
+    let orphan_uid = format!("UID:{}@myrefactor.com", orphan.id);
+    let coachee = capture.to(COACHEE_TO);
+    assert_eq!(coachee.len(), 1, "one email to the coachee: {coachee:?}");
+    let Mail { template, ics, .. } = &coachee[0];
+    assert_eq!(template, "session_cancel_template_abc");
+    assert_eq!(ics.len(), 1, "only the orphan cancel: {ics:?}");
+    assert!(ics[0].contains("METHOD:CANCEL") && ics[0].contains(&orphan_uid));
+    assert!(
+        !ics[0].contains("METHOD:REQUEST"),
+        "no reschedule: {}",
+        ics[0]
+    );
+
+    let coach = capture.to(COACH_TO);
+    assert_eq!(
+        coach.len(),
+        1,
+        "the coach gets the reschedule only: {coach:?}"
+    );
+    let Mail { template, ics, .. } = &coach[0];
+    assert_eq!(template, "series_reschedule_template_abc");
+    assert!(ics.iter().any(|ics| ics.contains(&orphan_uid)));
+}
+
+/// A "this and following" reschedule reports a coachee who left as skipped, not failed,
+/// while the coach still gets their copy.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn following_reschedule_reports_a_removed_coachee_as_not_a_member() {
+    let f = MembershipFixture::new();
+
+    let (mailed, told) =
+        send_relationship_email(RelationshipEmail::SeriesFollowing, &f, &[f.coach.id]).await;
+    assert_eq!(told, Some(Delivery::NoLongerAMember));
+    assert_eq!(
+        mailed,
+        BTreeSet::from(["\"Alex Smith\" <alex@example.com>".to_string()])
+    );
+
+    let (_, told) = send_relationship_email(
+        RelationshipEmail::SeriesFollowing,
+        &f,
+        &[f.coach.id, f.coachee.id],
+    )
+    .await;
+    assert_eq!(told, Some(Delivery::Sent));
+}
+
+/// An action assigned to both participants mails only the one still in the organization.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn action_assigned_reaches_only_current_members() {
+    let f = MembershipFixture::new();
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = RecipientsCapture::default();
+    let _mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .create_async()
+        .await;
+    let now = chrono::Utc::now().fixed_offset();
+    let action = entity::actions::Model {
+        id: Id::new_v4(),
+        coaching_session_id: f.session.id,
+        goal_id: None,
+        user_id: f.coach.id,
+        body: Some("Write it down".into()),
+        due_by: None,
+        status: entity::status::Status::NotStarted,
+        status_changed_at: now,
+        created_at: now,
+        updated_at: now,
+    };
+    let coach_role = entity::user_roles::Model {
+        id: Id::new_v4(),
+        role: Role::User,
+        organization_id: Some(f.org.id),
+        user_id: f.coach.id,
+        created_at: now,
+        updated_at: now,
+    };
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results(vec![vec![(f.session.clone(), f.relationship.clone())]])
+        .append_query_results(vec![vec![f.org.clone()]])
+        .append_query_results(vec![members(&[f.coach.id])])
+        .append_query_results(vec![vec![(f.coach.clone(), coach_role)]])
+        .into_connection();
+
+    notify_action_assigned(&db, &config, &[f.coach.id, f.coachee.id], &f.coach, &action).await;
+
+    assert_eq!(
+        capture.captured(),
+        BTreeSet::from(["\"Alex Smith\" <alex@example.com>".to_string()])
+    );
+    let log = db.into_transaction_log();
+    assert!(
+        format!("{:?}", log[3]).contains(&f.coach.id.to_string())
+            && !format!("{:?}", log[3]).contains(&f.coachee.id.to_string()),
+        "only the member is loaded to be mailed: {:?}",
+        log[3]
+    );
 }

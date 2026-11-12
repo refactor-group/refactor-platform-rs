@@ -8,6 +8,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
+use domain::search::visibility_for;
 use domain::{goal as GoalApi, Id};
 use service::config::ApiVersion;
 
@@ -39,18 +40,21 @@ use log::*;
 )]
 pub async fn index(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Path(user_id): Path<Id>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
+    super::ensure_self(&user, user_id)?;
     debug!("GET Goals for User: {user_id}");
     debug!("Filter Params: {params:?}");
 
     // Set user_id from path parameter and apply default sorting
     let params = params.with_user_id(user_id).apply_defaults();
 
-    let goals = GoalApi::find_by(app_state.db_conn_ref(), params).await?;
+    let goals =
+        GoalApi::find_accessible_by(app_state.db_conn_ref(), &visibility_for(&user), params)
+            .await?;
 
     debug!("Found {} goals for user {user_id}", goals.len());
 

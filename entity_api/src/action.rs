@@ -312,9 +312,6 @@ pub struct FindByUserParams {
     pub scope: Scope,
     pub coaching_session_id: Option<Id>,
     pub coaching_relationship_id: Option<Id>,
-    /// Limits results to relationships this user coaches with the target user as coachee,
-    /// who is still a member of the relationship's organization.
-    pub coached_by: Option<Visibility>,
     pub goal_id: Option<Id>,
     pub status: Option<entity::status::Status>,
     pub assignee_filter: AssigneeFilter,
@@ -331,12 +328,14 @@ pub struct FindByUserParams {
 /// Optional filters narrow results further: `coaching_session_id`, `coaching_relationship_id`,
 /// `status`, and `assignee_filter`. The `coaching_relationship_id` filter uses the
 /// `coaching_sessions.coaching_relationship_id` FK column, so it requires a join to
-/// `coaching_sessions` (not `coaching_relationships`). For `Scope::Sessions` this join
-/// already exists in the base query; for `Scope::Assigned` it is added dynamically.
-/// `coached_by` filters on `coaching_relationships`, which `Scope::Assigned` likewise joins
-/// only when it is set.
+/// `coaching_sessions` (not `coaching_relationships`); both scopes join it.
+///
+/// Either scope keeps only relationships `viewer` may read: their own accessible ones
+/// (see [`coaching_relationship::accessible_to`]) when `viewer` is `user_id`, otherwise
+/// the ones `viewer` coaches `user_id` in (see [`coaching_relationship::coached_by`]).
 pub async fn find_by_user(
     db: &DatabaseConnection,
+    viewer: &Visibility,
     user_id: Id,
     params: FindByUserParams,
 ) -> Result<Vec<ActionWithAssignees>, Error> {
@@ -375,25 +374,24 @@ pub async fn find_by_user(
     // Apply filters
     let mut select = base_select;
 
-    // Sessions already joins both tables; Assigned joins only what its filters need
+    // Sessions already joins both tables; Assigned needs them for the relationship filter
     if matches!(params.scope, Scope::Assigned) {
-        if params.coaching_relationship_id.is_some() || params.coached_by.is_some() {
-            select = select.join(
+        select = select
+            .join(
                 JoinType::InnerJoin,
                 actions::Relation::CoachingSessions.def(),
-            );
-        }
-        if params.coached_by.is_some() {
-            select = select.join(
+            )
+            .join(
                 JoinType::InnerJoin,
                 coaching_sessions::Relation::CoachingRelationships.def(),
             );
-        }
     }
 
-    if let Some(coach) = &params.coached_by {
-        select = select.filter(coaching_relationship::coached_by(coach, user_id));
-    }
+    select = select.filter(if viewer.user_id == user_id {
+        coaching_relationship::accessible_to(viewer)
+    } else {
+        coaching_relationship::coached_by(viewer, user_id)
+    });
 
     if let Some(session_id) = params.coaching_session_id {
         select = select.filter(actions::Column::CoachingSessionId.eq(session_id));
@@ -647,6 +645,16 @@ mod tests {
     use super::*;
     use entity::{actions::Model, Id};
     use sea_orm::{DatabaseBackend, MockDatabase};
+
+    /// `user_id` reading their own actions, holding a role in one organization.
+    fn member(user_id: Id) -> Visibility {
+        Visibility {
+            user_id,
+            is_super_admin: false,
+            admin_org_ids: vec![],
+            member_org_ids: vec![Id::new_v4()],
+        }
+    }
 
     #[tokio::test]
     async fn create_returns_a_new_action_model() -> Result<(), Error> {
@@ -927,6 +935,7 @@ mod tests {
 
         let actions = find_by_user(
             &db,
+            &member(user_id),
             user_id,
             FindByUserParams {
                 scope: Scope::Assigned,
@@ -956,6 +965,7 @@ mod tests {
 
         let actions = find_by_user(
             &db,
+            &member(user_id),
             user_id,
             FindByUserParams {
                 scope: Scope::Assigned,
@@ -1003,6 +1013,7 @@ mod tests {
 
         let actions = find_by_user(
             &db,
+            &member(user_id),
             user_id,
             FindByUserParams {
                 scope: Scope::Sessions,
@@ -1052,6 +1063,7 @@ mod tests {
 
         let actions = find_by_user(
             &db,
+            &member(user_id),
             user_id,
             FindByUserParams {
                 scope: Scope::Sessions,
@@ -1095,6 +1107,7 @@ mod tests {
 
         let actions = find_by_user(
             &db,
+            &member(user_id),
             user_id,
             FindByUserParams {
                 scope: Scope::Sessions,
@@ -1125,6 +1138,7 @@ mod tests {
 
         let _ = find_by_user(
             &db,
+            &member(user_id),
             user_id,
             FindByUserParams {
                 scope: Scope::Sessions,
@@ -1152,8 +1166,8 @@ mod tests {
     }
 
     /// Tests that find_by_user with Scope::Assigned and coaching_relationship_id generates
-    /// SQL with a dynamic JOIN to coaching_sessions and a coaching_relationship_id WHERE clause.
-    /// This proves that the Assigned scope correctly adds the join it doesn't have by default.
+    /// SQL with a JOIN to coaching_sessions and a coaching_relationship_id WHERE clause.
+    /// This proves that the Assigned scope adds the join its base query lacks.
     #[tokio::test]
     async fn find_by_user_with_assigned_scope_and_relationship_filter() -> Result<(), Error> {
         let now = chrono::Utc::now();
@@ -1177,6 +1191,7 @@ mod tests {
 
         let _ = find_by_user(
             &db,
+            &member(user_id),
             user_id,
             FindByUserParams {
                 scope: Scope::Assigned,
@@ -1199,7 +1214,7 @@ mod tests {
         let actions_sql = format!("{:?}", log[1]);
         assert!(
             actions_sql.contains(r#"JOIN \"refactor_platform\".\"coaching_sessions\""#),
-            "SQL must dynamically join coaching_sessions for Scope::Assigned, got: {actions_sql}"
+            "SQL must join coaching_sessions for Scope::Assigned, got: {actions_sql}"
         );
         assert!(
             actions_sql.contains(r#"AND \"coaching_sessions\".\"coaching_relationship_id\" ="#),
@@ -1223,6 +1238,7 @@ mod tests {
 
         let _ = find_by_user(
             &db,
+            &member(user_id),
             user_id,
             FindByUserParams {
                 scope: Scope::Sessions,

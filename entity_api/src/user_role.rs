@@ -14,10 +14,12 @@ use super::error::{EntityApiErrorKind, Error};
 use chrono::Utc;
 use entity::roles::Role;
 use entity::user_roles::{ActiveModel, Column, Entity, Model};
-use entity::Id;
+use entity::{users, Id};
 use sea_orm::{
+    sea_query::{Expr, SimpleExpr},
     ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, DatabaseTransaction, DbErr,
-    EntityTrait, IntoActiveModel, PaginatorTrait, QueryFilter, QuerySelect, Set, SqlErr,
+    EntityTrait, ExprTrait, IntoActiveModel, PaginatorTrait, QueryFilter, QuerySelect, QueryTrait,
+    Set, SqlErr,
 };
 
 /// Partial unique index holding a user to one role per organization.
@@ -364,19 +366,14 @@ pub async fn retain_organization_members(
     user_ids: &[Id],
     organization_id: Id,
 ) -> Result<Vec<Id>, Error> {
-    let members: Vec<Id> = Entity::find()
+    let members: Vec<Id> = users::Entity::find()
         .select_only()
-        .column(Column::UserId)
-        .filter(Column::UserId.is_in(user_ids.iter().copied()))
-        .filter(
-            Condition::any()
-                .add(Column::OrganizationId.eq(organization_id))
-                .add(
-                    Condition::all()
-                        .add(Column::Role.eq(Role::SuperAdmin))
-                        .add(Column::OrganizationId.is_null()),
-                ),
-        )
+        .column_as(users::Column::Id, "user_id")
+        .filter(users::Column::Id.is_in(user_ids.iter().copied()))
+        .filter(is_member(
+            Expr::col(users::Column::Id.as_column_ref()),
+            Expr::val(organization_id),
+        ))
         .into_tuple::<Id>()
         .all(db)
         .await?;
@@ -386,6 +383,26 @@ pub async fn retain_organization_members(
         .copied()
         .filter(|user_id| members.contains(user_id))
         .collect())
+}
+
+/// Whether `user` holds a role in `organization`; a global SuperAdmin is a member of every one.
+pub fn is_member(user: impl Into<SimpleExpr>, organization: impl Into<SimpleExpr>) -> SimpleExpr {
+    Expr::exists(
+        Entity::find()
+            .select_only()
+            .expr(Expr::cust("1"))
+            .filter(Expr::col(Column::UserId.as_column_ref()).eq(user))
+            .filter(
+                Condition::any()
+                    .add(Expr::col(Column::OrganizationId.as_column_ref()).eq(organization))
+                    .add(
+                        Condition::all()
+                            .add(Column::Role.eq(Role::SuperAdmin))
+                            .add(Column::OrganizationId.is_null()),
+                    ),
+            )
+            .into_query(),
+    )
 }
 
 #[cfg(test)]

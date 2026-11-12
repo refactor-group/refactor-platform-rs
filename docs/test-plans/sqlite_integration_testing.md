@@ -161,6 +161,38 @@ default flag feature that pulls in no SQLite code.)
   leaves the row unclaimed with one more attempt until it is given up; a change already
   reverted settles without an email; drain mode drops due rows unsent without stamping
   notice; and a change that is not yet due is left untouched.
+- **A user's own lists skip organizations they left**
+  (`domain/src/coaching_relationship_sqlite_tests.rs`,
+  `domain/src/coaching_session_sqlite_tests.rs`, `domain/src/action_sqlite_tests.rs`,
+  `domain/src/goal_sqlite_tests.rs`): a user's own relationships, sessions (list and
+  nearest), actions (both scopes) and goals list only relationships in organizations
+  where they still hold a role. A super admin, or a member of every organization involved,
+  sees them all.
+- **Removed members**: moving a session whose coachee left the organization is refused and
+  writes nothing, while retitling or deleting it still succeeds
+  (`domain/src/coaching_session_update_sqlite_tests.rs`). A "this and following"
+  reschedule that skips a removed coachee settles the moved sessions' pending reschedules
+  without stamping notice, one that reached the coachee settles and stamps it, and a failed
+  send records nothing (`domain/src/coaching_session_series_sqlite_tests.rs`). Accepting a
+  suggested action assigned to a removed coachee is refused
+  (`domain/src/transcript_suggestion/review_sqlite_tests.rs`). The organization
+  relationship list reports `coach_is_member` and `coachee_is_member` per participant,
+  including to an org admin when the coach was removed
+  (`domain/src/coaching_relationship_membership_sqlite_tests.rs`). Those fields agree with the
+  notify filter for a member, a removed user, a user with a role only in another
+  organization, a global super admin and an org admin, and a session read with
+  `include=relationship` marks a removed coachee
+  (`domain/src/coaching_session_sqlite_tests.rs`). Session and series cancellations, and
+  the cancel for a standalone session a series edit replaces, reach a participant with no
+  role, while a scheduled invite on the same seed reaches only the member
+  (`domain/src/emails_sqlite_tests.rs`).
+- **Account delete with coaching history** (`domain/src/user_delete_sqlite_tests.rs`): an
+  account in any relationship that has a session is refused with `user_has_coaching_history`
+  and the count of such relationships, and nothing is deleted. An account whose relationships
+  have no sessions is deleted along with them and their goals. A session that appears after
+  the check, forced with a temporary trigger, is refused the same way rather than surfacing a
+  foreign key fault. The tests recreate `user_role_changes` with SQLite defaults, since its id
+  and timestamp defaults exist only in the migrations.
 - **The coaching session image purge**, below.
 
 ### The coaching session image purge

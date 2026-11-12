@@ -7,6 +7,16 @@ use sea_orm::{DatabaseBackend, MockDatabase};
 
 use super::*;
 
+/// A non-SuperAdmin `user_id` holding a role in one organization.
+fn viewer(user_id: Id) -> Visibility {
+    Visibility {
+        user_id,
+        is_super_admin: false,
+        admin_org_ids: vec![],
+        member_org_ids: vec![Id::new_v4()],
+    }
+}
+
 const SESSION_COLUMNS: &str = r#""coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."notice_given_at""#;
 
 fn around() -> NaiveDateTime {
@@ -63,7 +73,7 @@ async fn one_statement_reads_every_relationships_window() -> Result<(), Error> {
 
     find_nearest_by_user_with_includes(
         &db,
-        user_id,
+        &viewer(user_id),
         window(&[first, second]),
         IncludeOptions::default(),
     )
@@ -132,7 +142,7 @@ async fn a_window_with_no_relationships_runs_no_query() -> Result<(), Error> {
 
     let sessions = find_nearest_by_user_with_includes(
         &db,
-        Id::new_v4(),
+        &viewer(Id::new_v4()),
         window(&[]),
         IncludeOptions::default(),
     )
@@ -161,7 +171,7 @@ async fn sessions_keep_the_statements_order() -> Result<(), Error> {
 
     let sessions = find_nearest_by_user_with_includes(
         &db,
-        Id::new_v4(),
+        &viewer(Id::new_v4()),
         window(&[relationship_id]),
         IncludeOptions::default(),
     )
@@ -182,7 +192,7 @@ async fn an_invalid_include_combination_runs_no_query() {
 
     let result = find_nearest_by_user_with_includes(
         &db,
-        Id::new_v4(),
+        &viewer(Id::new_v4()),
         window(&[Id::new_v4()]),
         IncludeOptions {
             organization: true,

@@ -1,10 +1,12 @@
 use super::error::{EntityApiErrorKind, Error};
+use crate::coaching_relationship::{accessible_to, select_membership, WithMembership};
 use crate::duration::Duration;
 use crate::mutate::UpdateMap;
 use chrono::NaiveDateTime;
 use entity::{
-    actions, agreements, coaching_relationships, coaching_session_reminders,
-    coaching_session_topics, coaching_session_views,
+    actions, agreements, coaching_relationships,
+    coaching_relationships::Visibility,
+    coaching_session_reminders, coaching_session_topics, coaching_session_views,
     coaching_sessions::{self, ActiveModel, Column, Entity, Model, Relation},
     goals,
     meeting_provider::Provider,
@@ -15,9 +17,8 @@ use sea_orm::{
     entity::prelude::*,
     sea_query::{Expr, Func, IntoCondition, Query, SelectStatement, UnionType},
     ActiveValue::Unchanged,
-    Condition, ConnectionTrait, DatabaseBackend, DatabaseConnection, ExprTrait, FromQueryResult,
-    JoinType, Order, QueryOrder, QuerySelect, QueryTrait, Select, Set, Statement, TryIntoModel,
-    Value,
+    ConnectionTrait, DatabaseBackend, DatabaseConnection, ExprTrait, FromQueryResult, JoinType,
+    Order, QueryOrder, QuerySelect, QueryTrait, Select, Set, Statement, TryIntoModel, Value,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -438,9 +439,10 @@ struct ClaimedPair {
 ///
 /// The membership test only ever removes people. Removal leaves relationships and
 /// sessions in place, so without it a former member is mailed session details forever. A
-/// global SuperAdmin holds no per-organization row and counts as a member everywhere,
-/// matching `user_role::retain_organization_members`. It is a semi-join because a join
-/// would yield a row per role, and the upsert cannot touch one row twice.
+/// global SuperAdmin holds no per-organization row and counts as a member everywhere.
+/// The clause mirrors [`crate::user_role::is_member`], hand-written because this statement
+/// is raw SQL. It is a semi-join because a join would yield a row per role, and the upsert
+/// cannot touch one row twice.
 ///
 /// The upsert is the claim: the unique index arbitrates between replicas, and `RETURNING`
 /// yields only the pairs this caller won. The `WHERE` on the `DO UPDATE` is what keeps it
@@ -847,10 +849,14 @@ pub async fn find_meeting_url_by_relationship_and_provider(
         .and_then(|session| session.meeting_url))
 }
 
-/// All of a user's coaching sessions (coach or coachee), unfiltered and unsorted.
+/// All of `viewer`'s coaching sessions in relationships they may access (see
+/// [`accessible_to`]), unfiltered and unsorted.
 /// Thin convenience over [`find_by_user_filtered`] with default options.
-pub async fn find_by_user(db: &impl ConnectionTrait, user_id: Id) -> Result<Vec<Model>, Error> {
-    find_by_user_filtered(db, user_id, SessionQueryOptions::default()).await
+pub async fn find_by_user(
+    db: &impl ConnectionTrait,
+    viewer: &Visibility,
+) -> Result<Vec<Model>, Error> {
+    find_by_user_filtered(db, viewer, SessionQueryOptions::default()).await
 }
 
 /// One row of the monthly count aggregation for the user's coaching sessions.
@@ -864,8 +870,8 @@ pub struct CountByMonth {
     pub count: i64,
 }
 
-/// Counts coaching sessions per calendar month for relationships the user
-/// participates in (coach or coachee), grouped by `date_trunc('month', date AT
+/// Counts coaching sessions per calendar month for relationships `viewer` may
+/// access (see [`accessible_to`]), grouped by `date_trunc('month', date AT
 /// TIME ZONE tz_name)`. Months with zero sessions are absent from the result.
 ///
 /// `tz_name` must be a canonical IANA identifier; Postgres `AT TIME ZONE`
@@ -876,7 +882,7 @@ pub struct CountByMonth {
 /// Mirrors the pattern in [`find_by_user_with_includes`].
 pub async fn find_counts_by_month_for_user(
     db: &impl ConnectionTrait,
-    user_id: Id,
+    viewer: &Visibility,
     from_date: chrono::NaiveDate,
     to_date: chrono::NaiveDate,
     tz_name: &str,
@@ -910,7 +916,7 @@ pub async fn find_counts_by_month_for_user(
         .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
         .filter(Column::Date.gte(from_date))
         .filter(Column::Date.lt(to_exclusive))
-        .filter(participant(user_id))
+        .filter(accessible_to(viewer))
         .apply_if(coaching_relationship_id, |q: Select<Entity>, rel_id| {
             q.filter(Column::CoachingRelationshipId.eq(rel_id))
         })
@@ -956,8 +962,9 @@ pub async fn find_counts_by_month_for_user(
 pub struct EnrichedSession {
     #[serde(flatten)]
     pub session: Model,
+    /// The session's relationship and whether each participant is still a member.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub relationship: Option<coaching_relationships::Model>,
+    pub relationship: Option<WithMembership>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coach: Option<users::Model>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1105,12 +1112,12 @@ pub struct SessionQueryOptions {
 }
 
 /// Base query for a user's coaching sessions: the optional tz-aware date window,
-/// relationship, and sort filters applied to the sessions where the user is coach
-/// or coachee. Returns plain models (no enrichment). The shared base for
+/// relationship, and sort filters applied to the sessions of relationships `viewer`
+/// may access. Returns plain models (no enrichment). The shared base for
 /// [`find_by_user`] (no filters) and the enriching [`find_by_user_with_includes`].
 async fn find_by_user_filtered(
     db: &impl ConnectionTrait,
-    user_id: Id,
+    viewer: &Visibility,
     options: SessionQueryOptions,
 ) -> Result<Vec<Model>, Error> {
     // Build the optional date-bound filters up-front so the query chain can
@@ -1149,7 +1156,7 @@ async fn find_by_user_filtered(
     // function body.
     let query = Entity::find()
         .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
-        .filter(participant(user_id))
+        .filter(accessible_to(viewer))
         .apply_if(
             options.coaching_relationship_id,
             |q: Select<Entity>, rel_id| {
@@ -1175,14 +1182,14 @@ async fn find_by_user_filtered(
 /// enrichment on top.
 pub async fn find_by_user_with_includes(
     db: &impl ConnectionTrait,
-    user_id: Id,
+    viewer: &Visibility,
     options: SessionQueryOptions,
     includes: IncludeOptions,
 ) -> Result<Vec<EnrichedSession>, Error> {
     includes.validate()?;
 
-    let sessions = find_by_user_filtered(db, user_id, options).await?;
-    enrich(db, sessions, user_id, includes).await
+    let sessions = find_by_user_filtered(db, viewer, options).await?;
+    enrich(db, sessions, viewer.user_id, includes).await
 }
 
 /// Sessions nearest a point in time, for each of several relationships: per relationship,
@@ -1200,12 +1207,12 @@ pub struct NearestWindow {
 /// The window's sessions across its relationships, latest first (ties by id), enriched
 /// like [`find_by_user_with_includes`].
 ///
-/// A relationship `user_id` is neither coach nor coachee of contributes nothing, matching
-/// how the list read's relationship filter behaves. One statement, however many
+/// A relationship `viewer` may not access (see [`accessible_to`]) contributes nothing,
+/// matching how the list read's relationship filter behaves. One statement, however many
 /// relationships.
 pub async fn find_nearest_by_user_with_includes(
     db: &impl ConnectionTrait,
-    user_id: Id,
+    viewer: &Visibility,
     window: NearestWindow,
     includes: IncludeOptions,
 ) -> Result<Vec<EnrichedSession>, Error> {
@@ -1216,13 +1223,13 @@ pub async fn find_nearest_by_user_with_includes(
     };
     let sessions = Entity::find()
         .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
-        .filter(participant(user_id))
+        .filter(accessible_to(viewer))
         .filter(Column::Id.in_subquery(ids))
         .order_by_desc(Column::Date)
         .order_by_desc(Column::Id)
         .all(db)
         .await?;
-    enrich(db, sessions, user_id, includes).await
+    enrich(db, sessions, viewer.user_id, includes).await
 }
 
 /// The ids of the window's sessions: for each relationship, the [`latest`] `before` sessions
@@ -1265,14 +1272,6 @@ fn ids_of(side: Select<Entity>) -> SelectStatement {
 
 const SIDE: &str = "side";
 
-/// Sessions of relationships `user_id` coaches or is coached in. Needs the
-/// `coaching_relationships` join.
-fn participant(user_id: Id) -> Condition {
-    Condition::any()
-        .add(coaching_relationships::Column::CoachId.eq(user_id))
-        .add(coaching_relationships::Column::CoacheeId.eq(user_id))
-}
-
 /// Adds view markers, display titles and the requested related data to `sessions`,
 /// keeping their order. `viewer_id` is whose view markers to load.
 async fn enrich(
@@ -1314,7 +1313,7 @@ async fn enrich(
 /// 3. Discard: This struct is not returned to clients
 #[derive(Debug, Default)]
 struct RelatedData {
-    relationships: HashMap<Id, coaching_relationships::Model>,
+    relationships: HashMap<Id, WithMembership>,
     coaches: HashMap<Id, users::Model>,
     coachees: HashMap<Id, users::Model>,
     organizations: HashMap<Id, organizations::Model>,
@@ -1346,8 +1345,16 @@ async fn load_related_data(
 
     // Load users (coaches and coachees) if relationship is included
     if includes.relationship {
-        let coach_ids: Vec<Id> = data.relationships.values().map(|r| r.coach_id).collect();
-        let coachee_ids: Vec<Id> = data.relationships.values().map(|r| r.coachee_id).collect();
+        let coach_ids: Vec<Id> = data
+            .relationships
+            .values()
+            .map(|r| r.relationship.coach_id)
+            .collect();
+        let coachee_ids: Vec<Id> = data
+            .relationships
+            .values()
+            .map(|r| r.relationship.coachee_id)
+            .collect();
 
         data.coaches = batch_load_users(db, &coach_ids).await?;
         data.coachees = batch_load_users(db, &coachee_ids).await?;
@@ -1358,7 +1365,7 @@ async fn load_related_data(
         let org_ids: Vec<Id> = data
             .relationships
             .values()
-            .map(|r| r.organization_id)
+            .map(|r| r.relationship.organization_id)
             .collect();
         data.organizations = batch_load_organizations(db, &org_ids).await?;
     }
@@ -1392,21 +1399,23 @@ async fn load_related_data(
     Ok(data)
 }
 
-/// Batch load coaching relationships by IDs
+/// Batch load coaching relationships by IDs, with their participants' membership, in one query
 async fn batch_load_relationships(
     db: &impl ConnectionTrait,
     ids: &[Id],
-) -> Result<HashMap<Id, coaching_relationships::Model>, Error> {
+) -> Result<HashMap<Id, WithMembership>, Error> {
     if ids.is_empty() {
         return Ok(HashMap::new());
     }
 
-    Ok(coaching_relationships::Entity::find()
-        .filter(coaching_relationships::Column::Id.is_in(ids.iter().copied()))
+    let query = coaching_relationships::Entity::find()
+        .filter(coaching_relationships::Column::Id.is_in(ids.iter().copied()));
+    Ok(select_membership(query)
+        .into_model::<WithMembership>()
         .all(db)
         .await?
         .into_iter()
-        .map(|r| (r.id, r))
+        .map(|r| (r.relationship.id, r))
         .collect())
 }
 
@@ -1592,15 +1601,18 @@ fn assemble_enriched_session(
         .as_ref()
         .map(|rel| {
             (
-                related.coaches.get(&rel.coach_id).cloned(),
-                related.coachees.get(&rel.coachee_id).cloned(),
+                related.coaches.get(&rel.relationship.coach_id).cloned(),
+                related.coachees.get(&rel.relationship.coachee_id).cloned(),
             )
         })
         .unwrap_or((None, None));
 
-    let organization = relationship
-        .as_ref()
-        .and_then(|rel| related.organizations.get(&rel.organization_id).cloned());
+    let organization = relationship.as_ref().and_then(|rel| {
+        related
+            .organizations
+            .get(&rel.relationship.organization_id)
+            .cloned()
+    });
 
     let goals = if includes.goal {
         Some(related.goals.get(&session.id).cloned().unwrap_or(vec![]))
@@ -1668,7 +1680,26 @@ mod tests {
     use super::*;
     use entity::meeting_provider::Provider;
     use entity::Id;
+    use sea_orm::sea_query::{Alias, PostgresQueryBuilder};
     use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult, Statement, Transaction, Value};
+
+    /// `user_id` as a SuperAdmin, whose reads carry no organization predicate.
+    fn viewer(user_id: Id) -> Visibility {
+        Visibility {
+            is_super_admin: true,
+            ..member(user_id, Id::new_v4())
+        }
+    }
+
+    /// A non-SuperAdmin `user_id` holding a role in `organization_id` only.
+    fn member(user_id: Id, organization_id: Id) -> Visibility {
+        Visibility {
+            user_id,
+            is_super_admin: false,
+            admin_org_ids: vec![],
+            member_org_ids: vec![organization_id],
+        }
+    }
 
     /// The claim has to select and write in one statement, and the conflict clause has
     /// to skip rows already current. If a refactor split it into a SELECT followed by an
@@ -1787,9 +1818,51 @@ mod tests {
         assert!(
             sql.contains("ur.organization_id IS NULL AND ur.role = 'super_admin'"),
             "a global SuperAdmin holds no organization row and must still count, \
-             matching user_role::retain_organization_members, got: {sql}"
+             matching user_role::is_member, got: {sql}"
         );
 
+        Ok(())
+    }
+
+    /// `is_member`'s conditions, spelled the way the reminder's raw SQL spells them.
+    fn is_member_conditions() -> Vec<String> {
+        let sql = Query::select()
+            .expr(crate::user_role::is_member(
+                Expr::col((Alias::new("cr"), Alias::new("coachee_id"))),
+                Expr::col((Alias::new("cr"), Alias::new("organization_id"))),
+            ))
+            .to_string(PostgresQueryBuilder)
+            .replace('"', "")
+            .replace("(CAST('super_admin' AS role))", "'super_admin'")
+            .replace("user_roles.", "ur.");
+        let (_, filter) = sql.split_once(" WHERE ").expect("is_member filters");
+        filter
+            .split(" AND ")
+            .flat_map(|part| part.split(" OR "))
+            .map(|condition| condition.trim_matches(['(', ')']).to_string())
+            .collect()
+    }
+
+    /// The reminder claim hand-writes `is_member` in raw SQL; this keeps the two in step.
+    #[tokio::test]
+    async fn claim_due_reminders_membership_mirrors_is_member() -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+
+        claim_due_reminders(&db, now, chrono::Duration::hours(24), 200).await?;
+
+        let log = db.into_transaction_log();
+        let sql = &log[0].statements()[0].sql;
+        let conditions = is_member_conditions();
+        assert_eq!(conditions.len(), 4, "{conditions:?}");
+        for condition in &conditions {
+            assert!(sql.contains(condition.as_str()), "{condition}: {sql}");
+        }
         Ok(())
     }
 
@@ -2356,14 +2429,15 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
         let user_id = Id::new_v4();
-        let _ = find_by_user(&db, user_id).await;
+        let organization_id = Id::new_v4();
+        let _ = find_by_user(&db, &member(user_id, organization_id)).await;
 
         assert_eq!(
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."notice_given_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
-                [user_id.into(), user_id.into()]
+                r#"SELECT "coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."notice_given_at" FROM "refactor_platform"."coaching_sessions" INNER JOIN "refactor_platform"."coaching_relationships" ON "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND "coaching_relationships"."organization_id" IN ($3)"#,
+                [user_id.into(), user_id.into(), organization_id.into()]
             )]
         );
 
@@ -2396,7 +2470,7 @@ mod tests {
 
         let _ = find_counts_by_month_for_user(
             &db,
-            user_id,
+            &viewer(user_id),
             from_date,
             to_date,
             "America/Los_Angeles",
@@ -2438,7 +2512,7 @@ mod tests {
 
         let _ = find_counts_by_month_for_user(
             &db,
-            user_id,
+            &viewer(user_id),
             from_date,
             to_date,
             "Europe/Berlin",
@@ -2463,6 +2537,109 @@ mod tests {
             )]
         );
 
+        Ok(())
+    }
+
+    /// A relationship row with its membership columns, as the include's load reads it back.
+    fn relationship_row(
+        id: Id,
+        coachee_is_member: bool,
+    ) -> std::collections::BTreeMap<String, Value> {
+        let now: DateTimeWithTimeZone = chrono::Utc::now().into();
+        std::collections::BTreeMap::from([
+            ("id".to_string(), id.into()),
+            ("organization_id".to_string(), Id::new_v4().into()),
+            ("coach_id".to_string(), Id::new_v4().into()),
+            ("coachee_id".to_string(), Id::new_v4().into()),
+            ("slug".to_string(), "slug".into()),
+            ("created_at".to_string(), now.into()),
+            ("updated_at".to_string(), now.into()),
+            ("coach_is_member".to_string(), true.into()),
+            ("coachee_is_member".to_string(), coachee_is_member.into()),
+        ])
+    }
+
+    #[tokio::test]
+    async fn m5_05_included_relationships_carry_membership_in_one_statement() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let (kept, removed) = (Id::new_v4(), Id::new_v4());
+        let session = |relationship_id: Id| Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship_id,
+            coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
+            date: now.naive_utc(),
+            collab_document_name: None,
+            duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: Some(now.into()),
+            notice_given_at: now.into(),
+        };
+        let sessions = vec![session(kept), session(removed), session(kept)];
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![sessions.clone()])
+            .append_query_results::<entity::coaching_session_views::Model, Vec<_>, _>(vec![vec![]])
+            .append_query_results([vec![
+                relationship_row(kept, true),
+                relationship_row(removed, false),
+            ]])
+            .append_query_results(vec![Vec::<users::Model>::new()])
+            .append_query_results(vec![Vec::<users::Model>::new()])
+            .append_query_results(vec![Vec::<coaching_session_topics::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .into_connection();
+
+        let results = find_by_user_with_includes(
+            &db,
+            &viewer(Id::new_v4()),
+            SessionQueryOptions::default(),
+            IncludeOptions {
+                relationship: true,
+                ..IncludeOptions::none()
+            },
+        )
+        .await?;
+
+        let coachee_is_member: Vec<Option<bool>> = results
+            .iter()
+            .map(|r| {
+                r.relationship
+                    .as_ref()
+                    .map(|r| r.membership.coachee_is_member)
+            })
+            .collect();
+        assert_eq!(coachee_is_member, [Some(true), Some(false), Some(true)]);
+        let log = db.into_transaction_log();
+        let statements: Vec<&str> = log
+            .iter()
+            .flat_map(Transaction::statements)
+            .map(|statement| statement.sql.as_str())
+            .collect();
+        let relationship_loads: Vec<&&str> = statements
+            .iter()
+            .filter(|sql| sql.contains(r#"FROM "refactor_platform"."coaching_relationships""#))
+            .collect();
+        let [relationship_load] = relationship_loads.as_slice() else {
+            panic!("expected one relationship load: {statements:?}");
+        };
+        assert!(
+            relationship_load.contains(r#"EXISTS(SELECT 1 FROM "refactor_platform"."user_roles""#),
+            "{relationship_load}"
+        );
+        assert_eq!(
+            statements
+                .iter()
+                .filter(|sql| sql.contains("user_roles"))
+                .count(),
+            1,
+            "no separate membership statement: {statements:?}"
+        );
         Ok(())
     }
 
@@ -2500,7 +2677,7 @@ mod tests {
 
         let results = find_by_user_with_includes(
             &db,
-            user_id,
+            &viewer(user_id),
             SessionQueryOptions::default(),
             IncludeOptions::default(),
         )
@@ -2564,7 +2741,7 @@ mod tests {
 
         let results = find_by_user_with_includes(
             &db,
-            user_id,
+            &viewer(user_id),
             SessionQueryOptions::default(),
             IncludeOptions::default(),
         )
@@ -2583,7 +2760,7 @@ mod tests {
 
         let results_empty = find_by_user_with_includes(
             &db_empty,
-            user_id,
+            &viewer(user_id),
             SessionQueryOptions::default(),
             IncludeOptions::default(),
         )
@@ -2630,7 +2807,7 @@ mod tests {
 
         let results = find_by_user_with_includes(
             &db,
-            user_id,
+            &viewer(user_id),
             SessionQueryOptions::default(),
             IncludeOptions::default(),
         )
@@ -2680,7 +2857,7 @@ mod tests {
 
         let results = find_by_user_with_includes(
             &db,
-            user_id,
+            &viewer(user_id),
             SessionQueryOptions {
                 from_date: Some(from_date),
                 to_date: Some(to_date),
@@ -2715,7 +2892,7 @@ mod tests {
 
         let _ = find_by_user_with_includes(
             &db,
-            user_id,
+            &viewer(user_id),
             SessionQueryOptions {
                 from_date: Some(from_date),
                 to_date: Some(to_date),
@@ -2764,7 +2941,7 @@ mod tests {
 
         let _ = find_by_user_with_includes(
             &db,
-            user_id,
+            &viewer(user_id),
             SessionQueryOptions {
                 from_date: Some(from_date),
                 to_date: Some(to_date),
@@ -2806,7 +2983,7 @@ mod tests {
 
         let _ = find_by_user_with_includes(
             &db,
-            user_id,
+            &viewer(user_id),
             SessionQueryOptions {
                 from_date: Some(from_date),
                 to_date: None,
@@ -2852,7 +3029,7 @@ mod tests {
 
         let _ = find_by_user_with_includes(
             &db,
-            user_id,
+            &viewer(user_id),
             SessionQueryOptions {
                 from_date: None,
                 to_date: Some(to_date),
@@ -3239,9 +3416,13 @@ mod tests {
             series: true,
             ..IncludeOptions::none()
         };
-        let results =
-            find_by_user_with_includes(&db, Id::new_v4(), SessionQueryOptions::default(), includes)
-                .await?;
+        let results = find_by_user_with_includes(
+            &db,
+            &viewer(Id::new_v4()),
+            SessionQueryOptions::default(),
+            includes,
+        )
+        .await?;
 
         assert_eq!(results.len(), 3);
         for enriched in &results[..2] {
@@ -3274,7 +3455,7 @@ mod tests {
 
         let results = find_by_user_with_includes(
             &db,
-            Id::new_v4(),
+            &viewer(Id::new_v4()),
             SessionQueryOptions::default(),
             IncludeOptions::default(),
         )

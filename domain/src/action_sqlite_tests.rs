@@ -1,6 +1,6 @@
-//! A user's actions read against a real SQL engine: `coached_by` keeps only the
-//! relationships that coach has with the user as coachee, in organizations the coach
-//! still belongs to.
+//! A user's actions read against a real SQL engine: a coach sees only the relationships
+//! they have with the user as coachee, and a user only their own, each in organizations
+//! the reader still belongs to.
 
 use std::collections::BTreeSet;
 
@@ -10,7 +10,10 @@ use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
 
 use super::*;
 use crate::coaching_relationships::Visibility;
-use crate::test_utils::sqlite::{database, seed_organization, seed_user, within_time_limit};
+use crate::test_utils::sqlite::{
+    database, seed_lapsed_membership, seed_organization, seed_user, within_time_limit,
+    LapsedMembership,
+};
 
 /// COACH, COACHEE, OTHER_COACH and MENTEE across two organizations, with actions A1 to A6.
 struct World {
@@ -147,9 +150,13 @@ async fn world() -> World {
 }
 
 impl World {
-    /// The ids `find_by_user` returns for the coachee under `params`.
-    async fn ids(&self, params: FindByUserParams) -> Result<BTreeSet<Id>, Error> {
-        Ok(find_by_user(&self.db, self.coachee, params)
+    /// The ids `find_by_user` returns to `viewer` for the coachee under `params`.
+    async fn ids(
+        &self,
+        viewer: &Visibility,
+        params: FindByUserParams,
+    ) -> Result<BTreeSet<Id>, Error> {
+        Ok(find_by_user(&self.db, viewer, self.coachee, params)
             .await?
             .into_iter()
             .map(|a| a.action.id)
@@ -177,10 +184,9 @@ fn member_of(user_id: Id, organization_ids: &[Id]) -> Visibility {
     }
 }
 
-fn params(scope: Scope, coached_by: Option<Visibility>) -> FindByUserParams {
+fn params(scope: Scope) -> FindByUserParams {
     FindByUserParams {
         scope,
-        coached_by,
         ..Default::default()
     }
 }
@@ -191,7 +197,7 @@ async fn a_coach_sees_only_their_relationships_with_the_user() -> Result<(), Err
     within_time_limit(async {
         let w = world().await;
         let ids = w
-            .ids(params(Scope::Sessions, Some(w.in_both_orgs(w.coach))))
+            .ids(&w.in_both_orgs(w.coach), params(Scope::Sessions))
             .await?;
         assert_eq!(ids, w.actions(&[1, 2, 6]));
         Ok::<(), Error>(())
@@ -205,7 +211,7 @@ async fn a_coach_sees_only_assignments_from_their_relationships() -> Result<(), 
     within_time_limit(async {
         let w = world().await;
         let ids = w
-            .ids(params(Scope::Assigned, Some(w.in_both_orgs(w.coach))))
+            .ids(&w.in_both_orgs(w.coach), params(Scope::Assigned))
             .await?;
         assert_eq!(ids, w.actions(&[1, 6]));
         Ok::<(), Error>(())
@@ -219,7 +225,7 @@ async fn another_coach_sees_only_their_own_relationship() -> Result<(), Error> {
     within_time_limit(async {
         let w = world().await;
         let ids = w
-            .ids(params(Scope::Sessions, Some(w.in_both_orgs(w.other_coach))))
+            .ids(&w.in_both_orgs(w.other_coach), params(Scope::Sessions))
             .await?;
         assert_eq!(ids, w.actions(&[3, 4]));
         Ok::<(), Error>(())
@@ -233,10 +239,13 @@ async fn a_coach_naming_another_coachs_relationship_sees_nothing() -> Result<(),
     within_time_limit(async {
         let w = world().await;
         let ids = w
-            .ids(FindByUserParams {
-                coaching_relationship_id: Some(w.r2),
-                ..params(Scope::Sessions, Some(w.in_both_orgs(w.coach)))
-            })
+            .ids(
+                &w.in_both_orgs(w.coach),
+                FindByUserParams {
+                    coaching_relationship_id: Some(w.r2),
+                    ..params(Scope::Sessions)
+                },
+            )
             .await?;
         assert_eq!(ids, BTreeSet::new());
         Ok::<(), Error>(())
@@ -250,10 +259,13 @@ async fn a_coach_naming_their_relationship_sees_its_assignments() -> Result<(), 
     within_time_limit(async {
         let w = world().await;
         let ids = w
-            .ids(FindByUserParams {
-                coaching_relationship_id: Some(w.r1),
-                ..params(Scope::Assigned, Some(w.in_both_orgs(w.coach)))
-            })
+            .ids(
+                &w.in_both_orgs(w.coach),
+                FindByUserParams {
+                    coaching_relationship_id: Some(w.r1),
+                    ..params(Scope::Assigned)
+                },
+            )
             .await?;
         assert_eq!(ids, w.actions(&[1]));
         Ok::<(), Error>(())
@@ -267,7 +279,7 @@ async fn the_users_own_coachee_sees_nothing_as_their_coach() -> Result<(), Error
     within_time_limit(async {
         let w = world().await;
         let ids = w
-            .ids(params(Scope::Sessions, Some(w.in_both_orgs(w.mentee))))
+            .ids(&w.in_both_orgs(w.mentee), params(Scope::Sessions))
             .await?;
         assert_eq!(ids, BTreeSet::new());
         Ok::<(), Error>(())
@@ -285,7 +297,7 @@ async fn a_coach_does_not_see_assignments_from_their_other_coachees() -> Result<
         action(&w.db, s6, w.coach, Some(w.coachee)).await;
 
         let ids = w
-            .ids(params(Scope::Assigned, Some(w.in_both_orgs(w.coach))))
+            .ids(&w.in_both_orgs(w.coach), params(Scope::Assigned))
             .await?;
         assert_eq!(ids, w.actions(&[1, 6]));
         Ok::<(), Error>(())
@@ -299,7 +311,7 @@ async fn a_coach_in_one_org_sees_only_that_orgs_relationship() -> Result<(), Err
     within_time_limit(async {
         let w = world().await;
         let coach = member_of(w.coach, &[w.o1]);
-        let ids = w.ids(params(Scope::Sessions, Some(coach))).await?;
+        let ids = w.ids(&coach, params(Scope::Sessions)).await?;
         assert_eq!(ids, w.actions(&[1, 2]));
         Ok::<(), Error>(())
     })
@@ -312,7 +324,7 @@ async fn a_coach_in_the_other_org_sees_only_its_assignments() -> Result<(), Erro
     within_time_limit(async {
         let w = world().await;
         let coach = member_of(w.coach, &[w.o2]);
-        let ids = w.ids(params(Scope::Assigned, Some(coach))).await?;
+        let ids = w.ids(&coach, params(Scope::Assigned)).await?;
         assert_eq!(ids, w.actions(&[6]));
         Ok::<(), Error>(())
     })
@@ -325,7 +337,7 @@ async fn a_coach_in_no_org_sees_nothing() -> Result<(), Error> {
     within_time_limit(async {
         let w = world().await;
         let coach = member_of(w.coach, &[]);
-        let ids = w.ids(params(Scope::Sessions, Some(coach))).await?;
+        let ids = w.ids(&coach, params(Scope::Sessions)).await?;
         assert_eq!(ids, BTreeSet::new());
         Ok::<(), Error>(())
     })
@@ -341,7 +353,7 @@ async fn a_super_admin_coach_with_no_org_role_sees_their_relationships() -> Resu
             is_super_admin: true,
             ..member_of(w.coach, &[])
         };
-        let ids = w.ids(params(Scope::Sessions, Some(coach))).await?;
+        let ids = w.ids(&coach, params(Scope::Sessions)).await?;
         assert_eq!(ids, w.actions(&[1, 2, 6]));
         Ok::<(), Error>(())
     })
@@ -353,7 +365,9 @@ async fn a_super_admin_coach_with_no_org_role_sees_their_relationships() -> Resu
 async fn the_user_sees_every_relationship_they_are_in() -> Result<(), Error> {
     within_time_limit(async {
         let w = world().await;
-        let ids = w.ids(params(Scope::Sessions, None)).await?;
+        let ids = w
+            .ids(&w.in_both_orgs(w.coachee), params(Scope::Sessions))
+            .await?;
         assert_eq!(ids, w.actions(&[1, 2, 3, 4, 5, 6]));
         Ok::<(), Error>(())
     })
@@ -365,8 +379,67 @@ async fn the_user_sees_every_relationship_they_are_in() -> Result<(), Error> {
 async fn the_user_sees_every_assignment_of_theirs() -> Result<(), Error> {
     within_time_limit(async {
         let w = world().await;
-        let ids = w.ids(params(Scope::Assigned, None)).await?;
+        let ids = w
+            .ids(&w.in_both_orgs(w.coachee), params(Scope::Assigned))
+            .await?;
         assert_eq!(ids, w.actions(&[1, 3, 6]));
+        Ok::<(), Error>(())
+    })
+    .await
+}
+
+/// The ids of the actions `viewer` reads as U under `scope`.
+async fn own_action_ids(
+    db: &DatabaseConnection,
+    m: &LapsedMembership,
+    viewer: &Visibility,
+    scope: Scope,
+) -> Result<BTreeSet<Id>, Error> {
+    Ok(find_by_user(db, viewer, m.user, params(scope))
+        .await?
+        .into_iter()
+        .map(|a| a.action.id)
+        .collect())
+}
+
+/// M1-05: a user's own session actions skip the organization they left.
+#[tokio::test]
+async fn a_users_own_session_actions_skip_an_org_they_left() -> Result<(), Error> {
+    within_time_limit(async {
+        let db = database().await;
+        let m = seed_lapsed_membership(&db, Utc::now().naive_utc()).await;
+        let ids = own_action_ids(&db, &m, &m.in_o1(), Scope::Sessions).await?;
+        assert_eq!(ids, BTreeSet::from([m.actions[0]]));
+        Ok::<(), Error>(())
+    })
+    .await
+}
+
+/// M1-06: a user's own assignments skip the organization they left.
+#[tokio::test]
+async fn a_users_own_assignments_skip_an_org_they_left() -> Result<(), Error> {
+    within_time_limit(async {
+        let db = database().await;
+        let m = seed_lapsed_membership(&db, Utc::now().naive_utc()).await;
+        let ids = own_action_ids(&db, &m, &m.in_o1(), Scope::Assigned).await?;
+        assert_eq!(ids, BTreeSet::from([m.actions[0]]));
+        Ok::<(), Error>(())
+    })
+    .await
+}
+
+/// M1-07, M1-08: a SuperAdmin with no roles, or a member of both orgs, sees both.
+#[tokio::test]
+async fn a_super_admin_or_a_member_of_both_orgs_sees_every_own_action() -> Result<(), Error> {
+    within_time_limit(async {
+        let db = database().await;
+        let m = seed_lapsed_membership(&db, Utc::now().naive_utc()).await;
+        for viewer in [m.super_admin(), m.in_both()] {
+            for scope in [Scope::Sessions, Scope::Assigned] {
+                let ids = own_action_ids(&db, &m, &viewer, scope.clone()).await?;
+                assert_eq!(ids, BTreeSet::from(m.actions), "{viewer:?} {scope:?}");
+            }
+        }
         Ok::<(), Error>(())
     })
     .await

@@ -19,7 +19,7 @@ use sea_orm::{
 
 use super::*;
 use crate::events::{DomainEvent, EventHandler};
-use crate::test_utils::sqlite::{database, seed_organization, within_time_limit};
+use crate::test_utils::sqlite::{database, seed_membership, seed_organization, within_time_limit};
 use crate::transcript_attribution::Attribution;
 use crate::transcript_participant::MatchSource;
 use crate::transcription::persist_completion;
@@ -72,6 +72,7 @@ struct Fixture {
     db: DatabaseConnection,
     coach: users::Model,
     coachee: users::Model,
+    organization_id: Id,
     relationship_id: Id,
     session: coaching_sessions::Model,
     analysis_id: Id,
@@ -159,11 +160,14 @@ async fn fixture_in(db: DatabaseConnection) -> Fixture {
     let coach = seed_person(&db, "Jordan Coach").await;
     let coachee = seed_person(&db, COACHEE_NAME).await;
     let at = Utc::now();
+    let organization_id = seed_organization(&db).await;
+    seed_membership(&db, coach.id, organization_id).await;
+    seed_membership(&db, coachee.id, organization_id).await;
 
     let relationship_id = Id::new_v4();
     coaching_relationships::ActiveModel {
         id: Set(relationship_id),
-        organization_id: Set(seed_organization(&db).await),
+        organization_id: Set(organization_id),
         coach_id: Set(coach.id),
         coachee_id: Set(coachee.id),
         slug: Set(format!("relationship-{relationship_id}")),
@@ -262,6 +266,7 @@ async fn fixture_in(db: DatabaseConnection) -> Fixture {
         db,
         coach,
         coachee,
+        organization_id,
         relationship_id,
         session,
         analysis_id,
@@ -630,6 +635,62 @@ async fn accept_with_edits_uses_them_and_rejects_an_outside_assignee() {
         assert_eq!(rows[0].body.as_deref(), Some("Send the revised org chart"));
         assert_eq!(rows[0].due_by, Some(due(5)));
         assert_eq!(rows[0].user_id, f.coach.id);
+    })
+    .await;
+}
+
+/// The details a conflict carries.
+fn conflict_details(error: &Error) -> Option<&serde_json::Value> {
+    match kind(error) {
+        DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Conflict {
+            details,
+            ..
+        })) => details.as_ref(),
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn accept_assigning_a_coachee_no_longer_in_the_organization_is_refused() {
+    within_time_limit(async {
+        let f = fixture().await;
+        let (publisher, recorder) = recording_publisher();
+        entity::user_roles::Entity::delete_many()
+            .filter(entity::user_roles::Column::UserId.eq(f.coachee.id))
+            .exec(&f.db)
+            .await
+            .expect("the coachee leaves the organization");
+        let p = proposal(
+            &f,
+            "Send the org chart",
+            vec![f.coach.id, f.coachee.id],
+            Some(due(3)),
+            None,
+        );
+        let suggestion = suggest(&f, &p, Status::Pending, None).await;
+
+        let refused = accept_action(
+            &f.db,
+            &publisher,
+            &Config::default(),
+            &f.coach,
+            suggestion.clone(),
+            None,
+            now(),
+        )
+        .await
+        .expect_err("a removed assignee is refused");
+
+        let details = conflict_details(&refused).expect("a conflict with details");
+        assert_eq!(details["reason"], "assignee_not_a_member");
+        assert_eq!(details["user_id"], serde_json::json!(f.coachee.id));
+        assert_eq!(
+            details["organization_id"],
+            serde_json::json!(f.organization_id)
+        );
+        assert!(session_actions(&f).await.is_empty());
+        assert_eq!(reread(&f, suggestion.id).await.status, Status::Pending);
+        assert_eq!(recorder.suggestion_changes(), 0);
     })
     .await;
 }

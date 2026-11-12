@@ -1,5 +1,6 @@
 pub(crate) mod recurrence;
 
+use crate::coaching_relationship::{coachee_not_a_member, ensure_coachee_is_member};
 use crate::coaching_relationships;
 use crate::coaching_session_hydration::{
     run_coaching_session_hydration_tasks, CoachingSessionHydrationContext,
@@ -7,7 +8,9 @@ use crate::coaching_session_hydration::{
 use crate::coaching_session_image;
 use crate::coaching_sessions::Model;
 use crate::emails;
-use crate::error::{DomainErrorKind, EntityErrorKind, Error, ExternalErrorKind, InternalErrorKind};
+use crate::error::{
+    reason, DomainErrorKind, EntityErrorKind, Error, ExternalErrorKind, InternalErrorKind,
+};
 use crate::events::{DomainEvent, EventPublisher};
 use crate::gateway::tiptap::TiptapDocument;
 use crate::meeting_provider::MeetingProperties;
@@ -95,6 +98,8 @@ pub async fn create(
             )),
         });
     }
+    let member_ids = coaching_relationship::notify_member_ids(db, &coaching_relationship).await?;
+    ensure_coachee_is_member(&coaching_relationship, &member_ids)?;
     let coach_id = coaching_relationship.coach_id;
 
     coaching_session_model.date = SessionDate::new(coaching_session_model.date)?.into_inner();
@@ -126,6 +131,7 @@ pub async fn create(
             txn: &txn,
             session: &session,
             relationship: &coaching_relationship,
+            member_ids: &member_ids,
         };
         let events = run_coaching_session_hydration_tasks(&ctx).await?;
 
@@ -140,7 +146,15 @@ pub async fn create(
         Ok((session, events)) => {
             publish_events(event_publisher, events).await;
             // Best-effort, after commit: a failed invite must not undo a created session.
-            emails::notify_session_scheduled(db, config, &session).await;
+            emails::notify_session_scheduled(
+                db,
+                config,
+                &session,
+                &coaching_relationship,
+                &organization,
+                &member_ids,
+            )
+            .await;
             Ok(session)
         }
         Err(e) => {
@@ -261,10 +275,13 @@ pub async fn ensure_hydrated(
             maybe_attach_meeting_url(db, config, &mut session, coach_id).await?;
         }
 
+        let member_ids =
+            coaching_relationship::notify_member_ids(&txn, &coaching_relationship).await?;
         let ctx = CoachingSessionHydrationContext {
             txn: &txn,
             session: &session,
             relationship: &coaching_relationship,
+            member_ids: &member_ids,
         };
         let events = run_coaching_session_hydration_tasks(&ctx).await?;
 
@@ -360,6 +377,18 @@ pub async fn update(
     );
     let old = existing.clone();
     let active_model = existing.into_active_model();
+
+    // Moving a session sends the coachee a reschedule, so they must still be a member.
+    let proposed = mutate::preview::<coaching_sessions::ActiveModel, coaching_sessions::Column>(
+        active_model.clone(),
+        &update_map,
+    )?;
+    if emails::affects_schedule(&old, &proposed) {
+        let relationship =
+            coaching_relationship::find_by_id(&txn, old.coaching_relationship_id).await?;
+        let member_ids = coaching_relationship::notify_member_ids(&txn, &relationship).await?;
+        ensure_coachee_is_member(&relationship, &member_ids)?;
+    }
 
     let updated = mutate::update::<coaching_sessions::ActiveModel, coaching_sessions::Column>(
         &txn,
@@ -511,49 +540,60 @@ pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<
 /// Resend a session's invite to both participants, under a bumped SEQUENCE so calendars
 /// update the event they already hold. A member of a current series is refused: its
 /// invite is the series', so it is resent from there. A legacy member never had a series
-/// invite and goes out standalone.
+/// invite and goes out standalone. Refused when the coachee is no longer in the
+/// organization.
 pub async fn resend_invite(db: &DatabaseConnection, config: &Config, id: Id) -> Result<(), Error> {
     let session = find_by_id(db, id).await?;
     if session.date <= chrono::Utc::now().naive_utc() {
-        return Err(resend_refused(
+        return Err(Error::conflict_because(
+            reason::NO_UPCOMING_SESSIONS,
             "This session has already happened.",
-            "no_upcoming_sessions",
+            serde_json::json!({}),
         ));
     }
     if session.coaching_session_series_id.is_some() && session.ical_recurrence_id.is_some() {
-        return Err(resend_refused(
+        return Err(Error::conflict_because(
+            reason::SERIES_MEMBER,
             "This session's invite is part of its series.",
-            "series_member",
+            serde_json::json!({}),
         ));
     }
 
+    let relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
+    ensure_coachee_is_member(&relationship, &member_ids)?;
+
     // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
     let bumped = coaching_session::increment_ical_sequence(db, id).await?;
-    let parties = emails::InviteParties::load(db, bumped.coaching_relationship_id).await?;
+    let parties = emails::InviteParties::load(db, &relationship).await?;
     let delivered = emails::send_session_invite_resend(
         db,
         config,
-        &parties.participants(),
+        &emails::Audience {
+            participants: &parties.participants(),
+            member_ids: &member_ids,
+        },
         &bumped,
         &parties.organization,
     )
     .await?;
-    ensure_coachee_reached(&delivered)?;
+    ensure_coachee_reached(&delivered, &relationship)?;
     record_announced(db, &bumped).await;
     Ok(())
 }
 
-/// A resend that cannot apply, as a 409 carrying a machine-readable `reason`.
-pub(crate) fn resend_refused(message: &str, reason: &str) -> Error {
-    Error::conflict(message, serde_json::json!({ "reason": reason }))
-}
-
 /// A resend is only done once the coachee has it. Missing the coach is not a failure: the
-/// coach is the one asking.
-pub(crate) fn ensure_coachee_reached(delivered: &emails::Delivered) -> Result<(), Error> {
+/// coach is the one asking. An `Audience` that leaves the coachee out of `member_ids` gets
+/// the not-a-member 409.
+pub(crate) fn ensure_coachee_reached(
+    delivered: &emails::Delivered,
+    relationship: &coaching_relationships::Model,
+) -> Result<(), Error> {
     match delivered.coachee {
-        true => Ok(()),
-        false => Err(Error {
+        emails::Delivery::Sent => Ok(()),
+        emails::Delivery::NoLongerAMember => Err(coachee_not_a_member(relationship)),
+        emails::Delivery::Failed => Err(Error {
             source: None,
             error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
         }),
@@ -694,7 +734,10 @@ fn generate_document_name(
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
-    use crate::test_utils::mock::{both_participants_are_members, recording_publisher};
+    use crate::test_utils::mock::{
+        both_participants_are_members, members, membership_statements, recording_publisher,
+        user_with_email, Mailbox,
+    };
     use crate::{
         coaching_relationships, coaching_session_images, coaching_sessions, goals,
         meeting_provider::Provider, oauth_connections, organizations,
@@ -792,10 +835,11 @@ mod tests {
         map
     }
 
-    /// Runs [`update`] against a mock stocked through the locked read, the UPDATE ...
-    /// RETURNING, the SEQUENCE bump and a pending reschedule's two writes, and returns the
-    /// SQL it issued.
+    /// Runs [`update`] against a mock stocked through the locked read, a move's membership
+    /// check, the UPDATE ... RETURNING, the SEQUENCE bump and a pending reschedule's two
+    /// writes, and returns the SQL it issued.
     async fn statements_for_update(
+        relationship: &coaching_relationships::Model,
         session: &coaching_sessions::Model,
         updated: &coaching_sessions::Model,
         params: mutate::UpdateMap,
@@ -805,7 +849,14 @@ mod tests {
             ..updated.clone()
         };
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![session.clone()]]);
+        let db = match emails::affects_schedule(session, updated) {
+            true => db
+                .append_query_results(vec![vec![relationship.clone()]])
+                .append_query_results([both_participants_are_members(relationship)]),
+            false => db,
+        };
+        let db = db
             .append_query_results(vec![vec![updated.clone()]])
             .append_query_results(vec![vec![bumped]])
             // record_change's upsert and undo check; unused by a title edit.
@@ -830,9 +881,9 @@ mod tests {
         }
     }
 
-    /// The notify path opens by resolving the session's relationship, so this identifies it.
-    /// `coaching_relationship_id` on the session UPDATE does not match: it is singular.
-    const RELATIONSHIP_LOOKUP: &str = r#"\"coaching_relationships\""#;
+    /// The notify path loads the participants, so this identifies it. The move's membership
+    /// check reads only user ids, which does not match.
+    const PARTICIPANTS_LOOKUP: &str = r#"\"users\".\"email\""#;
 
     /// Whether a logged statement writes a pending reschedule.
     fn records_a_pending_reschedule(sql: &str) -> bool {
@@ -857,12 +908,17 @@ mod tests {
             title: Some("Renamed".to_string()),
             ..session.clone()
         };
-        let title_sql =
-            statements_for_update(&session, &renamed, string_update("title", "Renamed")).await;
+        let title_sql = statements_for_update(
+            &relationship,
+            &session,
+            &renamed,
+            string_update("title", "Renamed"),
+        )
+        .await;
         assert!(
             !title_sql
                 .iter()
-                .any(|sql| sql.contains(RELATIONSHIP_LOOKUP)),
+                .any(|sql| sql.contains(PARTICIPANTS_LOOKUP)),
             "a title edit must not reach the notify path: {title_sql:?}"
         );
         assert!(
@@ -876,11 +932,12 @@ mod tests {
             date: session.date + chrono::Duration::hours(1),
             ..session.clone()
         };
-        let moved_sql = statements_for_update(&session, &moved, date_update(moved.date)).await;
+        let moved_sql =
+            statements_for_update(&relationship, &session, &moved, date_update(moved.date)).await;
         assert!(
             !moved_sql
                 .iter()
-                .any(|sql| sql.contains(RELATIONSHIP_LOOKUP)),
+                .any(|sql| sql.contains(PARTICIPANTS_LOOKUP)),
             "a moved start must not reach the notify path: {moved_sql:?}"
         );
         assert!(
@@ -910,7 +967,12 @@ mod tests {
         ]);
 
         let organization = test_organization();
-        let relationship = test_coaching_relationship(Id::new_v4(), organization.id);
+        let coach = test_user_with_email("coach@example.com");
+        let coachee = test_user_with_email("coachee@example.com");
+        let relationship = coaching_relationships::Model {
+            coachee_id: coachee.id,
+            ..test_coaching_relationship(coach.id, organization.id)
+        };
         let mut session = test_session(relationship.id, None);
         session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
         let bumped = coaching_sessions::Model {
@@ -920,10 +982,11 @@ mod tests {
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![bumped.clone()]])
-            .append_query_results(vec![vec![relationship]])
-            .append_query_results(vec![vec![test_user_with_email("coach@example.com")]])
-            .append_query_results(vec![vec![test_user_with_email("coachee@example.com")]])
+            .append_query_results(vec![vec![coach]])
+            .append_query_results(vec![vec![coachee]])
             .append_query_results(vec![vec![organization]])
             // The invite body's topics, goals and actions.
             .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
@@ -1080,13 +1143,13 @@ mod tests {
             updated_at: now.into(),
         };
 
-        // Queries: relationship, organization, session INSERT, membership filter,
-        // in-progress goals SELECT (one goal), join INSERT...RETURNING (one freshly-linked row).
+        // Queries: relationship, organization, coachee membership, session INSERT, in-progress
+        // goals SELECT (one goal), join INSERT...RETURNING (one freshly-linked row).
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
-            .append_query_results(vec![vec![session.clone()]])
             .append_query_results([both_participants_are_members(&relationship)])
+            .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![goal.clone()]])
             .append_query_results(vec![vec![link.clone()]])
             // find_prior_session → None, so topics carry-over no-ops.
@@ -1203,21 +1266,20 @@ mod tests {
             ..deferred_topic.clone()
         };
 
-        // relationship → organization → session INSERT → membership filter → in-progress
+        // relationship → organization → coachee membership → session INSERT → in-progress
         // goals SELECT (empty, no goal event) → find_prior_session (returns prior) →
         // move_deferred_to_session source SELECT (one Deferred topic) → target SELECT
-        // (empty, for base) → UPDATE (the moved topic) → membership filter.
+        // (empty, for base) → UPDATE (the moved topic).
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
-            .append_query_results(vec![vec![session.clone()]])
             .append_query_results([both_participants_are_members(&relationship)])
+            .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![Vec::<goals::Model>::new()])
             .append_query_results(vec![vec![prior.clone()]])
             .append_query_results(vec![vec![deferred_topic.clone()]])
             .append_query_results(vec![Vec::<crate::coaching_session_topics::Model>::new()])
             .append_query_results(vec![vec![moved_topic.clone()]])
-            .append_query_results([both_participants_are_members(&relationship)])
             .into_connection();
 
         let config = test_config(&server.url());
@@ -1271,14 +1333,14 @@ mod tests {
         let relationship = test_coaching_relationship(coach_id, org.id);
         let session = test_session(relationship.id, None);
 
-        // Queries: relationship SELECT, organization SELECT, session INSERT, membership
-        // filter, in-progress goals SELECT (for link_in_progress_goals_to_session).
+        // Queries: relationship SELECT, organization SELECT, coachee membership, session
+        // INSERT, in-progress goals SELECT (for link_in_progress_goals_to_session).
         // No oauth_connections query because provider is None.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
-            .append_query_results(vec![vec![session.clone()]])
             .append_query_results([both_participants_are_members(&relationship)])
+            .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![Vec::<goals::Model>::new()])
             // find_prior_session → None, so topics carry-over no-ops.
             .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
@@ -1295,6 +1357,184 @@ mod tests {
         .await?;
 
         assert!(result.meeting_url.is_none());
+        Ok(())
+    }
+
+    /// Create checks membership once and hands the answer to hydration and the invite.
+    #[tokio::test]
+    async fn m5_03_create_checks_membership_once() -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+        let _tiptap_mock = server
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let org = test_organization();
+        let relationship = test_coaching_relationship(Id::new_v4(), org.id);
+        let session = test_session(relationship.id, None);
+
+        // The create, then the invite's loads: both users.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            .append_query_results(vec![vec![test_user_with_email("coach@example.com")]])
+            .append_query_results(vec![vec![test_user_with_email("coachee@example.com")]])
+            .into_connection();
+
+        create(
+            &db,
+            &test_config(&server.url()),
+            &EventPublisher::new(),
+            session,
+            Some(Duration::default()),
+        )
+        .await?;
+
+        let log = db.into_transaction_log();
+        assert_eq!(membership_statements(&log), 1, "{log:?}");
+        Ok(())
+    }
+
+    /// An in-progress goal of `relationship` and its link to `session`.
+    fn carried_goal(
+        relationship: &coaching_relationships::Model,
+        session: &coaching_sessions::Model,
+    ) -> (goals::Model, entity_api::coaching_sessions_goals::Model) {
+        let now = chrono::Utc::now();
+        let goal = goals::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship.id,
+            created_in_session_id: None,
+            user_id: relationship.coachee_id,
+            title: Some("Carried-forward goal".to_string()),
+            body: None,
+            status: entity_api::status::Status::InProgress,
+            status_changed_at: None,
+            completed_at: None,
+            target_date: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let link = entity_api::coaching_sessions_goals::Model {
+            id: Id::new_v4(),
+            coaching_session_id: session.id,
+            goal_id: goal.id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        (goal, link)
+    }
+
+    /// The `notify_user_ids` of every published event.
+    fn notified(events: &[DomainEvent]) -> Vec<Vec<Id>> {
+        events
+            .iter()
+            .map(|event| match event {
+                DomainEvent::CoachingSessionGoalCreated {
+                    notify_user_ids, ..
+                }
+                | DomainEvent::TopicsChanged {
+                    notify_user_ids, ..
+                } => notify_user_ids.clone(),
+                other => panic!("unexpected event {other:?}"),
+            })
+            .collect()
+    }
+
+    /// M5-07: with the coach removed, create notifies only the coachee.
+    #[tokio::test]
+    async fn m5_07_create_notifies_only_current_members() -> Result<(), Error> {
+        let mailbox = Mailbox::new().await;
+        let org = test_organization();
+        let (coach, coachee) = (
+            user_with_email("coach@example.com"),
+            user_with_email("coachee@example.com"),
+        );
+        let relationship = coaching_relationships::Model {
+            coach_id: coach.id,
+            coachee_id: coachee.id,
+            ..test_coaching_relationship(coach.id, org.id)
+        };
+        let session = coaching_sessions::Model {
+            date: chrono::Utc::now().naive_utc() + chrono::Duration::days(7),
+            ..test_session(relationship.id, None)
+        };
+        let (goal, link) = carried_goal(&relationship, &session);
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org.clone()]])
+            .append_query_results([members(&[coachee.id])])
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![goal]])
+            .append_query_results(vec![vec![link]])
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            // the invite: both users, then its content
+            .append_query_results(vec![vec![coach]])
+            .append_query_results(vec![vec![coachee.clone()]])
+            .append_query_results(vec![Vec::<crate::coaching_session_topics::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![Vec::<entity_api::actions::Model>::new()])
+            .into_connection();
+
+        let (publisher, recorded) = recording_publisher();
+        create(
+            &db,
+            &mailbox.config(),
+            &publisher,
+            session,
+            Some(Duration::default()),
+        )
+        .await?;
+
+        assert_eq!(
+            notified(&recorded.lock().unwrap()),
+            [vec![coachee.id]],
+            "the carried goal's event"
+        );
+        mailbox.assert_only_to("coachee@example.com");
+        Ok(())
+    }
+
+    /// M5-11: lazy hydration notifies only the members it finds.
+    #[tokio::test]
+    async fn m5_11_ensure_hydrated_notifies_only_current_members() -> Result<(), Error> {
+        let mailbox = Mailbox::new().await;
+        let org = test_organization();
+        let relationship = test_coaching_relationship(Id::new_v4(), org.id);
+        let session = coaching_sessions::Model {
+            hydrated_at: None,
+            ..test_session(relationship.id, None)
+        };
+        let (goal, link) = carried_goal(&relationship, &session);
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // advisory lock, then the re-read under it
+            .append_exec_results(vec![exec_ok()])
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org]])
+            // no OAuth connection, so no meeting URL
+            .append_query_results(vec![Vec::<oauth_connections::Model>::new()])
+            .append_query_results([members(&[relationship.coachee_id])])
+            .append_query_results(vec![vec![goal]])
+            .append_query_results(vec![vec![link]])
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            .append_query_results(vec![vec![session.clone()]])
+            .into_connection();
+
+        let (publisher, recorded) = recording_publisher();
+        ensure_hydrated(&db, &mailbox.config(), &publisher, session).await?;
+
+        assert_eq!(
+            notified(&recorded.lock().unwrap()),
+            [vec![relationship.coachee_id]]
+        );
         Ok(())
     }
 
@@ -1346,17 +1586,17 @@ mod tests {
         // Query sequence:
         // 1. relationship SELECT
         // 2. organization SELECT
-        // 3. find_meeting_url_by_relationship_and_provider → returns existing session
+        // 3. coachee membership
+        // 4. find_meeting_url_by_relationship_and_provider → returns existing session
         //    (no oauth lookup or Meet API call needed!)
-        // 4. session INSERT → returns saved_session with the reused meeting_url
-        // 5. membership filter
+        // 5. session INSERT → returns saved_session with the reused meeting_url
         // 6. in-progress goals SELECT
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![existing_session_with_url]])
             .append_query_results(vec![vec![saved_session]])
-            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![Vec::<goals::Model>::new()])
             // find_prior_session → None, so topics carry-over no-ops.
             .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
@@ -1396,14 +1636,15 @@ mod tests {
         let relationship = test_coaching_relationship(coach_id, org.id);
         let session = test_session(relationship.id, Some(Provider::Google));
 
-        // 7 queries: relationship, organization,
+        // 7 queries: relationship, organization, coachee membership,
         // find_meeting_url (empty = no reusable URL),
         // oauth_connection (empty = no credentials),
-        // session INSERT, membership filter, in-progress goals SELECT.
+        // session INSERT, in-progress goals SELECT.
         // No Google Meet API call should occur.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results::<coaching_sessions::Model, Vec<coaching_sessions::Model>, _>(
                 vec![vec![]],
             )
@@ -1411,7 +1652,6 @@ mod tests {
                 vec![vec![]],
             )
             .append_query_results(vec![vec![session.clone()]])
-            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![Vec::<goals::Model>::new()])
             // find_prior_session → None, so topics carry-over no-ops.
             .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
@@ -1875,6 +2115,60 @@ mod tests {
         assert!(first.is_err(), "first attempt should surface the failure");
         assert!(second.is_err(), "second attempt should surface the failure");
         post_mock.assert_async().await;
+    }
+
+    fn coachee_delivery(coachee: emails::Delivery) -> emails::Delivered {
+        emails::Delivered {
+            coachee,
+            coach: emails::Delivery::Sent,
+        }
+    }
+
+    /// M7-06: a coachee the `Audience` skips as not a member gets the same 409 as the check.
+    #[test]
+    fn m7_06_a_coachee_skipped_as_not_a_member_is_the_resend_409() {
+        let relationship = test_coaching_relationship(Id::new_v4(), Id::new_v4());
+
+        let err = ensure_coachee_reached(
+            &coachee_delivery(emails::Delivery::NoLongerAMember),
+            &relationship,
+        )
+        .unwrap_err();
+
+        let DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Conflict {
+            details: Some(details),
+            ..
+        })) = err.error_kind
+        else {
+            panic!("expected a conflict, got {err:?}");
+        };
+        assert_eq!(details["reason"], "coachee_not_a_member");
+        assert_eq!(
+            details["organization_id"],
+            serde_json::json!(relationship.organization_id)
+        );
+        assert_eq!(
+            details["user_id"],
+            serde_json::json!(relationship.coachee_id)
+        );
+    }
+
+    /// M7-07: a failed send to the coachee is still a network error.
+    #[test]
+    fn m7_07_a_failed_send_to_the_coachee_is_a_network_error() {
+        let relationship = test_coaching_relationship(Id::new_v4(), Id::new_v4());
+
+        let err =
+            ensure_coachee_reached(&coachee_delivery(emails::Delivery::Failed), &relationship)
+                .unwrap_err();
+
+        assert!(
+            matches!(
+                err.error_kind,
+                DomainErrorKind::External(ExternalErrorKind::Network)
+            ),
+            "{err:?}"
+        );
     }
 }
 

@@ -12,6 +12,8 @@ Transactional emails are sent via [Resend](https://resend.com/) using template-b
 | Session Rescheduled | Periodic sweep, once a single session's edited schedule settles | Coach + coachee |
 | Action Assigned | Action created/updated with assignees | All assignees |
 
+Every email about a coaching relationship (sessions, series, reminders, reschedules, action assignments) goes only to participants who are still members of the relationship's organization; resending an invite to a coachee who is no longer a member is refused with a 409 (`details.reason` = `coachee_not_a_member`). Cancellations go to both participants regardless of membership, so a removed member's calendar is cleaned up.
+
 ## Two-Tier Pattern
 
 All email logic lives in `domain/src/emails.rs`, organized into two tiers:

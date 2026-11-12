@@ -1,6 +1,7 @@
 //! Shared scaffold for the relationship-scoped access tests: one relationship with one
 //! session, callers inside and outside it, and a signed-in request through the router.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
@@ -13,7 +14,7 @@ use chrono::Utc;
 use domain::user::Backend;
 use domain::{coaching_relationships, coaching_sessions, user_roles, users, Id};
 use password_auth::generate_hash;
-use sea_orm::{DatabaseBackend, DatabaseConnection, MockDatabase};
+use sea_orm::{DatabaseBackend, DatabaseConnection, MockDatabase, Value};
 use service::config::Config;
 use time::Duration;
 use tower::ServiceExt;
@@ -173,6 +174,14 @@ impl World {
     }
 }
 
+/// Rows for the organization-membership filter, keeping exactly `user_ids`.
+pub(crate) fn members(user_ids: &[Id]) -> Vec<BTreeMap<String, Value>> {
+    user_ids
+        .iter()
+        .map(|&user_id| BTreeMap::from([("user_id".to_string(), user_id.into())]))
+        .collect()
+}
+
 /// The app state over `db`, for routes layered with `from_fn_with_state`.
 pub(crate) fn app_state(db: &Arc<DatabaseConnection>) -> AppState {
     app_state_with(Config::default(), db)
@@ -287,8 +296,39 @@ pub(crate) fn assert_refusal(
     expected: StatusCode,
 ) {
     assert_eq!(response.status(), expected, "{row}");
+    assert_nothing_written(row, db);
+}
+
+/// Asserts the database was asked to write nothing.
+pub(crate) fn assert_nothing_written(row: &str, db: &DatabaseConnection) {
     assert!(
         !wrote(db),
         "{row}: the refused request wrote to the database"
+    );
+}
+
+/// Asserts `body` is the 409 refusing `user_id`, no longer in the organization, for `reason`.
+pub(crate) fn assert_not_a_member(
+    row: &str,
+    body: &serde_json::Value,
+    reason: &str,
+    user_id: Id,
+    organization_id: Id,
+) {
+    assert_eq!(body["error"], "conflict", "{row}: {body}");
+    assert_eq!(body["details"]["reason"], reason, "{row}: {body}");
+    assert_eq!(
+        body["details"]["user_id"],
+        serde_json::json!(user_id),
+        "{row}: {body}"
+    );
+    assert_eq!(
+        body["details"]["organization_id"],
+        serde_json::json!(organization_id),
+        "{row}: {body}"
+    );
+    assert!(
+        body["message"].as_str().is_some_and(|m| !m.is_empty()),
+        "{row}: {body}"
     );
 }

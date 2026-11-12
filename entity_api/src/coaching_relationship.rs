@@ -1,13 +1,16 @@
+use std::borrow::Cow;
+
 use super::{
     error::{EntityApiErrorKind, Error},
     organization,
 };
 use crate::user;
+use crate::user_role::is_member;
 use chrono::Utc;
 use entity::{
     coachees, coaches,
     coaching_relationships::{self, ActiveModel, Entity, Model, Visibility},
-    users, Id,
+    coaching_sessions, users, Id,
 };
 use log::*;
 use sea_orm::{
@@ -18,7 +21,8 @@ use sea_orm::{
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
 use slugify::slugify;
-use utoipa::ToSchema;
+use utoipa::openapi::{ObjectBuilder, RefOr, Schema};
+use utoipa::{PartialSchema, ToSchema};
 
 /// Creates a coaching relationship between a coach and a coachee in an organization.
 ///
@@ -203,7 +207,54 @@ pub async fn notify_member_ids(
     .await
 }
 
+/// Whether each participant still holds a role in the relationship's organization.
+///
+/// The same test as [`notify_member_ids`], so `true` means a write naming that
+/// participant is not refused for membership.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, FromQueryResult, ToSchema)]
+#[schema(as = domain::coaching_relationship::Membership)]
+pub struct Membership {
+    /// Whether the coach still holds a role in the relationship's organization.
+    pub coach_is_member: bool,
+    /// Whether the coachee still holds a role in the relationship's organization.
+    pub coachee_is_member: bool,
+}
+
+/// A coaching relationship with its participants' [`Membership`].
+#[derive(Debug, Clone, PartialEq, Serialize, FromQueryResult, ToSchema)]
+#[schema(as = domain::coaching_relationship::WithMembership)]
+pub struct WithMembership {
+    #[serde(flatten)]
+    #[sea_orm(nested)]
+    pub relationship: Model,
+    #[serde(flatten)]
+    #[sea_orm(nested)]
+    pub membership: Membership,
+}
+
+/// Adds each participant's [`Membership`] to a relationship select, computed in its SQL.
+pub(crate) fn select_membership<Q: QuerySelect>(query: Q) -> Q {
+    let organization = || Expr::col(coaching_relationships::Column::OrganizationId.as_column_ref());
+    query
+        .column_as(
+            is_member(
+                Expr::col(coaching_relationships::Column::CoachId.as_column_ref()),
+                organization(),
+            ),
+            "coach_is_member",
+        )
+        .column_as(
+            is_member(
+                Expr::col(coaching_relationships::Column::CoacheeId.as_column_ref()),
+                organization(),
+            ),
+            "coachee_is_member",
+        )
+}
+
 /// Pairs a coaching relationship with the names of its coach and coachee.
+///
+/// Only `create` builds one, after refusing unless both hold a role in the organization.
 fn with_user_names(
     coaching_relationship: Model,
     coach: &users::Model,
@@ -219,10 +270,14 @@ fn with_user_names(
         coachee_last_name: coachee.last_name.clone(),
         created_at: coaching_relationship.created_at,
         updated_at: coaching_relationship.updated_at,
+        membership: Membership {
+            coach_is_member: true,
+            coachee_is_member: true,
+        },
     }
 }
 
-pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error> {
+pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
     Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
@@ -344,16 +399,32 @@ pub async fn find_by_user_and_organization(
     Ok(relationships)
 }
 
+/// The query form of [`Model::grants_access_to`]: relationships `viewer` is coach or
+/// coachee of, in an organization they are still a member of unless a SuperAdmin.
+pub fn accessible_to(viewer: &Visibility) -> Condition {
+    Condition::all()
+        .add(
+            Condition::any()
+                .add(coaching_relationships::Column::CoachId.eq(viewer.user_id))
+                .add(coaching_relationships::Column::CoacheeId.eq(viewer.user_id)),
+        )
+        .add_option(in_member_organization(viewer))
+}
+
 /// Relationships where `coach` coaches `coachee_id` and is still a member of the
 /// relationship's organization, unless `coach` is a SuperAdmin.
 pub fn coached_by(coach: &Visibility, coachee_id: Id) -> Condition {
     Condition::all()
         .add(coaching_relationships::Column::CoachId.eq(coach.user_id))
         .add(coaching_relationships::Column::CoacheeId.eq(coachee_id))
-        .add_option((!coach.is_super_admin).then(|| {
-            coaching_relationships::Column::OrganizationId
-                .is_in(coach.member_org_ids.iter().copied())
-        }))
+        .add_option(in_member_organization(coach))
+}
+
+/// The org half of [`accessible_to`]; `None` for a SuperAdmin, who skips it.
+fn in_member_organization(viewer: &Visibility) -> Option<Expr> {
+    (!viewer.is_super_admin).then(|| {
+        coaching_relationships::Column::OrganizationId.is_in(viewer.member_org_ids.iter().copied())
+    })
 }
 
 /// Checks if a user is a coach of another user.
@@ -411,8 +482,8 @@ pub async fn find_by_organization_with_user_names(
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
         .column_as(Expr::cust("coaches.last_name"), "coach_last_name")
         .column_as(Expr::cust("coachees.first_name"), "coachee_first_name")
-        .column_as(Expr::cust("coachees.last_name"), "coachee_last_name")
-        .into_model::<CoachingRelationshipWithUserNames>();
+        .column_as(Expr::cust("coachees.last_name"), "coachee_last_name");
+    let query = select_membership(query).into_model::<CoachingRelationshipWithUserNames>();
 
     Ok(query.all(db).await?)
 }
@@ -452,8 +523,8 @@ pub async fn find_by_user_and_organization_with_user_names(
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
         .column_as(Expr::cust("coaches.last_name"), "coach_last_name")
         .column_as(Expr::cust("coachees.first_name"), "coachee_first_name")
-        .column_as(Expr::cust("coachees.last_name"), "coachee_last_name")
-        .into_model::<CoachingRelationshipWithUserNames>();
+        .column_as(Expr::cust("coachees.last_name"), "coachee_last_name");
+    let query = select_membership(query).into_model::<CoachingRelationshipWithUserNames>();
 
     Ok(query.all(db).await?)
 }
@@ -487,8 +558,8 @@ pub async fn get_relationship_with_user_names(
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
         .column_as(Expr::cust("coaches.last_name"), "coach_last_name")
         .column_as(Expr::cust("coachees.first_name"), "coachee_first_name")
-        .column_as(Expr::cust("coachees.last_name"), "coachee_last_name")
-        .into_model::<CoachingRelationshipWithUserNames>();
+        .column_as(Expr::cust("coachees.last_name"), "coachee_last_name");
+    let query = select_membership(query).into_model::<CoachingRelationshipWithUserNames>();
 
     Ok(query.one(db).await?)
 }
@@ -522,16 +593,46 @@ async fn by_organization(
     )
 }
 
+/// Deletes every relationship `user_id` coaches or is coached in.
+///
+/// # Errors
+///
+/// A relationship that still has a coaching session fails the foreign key; see
+/// [`Error::is_foreign_key_violation`].
 pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error> {
     Entity::delete_many()
-        .filter(
-            Condition::any()
-                .add(coaching_relationships::Column::CoachId.eq(user_id))
-                .add(coaching_relationships::Column::CoacheeId.eq(user_id)),
-        )
+        .filter(involving(user_id))
         .exec(db)
         .await?;
     Ok(())
+}
+
+/// Counts the relationships `user_id` coaches or is coached in that have at least one session.
+pub async fn count_with_sessions_by_user_id(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+) -> Result<u64, Error> {
+    let has_session = coaching_sessions::Entity::find()
+        .select_only()
+        .expr(Expr::cust("1"))
+        .filter(
+            Expr::col(coaching_sessions::Column::CoachingRelationshipId.as_column_ref())
+                .equals(coaching_relationships::Column::Id.as_column_ref()),
+        )
+        .into_query();
+
+    Ok(Entity::find()
+        .filter(involving(user_id))
+        .filter(Expr::exists(has_session))
+        .count(db)
+        .await?)
+}
+
+/// Relationships in which `user_id` is the coach or the coachee.
+fn involving(user_id: Id) -> Condition {
+    Condition::any()
+        .add(coaching_relationships::Column::CoachId.eq(user_id))
+        .add(coaching_relationships::Column::CoacheeId.eq(user_id))
 }
 
 /// Trait for filtering coaching relationships by user's role.
@@ -547,28 +648,28 @@ pub trait RoleFilterable {
 
 /// Finds coaching relationships for a user with optional role filtering.
 ///
-/// Returns relationships with user names for display purposes.
+/// Returns relationships with user names for display purposes: those `viewer` may access
+/// (see [`accessible_to`]), narrowed to those they coach or are coached in when
+/// `role_filter` asks.
 pub async fn find_by_user_id_with_user_names(
     db: &DatabaseConnection,
-    user_id: Id,
+    viewer: &Visibility,
     role_filter: impl RoleFilterable,
 ) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
     let coaches = Alias::new("coaches");
     let coachees = Alias::new("coachees");
 
-    let filter = if role_filter.filter_coach_only() {
-        Condition::all().add(coaching_relationships::Column::CoachId.eq(user_id))
+    let role = if role_filter.filter_coach_only() {
+        Some(coaching_relationships::Column::CoachId.eq(viewer.user_id))
     } else if role_filter.filter_coachee_only() {
-        Condition::all().add(coaching_relationships::Column::CoacheeId.eq(user_id))
+        Some(coaching_relationships::Column::CoacheeId.eq(viewer.user_id))
     } else {
-        // Default: return all relationships where user is coach or coachee
-        Condition::any()
-            .add(coaching_relationships::Column::CoachId.eq(user_id))
-            .add(coaching_relationships::Column::CoacheeId.eq(user_id))
+        None
     };
 
     let query = coaching_relationships::Entity::find()
-        .filter(filter)
+        .filter(accessible_to(viewer))
+        .apply_if(role, |q, role| q.filter(role))
         .join_as(
             JoinType::Join,
             coaches::Relation::CoachingRelationships.def().rev(),
@@ -589,16 +690,15 @@ pub async fn find_by_user_id_with_user_names(
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
         .column_as(Expr::cust("coaches.last_name"), "coach_last_name")
         .column_as(Expr::cust("coachees.first_name"), "coachee_first_name")
-        .column_as(Expr::cust("coachees.last_name"), "coachee_last_name")
-        .into_model::<CoachingRelationshipWithUserNames>();
+        .column_as(Expr::cust("coachees.last_name"), "coachee_last_name");
+    let query = select_membership(query).into_model::<CoachingRelationshipWithUserNames>();
 
     Ok(query.all(db).await?)
 }
 
 // A convenient combined struct that holds the results of looking up the Users associated
 // with the coach/coachee ids.
-#[derive(FromQueryResult, Debug, PartialEq, Clone, ToSchema)]
-#[schema(as = domain::coaching_relationship::CoachingRelationshipWithUserNames)]
+#[derive(FromQueryResult, Debug, PartialEq, Clone)]
 pub struct CoachingRelationshipWithUserNames {
     pub id: Id,
     pub coach_id: Id,
@@ -609,6 +709,48 @@ pub struct CoachingRelationshipWithUserNames {
     pub coachee_last_name: String,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
+    #[sea_orm(nested)]
+    pub membership: Membership,
+}
+
+/// By hand: the derive would nest `membership` under `allOf`, but the wire lists its fields.
+impl PartialSchema for CoachingRelationshipWithUserNames {
+    fn schema() -> RefOr<Schema> {
+        let fields: [(&str, RefOr<Schema>); 9] = [
+            ("id", utoipa::schema!(Uuid).into()),
+            ("coach_id", utoipa::schema!(Uuid).into()),
+            ("coachee_id", utoipa::schema!(Uuid).into()),
+            ("coach_first_name", utoipa::schema!(String).into()),
+            ("coach_last_name", utoipa::schema!(String).into()),
+            ("coachee_first_name", utoipa::schema!(String).into()),
+            ("coachee_last_name", utoipa::schema!(String).into()),
+            ("created_at", utoipa::schema!(DateTime<FixedOffset>).into()),
+            ("updated_at", utoipa::schema!(DateTime<FixedOffset>).into()),
+        ];
+        let object = fields
+            .into_iter()
+            .fold(ObjectBuilder::new(), |object, (name, schema)| {
+                object.property(name, schema).required(name)
+            });
+        // Serialized at the top level, so `Membership`'s properties join this object's.
+        let RefOr::T(Schema::Object(membership)) = Membership::schema() else {
+            return object.into();
+        };
+        membership
+            .required
+            .iter()
+            .filter_map(|name| Some((name, membership.properties.get(name)?.clone())))
+            .fold(object, |object, (name, schema)| {
+                object.property(name, schema).required(name)
+            })
+            .into()
+    }
+}
+
+impl ToSchema for CoachingRelationshipWithUserNames {
+    fn name() -> Cow<'static, str> {
+        Cow::Borrowed("domain.coaching_relationship.CoachingRelationshipWithUserNames")
+    }
 }
 
 // serialize the CoachingRelationshipUserWithNames struct so that it can be used in the API
@@ -618,7 +760,7 @@ impl Serialize for CoachingRelationshipWithUserNames {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("CoachingRelationship", 9)?;
+        let mut state = serializer.serialize_struct("CoachingRelationship", 11)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("coach_id", &self.coach_id)?;
         state.serialize_field("coachee_id", &self.coachee_id)?;
@@ -628,7 +770,45 @@ impl Serialize for CoachingRelationshipWithUserNames {
         state.serialize_field("coachee_last_name", &self.coachee_last_name)?;
         state.serialize_field("created_at", &self.created_at)?;
         state.serialize_field("updated_at", &self.updated_at)?;
+        state.serialize_field("coach_is_member", &self.membership.coach_is_member)?;
+        state.serialize_field("coachee_is_member", &self.membership.coachee_is_member)?;
         state.end()
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn schema_lists_exactly_the_serialized_keys() {
+        let now = Utc::now().fixed_offset();
+        let relationship = CoachingRelationshipWithUserNames {
+            id: Id::new_v4(),
+            coach_id: Id::new_v4(),
+            coachee_id: Id::new_v4(),
+            coach_first_name: String::new(),
+            coach_last_name: String::new(),
+            coachee_first_name: String::new(),
+            coachee_last_name: String::new(),
+            created_at: now,
+            updated_at: now,
+            membership: Membership::default(),
+        };
+        let serde_json::Value::Object(wire) =
+            serde_json::to_value(&relationship).expect("serializes")
+        else {
+            panic!("expected an object");
+        };
+        let RefOr::T(Schema::Object(schema)) = CoachingRelationshipWithUserNames::schema() else {
+            panic!("expected an object schema");
+        };
+        let keys: BTreeSet<&str> = wire.keys().map(String::as_str).collect();
+        let properties: BTreeSet<&str> = schema.properties.keys().map(String::as_str).collect();
+        let required: BTreeSet<&str> = schema.required.iter().map(String::as_str).collect();
+        assert_eq!(keys, properties);
+        assert_eq!(keys, required);
     }
 }
 
@@ -726,8 +906,12 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."created_at", "coaching_relationships"."updated_at", coaches.first_name AS "coach_first_name", coaches.last_name AS "coach_last_name", coachees.first_name AS "coachee_first_name", coachees.last_name AS "coachee_last_name" FROM "refactor_platform"."coaching_relationships" JOIN "refactor_platform"."users" AS "coaches" ON "coaching_relationships"."coach_id" = "coaches"."id" JOIN "refactor_platform"."users" AS "coachees" ON "coaching_relationships"."coachee_id" = "coachees"."id" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $1)"#,
-                [organization_id.into()]
+                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."created_at", "coaching_relationships"."updated_at", coaches.first_name AS "coach_first_name", coaches.last_name AS "coach_last_name", coachees.first_name AS "coachee_first_name", coachees.last_name AS "coachee_last_name", EXISTS(SELECT 1 FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = "coaching_relationships"."coach_id" AND ("user_roles"."organization_id" = "coaching_relationships"."organization_id" OR ("user_roles"."role" = (CAST($1 AS "role")) AND "user_roles"."organization_id" IS NULL))) AS "coach_is_member", EXISTS(SELECT 1 FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = "coaching_relationships"."coachee_id" AND ("user_roles"."organization_id" = "coaching_relationships"."organization_id" OR ("user_roles"."role" = (CAST($2 AS "role")) AND "user_roles"."organization_id" IS NULL))) AS "coachee_is_member" FROM "refactor_platform"."coaching_relationships" JOIN "refactor_platform"."users" AS "coaches" ON "coaching_relationships"."coach_id" = "coaches"."id" JOIN "refactor_platform"."users" AS "coachees" ON "coaching_relationships"."coachee_id" = "coachees"."id" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $3)"#,
+                [
+                    "super_admin".into(),
+                    "super_admin".into(),
+                    organization_id.into()
+                ]
             )]
         );
 
@@ -746,6 +930,31 @@ mod tests {
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
                 r#"DELETE FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
+                [user_id.into(), user_id.into()]
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn count_with_sessions_by_user_id_counts_only_relationships_with_a_session(
+    ) -> Result<(), Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([[std::collections::BTreeMap::from([(
+                "num_items".to_string(),
+                sea_orm::Value::BigInt(Some(2)),
+            )])]])
+            .into_connection();
+
+        let user_id = Id::new_v4();
+        assert_eq!(count_with_sessions_by_user_id(&db, user_id).await?, 2);
+
+        assert_eq!(
+            db.into_transaction_log(),
+            [Transaction::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"SELECT COUNT(*) AS num_items FROM (SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND EXISTS(SELECT 1 FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id")) AS "sub_query""#,
                 [user_id.into(), user_id.into()]
             )]
         );
@@ -906,3 +1115,8 @@ mod reuse_tests;
 #[cfg(feature = "mock")]
 #[path = "coaching_relationship_race_tests.rs"]
 mod race_tests;
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "coaching_relationship_membership_tests.rs"]
+mod membership_tests;

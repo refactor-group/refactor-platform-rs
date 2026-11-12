@@ -11,6 +11,7 @@ use sea_orm::{ActiveModelTrait, ActiveValue::Unchanged, DatabaseConnection, Enti
 use super::*;
 use crate::test_utils::sqlite::{database, seed_coaching_session, within_time_limit};
 use entity_api::coaching_session::Landing;
+use entity_api::coaching_session_pending_reschedule::{self, Schedule};
 
 fn monday() -> NaiveDateTime {
     NaiveDate::from_ymd_opt(2026, 11, 9)
@@ -402,6 +403,99 @@ async fn find_by_series_id_breaks_date_ties_by_id() {
                 .collect();
 
         assert_eq!(ordered, vec![first, second, later.id]);
+    })
+    .await;
+}
+
+/// Two moved series sessions, each with a pending reschedule from an hour earlier.
+async fn moved_with_pending_reschedules(db: &DatabaseConnection) -> Vec<coaching_sessions::Model> {
+    let seeded = seed_series(db).await;
+    let mut moved = Vec::new();
+    for week in 0..2 {
+        let session = seed_series_session(db, &seeded, monday() + TimeDelta::weeks(week)).await;
+        let before = coaching_sessions::Model {
+            date: session.date - TimeDelta::hours(1),
+            ..session.clone()
+        };
+        coaching_session_pending_reschedule::record_change(
+            db,
+            session.id,
+            Schedule::from(&before),
+            Schedule::from(&session),
+            Utc::now().naive_utc(),
+            coaching_session_pending_reschedule::LEASE,
+        )
+        .await
+        .expect("the move is pending");
+        moved.push(session);
+    }
+    moved
+}
+
+async fn pending(db: &DatabaseConnection, id: Id) -> bool {
+    coaching_session_pending_reschedule::find(db, id)
+        .await
+        .expect("the pending row reads")
+        .is_some()
+}
+
+/// A coachee no longer in the organization is owed nothing: the moved sessions settle, but
+/// none is stamped as noticed.
+#[tokio::test]
+async fn a_following_reschedule_skipping_the_coachee_settles_without_stamping_notice() {
+    within_time_limit(async {
+        let db = database().await;
+        let moved = moved_with_pending_reschedules(&db).await;
+
+        let returned =
+            record_following_notice(&db, emails::Delivery::NoLongerAMember, moved.clone()).await;
+
+        assert_eq!(returned, moved);
+        for session in &moved {
+            assert!(!pending(&db, session.id).await, "the move settles");
+            assert_eq!(
+                reread(&db, session.id).await.notice_given_at,
+                session.notice_given_at,
+                "nobody was told, so notice is not stamped"
+            );
+        }
+    })
+    .await;
+}
+
+/// The coachee told: each moved session settles and is stamped as noticed.
+#[tokio::test]
+async fn a_following_reschedule_that_told_the_coachee_settles_and_stamps_notice() {
+    within_time_limit(async {
+        let db = database().await;
+        let moved = moved_with_pending_reschedules(&db).await;
+
+        let returned = record_following_notice(&db, emails::Delivery::Sent, moved.clone()).await;
+
+        for (session, returned) in moved.iter().zip(&returned) {
+            assert!(!pending(&db, session.id).await, "the move settles");
+            assert!(returned.notice_given_at > session.notice_given_at);
+        }
+    })
+    .await;
+}
+
+/// A failed send told nobody: the moves stay pending and unstamped.
+#[tokio::test]
+async fn a_following_reschedule_that_failed_records_nothing() {
+    within_time_limit(async {
+        let db = database().await;
+        let moved = moved_with_pending_reschedules(&db).await;
+
+        record_following_notice(&db, emails::Delivery::Failed, moved.clone()).await;
+
+        for session in &moved {
+            assert!(pending(&db, session.id).await, "the move stays pending");
+            assert_eq!(
+                reread(&db, session.id).await.notice_given_at,
+                session.notice_given_at
+            );
+        }
     })
     .await;
 }

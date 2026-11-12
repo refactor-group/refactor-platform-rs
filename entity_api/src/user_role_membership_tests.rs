@@ -96,3 +96,30 @@ async fn returns_each_user_once_when_they_hold_several_roles() -> Result<(), Err
 
     Ok(())
 }
+
+#[tokio::test]
+async fn m5_06_one_exists_statement_keeps_input_order() -> Result<(), Error> {
+    let ids: Vec<Id> = (0..3).map(|_| Id::new_v4()).collect();
+
+    // Rows come back reversed, so the asserted order can only come from the input.
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([ids
+            .iter()
+            .rev()
+            .map(|&id| member_row(id))
+            .collect::<Vec<_>>()])
+        .into_connection();
+
+    let retained = retain_organization_members(&db, &ids, Id::new_v4()).await?;
+
+    assert_eq!(retained, ids);
+    let log = db.into_transaction_log();
+    assert_eq!(log.len(), 1, "{log:?}");
+    let sql = &log[0].statements()[0].sql;
+    let filter = &sql[sql.find(" WHERE ").unwrap_or(0)..];
+    assert!(
+        filter.contains(r#"EXISTS(SELECT 1 FROM "refactor_platform"."user_roles""#),
+        "{sql}"
+    );
+    Ok(())
+}

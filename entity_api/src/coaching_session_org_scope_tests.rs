@@ -2,6 +2,16 @@ use super::*;
 use entity::Id;
 use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
 
+/// `user_id` as a SuperAdmin, so the only organization predicate is the requested one.
+fn viewer(user_id: Id) -> Visibility {
+    Visibility {
+        user_id,
+        is_super_admin: true,
+        admin_org_ids: vec![],
+        member_org_ids: vec![],
+    }
+}
+
 #[tokio::test]
 async fn find_by_user_with_includes_filters_by_organization_when_supplied() -> Result<(), Error> {
     let user_id = Id::new_v4();
@@ -13,7 +23,7 @@ async fn find_by_user_with_includes_filters_by_organization_when_supplied() -> R
 
     let _ = find_by_user_with_includes(
         &db,
-        user_id,
+        &viewer(user_id),
         SessionQueryOptions {
             organization_id: Some(organization_id),
             ..Default::default()
@@ -47,7 +57,7 @@ async fn find_by_user_with_includes_omits_organization_predicate_when_absent() -
 
     let _ = find_by_user_with_includes(
         &db,
-        user_id,
+        &viewer(user_id),
         SessionQueryOptions::default(),
         IncludeOptions::default(),
     )
@@ -87,7 +97,7 @@ async fn find_counts_by_month_for_user_filters_by_organization_when_supplied() -
 
     let _ = find_counts_by_month_for_user(
         &db,
-        user_id,
+        &viewer(user_id),
         from_date,
         to_date,
         "America/Los_Angeles",
@@ -128,7 +138,7 @@ async fn find_counts_by_month_for_user_omits_organization_predicate_when_absent(
 
     let _ = find_counts_by_month_for_user(
         &db,
-        user_id,
+        &viewer(user_id),
         from_date,
         to_date,
         "America/Los_Angeles",

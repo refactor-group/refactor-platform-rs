@@ -1,14 +1,17 @@
 use crate::coaching_relationships::Model;
-use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
+use crate::error::{reason, DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
+use crate::Id;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
+use entity_api::user_role::retain_organization_members;
 use entity_api::{coaching_relationships, query};
-use sea_orm::{DatabaseConnection, TransactionTrait};
+use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 
+pub(crate) use entity_api::coaching_relationship::notify_member_ids;
 pub use entity_api::coaching_relationship::{
     create, find_by_coach_and_organization, find_by_id, find_by_organization_with_user_names,
     find_by_user, find_by_user_and_organization, find_by_user_and_organization_with_user_names,
     find_by_user_id_with_user_names, find_coach_and_coachee, get_relationship_with_user_names,
-    is_coach_of, CoachingRelationshipWithUserNames, RoleFilterable,
+    is_coach_of, CoachingRelationshipWithUserNames, Membership, RoleFilterable, WithMembership,
 };
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
@@ -74,6 +77,68 @@ pub async fn find_by_organization_for_user_with_user_names(
     Ok(coaching_relationships)
 }
 
+/// A 409 when the coachee is not among `member_ids`, the relationship's participants still
+/// in its organization: anything sent on the relationship would not reach them.
+pub(crate) fn ensure_coachee_is_member(
+    relationship: &Model,
+    member_ids: &[Id],
+) -> Result<(), Error> {
+    match member_ids.contains(&relationship.coachee_id) {
+        true => Ok(()),
+        false => Err(coachee_not_a_member(relationship)),
+    }
+}
+
+/// The 409 for a relationship whose coachee no longer belongs to its organization.
+pub(crate) fn coachee_not_a_member(relationship: &Model) -> Error {
+    not_a_member(
+        "Your coachee is no longer a member of this organization. Re-add them to the \
+         organization first.",
+        reason::COACHEE_NOT_A_MEMBER,
+        relationship.organization_id,
+        relationship.coachee_id,
+    )
+}
+
+/// A 409 for the first of `assignee_ids`, in order, no longer in the relationship's
+/// organization.
+pub async fn ensure_assignees_are_members(
+    db: &impl ConnectionTrait,
+    relationship: &Model,
+    assignee_ids: &[Id],
+) -> Result<(), Error> {
+    if assignee_ids.is_empty() {
+        return Ok(());
+    }
+    let members =
+        retain_organization_members(db, assignee_ids, relationship.organization_id).await?;
+    assignee_ids
+        .iter()
+        .find(|id| !members.contains(id))
+        .map_or(Ok(()), |&user_id| {
+            Err(not_a_member(
+                "An assignee is no longer a member of this organization; re-add them to the \
+                 organization first.",
+                reason::ASSIGNEE_NOT_A_MEMBER,
+                relationship.organization_id,
+                user_id,
+            ))
+        })
+}
+
+/// A 409 for a user who no longer belongs to the organization, carrying `reason`, the
+/// organization, and the user.
+fn not_a_member(message: &str, reason: &str, organization_id: Id, user_id: Id) -> Error {
+    Error::conflict_because(
+        reason,
+        message,
+        serde_json::json!({
+            "organization_id": organization_id,
+            "user_id": user_id,
+        }),
+    )
+}
+
 #[cfg(test)]
 #[path = "coaching_relationship_sqlite_tests.rs"]
 mod sqlite_tests;
@@ -81,3 +146,48 @@ mod sqlite_tests;
 #[cfg(test)]
 #[path = "coaching_relationship_people_sqlite_tests.rs"]
 mod people_sqlite_tests;
+
+#[cfg(test)]
+#[path = "coaching_relationship_membership_sqlite_tests.rs"]
+mod membership_sqlite_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn relationship() -> Model {
+        let now = chrono::Utc::now();
+        Model {
+            id: Id::new_v4(),
+            organization_id: Id::new_v4(),
+            coach_id: Id::new_v4(),
+            coachee_id: Id::new_v4(),
+            slug: "coach-coachee".into(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        }
+    }
+
+    /// M8-02: absent from `member_ids` is the 409; present is `Ok`. No database.
+    #[test]
+    fn m8_02_ensure_coachee_is_member_reads_only_the_member_ids() {
+        let relationship = relationship();
+
+        assert!(ensure_coachee_is_member(&relationship, &[relationship.coachee_id]).is_ok());
+
+        let err = ensure_coachee_is_member(&relationship, &[relationship.coach_id])
+            .expect_err("a coachee missing from member_ids is refused");
+        let DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Conflict {
+            details: Some(details),
+            ..
+        })) = err.error_kind
+        else {
+            panic!("expected a conflict, got {:?}", err.error_kind);
+        };
+        assert_eq!(details["reason"], "coachee_not_a_member");
+        assert_eq!(
+            details["user_id"],
+            serde_json::json!(relationship.coachee_id)
+        );
+    }
+}

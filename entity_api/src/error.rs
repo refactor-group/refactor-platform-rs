@@ -5,6 +5,7 @@ use std::fmt;
 use serde::{Serialize, Serializer};
 
 use sea_orm::error::DbErr;
+use sea_orm::SqlErr;
 
 use entity::duration::OutOfRange;
 use entity::working_hours::Invalid as InvalidWorkingHours;
@@ -114,6 +115,16 @@ impl From<InvalidWorkingHours> for Error {
             source: None,
             error_kind: EntityApiErrorKind::WorkingHours(err),
         }
+    }
+}
+
+impl Error {
+    /// Whether the database refused the statement for breaking a foreign key.
+    pub fn is_foreign_key_violation(&self) -> bool {
+        matches!(
+            self.source.as_ref().and_then(DbErr::sql_err),
+            Some(SqlErr::ForeignKeyConstraintViolation(_))
+        )
     }
 }
 

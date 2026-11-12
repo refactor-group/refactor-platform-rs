@@ -8,11 +8,10 @@ use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, IntoActiveModel
 use serde_json::json;
 
 use super::*;
-use crate::test_utils::sqlite::{database, seed_coaching_session, within_time_limit};
-use crate::{
-    coaching_relationships, coaching_session_pending_reschedules, coaching_sessions, user_roles,
-    users::Role, Id,
+use crate::test_utils::sqlite::{
+    database, organization_of, seed_coaching_session, seed_membership, within_time_limit,
 };
+use crate::{coaching_session_pending_reschedules, coaching_sessions, Id};
 
 const TEMPLATE: &str = "session_rescheduled_tpl";
 
@@ -67,29 +66,6 @@ fn schedule(date: NaiveDateTime) -> Schedule {
     }
 }
 
-/// Makes the session's one participant a member of its organization.
-async fn seed_membership(db: &DatabaseConnection, session_id: Id, user_id: Id) {
-    let relationship_id = session(db, session_id).await.coaching_relationship_id;
-    let organization_id = coaching_relationships::Entity::find_by_id(relationship_id)
-        .one(db)
-        .await
-        .expect("the relationship reads")
-        .expect("the relationship exists")
-        .organization_id;
-    let now = Utc::now();
-    user_roles::ActiveModel {
-        id: Set(Id::new_v4()),
-        role: Set(Role::User),
-        organization_id: Set(Some(organization_id)),
-        user_id: Set(user_id),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-    }
-    .insert(db)
-    .await
-    .expect("the membership is seeded");
-}
-
 /// A session a week out whose participant is not in its organization; returns its id
 /// and start.
 async fn upcoming_session_without_members(db: &DatabaseConnection) -> (Id, NaiveDateTime, Id) {
@@ -105,7 +81,7 @@ async fn upcoming_session_without_members(db: &DatabaseConnection) -> (Id, Naive
 /// A session a week out; returns its id and start.
 async fn upcoming_session(db: &DatabaseConnection) -> (Id, NaiveDateTime) {
     let (id, start, user_id) = upcoming_session_without_members(db).await;
-    seed_membership(db, id, user_id).await;
+    seed_membership(db, user_id, organization_of(db, id).await).await;
     (id, start)
 }
 
