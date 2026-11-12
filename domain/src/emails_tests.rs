@@ -726,11 +726,15 @@ async fn test_send_session_scheduled_email_variables() {
     let result = send_session_scheduled_email(
         &db,
         &config,
-        &coach,
-        &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
         &session,
         &org,
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -815,14 +819,16 @@ async fn test_send_session_rescheduled_email() {
     let result = send_session_rescheduled_email(
         &db,
         &config,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &session,
         &org,
         previous_start,
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -966,14 +972,16 @@ async fn test_send_session_rescheduled_email_carries_both_when_variables_per_rec
     let result = send_session_rescheduled_email(
         &db,
         &config,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &session,
         &org,
         previous_start,
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1020,14 +1028,16 @@ async fn test_send_session_rescheduled_email_unmoved_start_renders_unchanged() {
     let result = send_session_rescheduled_email(
         &db,
         &config,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &session,
         &org,
         session.date,
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1075,14 +1085,16 @@ async fn test_send_session_rescheduled_email_moved_start_is_not_unchanged() {
     let result = send_session_rescheduled_email(
         &db,
         &config,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &session,
         &org,
         previous_start,
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1135,11 +1147,15 @@ async fn test_send_session_scheduled_email_omits_when_variables() {
     let result = send_session_scheduled_email(
         &db,
         &config,
-        &coach,
-        &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
         &session,
         &org,
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1207,14 +1223,16 @@ async fn test_send_session_rescheduled_email_omits_recurrence_variables() {
     let result = send_session_rescheduled_email(
         &db,
         &config,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &session,
         &org,
         previous_start,
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1258,14 +1276,16 @@ async fn test_send_occurrence_rescheduled_email_addresses_the_occurrence() {
     let result = send_session_rescheduled_email(
         &db,
         &config,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &session,
         &org,
         original_start,
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1488,12 +1508,16 @@ async fn test_send_session_cancelled_email() {
 
     let result = send_session_cancelled_email(
         &config,
-        &coach,
-        &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
         &session,
         &org,
         anchor_tz(&coach),
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1556,12 +1580,16 @@ async fn test_send_session_cancelled_email_omits_when_variables() {
 
     let result = send_session_cancelled_email(
         &config,
-        &coach,
-        &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
         &session,
         &org,
         anchor_tz(&coach),
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1724,12 +1752,16 @@ async fn test_cancelling_a_legacy_series_member_addresses_it_by_its_own_uid() {
 
     let result = send_session_cancelled_email(
         &config,
-        &coach,
-        &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
         &session,
         &org,
         anchor_tz(&coach),
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -1782,11 +1814,15 @@ async fn test_scheduling_and_rescheduling_a_legacy_series_member_send_standalone
     let scheduled = send_session_scheduled_email(
         &mock_description_loaders(),
         &config,
-        &coach,
-        &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
         &session,
         &org,
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(scheduled.is_ok());
@@ -1794,14 +1830,16 @@ async fn test_scheduling_and_rescheduling_a_legacy_series_member_send_standalone
     let rescheduled = send_session_rescheduled_email(
         &mock_description_loaders(),
         &config,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &session,
         &org,
         session.date - chrono::Duration::days(1),
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(rescheduled.is_ok());
@@ -1940,7 +1978,15 @@ async fn test_scheduled_and_rescheduled_no_longer_short_circuit_a_legacy_series_
     session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
 
     let scheduled_db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-    notify_session_scheduled(&scheduled_db, &config, &session, &[]).await;
+    notify_session_scheduled(
+        &scheduled_db,
+        &config,
+        &session,
+        &test_relationship(),
+        &create_test_organization(),
+        &[],
+    )
+    .await;
     assert!(
         !scheduled_db.into_transaction_log().is_empty(),
         "scheduled must not skip a legacy series member"
@@ -2024,12 +2070,16 @@ async fn test_send_occurrence_cancelled_email_uses_session_template() {
 
     let result = send_session_cancelled_email(
         &config,
-        &coach,
-        &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
         &session,
         &org,
         anchor_tz(&coach),
-        &[coach.id, coachee.id],
     )
     .await;
     assert!(result.is_ok());
@@ -2101,11 +2151,15 @@ async fn test_send_session_scheduled_email_missing_template_id() {
     let result = send_session_scheduled_email(
         &db,
         &config,
-        &coach,
-        &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
         &session,
         &org,
-        &[coach.id, coachee.id],
     )
     .await;
 
@@ -2947,7 +3001,7 @@ async fn test_send_recurring_sessions_scheduled_email_personalization() {
                 coach: &coach,
                 coachee: &coachee,
             },
-            notify: &[coach.id, coachee.id],
+            member_ids: &[coach.id, coachee.id],
         },
         &sessions,
         &org,
@@ -3041,7 +3095,7 @@ async fn test_send_recurring_sessions_rescheduled_email() {
                 coach: &coach,
                 coachee: &coachee,
             },
-            notify: &[coach.id, coachee.id],
+            member_ids: &[coach.id, coachee.id],
         },
         &SeriesSessions {
             current: &sessions,
@@ -3139,7 +3193,7 @@ async fn test_send_recurring_sessions_rescheduled_email_previous_when_comes_from
                 coach: &coach,
                 coachee: &coachee,
             },
-            notify: &[coach.id, coachee.id],
+            member_ids: &[coach.id, coachee.id],
         },
         &SeriesSessions {
             current: &sessions,
@@ -3213,7 +3267,7 @@ async fn test_send_recurring_sessions_scheduled_email_carries_recurrence_summary
                 coach: &coach,
                 coachee: &coachee,
             },
-            notify: &[coach.id, coachee.id],
+            member_ids: &[coach.id, coachee.id],
         },
         &sessions,
         &org,
@@ -3287,7 +3341,7 @@ async fn test_send_recurring_sessions_rescheduled_email_previous_recurrence_from
                 coach: &coach,
                 coachee: &coachee,
             },
-            notify: &[coach.id, coachee.id],
+            member_ids: &[coach.id, coachee.id],
         },
         &SeriesSessions {
             current: &sessions,
@@ -3360,7 +3414,7 @@ async fn test_send_recurring_sessions_rescheduled_email_unchanged_recurrence() {
                 coach: &coach,
                 coachee: &coachee,
             },
-            notify: &[coach.id, coachee.id],
+            member_ids: &[coach.id, coachee.id],
         },
         &SeriesSessions {
             current: &sessions,
@@ -3529,7 +3583,7 @@ async fn test_send_recurring_sessions_cancelled_email() {
                 coach: &coach,
                 coachee: &coachee,
             },
-            notify: &[coach.id, coachee.id],
+            member_ids: &[coach.id, coachee.id],
         },
         &sessions,
         &org,
@@ -3589,7 +3643,7 @@ async fn test_rescheduling_a_series_clears_the_standalone_events_it_replaced() {
                 coach: &coach,
                 coachee: &coachee,
             },
-            notify: &[coach.id, coachee.id],
+            member_ids: &[coach.id, coachee.id],
         },
         &SeriesSessions {
             current: &current,
@@ -3703,7 +3757,7 @@ async fn test_a_split_reschedule_carries_the_new_and_the_shortened_series() {
                 coach: &coach,
                 coachee: &coachee,
             },
-            notify: &[coach.id, coachee.id],
+            member_ids: &[coach.id, coachee.id],
         },
         &SeriesSessions {
             current: &moved,
@@ -3806,7 +3860,7 @@ async fn send_edited_series(
                 &series,
                 &Audience {
                     participants: &participants,
-                    notify: &[coach.id, coachee.id],
+                    member_ids: &[coach.id, coachee.id],
                 },
                 &rows,
                 &rows,
@@ -3825,7 +3879,7 @@ async fn send_edited_series(
                         coach: &coach,
                         coachee: &coachee,
                     },
-                    notify: &[coach.id, coachee.id],
+                    member_ids: &[coach.id, coachee.id],
                 },
                 &rows,
                 &org,
@@ -4141,7 +4195,7 @@ async fn test_cancelling_a_series_also_clears_a_legacy_members_standalone_event(
                 coach: &coach,
                 coachee: &coachee,
             },
-            notify: &[coach.id, coachee.id],
+            member_ids: &[coach.id, coachee.id],
         },
         &sessions,
         &org,
@@ -4220,7 +4274,7 @@ async fn test_cancelling_a_native_series_carries_only_the_series_cancellation() 
                 coach: &coach,
                 coachee: &coachee,
             },
-            notify: &[coach.id, coachee.id],
+            member_ids: &[coach.id, coachee.id],
         },
         &sessions,
         &org,
@@ -4278,7 +4332,7 @@ async fn test_send_recurring_sessions_cancelled_email_omits_recurrence_variables
                 coach: &coach,
                 coachee: &coachee,
             },
-            notify: &[coach.id, coachee.id],
+            member_ids: &[coach.id, coachee.id],
         },
         &sessions,
         &org,
@@ -4363,7 +4417,7 @@ async fn test_send_recurring_sessions_scheduled_email_single_session() {
                 coach: &coach,
                 coachee: &coachee,
             },
-            notify: &[coach.id, coachee.id],
+            member_ids: &[coach.id, coachee.id],
         },
         &sessions,
         &org,
@@ -4401,7 +4455,7 @@ async fn test_send_recurring_sessions_scheduled_email_missing_template_id() {
                 coach: &coach,
                 coachee: &coachee,
             },
-            notify: &[coach.id, coachee.id],
+            member_ids: &[coach.id, coachee.id],
         },
         &sessions,
         &org,
@@ -4757,14 +4811,16 @@ async fn occurrence_reschedule_uses_the_stored_series_zone() {
     send_session_rescheduled_email(
         &db,
         &config,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
         },
         &session,
         &create_test_organization(),
         slot,
-        &[coach.id, coachee.id],
     )
     .await
     .unwrap();
@@ -5018,7 +5074,21 @@ impl MembershipFixture {
             .collect()
     }
 
-    /// The loads every entry point makes, then `rest`.
+    /// The loads an entry point handed the relationship and organization makes, then `rest`.
+    fn participant_loads(&self, rest: impl FnOnce(MockDatabase) -> MockDatabase) -> MockDatabase {
+        rest(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results(vec![vec![self.coach.clone()]])
+                .append_query_results(vec![vec![self.coachee.clone()]]),
+        )
+    }
+
+    /// The loads an entry point handed the relationship makes, then `rest`.
+    fn party_loads(&self, rest: impl FnOnce(MockDatabase) -> MockDatabase) -> MockDatabase {
+        self.participant_loads(|db| rest(db.append_query_results(vec![vec![self.org.clone()]])))
+    }
+
+    /// The loads every other entry point makes, then `rest`.
     fn loads(&self, rest: impl FnOnce(MockDatabase) -> MockDatabase) -> MockDatabase {
         rest(
             MockDatabase::new(DatabaseBackend::Postgres)
@@ -5079,22 +5149,38 @@ async fn send_relationship_email(
     let mut told = None;
     match email {
         RelationshipEmail::SessionScheduled => {
-            let db = f.loads(|db| {
+            let db = f.participant_loads(|db| {
                 db.append_query_results::<entity::coaching_session_topics::Model, _, _>(vec![
                     vec![],
                 ])
                 .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
                 .append_query_results::<entity::actions::Model, _, _>(vec![vec![]])
             });
-            notify_session_scheduled(&db.into_connection(), &config, &f.session, members).await;
+            notify_session_scheduled(
+                &db.into_connection(),
+                &config,
+                &f.session,
+                &f.relationship,
+                &f.org,
+                members,
+            )
+            .await;
         }
         RelationshipEmail::SessionCancelled => {
             let db = f.loads(|db| db).into_connection();
             notify_session_cancelled(&db, &config, &f.session).await;
         }
         RelationshipEmail::SeriesScheduled => {
-            let db = f.loads(goals).into_connection();
-            notify_recurring_sessions_scheduled(&db, &config, &f.series, &sessions, members).await;
+            let db = f.party_loads(goals).into_connection();
+            notify_recurring_sessions_scheduled(
+                &db,
+                &config,
+                &f.series,
+                &sessions,
+                &f.relationship,
+                members,
+            )
+            .await;
         }
         RelationshipEmail::SeriesRescheduled => {
             let db = f.loads(goals).into_connection();
@@ -5125,7 +5211,7 @@ async fn send_relationship_email(
                         replaced: ReplacedSessions(&[]),
                         split_from: None,
                         previous_overrides: &[],
-                        notify: members,
+                        member_ids: members,
                     },
                 )
                 .await,
@@ -5371,7 +5457,7 @@ async fn following_reschedule_reports_a_removed_coachee_as_not_a_member() {
 
     let (mailed, told) =
         send_relationship_email(RelationshipEmail::SeriesFollowing, &f, &[f.coach.id]).await;
-    assert_eq!(told, Some(Delivery::NotAMember));
+    assert_eq!(told, Some(Delivery::NoLongerAMember));
     assert_eq!(
         mailed,
         BTreeSet::from(["\"Alex Smith\" <alex@example.com>".to_string()])

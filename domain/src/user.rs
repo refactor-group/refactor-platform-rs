@@ -11,7 +11,7 @@ use entity_api::{
 use crate::{
     coaching_relationships,
     error::Error,
-    error::{DomainErrorKind, EntityErrorKind, InternalErrorKind},
+    error::{reason, DomainErrorKind, EntityErrorKind, InternalErrorKind},
     magic_link_token, magic_link_tokens, users, Actor, Id,
 };
 pub use entity_api::{
@@ -271,14 +271,12 @@ pub async fn delete(
 /// A 409 refusing to delete an account with coaching history; `relationship_count` is
 /// how many of its relationships have sessions, when known.
 fn coaching_history(user_id: Id, relationship_count: Option<u64>) -> Error {
-    let mut details = serde_json::json!({
-        "reason": "user_has_coaching_history",
-        "user_id": user_id,
-    });
+    let mut details = serde_json::json!({ "user_id": user_id });
     if let Some(count) = relationship_count {
         details["relationship_count"] = count.into();
     }
-    Error::conflict(
+    Error::conflict_because(
+        reason::USER_HAS_COACHING_HISTORY,
         "This person has coaching history, so remove them from the organization instead of deleting their account.",
         details,
     )

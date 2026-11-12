@@ -8,7 +8,9 @@ use crate::coaching_session_hydration::{
 use crate::coaching_session_image;
 use crate::coaching_sessions::Model;
 use crate::emails;
-use crate::error::{DomainErrorKind, EntityErrorKind, Error, ExternalErrorKind, InternalErrorKind};
+use crate::error::{
+    reason, DomainErrorKind, EntityErrorKind, Error, ExternalErrorKind, InternalErrorKind,
+};
 use crate::events::{DomainEvent, EventPublisher};
 use crate::gateway::tiptap::TiptapDocument;
 use crate::meeting_provider::MeetingProperties;
@@ -96,7 +98,8 @@ pub async fn create(
             )),
         });
     }
-    let notify = ensure_coachee_is_member(db, &coaching_relationship).await?;
+    let member_ids = coaching_relationship::notify_member_ids(db, &coaching_relationship).await?;
+    ensure_coachee_is_member(&coaching_relationship, &member_ids)?;
     let coach_id = coaching_relationship.coach_id;
 
     coaching_session_model.date = SessionDate::new(coaching_session_model.date)?.into_inner();
@@ -128,7 +131,7 @@ pub async fn create(
             txn: &txn,
             session: &session,
             relationship: &coaching_relationship,
-            notify: &notify,
+            member_ids: &member_ids,
         };
         let events = run_coaching_session_hydration_tasks(&ctx).await?;
 
@@ -143,7 +146,15 @@ pub async fn create(
         Ok((session, events)) => {
             publish_events(event_publisher, events).await;
             // Best-effort, after commit: a failed invite must not undo a created session.
-            emails::notify_session_scheduled(db, config, &session, &notify).await;
+            emails::notify_session_scheduled(
+                db,
+                config,
+                &session,
+                &coaching_relationship,
+                &organization,
+                &member_ids,
+            )
+            .await;
             Ok(session)
         }
         Err(e) => {
@@ -264,12 +275,13 @@ pub async fn ensure_hydrated(
             maybe_attach_meeting_url(db, config, &mut session, coach_id).await?;
         }
 
-        let notify = coaching_relationship::notify_member_ids(&txn, &coaching_relationship).await?;
+        let member_ids =
+            coaching_relationship::notify_member_ids(&txn, &coaching_relationship).await?;
         let ctx = CoachingSessionHydrationContext {
             txn: &txn,
             session: &session,
             relationship: &coaching_relationship,
-            notify: &notify,
+            member_ids: &member_ids,
         };
         let events = run_coaching_session_hydration_tasks(&ctx).await?;
 
@@ -374,7 +386,8 @@ pub async fn update(
     if emails::affects_schedule(&old, &proposed) {
         let relationship =
             coaching_relationship::find_by_id(&txn, old.coaching_relationship_id).await?;
-        ensure_coachee_is_member(&txn, &relationship).await?;
+        let member_ids = coaching_relationship::notify_member_ids(&txn, &relationship).await?;
+        ensure_coachee_is_member(&relationship, &member_ids)?;
     }
 
     let updated = mutate::update::<coaching_sessions::ActiveModel, coaching_sessions::Column>(
@@ -532,21 +545,24 @@ pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<
 pub async fn resend_invite(db: &DatabaseConnection, config: &Config, id: Id) -> Result<(), Error> {
     let session = find_by_id(db, id).await?;
     if session.date <= chrono::Utc::now().naive_utc() {
-        return Err(resend_refused(
+        return Err(Error::conflict_because(
+            reason::NO_UPCOMING_SESSIONS,
             "This session has already happened.",
-            "no_upcoming_sessions",
+            serde_json::json!({}),
         ));
     }
     if session.coaching_session_series_id.is_some() && session.ical_recurrence_id.is_some() {
-        return Err(resend_refused(
+        return Err(Error::conflict_because(
+            reason::SERIES_MEMBER,
             "This session's invite is part of its series.",
-            "series_member",
+            serde_json::json!({}),
         ));
     }
 
     let relationship =
         coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-    let notify = ensure_coachee_is_member(db, &relationship).await?;
+    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
+    ensure_coachee_is_member(&relationship, &member_ids)?;
 
     // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
     let bumped = coaching_session::increment_ical_sequence(db, id).await?;
@@ -554,20 +570,17 @@ pub async fn resend_invite(db: &DatabaseConnection, config: &Config, id: Id) -> 
     let delivered = emails::send_session_invite_resend(
         db,
         config,
-        &parties.participants(),
+        &emails::Audience {
+            participants: &parties.participants(),
+            member_ids: &member_ids,
+        },
         &bumped,
         &parties.organization,
-        &notify,
     )
     .await?;
     ensure_coachee_reached(&delivered, &relationship)?;
     record_announced(db, &bumped).await;
     Ok(())
-}
-
-/// A resend that cannot apply, as a 409 carrying a machine-readable `reason`.
-pub(crate) fn resend_refused(message: &str, reason: &str) -> Error {
-    Error::conflict(message, serde_json::json!({ "reason": reason }))
 }
 
 /// A resend is only done once the coachee has it. Missing the coach is not a failure: the
@@ -578,7 +591,7 @@ pub(crate) fn ensure_coachee_reached(
 ) -> Result<(), Error> {
     match delivered.coachee {
         emails::Delivery::Sent => Ok(()),
-        emails::Delivery::NotAMember => Err(coachee_not_a_member(relationship)),
+        emails::Delivery::NoLongerAMember => Err(coachee_not_a_member(relationship)),
         emails::Delivery::Failed => Err(Error {
             source: None,
             error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
@@ -1360,7 +1373,7 @@ mod tests {
         let relationship = test_coaching_relationship(Id::new_v4(), org.id);
         let session = test_session(relationship.id, None);
 
-        // The create, then the invite's loads: relationship, both users, organization.
+        // The create, then the invite's loads: both users.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
@@ -1368,10 +1381,8 @@ mod tests {
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![Vec::<goals::Model>::new()])
             .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
-            .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![test_user_with_email("coach@example.com")]])
             .append_query_results(vec![vec![test_user_with_email("coachee@example.com")]])
-            .append_query_results(vec![vec![org.clone()]])
             .into_connection();
 
         create(
@@ -1462,11 +1473,9 @@ mod tests {
             .append_query_results(vec![vec![goal]])
             .append_query_results(vec![vec![link]])
             .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
-            // the invite: relationship, both users, organization, then its content
-            .append_query_results(vec![vec![relationship.clone()]])
+            // the invite: both users, then its content
             .append_query_results(vec![vec![coach]])
             .append_query_results(vec![vec![coachee.clone()]])
-            .append_query_results(vec![vec![org]])
             .append_query_results(vec![Vec::<crate::coaching_session_topics::Model>::new()])
             .append_query_results(vec![Vec::<goals::Model>::new()])
             .append_query_results(vec![Vec::<entity_api::actions::Model>::new()])
@@ -2120,7 +2129,7 @@ mod tests {
         let relationship = test_coaching_relationship(Id::new_v4(), Id::new_v4());
 
         let err = ensure_coachee_reached(
-            &coachee_delivery(emails::Delivery::NotAMember),
+            &coachee_delivery(emails::Delivery::NoLongerAMember),
             &relationship,
         )
         .unwrap_err();

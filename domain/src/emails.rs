@@ -553,7 +553,7 @@ pub(crate) struct Participants<'a> {
 /// relationship's organization.
 pub(crate) struct Audience<'a> {
     pub(crate) participants: &'a Participants<'a>,
-    pub(crate) notify: &'a [Id],
+    pub(crate) member_ids: &'a [Id],
 }
 
 /// One addressee of a per-recipient send, plus the other party as that recipient sees them.
@@ -856,7 +856,7 @@ pub enum Delivery {
     #[default]
     Failed,
     /// Not sent: no longer a member of the relationship's organization.
-    NotAMember,
+    NoLongerAMember,
 }
 
 /// What a session email did for each participant.
@@ -877,7 +877,7 @@ impl Delivered {
             (self.coach, participants.coach.id),
         ]
         .into_iter()
-        .filter(|(delivery, _)| *delivery == Delivery::NotAMember)
+        .filter(|(delivery, _)| *delivery == Delivery::NoLongerAMember)
         .map(|(_, id)| id)
         .collect()
     }
@@ -912,11 +912,11 @@ impl<'a> Participants<'a> {
     }
 }
 
-/// Sends each of `copies` (coachee, then coach), skipping anyone not in `notify`. A failed
+/// Sends each of `copies` (coachee, then coach), skipping anyone not in `member_ids`. A failed
 /// send is logged rather than returned, so it never costs the other participant their copy.
 async fn send_to_participants<'r, 'p, F, Fut>(
     copies: &'r [(&'static str, Recipient<'p>); 2],
-    notify: &[Id],
+    member_ids: &[Id],
     notification: &str,
     send: F,
 ) -> Delivered
@@ -926,14 +926,14 @@ where
 {
     let [coachee, coach] = copies;
     Delivered {
-        coachee: deliver(notify, notification, coachee, &send).await,
-        coach: deliver(notify, notification, coach, &send).await,
+        coachee: deliver(member_ids, notification, coachee, &send).await,
+        coach: deliver(member_ids, notification, coach, &send).await,
     }
 }
 
-/// One participant's send, unless they are no longer notified.
+/// One participant's send, unless they are no longer a member.
 async fn deliver<'r, 'p, F, Fut>(
-    notify: &[Id],
+    member_ids: &[Id],
     notification: &str,
     (role, to): &'r (&'static str, Recipient<'p>),
     send: &F,
@@ -942,12 +942,12 @@ where
     F: Fn(&'r Recipient<'p>) -> Fut,
     Fut: Future<Output = Result<(), Error>>,
 {
-    if !notify.contains(&to.user.id) {
+    if !member_ids.contains(&to.user.id) {
         debug!(
             "Skipping {notification} email to {role} {}: not a member of the organization",
             to.user.id
         );
-        return Delivery::NotAMember;
+        return Delivery::NoLongerAMember;
     }
     match send(to).await {
         Ok(()) => Delivery::Sent,
@@ -961,7 +961,7 @@ where
     }
 }
 
-/// Send single-session invite emails to the participants in `notify`. Generic over the
+/// Send single-session invite emails to the participants `audience` may reach. Generic over the
 /// notification type `N` so the scheduled and reschedule flows share one body; they
 /// differ only by template (via `N`) and the `session_or_series` template variable.
 /// A reschedule passes an already-bumped `session`, so the `.ics` carries the next
@@ -969,13 +969,16 @@ where
 async fn send_single_session_invite_email<N: EmailNotification>(
     db: &DatabaseConnection,
     config: &Config,
-    participants: &Participants<'_>,
+    audience: &Audience<'_>,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
     reschedule: Option<&RescheduleVars>,
-    notify: &[Id],
 ) -> Result<Delivered, Error> {
-    let (coach, coachee) = (participants.coach, participants.coachee);
+    let Audience {
+        participants,
+        member_ids,
+    } = *audience;
+    let Participants { coach, coachee } = *participants;
     info!(
         "Initiating {} emails for session: {} (coach: {}, coachee: {})",
         N::notification_name(),
@@ -1046,7 +1049,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
 
     let copies = participants.copies();
     Ok(
-        send_to_participants(&copies, notify, N::notification_name(), |to| {
+        send_to_participants(&copies, member_ids, N::notification_name(), |to| {
             send_session_email_to_recipient(
                 &email_config,
                 to,
@@ -1060,46 +1063,42 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     )
 }
 
-/// Send session-scheduled notification emails to the participants in `notify`.
+/// Send session-scheduled notification emails to the participants `audience` may reach.
 async fn send_session_scheduled_email(
     db: &DatabaseConnection,
     config: &Config,
-    coach: &users::Model,
-    coachee: &users::Model,
+    audience: &Audience<'_>,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
-    notify: &[Id],
 ) -> Result<(), Error> {
     send_single_session_invite_email::<SessionScheduled>(
         db,
         config,
-        &Participants { coach, coachee },
+        audience,
         session,
         organization,
         None,
-        notify,
     )
     .await
     .map(|_| ())
 }
 
-/// Send session-rescheduled notification emails to both coach and coachee. `session`
-/// must already carry the bumped `ical_sequence`, so the invite updates the calendar
+/// Send session-rescheduled notification emails to the participants `audience` may reach.
+/// `session` must already carry the bumped `ical_sequence`, so the invite updates the calendar
 /// event in place (same `UID`, next `SEQUENCE`). `previous_start` is the start the
 /// recipients last saw; equal to the new start when only a non-time field changed.
 async fn send_session_rescheduled_email(
     db: &DatabaseConnection,
     config: &Config,
-    participants: &Participants<'_>,
+    audience: &Audience<'_>,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
     previous_start: NaiveDateTime,
-    notify: &[Id],
 ) -> Result<Delivered, Error> {
     send_single_session_invite_email::<SessionRescheduled>(
         db,
         config,
-        participants,
+        audience,
         session,
         organization,
         Some(&RescheduleVars {
@@ -1107,7 +1106,6 @@ async fn send_session_rescheduled_email(
             previous_start,
             previous_recurrence_summary: None,
         }),
-        notify,
     )
     .await
 }
@@ -1186,24 +1184,36 @@ async fn send_action_assigned_email(
 
 /// Orchestrate sending session-scheduled emails (best-effort).
 ///
-/// Looks up the coaching relationship, both users, and the organization,
-/// then emails `notify`, the participants the caller found still in the organization.
+/// Looks up both users of the caller's `relationship`, then emails `member_ids`, the
+/// participants the caller found still in the organization.
 /// Errors are logged internally — email delivery must never block or fail
 /// the calling operation.
 pub async fn notify_session_scheduled(
     db: &DatabaseConnection,
     config: &Config,
     session: &coaching_sessions::Model,
-    notify: &[Id],
+    relationship: &coaching_relationships::Model,
+    organization: &organizations::Model,
+    member_ids: &[Id],
 ) {
     let result: Result<(), Error> = async {
-        let relationship =
-            coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
         let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
         let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
-        let org = organization::find_by_id(db, relationship.organization_id).await?;
 
-        send_session_scheduled_email(db, config, &coach, &coachee, session, &org, notify).await
+        send_session_scheduled_email(
+            db,
+            config,
+            &Audience {
+                participants: &Participants {
+                    coach: &coach,
+                    coachee: &coachee,
+                },
+                member_ids,
+            },
+            session,
+            organization,
+        )
+        .await
     }
     .await;
 
@@ -1269,25 +1279,27 @@ pub async fn send_session_rescheduled(
     let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
     let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
     let org = organization::find_by_id(db, relationship.organization_id).await?;
-    let notify = notify_member_ids(db, &relationship).await?;
-    if notify.is_empty() {
+    let member_ids = notify_member_ids(db, &relationship).await?;
+    if member_ids.is_empty() {
         return Ok(RescheduleOutcome::CoacheeNoLongerAMember);
     }
 
     let delivered = send_session_rescheduled_email(
         db,
         config,
-        &Participants {
-            coach: &coach,
-            coachee: &coachee,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &member_ids,
         },
         session,
         &org,
         previous_start,
-        &notify,
     )
     .await?;
-    Ok(match notify.contains(&coachee.id) {
+    Ok(match member_ids.contains(&coachee.id) {
         true => RescheduleOutcome::Sent(delivered),
         false => RescheduleOutcome::CoacheeNoLongerAMember,
     })
@@ -1518,18 +1530,21 @@ async fn send_session_cancelled_email_to_recipient(
     email_config.client.send_email(email_request).await
 }
 
-/// Send session-cancelled emails to the participants in `notify`. Takes no database
+/// Send session-cancelled emails to the participants `audience` may reach. Takes no database
 /// handle: a cancellation loads no topics, goals, or actions. `series_zone` is the zone
 /// from [`invite_zone`], resolved by the caller.
 async fn send_session_cancelled_email(
     config: &Config,
-    coach: &users::Model,
-    coachee: &users::Model,
+    audience: &Audience<'_>,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
     series_zone: Tz,
-    notify: &[Id],
 ) -> Result<(), Error> {
+    let Audience {
+        participants,
+        member_ids,
+    } = *audience;
+    let Participants { coach, coachee } = *participants;
     info!(
         "Initiating session cancelled emails for session: {} (coach: {}, coachee: {})",
         session.id, coach.email, coachee.email
@@ -1565,10 +1580,10 @@ async fn send_session_cancelled_email(
         },
     )?;
 
-    let copies = Participants { coach, coachee }.copies();
+    let copies = participants.copies();
     send_to_participants(
         &copies,
-        notify,
+        member_ids,
         SessionCancelled::notification_name(),
         |to| {
             send_session_cancelled_email_to_recipient(
@@ -1613,12 +1628,13 @@ pub async fn notify_session_cancelled(
         // Both, members or not: a removed member still holds the event.
         send_session_cancelled_email(
             config,
-            &coach,
-            &coachee,
+            &Audience {
+                participants: &participants,
+                member_ids: &participants.ids(),
+            },
             session,
             &org,
             series_zone,
-            &participants.ids(),
         )
         .await
     }
@@ -1904,7 +1920,7 @@ async fn send_series_invite_email<N: EmailNotification>(
 ) -> Result<Delivered, Error> {
     let Audience {
         participants,
-        notify,
+        member_ids,
     } = *audience;
     let Participants { coach, coachee } = *participants;
     let SeriesInviteKind { reschedule, shape } = kind;
@@ -2018,7 +2034,7 @@ async fn send_series_invite_email<N: EmailNotification>(
     let recurrence_summary = current_rule.recurrence.summary();
 
     let copies = participants.copies();
-    let delivered = send_to_participants(&copies, notify, N::notification_name(), |to| {
+    let delivered = send_to_participants(&copies, member_ids, N::notification_name(), |to| {
         send_recurring_series_email_to_recipient(
             &email_config,
             to,
@@ -2115,19 +2131,17 @@ pub(crate) async fn send_series_invite_resend(
 pub(crate) async fn send_session_invite_resend(
     db: &DatabaseConnection,
     config: &Config,
-    participants: &Participants<'_>,
+    audience: &Audience<'_>,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
-    notify: &[Id],
 ) -> Result<Delivered, Error> {
     send_single_session_invite_email::<SessionScheduled>(
         db,
         config,
-        participants,
+        audience,
         session,
         organization,
         None,
-        notify,
     )
     .await
 }
@@ -2198,8 +2212,8 @@ async fn send_recurring_sessions_rescheduled_email(
 
 /// Orchestrate sending recurring-sessions-scheduled emails (best-effort).
 ///
-/// Looks up the coaching relationship, both users, and the organization,
-/// then sends a single summary email per recipient in `notify` covering the whole series — count.
+/// Looks up both users of the caller's `relationship` and its organization, then sends a
+/// single summary email per recipient in `member_ids` covering the whole series.
 ///
 /// Errors are logged internally — email delivery must never block or fail
 /// the calling operation.
@@ -2208,15 +2222,14 @@ pub async fn notify_recurring_sessions_scheduled(
     config: &Config,
     series: &coaching_session_series::Model,
     sessions: &[coaching_sessions::Model],
-    notify: &[Id],
+    relationship: &coaching_relationships::Model,
+    member_ids: &[Id],
 ) {
     if sessions.is_empty() {
         return;
     }
 
     let result: Result<(), Error> = async {
-        let relationship_id = sessions[0].coaching_relationship_id;
-        let relationship = coaching_relationship::find_by_id(db, relationship_id).await?;
         let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
         let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
@@ -2230,7 +2243,7 @@ pub async fn notify_recurring_sessions_scheduled(
                     coach: &coach,
                     coachee: &coachee,
                 },
-                notify,
+                member_ids,
             },
             sessions,
             &org,
@@ -2251,7 +2264,7 @@ pub async fn notify_recurring_sessions_scheduled(
 ///
 /// `series` must be the post-update model, so its `ical_sequence` is already
 /// incremented. Looks up the coaching relationship, both users, and the organization,
-/// then re-sends the series invite to `notify`, the participants the caller found still in
+/// then re-sends the series invite to `member_ids`, the participants the caller found still in
 /// the organization, so their recurring calendar event updates in place. A reschedule can legitimately leave no
 /// future sessions, in which case there is nothing to invite anyone to. `previous_series`
 /// is the pre-update model: its rule carries the start the recipients last saw.
@@ -2265,7 +2278,7 @@ pub async fn notify_recurring_sessions_rescheduled(
     previous_series: PreviousSeries<'_>,
     sessions: &[coaching_sessions::Model],
     replaced: ReplacedSessions<'_>,
-    notify: &[Id],
+    member_ids: &[Id],
 ) {
     // No future sessions means no series invite to send, but the replaced rows are gone
     // either way and any standalone event they left is addressed by nothing else. Cancel
@@ -2293,7 +2306,7 @@ pub async fn notify_recurring_sessions_rescheduled(
                     coach: &coach,
                     coachee: &coachee,
                 },
-                notify,
+                member_ids,
             },
             &SeriesSessions {
                 current: sessions,
@@ -2334,7 +2347,7 @@ pub struct FollowingRescheduleNotice<'a> {
     /// cancelled.
     pub previous_overrides: &'a [coaching_sessions::Model],
     /// The participants the caller found still in the organization.
-    pub notify: &'a [Id],
+    pub member_ids: &'a [Id],
 }
 
 /// Orchestrate the email for a "this and following" series reschedule (best-effort).
@@ -2382,7 +2395,7 @@ pub async fn notify_recurring_sessions_rescheduled_following(
             change.series,
             &Audience {
                 participants: &parties.participants(),
-                notify: change.notify,
+                member_ids: change.member_ids,
             },
             &SeriesSessions {
                 current: change.sessions,
@@ -2638,12 +2651,13 @@ async fn cancel_orphans_for(
         // An orphan is standalone, so its invite was anchored to the coach.
         if let Err(e) = send_session_cancelled_email(
             config,
-            participants.coach,
-            participants.coachee,
+            &Audience {
+                participants,
+                member_ids: recipients,
+            },
             &cancelled,
             organization,
             anchor_tz(participants.coach),
-            recipients,
         )
         .await
         {
@@ -2718,7 +2732,7 @@ async fn send_recurring_sessions_cancelled_email(
 ) -> Result<(), Error> {
     let Audience {
         participants,
-        notify,
+        member_ids,
     } = *audience;
     let Participants { coach, coachee } = *participants;
     info!(
@@ -2751,7 +2765,7 @@ async fn send_recurring_sessions_cancelled_email(
     let copies = participants.copies();
     send_to_participants(
         &copies,
-        notify,
+        member_ids,
         RecurringSessionsCancelled::notification_name(),
         |to| {
             send_recurring_sessions_cancelled_email_to_recipient(
@@ -2801,7 +2815,7 @@ pub async fn notify_recurring_sessions_cancelled(
             series,
             &Audience {
                 participants: &participants,
-                notify: &participants.ids(),
+                member_ids: &participants.ids(),
             },
             sessions,
             &org,
@@ -2852,9 +2866,9 @@ pub async fn notify_action_assigned(
 
         let goal_title = get_action_goal_title(db, action).await;
 
-        let notify = notify_member_ids(db, &relationship).await?;
+        let member_ids = notify_member_ids(db, &relationship).await?;
         let (notified, skipped): (Vec<Id>, Vec<Id>) =
-            assignee_ids.iter().partition(|id| notify.contains(id));
+            assignee_ids.iter().partition(|id| member_ids.contains(id));
         skipped.iter().for_each(|id| {
             debug!("Skipping action assigned email to {id}: not a member of the organization")
         });

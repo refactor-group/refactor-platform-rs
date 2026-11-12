@@ -87,8 +87,11 @@ async fn m4_01_both_members_are_marked_members() {
 
         let relationship = listed(&s, s.coach).await;
 
-        assert!(relationship.coach_is_member, "{relationship:?}");
-        assert!(relationship.coachee_is_member, "{relationship:?}");
+        assert!(relationship.membership.coach_is_member, "{relationship:?}");
+        assert!(
+            relationship.membership.coachee_is_member,
+            "{relationship:?}"
+        );
     })
     .await
 }
@@ -103,8 +106,11 @@ async fn m4_02_a_removed_coachee_is_not_a_member() {
 
         let relationship = listed(&s, s.coach).await;
 
-        assert!(relationship.coach_is_member, "{relationship:?}");
-        assert!(!relationship.coachee_is_member, "{relationship:?}");
+        assert!(relationship.membership.coach_is_member, "{relationship:?}");
+        assert!(
+            !relationship.membership.coachee_is_member,
+            "{relationship:?}"
+        );
     })
     .await
 }
@@ -119,8 +125,11 @@ async fn m4_03_a_removed_coach_is_not_a_member_to_an_admin() {
 
         let relationship = listed(&s, admin).await;
 
-        assert!(!relationship.coach_is_member, "{relationship:?}");
-        assert!(relationship.coachee_is_member, "{relationship:?}");
+        assert!(!relationship.membership.coach_is_member, "{relationship:?}");
+        assert!(
+            relationship.membership.coachee_is_member,
+            "{relationship:?}"
+        );
     })
     .await
 }
@@ -170,7 +179,7 @@ async fn m5_01_the_list_field_agrees_with_the_notify_filter() {
             seed_membership(&s.db, s.coach, s.organization).await;
             standing.seed(&s).await;
 
-            let listed = listed(&s, s.coach).await.coachee_is_member;
+            let listed = listed(&s, s.coach).await.membership.coachee_is_member;
             let retained = retain_organization_members(&s.db, &[s.coachee], s.organization)
                 .await
                 .expect("the filter reads")

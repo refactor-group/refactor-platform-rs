@@ -11,7 +11,7 @@ use crate::coaching_session_image;
 use crate::coaching_sessions;
 use crate::duration::Duration;
 use crate::emails;
-use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
+use crate::error::{reason, DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::gateway::ical;
 use crate::gateway::tiptap::TiptapDocument;
 use crate::Id;
@@ -99,7 +99,8 @@ pub async fn create_with_sessions(
             )),
         });
     }
-    let notify = ensure_coachee_is_member(db, &relationship).await?;
+    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
+    ensure_coachee_is_member(&relationship, &member_ids)?;
     let coach_id = relationship.coach_id;
     let zone = publication_zone(db, coach_id).await?;
 
@@ -141,7 +142,15 @@ pub async fn create_with_sessions(
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
     // Best-effort, after commit: a failed invite must not undo a created series.
-    emails::notify_recurring_sessions_scheduled(db, config, &series, &sessions, &notify).await;
+    emails::notify_recurring_sessions_scheduled(
+        db,
+        config,
+        &series,
+        &sessions,
+        &relationship,
+        &member_ids,
+    )
+    .await;
 
     Ok((series, sessions))
 }
@@ -244,7 +253,8 @@ pub async fn reschedule(
 
     let relationship =
         coaching_relationship::find_by_id(db, existing.coaching_relationship_id).await?;
-    let notify = ensure_coachee_is_member(db, &relationship).await?;
+    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
+    ensure_coachee_is_member(&relationship, &member_ids)?;
 
     let new_rule = serde_json::to_value(&new_rule)?;
 
@@ -302,7 +312,7 @@ pub async fn reschedule(
         emails::PreviousSeries(&existing),
         &new_sessions,
         emails::ReplacedSessions(&replaced_sessions),
-        &notify,
+        &member_ids,
     )
     .await;
 
@@ -631,7 +641,8 @@ pub async fn reschedule_following(
 
     let relationship =
         coaching_relationship::find_by_id(&txn, existing.coaching_relationship_id).await?;
-    let notify = ensure_coachee_is_member(&txn, &relationship).await?;
+    let member_ids = coaching_relationship::notify_member_ids(&txn, &relationship).await?;
+    ensure_coachee_is_member(&relationship, &member_ids)?;
 
     let leftover_ids = plan.leftover_ids();
     entity_api::coaching_session::lock_for_update(&txn, &leftover_ids).await?;
@@ -643,12 +654,10 @@ pub async fn reschedule_following(
             .copied()
             .filter(|id| with_content.contains(id))
             .collect();
-        return Err(Error::conflict(
+        return Err(Error::conflict_because(
+            reason::SESSIONS_HAVE_CONTENT,
             "The new schedule leaves out sessions that have notes, actions, agreements or topics.",
-            serde_json::json!({
-                "reason": "sessions_have_content",
-                "coaching_session_ids": blocking,
-            }),
+            serde_json::json!({ "coaching_session_ids": blocking }),
         ));
     }
 
@@ -756,7 +765,7 @@ pub async fn reschedule_following(
             replaced: emails::ReplacedSessions(&superseded),
             previous_overrides: &previous_overrides,
             split_from: split_from.as_ref(),
-            notify: &notify,
+            member_ids: &member_ids,
         },
     )
     .await;
@@ -790,7 +799,7 @@ async fn record_following_notice(
                 .collect()
                 .await
         }
-        emails::Delivery::NotAMember => {
+        emails::Delivery::NoLongerAMember => {
             stream::iter(&moved)
                 .for_each(|session| coaching_session::record_announced(db, session))
                 .await;
@@ -884,21 +893,24 @@ pub async fn resend_invite(
     upcoming.sort_by_key(|s| s.date);
 
     if upcoming.is_empty() {
-        return Err(coaching_session::resend_refused(
+        return Err(Error::conflict_because(
+            reason::NO_UPCOMING_SESSIONS,
             "This series has no upcoming sessions.",
-            "no_upcoming_sessions",
+            serde_json::json!({}),
         ));
     }
     if upcoming.iter().any(|s| s.ical_recurrence_id.is_none()) {
-        return Err(coaching_session::resend_refused(
+        return Err(Error::conflict_because(
+            reason::LEGACY_SERIES,
             "This series predates resendable invites.",
-            "legacy_series",
+            serde_json::json!({}),
         ));
     }
 
     let relationship =
         coaching_relationship::find_by_id(db, series.coaching_relationship_id).await?;
-    let notify = ensure_coachee_is_member(db, &relationship).await?;
+    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
+    ensure_coachee_is_member(&relationship, &member_ids)?;
 
     // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
     // Members are raised with the series because Google drops an override whose SEQUENCE
@@ -923,7 +935,7 @@ pub async fn resend_invite(
         &bumped,
         &emails::Audience {
             participants: &parties.participants(),
-            notify: &notify,
+            member_ids: &member_ids,
         },
         &upcoming,
         &rows,
@@ -1020,17 +1032,18 @@ mod tests {
         }
     }
 
-    /// The loads an invite makes after commit: the relationship, both users, the organization.
+    /// The loads an invite makes after commit: both users, then the organization.
     fn invite_loads(
         db: MockDatabase,
-        relationship: &entity::coaching_relationships::Model,
+        organization_id: Id,
+        coach: &entity::users::Model,
+        coachee: &entity::users::Model,
     ) -> MockDatabase {
         let now = chrono::Utc::now();
-        db.append_query_results(vec![vec![relationship.clone()]])
-            .append_query_results(vec![vec![coach_row("UTC")]])
-            .append_query_results(vec![vec![coach_row("UTC")]])
+        db.append_query_results(vec![vec![coach.clone()]])
+            .append_query_results(vec![vec![coachee.clone()]])
             .append_query_results(vec![vec![entity::organizations::Model {
-                id: relationship.organization_id,
+                id: organization_id,
                 name: "Acme".into(),
                 logo: None,
                 slug: "acme".into(),
@@ -1069,24 +1082,6 @@ mod tests {
         /// The membership check's rows: only the coachee.
         fn members(&self) -> Vec<std::collections::BTreeMap<String, sea_orm::Value>> {
             members(&[self.coachee.id])
-        }
-
-        /// The invite's loads, with these participants' real addresses.
-        fn invite_loads(&self, db: MockDatabase) -> MockDatabase {
-            let now = chrono::Utc::now();
-            db.append_query_results(vec![vec![self.relationship.clone()]])
-                .append_query_results(vec![vec![self.coach.clone()]])
-                .append_query_results(vec![vec![self.coachee.clone()]])
-                .append_query_results(vec![vec![entity::organizations::Model {
-                    id: self.relationship.organization_id,
-                    name: "Acme".into(),
-                    logo: None,
-                    slug: "acme".into(),
-                    created_at: now.into(),
-                    updated_at: now.into(),
-                    archived_at: None,
-                    archived_by: None,
-                }]])
         }
     }
 
@@ -1150,8 +1145,7 @@ mod tests {
             .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![sessions])
             .append_exec_results(vec![exec_ok()]);
-        let db = p
-            .invite_loads(db)
+        let db = invite_loads(db, p.relationship.organization_id, &p.coach, &p.coachee)
             .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
             .into_connection();
 
@@ -1212,10 +1206,14 @@ mod tests {
             .append_query_results(vec![vec![updated]])
             .append_query_results(vec![rematerialized])
             .append_exec_results(vec![exec_ok()]);
-        let db = p
-            .invite_loads(db)
-            .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
-            .into_connection();
+        let db = invite_loads(
+            db.append_query_results(vec![vec![p.relationship.clone()]]),
+            p.relationship.organization_id,
+            &p.coach,
+            &p.coachee,
+        )
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        .into_connection();
 
         reschedule(
             &db,
@@ -1273,17 +1271,21 @@ mod tests {
             .append_query_results(vec![moved.clone()])
             .append_query_results(vec![moved.clone()])
             .append_exec_results(vec![exec_ok()]);
-        let db = p
-            .invite_loads(db)
-            .append_query_results(vec![moved.clone()])
-            .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
-            // record_notice × 2
-            .append_exec_results(vec![exec_ok(), exec_ok()])
-            .append_query_results(vec![vec![moved[0].clone()]])
-            .append_query_results(vec![vec![moved[0].clone()]])
-            .append_query_results(vec![vec![moved[1].clone()]])
-            .append_query_results(vec![vec![moved[1].clone()]])
-            .into_connection();
+        let db = invite_loads(
+            db.append_query_results(vec![vec![p.relationship.clone()]]),
+            p.relationship.organization_id,
+            &p.coach,
+            &p.coachee,
+        )
+        .append_query_results(vec![moved.clone()])
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        // record_notice × 2
+        .append_exec_results(vec![exec_ok(), exec_ok()])
+        .append_query_results(vec![vec![moved[0].clone()]])
+        .append_query_results(vec![vec![moved[0].clone()]])
+        .append_query_results(vec![vec![moved[1].clone()]])
+        .append_query_results(vec![vec![moved[1].clone()]])
+        .into_connection();
 
         reschedule_following(
             &db,
@@ -1416,7 +1418,13 @@ mod tests {
                 last_insert_id: 0,
                 rows_affected: 1,
             }]);
-        let db = invite_loads(db, &relationship).into_connection();
+        let db = invite_loads(
+            db,
+            relationship.organization_id,
+            &coach_row("UTC"),
+            &coach_row("UTC"),
+        )
+        .into_connection();
 
         let (returned_series, returned_sessions) = create_with_sessions(
             &db,
@@ -1632,7 +1640,13 @@ mod tests {
                 last_insert_id: 0,
                 rows_affected: 1,
             }]);
-        let db = invite_loads(db, &relationship).into_connection();
+        let db = invite_loads(
+            db.append_query_results(vec![vec![relationship.clone()]]),
+            relationship.organization_id,
+            &coach_row("UTC"),
+            &coach_row("UTC"),
+        )
+        .into_connection();
 
         let rescheduled = reschedule(
             &db,

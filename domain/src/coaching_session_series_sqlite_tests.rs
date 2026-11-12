@@ -448,7 +448,7 @@ async fn a_following_reschedule_skipping_the_coachee_settles_without_stamping_no
         let moved = moved_with_pending_reschedules(&db).await;
 
         let returned =
-            record_following_notice(&db, emails::Delivery::NotAMember, moved.clone()).await;
+            record_following_notice(&db, emails::Delivery::NoLongerAMember, moved.clone()).await;
 
         assert_eq!(returned, moved);
         for session in &moved {

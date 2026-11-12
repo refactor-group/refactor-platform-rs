@@ -45,7 +45,7 @@ async fn m4_06_a_list_of_n_relationships_is_one_statement() -> Result<(), Error>
     assert_eq!(listed.len(), 3);
     assert!(listed
         .iter()
-        .all(|r| r.coach_is_member && !r.coachee_is_member));
+        .all(|r| r.membership.coach_is_member && !r.membership.coachee_is_member));
     let log = db.into_transaction_log();
     assert_eq!(log.len(), 1, "{log:?}");
     let sql = &log[0].statements()[0].sql;

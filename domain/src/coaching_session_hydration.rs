@@ -18,7 +18,7 @@ pub(crate) struct CoachingSessionHydrationContext<'a> {
     pub session: &'a Model,
     pub relationship: &'a coaching_relationships::Model,
     /// The relationship's participants still in its organization, checked once by the caller.
-    pub notify: &'a [Id],
+    pub member_ids: &'a [Id],
 }
 
 /// A unit of deferred, prerequisite work run at-latest on a coaching session's
@@ -92,7 +92,7 @@ impl CoachingSessionHydrationTask for GoalsCarryForwardTask {
             coaching_relationship_id: ctx.relationship.id,
             coaching_session_id: ctx.session.id,
             goal_id,
-            notify_user_ids: ctx.notify.to_vec(),
+            notify_user_ids: ctx.member_ids.to_vec(),
         })
         .collect())
     }
@@ -131,11 +131,11 @@ impl CoachingSessionHydrationTask for TopicsMoveForwardTask {
         Ok(vec![
             DomainEvent::TopicsChanged {
                 coaching_session_id: ctx.session.id,
-                notify_user_ids: ctx.notify.to_vec(),
+                notify_user_ids: ctx.member_ids.to_vec(),
             },
             DomainEvent::TopicsChanged {
                 coaching_session_id: prior.id,
-                notify_user_ids: ctx.notify.to_vec(),
+                notify_user_ids: ctx.member_ids.to_vec(),
             },
         ])
     }

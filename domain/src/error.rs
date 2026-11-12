@@ -140,6 +140,32 @@ impl Error {
             )),
         }
     }
+
+    /// A 409 whose `details` carry a machine-readable `reason` (one of [`reason`]) beside
+    /// the other keys of `details`, which must be an object.
+    pub(crate) fn conflict_because(
+        reason: &str,
+        message: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Self {
+        let mut details = match details {
+            serde_json::Value::Object(map) => map,
+            _ => serde_json::Map::new(),
+        };
+        details.insert("reason".to_string(), reason.into());
+        Self::conflict(message, details.into())
+    }
+}
+
+/// The `details.reason` values a 409 can carry.
+pub(crate) mod reason {
+    pub(crate) const COACHEE_NOT_A_MEMBER: &str = "coachee_not_a_member";
+    pub(crate) const ASSIGNEE_NOT_A_MEMBER: &str = "assignee_not_a_member";
+    pub(crate) const USER_HAS_COACHING_HISTORY: &str = "user_has_coaching_history";
+    pub(crate) const SESSIONS_HAVE_CONTENT: &str = "sessions_have_content";
+    pub(crate) const NO_UPCOMING_SESSIONS: &str = "no_upcoming_sessions";
+    pub(crate) const SERIES_MEMBER: &str = "series_member";
+    pub(crate) const LEGACY_SERIES: &str = "legacy_series";
 }
 
 impl fmt::Display for Error {
@@ -346,5 +372,36 @@ impl From<MeetingAuthError> for Error {
             source: Some(Box::new(err)),
             error_kind,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// M8-01: the reason joins the details and every other key stays.
+    #[test]
+    fn m8_01_conflict_because_adds_the_reason_to_the_details() {
+        let error = Error::conflict_because(
+            reason::COACHEE_NOT_A_MEMBER,
+            "refused",
+            serde_json::json!({ "user_id": "u", "organization_id": "o" }),
+        );
+        let DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Conflict {
+            message,
+            details,
+        })) = error.error_kind
+        else {
+            panic!("expected a conflict, got {:?}", error.error_kind);
+        };
+        assert_eq!(message, "refused");
+        assert_eq!(
+            details,
+            Some(serde_json::json!({
+                "reason": "coachee_not_a_member",
+                "user_id": "u",
+                "organization_id": "o",
+            }))
+        );
     }
 }

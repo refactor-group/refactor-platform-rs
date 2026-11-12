@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::{
     error::{EntityApiErrorKind, Error},
     organization,
@@ -19,7 +21,8 @@ use sea_orm::{
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
 use slugify::slugify;
-use utoipa::ToSchema;
+use utoipa::openapi::{ObjectBuilder, RefOr, Schema};
+use utoipa::{PartialSchema, ToSchema};
 
 /// Creates a coaching relationship between a coach and a coachee in an organization.
 ///
@@ -267,8 +270,10 @@ fn with_user_names(
         coachee_last_name: coachee.last_name.clone(),
         created_at: coaching_relationship.created_at,
         updated_at: coaching_relationship.updated_at,
-        coach_is_member: true,
-        coachee_is_member: true,
+        membership: Membership {
+            coach_is_member: true,
+            coachee_is_member: true,
+        },
     }
 }
 
@@ -693,8 +698,7 @@ pub async fn find_by_user_id_with_user_names(
 
 // A convenient combined struct that holds the results of looking up the Users associated
 // with the coach/coachee ids.
-#[derive(FromQueryResult, Debug, PartialEq, Clone, ToSchema)]
-#[schema(as = domain::coaching_relationship::CoachingRelationshipWithUserNames)]
+#[derive(FromQueryResult, Debug, PartialEq, Clone)]
 pub struct CoachingRelationshipWithUserNames {
     pub id: Id,
     pub coach_id: Id,
@@ -705,10 +709,48 @@ pub struct CoachingRelationshipWithUserNames {
     pub coachee_last_name: String,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
-    /// Whether the coach still holds a role in the relationship's organization.
-    pub coach_is_member: bool,
-    /// Whether the coachee still holds a role in the relationship's organization.
-    pub coachee_is_member: bool,
+    #[sea_orm(nested)]
+    pub membership: Membership,
+}
+
+/// By hand: the derive would nest `membership` under `allOf`, but the wire lists its fields.
+impl PartialSchema for CoachingRelationshipWithUserNames {
+    fn schema() -> RefOr<Schema> {
+        let fields: [(&str, RefOr<Schema>); 9] = [
+            ("id", utoipa::schema!(Uuid).into()),
+            ("coach_id", utoipa::schema!(Uuid).into()),
+            ("coachee_id", utoipa::schema!(Uuid).into()),
+            ("coach_first_name", utoipa::schema!(String).into()),
+            ("coach_last_name", utoipa::schema!(String).into()),
+            ("coachee_first_name", utoipa::schema!(String).into()),
+            ("coachee_last_name", utoipa::schema!(String).into()),
+            ("created_at", utoipa::schema!(DateTime<FixedOffset>).into()),
+            ("updated_at", utoipa::schema!(DateTime<FixedOffset>).into()),
+        ];
+        let object = fields
+            .into_iter()
+            .fold(ObjectBuilder::new(), |object, (name, schema)| {
+                object.property(name, schema).required(name)
+            });
+        // Serialized at the top level, so `Membership`'s properties join this object's.
+        let RefOr::T(Schema::Object(membership)) = Membership::schema() else {
+            return object.into();
+        };
+        membership
+            .required
+            .iter()
+            .filter_map(|name| Some((name, membership.properties.get(name)?.clone())))
+            .fold(object, |object, (name, schema)| {
+                object.property(name, schema).required(name)
+            })
+            .into()
+    }
+}
+
+impl ToSchema for CoachingRelationshipWithUserNames {
+    fn name() -> Cow<'static, str> {
+        Cow::Borrowed("domain.coaching_relationship.CoachingRelationshipWithUserNames")
+    }
 }
 
 // serialize the CoachingRelationshipUserWithNames struct so that it can be used in the API
@@ -728,8 +770,8 @@ impl Serialize for CoachingRelationshipWithUserNames {
         state.serialize_field("coachee_last_name", &self.coachee_last_name)?;
         state.serialize_field("created_at", &self.created_at)?;
         state.serialize_field("updated_at", &self.updated_at)?;
-        state.serialize_field("coach_is_member", &self.coach_is_member)?;
-        state.serialize_field("coachee_is_member", &self.coachee_is_member)?;
+        state.serialize_field("coach_is_member", &self.membership.coach_is_member)?;
+        state.serialize_field("coachee_is_member", &self.membership.coachee_is_member)?;
         state.end()
     }
 }
