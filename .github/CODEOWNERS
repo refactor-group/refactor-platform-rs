@@ -13,7 +13,16 @@
 /migration/                         @jhodapp
 
 # Authentication and authorization
+/web/src/lib.rs                     @jhodapp
 /web/src/router.rs                  @jhodapp
+/web/src/controller/user_session_controller.rs    @jhodapp
+/web/src/controller/magic_link_controller.rs      @jhodapp
+/web/src/controller/oauth_controller.rs           @jhodapp
+/web/src/controller/oauth_callback_controller.rs  @jhodapp
+/web/src/controller/password_reset_controller.rs  @jhodapp
+/web/src/controller/jwt_controller.rs             @jhodapp
+/web/src/controller/webhook_controller.rs         @jhodapp
+/domain/src/magic_link_token.rs     @jhodapp
 /web/src/extractors/                @jhodapp
 /web/src/protect/                   @jhodapp
 /web/src/middleware/                @jhodapp
@@ -36,3 +45,4 @@
 /AGENTS.md                          @jhodapp
 /CLAUDE.md                          @jhodapp
 /REVIEW.md                          @jhodapp
+/docs/cicd/review-risk-tiers.md     @jhodapp

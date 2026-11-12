@@ -14,6 +14,8 @@ This backend holds private coaching notes, transcripts, and goals. In order of c
 6. **A change happens and connected clients never hear of it.** Other writes to the same entity publish a `DomainEvent` and this one does not. Look hardest at writes that happen as a side effect: auto-linking, webhooks, background jobs. An event whose recipients are not derived from who may read the entity belongs under failure 1.
 7. **Suggestion behavior changes with no new baseline.** A change to `actions_prompt.md`, the model, or the verification or due-date code under `domain/src/transcript_suggestion/` needs the eval rerun and an updated `baseline.json` in the same PR. Its absence is the finding.
 8. **It is slow at real size.** A query per row inside a loop where one batched query would do, a list read with no bound, or a pooled connection held across a call to an external service. Name the loop and what makes it grow.
+9. **Time is computed in the wrong zone.** Recurrence expansion, reminders, and due dates that mix a user's wall-clock time with UTC, or that break across a DST transition or on days 29 to 31. A change to date math with no test that crosses a DST boundary is a finding.
+10. **A handler is not safe to run twice.** Webhooks are redelivered and jobs are retried. A second run must not create a second row, send a second email, or dispatch a second bot.
 
 ## Evidence
 

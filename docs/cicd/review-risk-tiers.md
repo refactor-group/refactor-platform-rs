@@ -8,6 +8,7 @@ How much human attention a pull request needs before it merges. Most changes her
 - **The highest tier touched wins.** One high-tier file makes the whole PR high.
 - **An automated review never counts as a person.** It reduces what a person has to read; it does not replace the person a tier requires.
 - **A read covers one commit.** Commits pushed after the read need their own read, of the new diff at least.
+- **The tiers say what a read must cover, not who may approve.** Branch protection separately requires one approval on every PR from anyone who cannot bypass it, whatever the tier.
 - **Start strict, loosen with evidence.** Move a path down a tier only in a PR that says what evidence justifies it.
 
 ## Tiers
@@ -24,11 +25,11 @@ A code owner's own high-tier change needs no second person. The deep review and 
 
 `.github/CODEOWNERS` lists the paths. The reasons:
 
-- **Authentication and authorization**: `web/src/extractors/`, `web/src/protect/`, `web/src/middleware/`, `web/src/router.rs`, `domain/src/jwt/`, OAuth and password reset code, `meeting-auth/`, and the collab server's `auth.rs` and `rest.rs`. A mistake here exposes private coaching data.
+- **Authentication and authorization**: `web/src/extractors/`, `web/src/protect/`, `web/src/middleware/`, `web/src/router.rs`, `web/src/lib.rs` (CORS and sessions), the login, magic-link, OAuth, password reset, JWT, and webhook controllers, `domain/src/jwt/`, `domain/src/magic_link_token.rs`, `meeting-auth/`, and the collab server's `auth.rs` and `rest.rs`. A mistake here exposes private coaching data.
 - **Real-time delivery**: `web/src/sse/`, `sse/`. These decide which user receives which event.
 - **Migrations**: `migration/`. A revert does not undo a schema change.
 - **CI, deploy, and runtime**: `.github/`, `Dockerfile`, `entrypoint.sh`, compose files, `nginx/`. These run with production secrets or decide what reaches production.
-- **Agent and reviewer instructions**: `.claude/`, `AGENTS.md`, `REVIEW.md`. Weakening these weakens every later review.
+- **Agent and reviewer instructions**: `.claude/`, `AGENTS.md`, `REVIEW.md`, and this document. Weakening these weakens every later review.
 
 Also high, wherever the code lives:
 
