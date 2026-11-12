@@ -668,6 +668,57 @@ async fn ses_29_only_the_user_lists_their_own_sessions() {
     .await;
 }
 
+/// SES-30
+#[tokio::test]
+async fn ses_30_a_removed_coachee_lists_none_of_their_own_sessions() {
+    within_time_limit(async {
+        let mut baseline = Baseline::new().await;
+        let removed = baseline.world.user(Caller::Removed);
+
+        assert_eq!(
+            baseline
+                .expect(
+                    Caller::Removed,
+                    Method::GET,
+                    &format!("/users/{removed}/coaching_sessions"),
+                    None
+                )
+                .await,
+            (StatusCode::OK, BTreeSet::new())
+        );
+    })
+    .await;
+}
+
+/// SES-32
+#[tokio::test]
+async fn ses_32_a_coachee_reads_the_nearest_session_of_each_relationship() {
+    within_time_limit(async {
+        let mut baseline = Baseline::new().await;
+        let world = &baseline.world;
+        let coachee = world.user(Caller::Coachee);
+        let (r1, r2, r3) = (world.r1, world.r2, world.r3);
+        let expected = ids([world.s1, world.s2]);
+        let around = Utc::now().format("%Y-%m-%dT%H:%M:%S");
+
+        // R3 is not the coachee's, so it adds nothing.
+        for relationships in [format!("{r1},{r2}"), format!("{r1},{r2},{r3}")] {
+            let path = format!(
+                "/users/{coachee}/coaching_sessions/nearest\
+                 ?coaching_relationship_ids={relationships}&around={around}&before=1&after=1"
+            );
+            assert_eq!(
+                baseline
+                    .expect(Caller::Coachee, Method::GET, &path, None)
+                    .await,
+                (StatusCode::OK, expected.clone()),
+                "{relationships}"
+            );
+        }
+    })
+    .await;
+}
+
 /// SES-33
 #[tokio::test]
 async fn ses_33_scheduling_with_a_coachee_who_left_is_refused() {

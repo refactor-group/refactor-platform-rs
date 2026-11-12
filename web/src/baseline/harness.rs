@@ -5,8 +5,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration as StdDuration;
 
-use axum::body::{to_bytes, Body, Bytes};
+use axum::body::{to_bytes, Body, BodyDataStream, Bytes};
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use axum::response::Response;
@@ -15,6 +16,7 @@ use axum_login::{
     tower_sessions::{MemoryStore, SessionManagerLayer},
     AuthManagerLayerBuilder,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use domain::gateway::object_storage::{self, ObjectStore};
 use domain::test_utils::sqlite::access_world::{IMG1_BYTES, IMG1_CONTENT_TYPE, PASSWORD};
 use domain::test_utils::sqlite::{
@@ -22,10 +24,13 @@ use domain::test_utils::sqlite::{
 };
 use domain::user::Backend;
 use domain::Id;
+use futures::StreamExt;
+use hmac::{Hmac, Mac};
 use mockito::{Matcher, Mock, ServerGuard};
 use sea_orm::DatabaseConnection;
-use serde_json::Value;
+use serde_json::{json, Value};
 use service::config::Config;
+use sha2::Sha256;
 use time::Duration;
 use tower::ServiceExt;
 use tower_sessions::Expiry;
@@ -33,6 +38,11 @@ use tower_sessions::Expiry;
 use crate::AppState;
 
 const API_VERSION: &str = "1.0.0";
+
+const JSON: (&str, &str) = ("content-type", "application/json");
+
+/// The key Recall webhooks are signed with.
+const WEBHOOK_KEY: &[u8] = b"access-baseline-webhook-key";
 
 /// The matrix's "non-participants" for R1 and S1 data, all members of O1 except OUTSIDER.
 pub(super) const NON_PARTICIPANTS: [Caller; 5] = [
@@ -224,42 +234,144 @@ impl Baseline {
         path: &str,
         body: Option<Value>,
     ) -> Reply {
-        let response = self.respond(caller, method, path, body).await;
-        let status = response.status();
-        let bytes = to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("the body reads");
-        Reply {
-            status,
-            body: serde_json::from_slice(&bytes)
-                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned())),
-            bytes,
-        }
+        let body = body.map_or_else(Body::empty, |json| Body::from(json.to_string()));
+        self.send_with(caller, method, path, &[JSON], body).await
     }
 
+    /// Sends a request as `caller` with `headers` and a raw `body`.
+    pub(super) async fn send_with(
+        &mut self,
+        caller: Caller,
+        method: Method,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Body,
+    ) -> Reply {
+        let cookie = self.cookie(caller).await;
+        let response = self
+            .respond(Some(&cookie), method, path, headers, body)
+            .await;
+        read_reply(response).await
+    }
+
+    /// Opens `caller`'s event stream; the returned listener reads what reaches it.
+    pub(super) async fn listen(&mut self, caller: Caller) -> Listener {
+        let cookie = self.cookie(caller).await;
+        let response = self
+            .respond(Some(&cookie), Method::GET, "/sse", &[], Body::empty())
+            .await;
+        assert_eq!(response.status(), StatusCode::OK, "{caller:?} listens");
+        Listener(response.into_body().into_data_stream())
+    }
+
+    /// Delivers a Recall webhook, signed as Recall signs it; no one is signed in.
+    pub(super) async fn webhook(&mut self, event: &str, data: Value) -> StatusCode {
+        let body = json!({ "event": event, "data": data }).to_string();
+        let id = format!("msg_{}", Id::new_v4());
+        let timestamp = chrono::Utc::now().timestamp().to_string();
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(WEBHOOK_KEY).expect("an HMAC key of any length");
+        mac.update(format!("{id}.{timestamp}.{body}").as_bytes());
+        let signature = format!("v1,{}", BASE64.encode(mac.finalize().into_bytes()));
+        let headers = [
+            JSON,
+            ("svix-id", id.as_str()),
+            ("svix-timestamp", timestamp.as_str()),
+            ("svix-signature", signature.as_str()),
+        ];
+        self.respond(
+            None,
+            Method::POST,
+            "/webhooks/recall_ai",
+            &headers,
+            Body::from(body),
+        )
+        .await
+        .status()
+    }
+}
+
+/// A caller's open event stream.
+pub(super) struct Listener(BodyDataStream);
+
+impl Listener {
+    /// The events already sent to this stream, as `(event type, data)`.
+    pub(super) async fn received(&mut self) -> Vec<(String, Value)> {
+        let mut events = Vec::new();
+        while let Ok(Some(chunk)) =
+            tokio::time::timeout(StdDuration::from_millis(100), self.0.next()).await
+        {
+            let chunk = chunk.expect("the stream reads");
+            let text = String::from_utf8_lossy(&chunk);
+            let field = |name: &str| {
+                text.lines()
+                    .find_map(|line| line.strip_prefix(name))
+                    .map(str::trim)
+            };
+            if let (Some(event), Some(data)) = (field("event:"), field("data:")) {
+                events.push((
+                    event.to_string(),
+                    serde_json::from_str(data).expect("event data is JSON"),
+                ));
+            }
+        }
+        events
+    }
+
+    /// The types of the events already sent to this stream.
+    pub(super) async fn received_types(&mut self) -> Vec<String> {
+        self.received()
+            .await
+            .into_iter()
+            .map(|(event, _)| event)
+            .collect()
+    }
+}
+
+/// A response read whole.
+async fn read_reply(response: Response) -> Reply {
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("the body reads");
+    Reply {
+        status,
+        body: serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned())),
+        bytes,
+    }
+}
+
+impl Baseline {
     /// GETs a streaming route as `caller`: the status and headers only. The body is never
     /// read, since a stream like `/sse` never ends.
     pub(super) async fn open(&mut self, caller: Caller, path: &str) -> (StatusCode, HeaderMap) {
-        let response = self.respond(caller, Method::GET, path, None).await;
+        let cookie = self.cookie(caller).await;
+        let response = self
+            .respond(Some(&cookie), Method::GET, path, &[], Body::empty())
+            .await;
         (response.status(), response.headers().clone())
     }
 
     async fn respond(
         &mut self,
-        caller: Caller,
+        cookie: Option<&str>,
         method: Method,
         path: &str,
-        body: Option<Value>,
+        headers: &[(&str, &str)],
+        body: Body,
     ) -> Response {
-        let cookie = self.cookie(caller).await;
         let mut request = Request::builder()
             .uri(path)
             .method(method)
-            .header("cookie", cookie)
-            .header("x-version", API_VERSION)
-            .header("content-type", "application/json")
-            .body(body.map_or_else(Body::empty, |json| Body::from(json.to_string())))
-            .expect("the request builds");
+            .header("x-version", API_VERSION);
+        if let Some(cookie) = cookie {
+            request = request.header("cookie", cookie);
+        }
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let mut request = request.body(body).expect("the request builds");
         // Production serves with connect info; the throttled routes key on the peer address.
         request
             .extensions_mut()
@@ -304,6 +416,10 @@ fn config(server_url: &str, store_root: &StoreRoot) -> Config {
         "--action-assigned-email-template-id=action-assigned",
         "--assembly-ai-api-key=access-baseline-assembly-ai-key",
         &format!("--assembly-ai-llm-base-url={server_url}"),
+        &format!(
+            "--recall-ai-webhook-secret=whsec_{}",
+            BASE64.encode(WEBHOOK_KEY)
+        ),
         "--object-store-backend=local",
         &format!("--object-store-local-path={store_root}"),
     ])
@@ -323,10 +439,14 @@ async fn store_img1(stand_ins: &StandIns, world: &AccessWorld) {
 /// The production route table behind the auth and session layers `init_server` adds.
 /// The session store is in memory; production's lives in Postgres.
 fn app(db: &Arc<DatabaseConnection>, stand_ins: &StandIns) -> Router {
+    let sse_manager = Arc::new(sse::Manager::default());
+    let events = domain::events::EventPublisher::new().with_handler(Arc::new(
+        sse::SseDomainEventHandler::new(sse_manager.clone()),
+    ));
     let app_state = AppState::new(
         service::AppState::new(stand_ins.config.clone(), db),
-        Arc::new(sse::Manager::default()),
-        domain::events::EventPublisher::default(),
+        sse_manager,
+        events,
         None,
         None,
         Some(stand_ins.store.clone()),

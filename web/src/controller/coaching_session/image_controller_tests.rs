@@ -500,22 +500,6 @@ async fn a_backend_that_cannot_presign_streams_the_bytes() {
     assert_eq!(bytes.as_ref(), TINY_PNG);
 }
 
-/// The id lives forever inside opaque CRDT note bytes, so it must not act as a bearer
-/// token: holding a valid one buys a non-participant nothing.
-#[tokio::test]
-async fn a_non_participant_cannot_fetch_an_image_it_holds_the_id_for() {
-    let world = fetch_world(false, presigning_store()).await;
-
-    let status = fetch(&world.app, Some(&world.cookie), world.image_id)
-        .await
-        .status();
-
-    assert!(
-        status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND,
-        "a non-participant must be refused, got {status}"
-    );
-}
-
 #[tokio::test]
 async fn an_unauthenticated_fetch_is_unauthorized() {
     let world = fetch_world(true, presigning_store()).await;
@@ -523,24 +507,6 @@ async fn an_unauthenticated_fetch_is_unauthorized() {
     let status = fetch(&world.app, None, world.image_id).await.status();
 
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn a_non_participant_cannot_upload() {
-    let world = upload_world(false, presigning_store()).await;
-
-    let status = upload(
-        &world.app,
-        &world.cookie,
-        world.session_id,
-        multipart_body("file", &TINY_PNG),
-    )
-    .await;
-
-    assert!(
-        status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND,
-        "a non-participant must be refused, got {status}"
-    );
 }
 
 /// The envelope carries 201, matching every other create in this API, and the storage key
@@ -800,20 +766,6 @@ async fn a_fetch_still_serves_an_image_that_is_marked_deleted() {
     assert!(
         status == StatusCode::FOUND || status == StatusCode::OK,
         "a soft-deleted image must still be served during the grace window, got {status}"
-    );
-}
-
-#[tokio::test]
-async fn a_non_participant_cannot_delete_an_image_it_holds_the_id_for() {
-    let world = signal_world(false, true).await.world;
-
-    let status = soft_delete(&world.app, Some(&world.cookie), world.image_id)
-        .await
-        .status();
-
-    assert!(
-        status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND,
-        "a non-participant must be refused, got {status}"
     );
 }
 

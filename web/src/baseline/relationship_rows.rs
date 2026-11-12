@@ -310,6 +310,28 @@ async fn rel_16_non_admins_cannot_create_a_relationship() {
     .await;
 }
 
+/// REL-17
+#[tokio::test]
+async fn rel_17_a_removed_coachee_lists_none_of_their_own_relationships() {
+    within_time_limit(async {
+        let mut baseline = Baseline::new().await;
+        let removed = baseline.world.user(Caller::Removed);
+
+        assert_eq!(
+            baseline
+                .expect(
+                    Caller::Removed,
+                    Method::GET,
+                    &format!("/users/{removed}/coaching-relationships"),
+                    None
+                )
+                .await,
+            (StatusCode::OK, BTreeSet::new())
+        );
+    })
+    .await;
+}
+
 /// REL-18
 #[tokio::test]
 async fn rel_18_an_admin_sees_who_is_still_a_member() {

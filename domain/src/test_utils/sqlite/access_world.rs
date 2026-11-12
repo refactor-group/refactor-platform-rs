@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
 use chrono::{DateTime, NaiveDateTime, TimeDelta, Timelike, Utc};
+use entity::meeting_provider::Provider;
 use entity::meeting_recording::MeetingRecordingStatus;
 use entity::roles::Role;
 use entity::status::Status;
@@ -20,9 +21,9 @@ use entity::transcription::TranscriptionStatus;
 use entity::{
     actions, actions_users, agreements, coaching_relationships, coaching_session_images,
     coaching_session_series, coaching_session_topics, coaching_session_views, coaching_sessions,
-    coaching_sessions_goals, goals, meeting_recording, notes, transcript_analysis,
-    transcript_participant, transcript_segment, transcript_suggestion, transcription,
-    user_role_changes, user_roles, users, Id,
+    coaching_sessions_goals, goals, meeting_recording, notes, oauth_connections,
+    transcript_analysis, transcript_participant, transcript_segment, transcript_suggestion,
+    transcription, user_role_changes, user_roles, users, Id,
 };
 use entity_api::user::generate_hash;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
@@ -532,6 +533,194 @@ pub async fn session_goals(db: &DatabaseConnection, session_id: Id) -> BTreeSet<
         .collect()
 }
 
+/// A topic as stored, without its priority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TopicRow {
+    pub session: Id,
+    pub author: Id,
+    pub body: String,
+    pub status: TopicStatus,
+    pub display_order: i32,
+    pub deleted: bool,
+}
+
+/// The topic, deleted or not, or `None` when there is no such topic.
+pub async fn topic_row(db: &DatabaseConnection, topic_id: Id) -> Option<TopicRow> {
+    coaching_session_topics::Entity::find_by_id(topic_id)
+        .one(db)
+        .await
+        .expect("the topic reads")
+        .map(|topic| TopicRow {
+            session: topic.coaching_session_id,
+            author: topic.user_id,
+            body: topic.body,
+            status: topic.status,
+            display_order: topic.display_order,
+            deleted: topic.deleted_at.is_some(),
+        })
+}
+
+/// Ids of every topic in the session, deleted ones included.
+pub async fn session_topics(db: &DatabaseConnection, session_id: Id) -> BTreeSet<Id> {
+    coaching_session_topics::Entity::find()
+        .filter(coaching_session_topics::Column::CoachingSessionId.eq(session_id))
+        .all(db)
+        .await
+        .expect("the topics read")
+        .into_iter()
+        .map(|topic| topic.id)
+        .collect()
+}
+
+/// Ids of the transcription's segments.
+pub async fn transcription_segments(db: &DatabaseConnection, transcription_id: Id) -> BTreeSet<Id> {
+    transcript_segment::Entity::find()
+        .filter(transcript_segment::Column::TranscriptionId.eq(transcription_id))
+        .all(db)
+        .await
+        .expect("the segments read")
+        .into_iter()
+        .map(|segment| segment.id)
+        .collect()
+}
+
+/// Ids of the session's meeting recordings.
+pub async fn session_recordings(db: &DatabaseConnection, session_id: Id) -> BTreeSet<Id> {
+    meeting_recording::Entity::find()
+        .filter(meeting_recording::Column::CoachingSessionId.eq(session_id))
+        .all(db)
+        .await
+        .expect("the recordings read")
+        .into_iter()
+        .map(|recording| recording.id)
+        .collect()
+}
+
+/// A recording of `session_id` whose bot is still joining; returns the bot id.
+pub async fn seed_active_recording(db: &DatabaseConnection, session_id: Id) -> String {
+    let now = Utc::now();
+    let bot_id = format!("bot-{}", Id::new_v4());
+    meeting_recording::ActiveModel {
+        id: Set(Id::new_v4()),
+        coaching_session_id: Set(session_id),
+        bot_id: Set(bot_id.clone()),
+        status: Set(MeetingRecordingStatus::Joining),
+        video_url: Set(None),
+        audio_url: Set(None),
+        duration_seconds: Set(None),
+        started_at: Set(None),
+        ended_at: Set(None),
+        error_message: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the recording is seeded");
+    bot_id
+}
+
+/// A completed transcription of `session_id` that was never scanned for actions.
+pub async fn seed_unscanned_transcription(
+    db: &DatabaseConnection,
+    session_id: Id,
+    coach: Id,
+    coachee: Id,
+) -> Id {
+    seed_completed_transcription(db, session_id, coach, coachee)
+        .await
+        .0
+}
+
+/// Whether the transcription has an action scan, in any state.
+pub async fn transcription_scanned(db: &DatabaseConnection, transcription_id: Id) -> bool {
+    transcript_analysis::Entity::find()
+        .filter(transcript_analysis::Column::TranscriptionId.eq(transcription_id))
+        .one(db)
+        .await
+        .expect("the scan reads")
+        .is_some()
+}
+
+/// Ids of the session's note images, deleted ones included.
+pub async fn session_images(db: &DatabaseConnection, session_id: Id) -> BTreeSet<Id> {
+    coaching_session_images::Entity::find()
+        .filter(coaching_session_images::Column::CoachingSessionId.eq(session_id))
+        .all(db)
+        .await
+        .expect("the images read")
+        .into_iter()
+        .map(|image| image.id)
+        .collect()
+}
+
+/// Whether the image is marked deleted, or `None` when there is no such image.
+pub async fn image_deleted(db: &DatabaseConnection, image_id: Id) -> Option<bool> {
+    coaching_session_images::Entity::find_by_id(image_id)
+        .one(db)
+        .await
+        .expect("the image reads")
+        .map(|image| image.deleted_at.is_some())
+}
+
+/// Gives the session a Google meeting link, which later sessions in its relationship reuse.
+pub async fn set_google_meeting_url(db: &DatabaseConnection, session_id: Id, url: &str) {
+    let session = coaching_sessions::Entity::find_by_id(session_id)
+        .one(db)
+        .await
+        .expect("the session reads")
+        .expect("the session exists");
+    let mut active: coaching_sessions::ActiveModel = session.into();
+    active.meeting_url = Set(Some(url.to_string()));
+    active.provider = Set(Some(Provider::Google));
+    active.update(db).await.expect("the meeting link is set");
+}
+
+/// The session's meeting link, or `None` once it is deleted.
+pub async fn session_meeting_url(
+    db: &DatabaseConnection,
+    session_id: Id,
+) -> Option<Option<String>> {
+    coaching_sessions::Entity::find_by_id(session_id)
+        .one(db)
+        .await
+        .expect("the session reads")
+        .map(|session| session.meeting_url)
+}
+
+/// A Google connection for `user_id`, with tokens that never leave the database.
+pub async fn seed_google_connection(db: &DatabaseConnection, user_id: Id, email: &str) {
+    let now = Utc::now();
+    oauth_connections::ActiveModel {
+        id: Set(Id::new_v4()),
+        user_id: Set(user_id),
+        provider: Set(Provider::Google),
+        external_account_id: Set(None),
+        external_email: Set(Some(email.to_string())),
+        access_token: Set("stored-access-token".to_string()),
+        refresh_token: Set(None),
+        token_expires_at: Set(None),
+        token_type: Set("Bearer".to_string()),
+        scopes: Set(String::new()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the connection is seeded");
+}
+
+/// Ids of the users holding any provider connection.
+pub async fn connected_users(db: &DatabaseConnection) -> BTreeSet<Id> {
+    oauth_connections::Entity::find()
+        .all(db)
+        .await
+        .expect("the connections read")
+        .into_iter()
+        .map(|connection| connection.user_id)
+        .collect()
+}
+
 /// Argon2 is slow by design; one hash serves every person in every test.
 fn password_hash() -> String {
     static HASH: OnceLock<String> = OnceLock::new();
@@ -839,11 +1028,48 @@ async fn seed_transcript(
     coach: Id,
     coachee: Id,
 ) -> Transcript {
+    let (transcription, coachee_segment) =
+        seed_completed_transcription(db, session_id, coach, coachee).await;
+    let now = Utc::now();
+    let analysis = transcript_analysis::ActiveModel {
+        id: Set(Id::new_v4()),
+        transcription_id: Set(transcription),
+        target: Set(Target::Action),
+        status: Set(AnalysisStatus::Completed),
+        attempts: Set(1),
+        claimed_at: Set(None),
+        error_message: Set(None),
+        model: Set(None),
+        input_tokens: Set(None),
+        output_tokens: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the analysis is seeded")
+    .id;
+
+    Transcript {
+        transcription,
+        analysis,
+        coachee_segment,
+    }
+}
+
+/// A completed recording and transcription of `session_id` with one attributed line from
+/// each participant and no action scan. Returns the transcription and the coachee's line.
+async fn seed_completed_transcription(
+    db: &DatabaseConnection,
+    session_id: Id,
+    coach: Id,
+    coachee: Id,
+) -> (Id, Id) {
     let now = Utc::now();
     let recording = meeting_recording::ActiveModel {
         id: Set(Id::new_v4()),
         coaching_session_id: Set(session_id),
-        bot_id: Set(format!("bot-{session_id}")),
+        bot_id: Set(format!("bot-{}", Id::new_v4())),
         status: Set(MeetingRecordingStatus::Completed),
         video_url: Set(None),
         audio_url: Set(None),
@@ -923,30 +1149,7 @@ async fn seed_transcript(
         segments.push(segment.id);
     }
 
-    let analysis = transcript_analysis::ActiveModel {
-        id: Set(Id::new_v4()),
-        transcription_id: Set(transcription),
-        target: Set(Target::Action),
-        status: Set(AnalysisStatus::Completed),
-        attempts: Set(1),
-        claimed_at: Set(None),
-        error_message: Set(None),
-        model: Set(None),
-        input_tokens: Set(None),
-        output_tokens: Set(None),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-    }
-    .insert(db)
-    .await
-    .expect("the analysis is seeded")
-    .id;
-
-    Transcript {
-        transcription,
-        analysis,
-        coachee_segment: segments[1],
-    }
+    (transcription, segments[1])
 }
 
 /// A pending action suggestion from `transcript`, assigned to `assignee_ids`.

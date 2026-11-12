@@ -359,6 +359,44 @@ async fn act_17_a_removed_coachee_cannot_list_their_sessions_actions() {
     .await;
 }
 
+/// ACT-18 and ACT-19
+async fn assert_own_actions(scope: &str, expected: impl Fn(&Baseline) -> BTreeSet<Id>) {
+    let mut baseline = Baseline::new().await;
+    let coachee = baseline.world.user(Caller::Coachee);
+    let expected = expected(&baseline);
+
+    assert_eq!(
+        baseline
+            .expect(
+                Caller::Coachee,
+                Method::GET,
+                &format!("/users/{coachee}/actions{scope}"),
+                None
+            )
+            .await,
+        (StatusCode::OK, expected)
+    );
+}
+
+/// ACT-18
+#[tokio::test]
+async fn act_18_a_coachee_lists_every_action_of_their_sessions() {
+    within_time_limit(assert_own_actions("", |b| {
+        let w = &b.world;
+        ids([w.a1, w.a2, w.a3, w.a4, w.a5])
+    }))
+    .await;
+}
+
+/// ACT-19
+#[tokio::test]
+async fn act_19_a_coachee_lists_the_actions_assigned_to_them() {
+    within_time_limit(assert_own_actions("?scope=assigned", |b| {
+        ids([b.world.a2, b.world.a5])
+    }))
+    .await;
+}
+
 /// ACT-20
 #[tokio::test]
 async fn act_20_a_coach_lists_their_own_actions() {
@@ -406,6 +444,58 @@ async fn act_21_a_removed_coachee_lists_none_of_their_own_actions() {
             (StatusCode::OK, BTreeSet::new())
         );
     })
+    .await;
+}
+
+/// ACT-22, ACT-23 and ACT-24: `caller` lists the coachee's actions with `scope`.
+async fn assert_coachee_actions_as(
+    caller: Caller,
+    scope: &str,
+    expected: impl Fn(&Baseline) -> BTreeSet<Id>,
+) {
+    let mut baseline = Baseline::new().await;
+    let coachee = baseline.world.user(Caller::Coachee);
+    let expected = expected(&baseline);
+
+    assert_eq!(
+        baseline
+            .expect(
+                caller,
+                Method::GET,
+                &format!("/users/{coachee}/actions{scope}"),
+                None
+            )
+            .await,
+        (StatusCode::OK, expected)
+    );
+}
+
+/// ACT-22
+#[tokio::test]
+async fn act_22_a_coach_lists_only_their_relationships_actions_for_the_coachee() {
+    within_time_limit(assert_coachee_actions_as(Caller::Coach, "", |b| {
+        ids([b.world.a1, b.world.a2, b.world.a3])
+    }))
+    .await;
+}
+
+/// ACT-23
+#[tokio::test]
+async fn act_23_a_coach_lists_only_their_relationships_assignments_of_the_coachee() {
+    within_time_limit(assert_coachee_actions_as(
+        Caller::Coach,
+        "?scope=assigned",
+        |b| ids([b.world.a2]),
+    ))
+    .await;
+}
+
+/// ACT-24
+#[tokio::test]
+async fn act_24_another_coach_lists_only_their_relationships_actions_for_the_coachee() {
+    within_time_limit(assert_coachee_actions_as(Caller::OtherCoach, "", |b| {
+        ids([b.world.a4, b.world.a5])
+    }))
     .await;
 }
 

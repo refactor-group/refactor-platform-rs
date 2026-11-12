@@ -313,6 +313,36 @@ async fn goal_12_non_participants_cannot_list_the_sessions_goals() {
     .await;
 }
 
+/// GOAL-13
+#[tokio::test]
+async fn goal_13_participants_link_a_goal_to_another_session_of_the_relationship() {
+    within_time_limit(async {
+        for caller in [Caller::Coach, Caller::Coachee] {
+            let mut baseline = Baseline::new().await;
+            let (session, g1) = (baseline.world.sr1_sessions[0], baseline.world.g1);
+            assert_eq!(session_goals(baseline.db(), session).await, BTreeSet::new());
+
+            let reply = baseline
+                .send(
+                    caller,
+                    Method::POST,
+                    &format!("/coaching_sessions/{session}/goals"),
+                    Some(json!({ "goal_id": g1 })),
+                )
+                .await;
+
+            assert_eq!(reply.status, StatusCode::OK, "{caller:?}");
+            assert_eq!(reply.body["status_code"], 201, "{caller:?}");
+            assert_eq!(
+                session_goals(baseline.db(), session).await,
+                ids([g1]),
+                "{caller:?}"
+            );
+        }
+    })
+    .await;
+}
+
 /// GOAL-14
 #[tokio::test]
 async fn goal_14_participants_unlink_a_goal_from_the_session() {
