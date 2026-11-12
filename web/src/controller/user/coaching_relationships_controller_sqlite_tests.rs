@@ -1,5 +1,8 @@
-//! A user's own relationships (`REL`, `USR`) through `/users/{id}/coaching-relationships`, on
-//! SQLite as each access-matrix caller.
+//! Which relationships appear in a person's relationship list, and who may ask for it.
+//!
+//! Each test signs in as one kind of person, asks for a list against a real database, and
+//! checks that it holds exactly the right records, or that the request is refused.
+//! `web/src/test_utils/README.md` describes the people and the database.
 
 use std::collections::BTreeSet;
 

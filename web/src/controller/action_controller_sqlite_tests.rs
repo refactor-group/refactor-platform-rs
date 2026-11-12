@@ -1,4 +1,9 @@
-//! Actions (`ACT`) through `/actions`, on SQLite as each access-matrix caller.
+//! Who can read, create, change and delete actions.
+//!
+//! Each test signs in as one kind of person, calls one of this module's routes against a
+//! real database, and checks that the right people get through and everyone else is refused
+//! with nothing changed.
+//! `web/src/test_utils/README.md` describes the people and the database.
 
 use std::collections::BTreeSet;
 

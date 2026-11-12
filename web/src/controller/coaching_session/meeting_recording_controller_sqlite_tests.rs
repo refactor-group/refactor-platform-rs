@@ -1,4 +1,10 @@
-//! Meeting recordings (`TRN`), on SQLite as each access-matrix caller.
+//! Who can see, start and stop a session's meeting recording.
+//!
+//! Each test signs in as one kind of person, calls one of this module's routes against a
+//! real database, and checks that the right people get through and everyone else is refused
+//! with nothing changed.
+//! How the routes behave once allowed is tested in the tests in `meeting_recording_controller.rs`.
+//! `web/src/test_utils/README.md` describes the people and the database.
 
 use axum::http::{Method, StatusCode};
 use domain::test_utils::sqlite::access_world::session_recordings;

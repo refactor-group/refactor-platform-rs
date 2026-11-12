@@ -1,5 +1,8 @@
-//! Real-time events (`SSE`): who each change reaches, read from the callers' open streams on
-//! SQLite.
+//! Who receives each real-time update.
+//!
+//! Each test opens several people's event streams, makes a change through the API against a
+//! real database, and checks which streams receive it.
+//! `web/src/test_utils/README.md` describes the people and the database.
 
 use std::collections::BTreeSet;
 

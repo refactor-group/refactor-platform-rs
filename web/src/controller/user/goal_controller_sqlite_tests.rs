@@ -1,5 +1,8 @@
-//! A user's own goals (`GOAL`) through `/users/{id}/goals`, on SQLite as each access-matrix
-//! caller.
+//! Which goals appear in a person's goal list, and who may ask for it.
+//!
+//! Each test signs in as one kind of person, asks for a list against a real database, and
+//! checks that it holds exactly the right records, or that the request is refused.
+//! `web/src/test_utils/README.md` describes the people and the database.
 
 use std::collections::BTreeSet;
 

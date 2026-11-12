@@ -1,5 +1,11 @@
-//! Search (`SRCH`), on SQLite as each access-matrix caller. Searches with hits need Postgres
-//! full-text search; only searches with no hits run here.
+//! Who finds what in search.
+//!
+//! Each test signs in as one kind of person, calls one of this module's routes against a
+//! real database, and checks that the right people get through and everyone else is refused
+//! with nothing changed.
+//! Searches that find something need Postgres full-text search, so only searches that find
+//! nothing run here; the rest are checked by hand.
+//! `web/src/test_utils/README.md` describes the people and the database.
 
 use std::collections::BTreeSet;
 

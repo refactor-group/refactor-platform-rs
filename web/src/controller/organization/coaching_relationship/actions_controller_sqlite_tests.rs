@@ -1,5 +1,10 @@
-//! Actions per relationship (`ACT`) through
-//! `/organizations/{id}/coaching_relationships/.../actions`, on SQLite as each access-matrix caller.
+//! Which actions appear in an organization's per-relationship action lists, and who may ask for
+//! them.
+//!
+//! Each test signs in as one kind of person, asks for a list against a real database, and
+//! checks that it holds exactly the right records, or that the request is refused.
+//! How the routes behave once allowed is tested in the tests in `actions_controller.rs`.
+//! `web/src/test_utils/README.md` describes the people and the database.
 
 use std::collections::{BTreeMap, BTreeSet};
 

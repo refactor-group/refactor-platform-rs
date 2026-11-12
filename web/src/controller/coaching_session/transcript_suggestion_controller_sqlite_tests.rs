@@ -1,4 +1,10 @@
-//! Transcript suggestions and scans (`TRN`), on SQLite as each access-matrix caller.
+//! Who can scan a session's transcript and accept, dismiss or restore its suggested actions.
+//!
+//! Each test signs in as one kind of person, calls one of this module's routes against a
+//! real database, and checks that the right people get through and everyone else is refused
+//! with nothing changed.
+//! How the routes behave once allowed is tested in `transcript_suggestion_controller_tests.rs`.
+//! `web/src/test_utils/README.md` describes the people and the database.
 
 use std::collections::BTreeSet;
 

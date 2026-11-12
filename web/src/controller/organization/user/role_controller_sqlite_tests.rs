@@ -1,4 +1,10 @@
-//! Organization member roles (`ORG`), on SQLite as each access-matrix caller.
+//! Who can add, change and remove a member's role in an organization.
+//!
+//! Each test signs in as one kind of person, calls one of this module's routes against a
+//! real database, and checks that the right people get through and everyone else is refused
+//! with nothing changed.
+//! How the routes behave once allowed is tested in `role_controller_tests.rs`.
+//! `web/src/test_utils/README.md` describes the people and the database.
 
 use axum::http::{Method, StatusCode};
 use domain::test_utils::sqlite::access_world::{holds_role, record_removal, relationships_between};

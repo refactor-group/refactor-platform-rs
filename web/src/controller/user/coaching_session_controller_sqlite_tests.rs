@@ -1,5 +1,9 @@
-//! A user's own sessions (`SES`, `USR`) through `/users/{id}/coaching_sessions`, on SQLite as
-//! each access-matrix caller.
+//! Which sessions appear in a person's own session list, and who may ask for it.
+//!
+//! Each test signs in as one kind of person, asks for a list against a real database, and
+//! checks that it holds exactly the right records, or that the request is refused.
+//! How the routes behave once allowed is tested in `coaching_session_controller_tests.rs`.
+//! `web/src/test_utils/README.md` describes the people and the database.
 
 use std::collections::BTreeSet;
 
