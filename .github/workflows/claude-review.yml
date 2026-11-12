@@ -10,7 +10,8 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, labeled]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  # An unrelated label must not cancel a review that is running.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.event.action == 'labeled' && github.event.label.name != 'claude-review' && 'other-label' || 'review' }}
   cancel-in-progress: true
 
 permissions:
