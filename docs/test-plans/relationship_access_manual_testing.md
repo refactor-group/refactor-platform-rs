@@ -18,7 +18,10 @@ before the baseline. Their expected results already show the phase M rule:
   `/counts` and `/nearest`, `/actions`) leave out relationships in orgs the user no longer
   belongs to, unless they are a SuperAdmin, matching the 403 they get opening one.
 - Session and series emails, and action assignment emails, go only to participants who are
-  still members of the relationship's org.
+  still members of the relationship's org. Cancellations are the exception: they go to both
+  participants, so a removed member's calendar is cleaned up.
+- Membership is checked once per request, before any write, and that result decides who is
+  emailed. A participant removed while a request is in flight can still get that one email.
 - Creating, rescheduling or resending a session or series is refused (409,
   `details.reason` `coachee_not_a_member`) when the coachee is no longer a member; assigning an
   action to someone who is no longer a member is refused (`assignee_not_a_member`). Cancelling
@@ -493,12 +496,12 @@ Check with two browsers or `curl -N -b /tmp/<jar>.jar -H "$VER" $BASE/sse`.
 | JOB-05 | Password reset token cleanup (`domain/src/jobs/password_reset.rs`) | None | not relationship-scoped |
 | MAIL-01 | Session scheduled: `POST /coaching_sessions` (`domain/src/coaching_session.rs:143`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:1007` |
 | MAIL-02 | Session rescheduled (JOB-02) | COACH and COACHEE, each only if still an org member; none if both left | `domain/src/emails.rs:1198` |
-| MAIL-03 | Session cancelled: `DELETE /coaching_sessions/{id}` (`domain/src/coaching_session.rs:507`); also orphan cancels in series edits (`domain/src/emails.rs:2547`) | COACH and COACHEE, each only if still an org member [membership]; nothing for a past session | `domain/src/emails.rs:1546`, `:1497`, `:1516` |
+| MAIL-03 | Session cancelled: `DELETE /coaching_sessions/{id}` (`domain/src/coaching_session.rs:536`); also orphan cancels in series edits (`domain/src/emails.rs:2640`) | COACH and COACHEE, members or not [membership]; nothing for a past session. In a series edit a removed participant gets only the cancel, not the reschedule | `domain/src/emails.rs:1612`, `:2623`, `:2640` |
 | MAIL-04 | Session invite resend: SES-24 (`domain/src/coaching_session.rs:533`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:2087` |
 | MAIL-05 | Series scheduled: SER-01 (`domain/src/coaching_session_series.rs:141`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:2160`, `:1953`, `:1977` |
 | MAIL-06 | Series rescheduled: SER-08 (`domain/src/coaching_session_series.rs:290`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:2203` |
 | MAIL-07 | Series rescheduled from an occurrence on: SER-10 (`domain/src/coaching_session_series.rs:731`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:2285` |
-| MAIL-08 | Series cancelled: SER-12 (`domain/src/coaching_session_series.rs:832`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:2684`, `:2564` |
+| MAIL-08 | Series cancelled: SER-12 (`domain/src/coaching_session_series.rs:872`) | COACH and COACHEE, members or not [membership] | `domain/src/emails.rs:2795` |
 | MAIL-09 | Series invite resend: SER-14 (`domain/src/coaching_session_series.rs:884`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:2037` |
 | MAIL-10 | Session reminder (JOB-01) | COACHEE only | `domain/src/emails.rs:1246` |
 | MAIL-11 | Action assigned: ACT-28, ACT-29, TRN-11, TRN-13 | Every listed assignee (the coach or coachee, per ACT rules) who is still an org member [membership] | `domain/src/emails.rs:2732`; `web/src/controller/action_controller.rs:81`, `:154`; `domain/src/transcript_suggestion/review.rs:377` |
