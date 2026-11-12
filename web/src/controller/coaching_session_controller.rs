@@ -288,6 +288,7 @@ pub async fn update_title(
     responses(
         (status = 204, description = "Successfully deleted a Coaching Session", body = ()),
         (status = 401, description = "Unauthorized"),
+        (status = 409, description = "The session has notes, actions or agreements; `details.reason` is `sessions_have_content`, with `details.coaching_session_id`"),
         (status = 503, description = "Service temporarily unavailable"),
     ),
     security(
