@@ -87,6 +87,7 @@ Rows the scenarios need. Put the word `kumquat` in every body and session title 
 | `R2` | Relationship OTHER_COACH to COACHEE, O1 |
 | `R3` | Relationship COACH to REMOVED, O1 |
 | `S1`, `S2`, `S3` | One future session in R1, R2, R3 respectively |
+| `S4`, `S5` | A future session with no notes, actions or agreements, in R1 and R3. Created only for the delete rows (SES-21 to SES-23, SES-36), so no list row includes them |
 | `SR1` | Series in R1 created by COACH (its sessions are `SR1-*`) |
 | `SR3` | Series in R3 created by COACH before REMOVED is removed (its sessions are `SR3-*`); after phase M a series can't be created for a removed coachee |
 | `A1` | Action in S1 assigned to COACH |
@@ -196,7 +197,7 @@ How to read the tables:
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
-| SES-01 | GET /coaching_sessions?coaching_relationship_id=R1 | COACH, COACHEE | 200, S1 and SR1-* | `web/src/protect/coaching_sessions.rs:33` | [rows] filtered by relationship id |
+| SES-01 | GET /coaching_sessions?coaching_relationship_id=R1&from_date=2000-01-01&to_date=2100-01-01 | COACH, COACHEE | 200, S1 and SR1-* | `web/src/protect/coaching_sessions.rs:33` | [rows] filtered by relationship id. `from_date` and `to_date` are required: 400 without them |
 | SES-02 | GET /coaching_sessions?coaching_relationship_id=R1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403 | `web/src/protect/coaching_sessions.rs:33` | Unknown relationship id: 404 (`:42`). Missing param: 400 |
 | SES-03 | GET /coaching_sessions?coaching_relationship_id=R3 | REMOVED | 403 | `web/src/protect/coaching_sessions.rs:33` | |
 | SES-04 | GET /coaching_sessions/S1 | COACH, COACHEE | 200, S1 plus `organization_id` O1 | `web/src/extractors/coaching_session_access.rs:118` | First read hydrates the session, see MEET-01 |
@@ -216,9 +217,9 @@ How to read the tables:
 | SES-18 | PUT /coaching_sessions/S3 | COACH | 200 (204) | `web/src/protect/coaching_sessions.rs:129` | Coach still a member after the coachee left. [membership] Only when `date` and `duration_minutes` are unchanged, see SES-34 |
 | SES-19 | PATCH /coaching_sessions/S1/title | COACH, COACHEE | 200, S1 with new title | `web/src/extractors/coaching_session_access.rs:118` | Either participant |
 | SES-20 | PATCH /coaching_sessions/S1/title | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:118` | |
-| SES-21 | DELETE /coaching_sessions/S1 | COACH | 200 (204) | `web/src/protect/coaching_sessions.rs:129` | Sends MAIL-03 |
-| SES-22 | DELETE /coaching_sessions/S1 | COACHEE | 403 | `web/src/protect/coaching_sessions.rs:129` | |
-| SES-23 | DELETE /coaching_sessions/S1 | non-participants | 403 | `web/src/protect/coaching_sessions.rs:129` | |
+| SES-21 | DELETE /coaching_sessions/S4 | COACH | 200 (204) | `web/src/protect/coaching_sessions.rs:129` | Sends MAIL-03. A session with content: SES-37 |
+| SES-22 | DELETE /coaching_sessions/S4 | COACHEE | 403 | `web/src/protect/coaching_sessions.rs:129` | |
+| SES-23 | DELETE /coaching_sessions/S4 | non-participants | 403 | `web/src/protect/coaching_sessions.rs:129` | |
 | SES-24 | POST /coaching_sessions/S1/resend_invite | COACH | 204 | `web/src/protect/coaching_sessions.rs:129` | 409 when past or a series member. Sends MAIL-04 |
 | SES-25 | POST /coaching_sessions/S1/resend_invite | COACHEE | 403 | `web/src/protect/coaching_sessions.rs:129` | |
 | SES-26 | POST /coaching_sessions/S1/resend_invite | non-participants | 403 | `web/src/protect/coaching_sessions.rs:129` | |
@@ -231,7 +232,8 @@ How to read the tables:
 | SES-33 | POST /coaching_sessions `{coaching_relationship_id: R3}` | COACH | 409 `coachee_not_a_member`, nothing written, no email | `domain/src/coaching_session.rs:102` | [membership] `details: {reason, organization_id, user_id}` |
 | SES-34 | PUT /coaching_sessions/S3 changing `date` or `duration_minutes` | COACH | 409 `coachee_not_a_member`, S3 unchanged | `domain/src/coaching_session.rs:390` | [membership] Other edits succeed (SES-18) |
 | SES-35 | POST /coaching_sessions/S3/resend_invite | COACH | 409 `coachee_not_a_member`, no email | `domain/src/coaching_session.rs:565` | [membership] |
-| SES-36 | DELETE /coaching_sessions/S3 | COACH | 200 (204) | `web/src/protect/coaching_sessions.rs:129` | [membership] Deleting stays allowed. Sends MAIL-03 to both COACH and REMOVED. Run after SES-34 and SES-35 |
+| SES-36 | DELETE /coaching_sessions/S5 | COACH | 200 (204) | `web/src/protect/coaching_sessions.rs:129` | [membership] Deleting stays allowed. Sends MAIL-03 to both COACH and REMOVED |
+| SES-37 | DELETE /coaching_sessions/S1 | COACH | 409 `sessions_have_content`, `details: {reason, coaching_session_id}`; S1, its content and its notes document untouched, no email | `domain/src/coaching_session.rs:525` | S1 holds N1, AG1 and A1 to A3 |
 
 ### 4.3 Series (`SER`)
 
@@ -294,7 +296,7 @@ How to read the tables:
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
-| ACT-01 | GET /organizations/O1/coaching_relationships/actions | COACH | 200, `coachee_actions`: R1 [A1 A2 A3], R3 [A6] | `web/src/extractors/organization_member_access.rs:85`; `entity_api/src/action.rs:615` | [rows] keyed by relationship id |
+| ACT-01 | GET /organizations/O1/coaching_relationships/actions | COACH | 200, `coachee_actions`: R1 [A1 A2 A3], R3 [A6 A7] | `web/src/extractors/organization_member_access.rs:85`; `entity_api/src/action.rs:615` | [rows] keyed by relationship id |
 | ACT-02 | GET /organizations/O1/coaching_relationships/actions | COACHEE | 200, R1 [A2 A3], R2 [A5]; not A1, A4 | `entity_api/src/action.rs:482`, `:475` | [rows] coachee side sees own or unassigned |
 | ACT-03 | GET /organizations/O1/coaching_relationships/actions | OTHER_COACH | 200, R2 [A4 A5] | `entity_api/src/action.rs:615` | [rows] |
 | ACT-04 | GET /organizations/O1/coaching_relationships/actions | MEMBER, ADMIN, SUPER | 200, empty object | `web/src/controller/organization/coaching_relationship/actions_controller.rs:158` | [rows] only the caller's own relationships |
@@ -306,14 +308,14 @@ How to read the tables:
 | ACT-10 | GET /organizations/O1/coaching_relationships/R1/actions | MEMBER, OTHER_COACH, ADMIN, SUPER | 403 | `web/src/extractors/coaching_relationship_access.rs:84` | |
 | ACT-11 | GET /organizations/O1/coaching_relationships/R1/actions | OUTSIDER | 403 | `web/src/extractors/organization_member_access.rs:103` | Member check runs first |
 | ACT-12 | GET /organizations/O1/coaching_relationships/R3/actions | REMOVED | 403 | `web/src/extractors/organization_member_access.rs:103` | |
-| ACT-13 | GET /organizations/O1/coaching_relationships/R3/actions | COACH | 200, A6 | `web/src/extractors/coaching_relationship_access.rs:84` | [rows] |
+| ACT-13 | GET /organizations/O1/coaching_relationships/R3/actions | COACH | 200, A6 A7 | `web/src/extractors/coaching_relationship_access.rs:84` | [rows] |
 | ACT-14 | GET /actions?coaching_session_id=S1 | COACH | 200, A1 A2 A3 | `web/src/protect/actions.rs:34` | [rows] |
 | ACT-15 | GET /actions?coaching_session_id=S1 | COACHEE | 200, A1 A2 A3 | `web/src/protect/actions.rs:34`; `web/src/controller/action_controller.rs:356` | [rows] no assignee narrowing here |
 | ACT-16 | GET /actions?coaching_session_id=S1 | non-participants | 403 | `web/src/protect/actions.rs:34` | |
 | ACT-17 | GET /actions?coaching_session_id=S3 | REMOVED | 403 | `web/src/protect/actions.rs:34` | |
 | ACT-18 | GET /users/{COACHEE_ID}/actions (scope=sessions, default) | COACHEE | 200, A1 A2 A3 A4 A5 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:391` | [rows] self access; no assignee narrowing |
 | ACT-19 | GET /users/{COACHEE_ID}/actions?scope=assigned | COACHEE | 200, A2 A5 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:350` | [rows] |
-| ACT-20 | GET /users/{COACH_ID}/actions (scope=sessions) | COACH | 200, A1 A2 A3 A6 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:391` | [rows] `scope=assigned`: A1 |
+| ACT-20 | GET /users/{COACH_ID}/actions (scope=sessions) | COACH | 200, A1 A2 A3 A6 A7 | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:391` | [rows] `scope=assigned`: A1 |
 | ACT-21 | GET /users/{REMOVED_ID}/actions (scope=sessions) | REMOVED | 200, empty list | `web/src/protect/users/actions.rs:24`; `entity_api/src/action.rs:391` | [membership] self list leaves out A6; was 200, A6 |
 | ACT-22 | GET /users/{COACHEE_ID}/actions (scope=sessions) | COACH | 200, A1 A2 A3; not A4 A5 | `web/src/protect/users/actions.rs:31`; `web/src/controller/user/action_controller.rs:85`; `entity_api/src/action.rs:393`; `entity_api/src/coaching_relationship.rs:416` | [rows] [tightened] only relationships where the caller coaches this user |
 | ACT-23 | GET /users/{COACHEE_ID}/actions?scope=assigned | COACH | 200, A2; not A5 | `web/src/protect/users/actions.rs:31`; `web/src/controller/user/action_controller.rs:85`; `entity_api/src/action.rs:393`; `entity_api/src/coaching_relationship.rs:416` | [rows] [tightened] |
@@ -443,15 +445,15 @@ relationship's org) via `entity_api/src/search/visibility.rs:18`; SuperAdmins sk
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
-| SRCH-01 | GET /search?q=kumquat&types=actions | COACH | 200, A1 A2 A3 A6 | `entity_api/src/search/visibility.rs:36` | [rows] Automated: SQL-shape mock and visible-relationship SQLite only; check hits by hand. |
+| SRCH-01 | GET /search?q=kumquat&types=actions | COACH | 200, A1 A2 A3 A6 A7 | `entity_api/src/search/visibility.rs:36` | [rows] Automated: SQL-shape mock and visible-relationship SQLite only; check hits by hand. |
 | SRCH-02 | GET /search?q=kumquat&types=actions | COACHEE | 200, A1 A2 A3 A4 A5 | `entity_api/src/search/visibility.rs:36`; `entity_api/src/search/action.rs:45` | [rows] no assignee narrowing. Automated: SQL-shape mock and visible-relationship SQLite only; check hits by hand. |
 | SRCH-03 | GET /search?q=kumquat&types=actions | OTHER_COACH | 200, A4 A5 | `entity_api/src/search/visibility.rs:36` | [rows] Automated: SQL-shape mock and visible-relationship SQLite only; check hits by hand. |
 | SRCH-04 | GET /search?q=kumquat&types=actions | MEMBER, ADMIN, OUTSIDER | 200, no hits | `entity_api/src/search/visibility.rs:36`; `domain/src/search.rs:103` | [rows] Admin gets no org-wide search |
-| SRCH-05 | GET /search?q=kumquat&types=actions | SUPER | 200, A1 to A6 | `entity_api/src/search/visibility.rs:26` | [rows] unrestricted. Automated: SQL-shape mock and visible-relationship SQLite only; check hits by hand. |
+| SRCH-05 | GET /search?q=kumquat&types=actions | SUPER | 200, A1 to A7 | `entity_api/src/search/visibility.rs:26` | [rows] unrestricted. Automated: SQL-shape mock and visible-relationship SQLite only; check hits by hand. |
 | SRCH-06 | GET /search?q=kumquat&types=actions | REMOVED | 200, no hits | `entity/src/coaching_relationships.rs:131` | [rows] R3 dropped by the membership clause |
 | SRCH-07 | GET /search?q=kumquat&types=actions&coaching_relationship_id=R1 | COACHEE | 200, A1 A2 A3 | `entity_api/src/search/visibility.rs:42` | [rows] filter intersects, never widens. Automated: SQL-shape mock and visible-relationship SQLite only; check hits by hand. |
 | SRCH-08 | GET /search?q=kumquat&types=actions&coaching_relationship_id=R1 | MEMBER | 200, no hits | `entity_api/src/search/visibility.rs:42` | [rows] not 403 |
-| SRCH-09 | GET /search?q=kumquat&types=actions&organization_id=O1 | SUPER | 200, A1 to A6 | `entity_api/src/search/visibility.rs:39` | [rows] Automated: SQL-shape mock and visible-relationship SQLite only; check hits by hand. |
+| SRCH-09 | GET /search?q=kumquat&types=actions&organization_id=O1 | SUPER | 200, A1 to A7 | `entity_api/src/search/visibility.rs:39` | [rows] Automated: SQL-shape mock and visible-relationship SQLite only; check hits by hand. |
 | SRCH-10 | GET /search?q=kumquat (all types) | COACHEE | 200, R1 and R2 hits of every type (S1 S2, G1 G2, A1 to A5, AG1, T1 T2, SG1 SG2) | `entity_api/src/search/visibility.rs:36` | [rows] notes are not searched. Automated: SQL-shape mock and visible-relationship SQLite only; check hits by hand. |
 
 ### 4.12 Collaboration token (`JWT`)
