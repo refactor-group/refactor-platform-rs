@@ -24,8 +24,9 @@ before the baseline. Their expected results already show the phase M rule:
   emailed. A participant removed while a request is in flight can still get that one email.
 - Creating, rescheduling or resending a session or series is refused (409,
   `details.reason` `coachee_not_a_member`) when the coachee is no longer a member; assigning an
-  action to someone who is no longer a member is refused (`assignee_not_a_member`). Cancelling
-  and deleting stay allowed (SES-33 to SES-36, SER-17 to SER-21, ACT-37, ACT-38, TRN-28).
+  action to someone who is no longer a member is refused (`assignee_not_a_member`); an
+  assignee already on an action is not rechecked. Cancelling and deleting stay allowed.
+  Rows: SES-33 to SES-36, SER-17 to SER-21, ACT-37 to ACT-39, TRN-28.
 - Deleting an account with coaching history is refused (409 `user_has_coaching_history`,
   ORG-08); removing the person from the organization is the way out.
 
