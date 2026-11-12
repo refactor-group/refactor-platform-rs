@@ -30,6 +30,8 @@ use time::Duration;
 use tokio::net::TcpListener;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
+#[cfg(test)]
+mod baseline;
 mod controller;
 mod error;
 pub(crate) mod extractors;

@@ -24,15 +24,19 @@ use entity::{
 #[cfg(feature = "mock")]
 use sea_orm::DbErr;
 use sea_orm::{
-    ActiveModelTrait, ConnectOptions, ConnectionTrait, Database, DatabaseConnection, EntityTrait,
-    Set,
+    ActiveModelTrait, ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend,
+    EntityTrait, QueryResult, Set, Statement,
 };
+
+pub mod access_world;
+
+pub use access_world::{seed_access_world, AccessWorld, Caller};
 
 /// Ceiling on one SQLite test. Per-acquire timeouts still add up across many rows.
 const TEST_TIME_LIMIT: Duration = Duration::from_secs(5 * 60);
 
 /// Runs a SQLite test body, failing it once it passes `TEST_TIME_LIMIT`.
-pub(crate) async fn within_time_limit<F: Future>(test: F) -> F::Output {
+pub async fn within_time_limit<F: Future>(test: F) -> F::Output {
     tokio::time::timeout(TEST_TIME_LIMIT, test)
         .await
         .unwrap_or_else(|_| {
@@ -43,7 +47,7 @@ pub(crate) async fn within_time_limit<F: Future>(test: F) -> F::Output {
 }
 
 /// A fresh in-memory database holding every entity's table, with foreign keys enforced.
-pub(crate) async fn database() -> DatabaseConnection {
+pub async fn database() -> DatabaseConnection {
     let mut options = ConnectOptions::new("sqlite::memory:");
     // Every in-memory SQLite connection is its own database, so there must be exactly one.
     // A query that escapes an open transaction then waits for a second connection that never
@@ -107,8 +111,124 @@ pub(crate) async fn database() -> DatabaseConnection {
     db
 }
 
+/// SQLite stand-in for a Postgres timestamp default, in the format SeaORM writes.
+const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+
+/// Column defaults the migrations declare that inserts through the app rely on:
+/// (table, or `None` for every table; column; SQLite default expression).
+const MIGRATION_DEFAULTS: &[(Option<&str>, &str, &str)] = &[
+    (None, "id", "randomblob(16)"),
+    (Some("coaching_session_series"), "ical_sequence", "0"),
+    (Some("coaching_sessions"), "ical_sequence", "0"),
+    (Some("coaching_sessions"), "notice_given_at", NOW),
+    (Some("coaching_session_topics"), "status", "'open'"),
+    (Some("users"), "timezone", "'UTC'"),
+    (
+        Some("users"),
+        "default_coaching_session_duration_minutes",
+        "60",
+    ),
+    (Some("users"), "working_hours_start", "'08:00:00'"),
+    (Some("users"), "working_hours_end", "'17:30:00'"),
+    (Some("user_role_changes"), "changed_at", NOW),
+];
+
+/// Unique indexes only the migrations create; `ON CONFLICT` targets need them.
+const MIGRATION_INDEXES: &[&str] = &[
+    "CREATE UNIQUE INDEX refactor_platform.coaching_relationships_coach_coachee_org \
+     ON coaching_relationships (coach_id, coachee_id, organization_id)",
+    "CREATE UNIQUE INDEX refactor_platform.user_roles_user_org_unique \
+     ON user_roles (user_id, organization_id) WHERE organization_id IS NOT NULL",
+    "CREATE UNIQUE INDEX refactor_platform.user_roles_user_global_role_unique \
+     ON user_roles (user_id, role) WHERE organization_id IS NULL",
+    "CREATE UNIQUE INDEX refactor_platform.actions_users_action_user_unique \
+     ON actions_users (action_id, user_id)",
+    "CREATE UNIQUE INDEX refactor_platform.coaching_sessions_goals_session_goal_unique \
+     ON coaching_sessions_goals (coaching_session_id, goal_id)",
+];
+
+/// Rebuilds every table with the column defaults the migrations declare
+/// (`MIGRATION_DEFAULTS`) and adds their unique indexes (`MIGRATION_INDEXES`); schema sync
+/// leaves both out, and the app's own inserts rely on them. Call before seeding: the
+/// tables come back empty.
+pub async fn mirror_migration_defaults(db: &DatabaseConnection) {
+    let schema = db
+        .query_all_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT type, name, sql FROM refactor_platform.sqlite_master WHERE sql IS NOT NULL",
+        ))
+        .await
+        .expect("the schema reads");
+    let column = |row: &QueryResult, name: &str| -> String {
+        row.try_get("", name)
+            .expect("the schema row has the column")
+    };
+    let of_type = |kind: &'static str| {
+        schema
+            .iter()
+            .filter(move |row| column(row, "type") == kind)
+            .map(|row| (column(row, "name"), column(row, "sql")))
+    };
+    let tables: Vec<(String, String)> = of_type("table").collect();
+    let indexes: Vec<(String, String)> = of_type("index").collect();
+
+    db.execute_unprepared("PRAGMA foreign_keys = OFF")
+        .await
+        .expect("foreign keys pause");
+    for (name, sql) in &tables {
+        let rebuilt = MIGRATION_DEFAULTS
+            .iter()
+            .filter(|(table, _, _)| table.is_none_or(|table| table == name))
+            .fold(
+                qualify(sql, "CREATE TABLE "),
+                |sql, (_, column, default)| with_default(&sql, column, default),
+            );
+        for statement in [format!("DROP TABLE refactor_platform.\"{name}\""), rebuilt] {
+            db.execute_unprepared(&statement)
+                .await
+                .expect("the table is rebuilt");
+        }
+    }
+    let synced_indexes = indexes
+        .iter()
+        .map(|(_, sql)| qualify(&qualify(sql, "CREATE INDEX "), "CREATE UNIQUE INDEX "));
+    for sql in synced_indexes.chain(MIGRATION_INDEXES.iter().map(|sql| sql.to_string())) {
+        db.execute_unprepared(&sql)
+            .await
+            .expect("the index is created");
+    }
+    db.execute_unprepared("PRAGMA foreign_keys = ON")
+        .await
+        .expect("foreign keys resume");
+}
+
+/// Puts the statement's object in the `refactor_platform` schema.
+fn qualify(sql: &str, prefix: &str) -> String {
+    sql.replacen(
+        &format!("{prefix}\""),
+        &format!("{prefix}refactor_platform.\""),
+        1,
+    )
+}
+
+/// Adds `DEFAULT (default)` to the column's definition, if the table has the column.
+fn with_default(sql: &str, column: &str, default: &str) -> String {
+    let Some(start) = sql
+        .find(&format!("( \"{column}\" "))
+        .map(|at| at + 2)
+        .or_else(|| sql.find(&format!(", \"{column}\" ")).map(|at| at + 2))
+    else {
+        return sql.to_string();
+    };
+    let end = start
+        + sql[start..]
+            .find([',', ')'])
+            .expect("a column definition ends");
+    format!("{} DEFAULT ({default}){}", &sql[..end], &sql[end..])
+}
+
 /// Inserts a user with every column set and returns its id.
-pub(crate) async fn seed_user(db: &DatabaseConnection) -> Id {
+pub async fn seed_user(db: &DatabaseConnection) -> Id {
     let id = Id::new_v4();
     let now = Utc::now();
     users::ActiveModel {
@@ -134,7 +254,7 @@ pub(crate) async fn seed_user(db: &DatabaseConnection) -> Id {
 }
 
 /// Inserts an organization with every column set and returns its id.
-pub(crate) async fn seed_organization(db: &DatabaseConnection) -> Id {
+pub async fn seed_organization(db: &DatabaseConnection) -> Id {
     let id = Id::new_v4();
     let now = Utc::now();
     organizations::ActiveModel {
@@ -154,7 +274,7 @@ pub(crate) async fn seed_organization(db: &DatabaseConnection) -> Id {
 }
 
 /// Gives `user_id` a User role in `organization_id`.
-pub(crate) async fn seed_membership(db: &DatabaseConnection, user_id: Id, organization_id: Id) {
+pub async fn seed_membership(db: &DatabaseConnection, user_id: Id, organization_id: Id) {
     let now = Utc::now();
     user_roles::ActiveModel {
         id: Set(Id::new_v4()),
@@ -170,7 +290,7 @@ pub(crate) async fn seed_membership(db: &DatabaseConnection, user_id: Id, organi
 }
 
 /// The organization a session's relationship belongs to.
-pub(crate) async fn organization_of(db: &DatabaseConnection, session_id: Id) -> Id {
+pub async fn organization_of(db: &DatabaseConnection, session_id: Id) -> Id {
     let session = coaching_sessions::Entity::find_by_id(session_id)
         .one(db)
         .await
@@ -185,7 +305,7 @@ pub(crate) async fn organization_of(db: &DatabaseConnection, session_id: Id) -> 
 }
 
 /// Inserts a coaching session and its parents; returns the session and its one user.
-pub(crate) async fn seed_coaching_session(db: &DatabaseConnection) -> (Id, Id) {
+pub async fn seed_coaching_session(db: &DatabaseConnection) -> (Id, Id) {
     let user_id = seed_user(db).await;
     let organization_id = seed_organization(db).await;
     let now = Utc::now();
@@ -229,7 +349,7 @@ pub(crate) async fn seed_coaching_session(db: &DatabaseConnection) -> (Id, Id) {
 }
 
 /// Inserts a note on `session_id` and returns its id.
-pub(crate) async fn seed_note(db: &DatabaseConnection, session_id: Id, user_id: Id) -> Id {
+pub async fn seed_note(db: &DatabaseConnection, session_id: Id, user_id: Id) -> Id {
     let now = Utc::now();
     notes::ActiveModel {
         id: Set(Id::new_v4()),
@@ -246,7 +366,7 @@ pub(crate) async fn seed_note(db: &DatabaseConnection, session_id: Id, user_id: 
 }
 
 /// Inserts an action on `session_id` and returns its id.
-pub(crate) async fn seed_action(db: &DatabaseConnection, session_id: Id, user_id: Id) -> Id {
+pub async fn seed_action(db: &DatabaseConnection, session_id: Id, user_id: Id) -> Id {
     let now = Utc::now();
     actions::ActiveModel {
         id: Set(Id::new_v4()),
@@ -267,7 +387,7 @@ pub(crate) async fn seed_action(db: &DatabaseConnection, session_id: Id, user_id
 }
 
 /// Inserts an agreement on `session_id` and returns its id.
-pub(crate) async fn seed_agreement(db: &DatabaseConnection, session_id: Id, user_id: Id) -> Id {
+pub async fn seed_agreement(db: &DatabaseConnection, session_id: Id, user_id: Id) -> Id {
     let now = Utc::now();
     agreements::ActiveModel {
         id: Set(Id::new_v4()),
@@ -284,7 +404,7 @@ pub(crate) async fn seed_agreement(db: &DatabaseConnection, session_id: Id, user
 }
 
 /// Inserts a topic on `session_id`, soft-deleted when `deleted`, and returns its id.
-pub(crate) async fn seed_topic(
+pub async fn seed_topic(
     db: &DatabaseConnection,
     session_id: Id,
     user_id: Id,
@@ -323,7 +443,7 @@ pub(crate) async fn foreign_key_violation() -> DbErr {
 }
 
 /// Ids of a seeded completed transcription and the rows around it.
-pub(crate) struct SeededTranscription {
+pub struct SeededTranscription {
     pub session_id: Id,
     pub user_id: Id,
     pub transcription_id: Id,
@@ -331,10 +451,7 @@ pub(crate) struct SeededTranscription {
 }
 
 /// Inserts a session, a completed recording and transcription, and `segments` segments.
-pub(crate) async fn seed_transcription(
-    db: &DatabaseConnection,
-    segments: usize,
-) -> SeededTranscription {
+pub async fn seed_transcription(db: &DatabaseConnection, segments: usize) -> SeededTranscription {
     let (session_id, user_id) = seed_coaching_session(db).await;
     let now = Utc::now();
 
@@ -410,7 +527,7 @@ pub(crate) async fn seed_transcription(
 /// A user who left one of their two organizations: U holds a role in O1 only, coaches R1
 /// in O1 and is coached in R2 in O2. Each relationship has one session, one action assigned
 /// to U and one goal U wrote; index 0 is R1's, index 1 is R2's.
-pub(crate) struct LapsedMembership {
+pub struct LapsedMembership {
     pub user: Id,
     pub o1: Id,
     pub o2: Id,
@@ -450,7 +567,7 @@ impl LapsedMembership {
 }
 
 /// Seeds a [`LapsedMembership`], with every session dated `date`.
-pub(crate) async fn seed_lapsed_membership(
+pub async fn seed_lapsed_membership(
     db: &DatabaseConnection,
     date: chrono::NaiveDateTime,
 ) -> LapsedMembership {
