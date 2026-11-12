@@ -1,0 +1,33 @@
+# High-tier paths: a change here needs a person. See docs/cicd/review-risk-tiers.md.
+# Later matches win, so keep the most specific patterns last.
+
+# CI, deploy, and runtime
+/.github/                           @jhodapp
+/Dockerfile                         @jhodapp
+/entrypoint.sh                      @jhodapp
+/docker-compose*.yaml               @jhodapp
+/nginx/                             @jhodapp
+/nginx-preview/                     @jhodapp
+
+# Migrations
+/migration/                         @jhodapp
+
+# Authentication and authorization
+/web/src/router.rs                  @jhodapp
+/web/src/extractors/                @jhodapp
+/web/src/protect/                   @jhodapp
+/web/src/middleware/                @jhodapp
+/domain/src/jwt/                    @jhodapp
+/domain/src/gateway/auth.rs         @jhodapp
+/domain/src/gateway/oauth/          @jhodapp
+/domain/src/oauth_token_storage.rs  @jhodapp
+/domain/src/password_policy.rs      @jhodapp
+/domain/src/password_reset.rs       @jhodapp
+/meeting-auth/                      @jhodapp
+/docs-collab-server/src/auth.rs     @jhodapp
+
+# Agent and reviewer instructions
+/.claude/                           @jhodapp
+/AGENTS.md                          @jhodapp
+/CLAUDE.md                          @jhodapp
+/REVIEW.md                          @jhodapp
