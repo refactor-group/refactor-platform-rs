@@ -1,6 +1,5 @@
 //! `SeaORM` Entity.
 
-use crate::topic_priority::Priority;
 use crate::topic_status::Status;
 use crate::Id;
 use sea_orm::entity::prelude::*;
@@ -15,7 +14,6 @@ pub struct TopicSnapshot {
     pub coaching_session_id: Id,
     pub body: String,
     pub display_order: i32,
-    pub priority: Option<crate::topic_priority::Priority>,
     pub status: crate::topic_status::Status,
     pub moved_from_session_id: Option<Id>,
     pub deleted_at: Option<DateTimeWithTimeZone>,
@@ -40,8 +38,6 @@ pub struct Model {
     // Backend-internal ordering index. Never crosses the wire in either direction.
     #[serde(skip)]
     pub display_order: i32,
-    // Coachee-set priority; null when unset.
-    pub priority: Option<Priority>,
     // Lifecycle status; NOT NULL, defaults to Open.
     pub status: Status,
     // Provenance for a moved topic: the session it was last moved out of. Server-set; null normally.

@@ -1277,7 +1277,6 @@ mod tests {
             body: "Deferred topic".to_string(),
             user_id: Id::new_v4(),
             display_order: 0,
-            priority: Some(crate::topic_priority::Priority::High),
             status: crate::topic_status::Status::Deferred,
             moved_from_session_id: None,
             undo_snapshot: None,

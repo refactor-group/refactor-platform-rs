@@ -36,7 +36,6 @@ pub mod platform_cost_metrics;
 pub mod roles;
 pub mod status;
 pub mod token_purpose;
-pub mod topic_priority;
 pub mod topic_status;
 pub mod transcript_analysis;
 pub mod transcript_participant;

@@ -77,7 +77,6 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::topic_controller::update,
             coaching_session::topic_controller::reorder,
             coaching_session::topic_controller::delete,
-            coaching_session::topic_controller::set_rating,
             coaching_session::topic_controller::set_status,
             coaching_session::topic_controller::undo,
             coaching_session::transcript_suggestion_controller::index,
@@ -165,7 +164,6 @@ use utoipa_rapidoc::RapiDoc;
                 crate::controller::coaching_session::topic_controller::CreateParams,
                 crate::controller::coaching_session::topic_controller::UpdateParams,
                 crate::controller::coaching_session::topic_controller::ReorderParams,
-                crate::controller::coaching_session::topic_controller::RatingParams,
                 crate::controller::coaching_session::topic_controller::StatusParams,
                 crate::controller::oauth_controller::ConnectionResponse,
                 crate::controller::password_reset_controller::ValidateParams,
@@ -237,7 +235,6 @@ use utoipa_rapidoc::RapiDoc;
                 domain::transcription::Model,
                 domain::transcription::WithSpeakers,
                 domain::topic_status::Status,
-                domain::topic_priority::Priority,
                 domain::transcript_suggestion_target::Target,
                 domain::user::Credentials,
                 domain::user_role::UserLookupResult,
@@ -944,10 +941,6 @@ fn coaching_session_topic_routes(app_state: AppState) -> Router {
             "/coaching_sessions/:coaching_session_id/topics/:topic_id",
             put(coaching_session::topic_controller::update)
                 .delete(coaching_session::topic_controller::delete),
-        )
-        .route(
-            "/coaching_sessions/:coaching_session_id/topics/:topic_id/rating",
-            patch(coaching_session::topic_controller::set_rating),
         )
         .route(
             "/coaching_sessions/:coaching_session_id/topics/:topic_id/status",

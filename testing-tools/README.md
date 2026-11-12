@@ -92,7 +92,6 @@ cargo run -p testing-tools --bin sse-test-client -- \
 - `action-delete` - Tests SSE events for action deletion (uses existing coaching relationship or creates one)
 - `topic-create` - Tests `topics_changed` when a topic is created (coach acts, coachee receives)
 - `topic-update` - Tests `topics_changed` when a topic body is edited (coach acts, coachee receives)
-- `topic-priority` - Tests `topics_changed` when the coachee sets priority (coachee acts, coach receives)
 - `topic-status` - Tests `topics_changed` when status is set to Discussed (coach acts, coachee receives)
 - `topic-delete` - Tests `topics_changed` when a topic is deleted (author acts, coachee receives)
 - `force-logout-test` - Tests SSE events for force logout (NOT YET IMPLEMENTED)

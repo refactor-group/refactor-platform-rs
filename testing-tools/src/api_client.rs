@@ -534,37 +534,6 @@ impl ApiClient {
             .map(|obj| Value::Object(obj.clone()))
     }
 
-    /// Coachee-only. Sets the topic's `priority` (Low|Medium|High).
-    pub async fn set_topic_priority(
-        &self,
-        session_cookie: &str,
-        coaching_session_id: &str,
-        topic_id: &str,
-        priority: &str,
-    ) -> Result<Value> {
-        let url = format!(
-            "{}/coaching_sessions/{}/topics/{}/rating",
-            self.base_url, coaching_session_id, topic_id
-        );
-        let response = self
-            .client
-            .patch(&url)
-            .header("Cookie", format!("id={}", session_cookie))
-            .header("x-version", "1.0.0")
-            .json(&json!({ "priority": priority }))
-            .send()
-            .await
-            .context("Failed to set topic priority")?;
-        if !response.status().is_success() {
-            anyhow::bail!("Failed to set topic priority: {}", response.status());
-        }
-        let api_response: Value = response.json().await.context("Failed to parse response")?;
-        api_response["data"]
-            .as_object()
-            .context("No data object in response")
-            .map(|obj| Value::Object(obj.clone()))
-    }
-
     /// Either participant. Sets the topic's lifecycle `status` (Open|Discussed|Deferred).
     pub async fn set_topic_status(
         &self,

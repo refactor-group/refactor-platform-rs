@@ -2,7 +2,6 @@ use crate::coaching_session;
 use crate::coaching_session_topics::Model;
 use crate::error::{DomainErrorKind, Error};
 use crate::events::{DomainEvent, EventPublisher};
-use crate::topic_priority::Priority;
 use crate::topic_status::Status;
 use crate::Id;
 use entity_api::coaching_session_topic as TopicApi;
@@ -50,9 +49,8 @@ pub async fn create(
     coaching_session_id: Id,
     body: String,
     user_id: Id,
-    priority: Option<Priority>,
 ) -> Result<Model, Error> {
-    let topic = TopicApi::create(db, coaching_session_id, body, user_id, priority).await?;
+    let topic = TopicApi::create(db, coaching_session_id, body, user_id).await?;
     publish_topics_changed(db, event_publisher, &[coaching_session_id]).await;
     Ok(topic)
 }
@@ -89,17 +87,6 @@ pub async fn reorder(
     let topics = TopicApi::reorder(db, coaching_session_id, ordered_ids).await?;
     publish_topics_changed(db, event_publisher, &[coaching_session_id]).await;
     Ok(topics)
-}
-
-pub async fn set_priority(
-    db: &DatabaseConnection,
-    event_publisher: &EventPublisher,
-    id: Id,
-    priority: Option<Priority>,
-) -> Result<Model, Error> {
-    let topic = TopicApi::set_priority(db, id, priority).await?;
-    publish_topics_changed(db, event_publisher, &[topic.coaching_session_id]).await;
-    Ok(topic)
 }
 
 pub async fn set_status(
