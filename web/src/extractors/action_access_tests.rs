@@ -18,7 +18,7 @@ use serde_json::json;
 
 use crate::controller::action_controller::{create, delete, read, update, update_status};
 use crate::extractors::relationship_access_test_support::{
-    self as support, assert_refusal, json_body, Caller,
+    self as support, assert_refusal, assert_status_written, json_body, Caller,
 };
 use crate::AppState;
 
@@ -504,29 +504,30 @@ async fn act_34_member_cannot_update_the_action() {
 #[tokio::test]
 async fn act_30_coach_updates_the_action_status() {
     let w = world();
-    let completed = actions::Model {
-        status: domain::status::Status::Completed,
+    let on_hold = actions::Model {
+        status: domain::status::Status::OnHold,
         ..w.action.clone()
     };
     let db = Arc::new(
         w.reaching_action(Caller::Coach)
             // The locked read, then the UPDATE ... RETURNING.
             .append_query_results([vec![w.action.clone()]])
-            .append_query_results([vec![completed]])
+            .append_query_results([vec![on_hold]])
             .into_connection(),
     );
     let response = send(
         &db,
         &w.coach.email,
         "PUT",
-        &format!("/actions/{}/status?value=completed", w.action.id),
+        &format!("/actions/{}/status?value=on_hold", w.action.id),
         None,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK, "ACT-30");
     let body = json_body(response).await;
     assert_eq!(body["data"]["id"], json!(w.action.id), "ACT-30");
-    assert_eq!(body["data"]["status"], json!("Completed"), "ACT-30");
+    assert_eq!(body["data"]["status"], json!("OnHold"), "ACT-30");
+    assert_status_written("ACT-30", &db, "on_hold");
 }
 
 #[tokio::test]

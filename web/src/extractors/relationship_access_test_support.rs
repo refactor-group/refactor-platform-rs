@@ -288,6 +288,24 @@ fn wrote(db: &DatabaseConnection) -> bool {
     })
 }
 
+/// Asserts the one UPDATE run set `status` to `value`, judged by its SET clause.
+pub(crate) fn assert_status_written(row: &str, db: &DatabaseConnection, value: &str) {
+    let set_clauses: Vec<String> = db
+        .clone()
+        .into_transaction_log()
+        .iter()
+        .flat_map(|t| t.statements().iter().map(|s| s.to_string()))
+        .filter(|sql| sql.trim_start().to_uppercase().starts_with("UPDATE"))
+        .filter_map(|sql| sql.split(" WHERE ").next().map(str::to_string))
+        .collect();
+    assert_eq!(set_clauses.len(), 1, "{row}: {set_clauses:?}");
+    assert!(
+        set_clauses[0].contains(&format!(r#""status" = CAST('{value}' AS "status")"#)),
+        "{row}: {}",
+        set_clauses[0]
+    );
+}
+
 /// Asserts `response` is the refusal `expected` and nothing was written.
 pub(crate) fn assert_refusal(
     row: &str,

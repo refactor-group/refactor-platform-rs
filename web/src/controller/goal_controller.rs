@@ -4,6 +4,7 @@ use crate::extractors::{
     compare_api_version::CompareApiVersion,
 };
 use crate::params::goal::{IndexParams, SortField};
+use crate::params::status;
 use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
@@ -13,7 +14,6 @@ use axum::Json;
 use domain::coaching_session as CoachingSessionApi;
 use domain::goal as GoalApi;
 use domain::goal_progress as GoalProgressApi;
-use domain::status::Status;
 use domain::{goals::Model, Id};
 use serde_json::json;
 use service::config::ApiVersion;
@@ -182,12 +182,16 @@ pub async fn update(
     params(
         ApiVersion,
         ("id" = Uuid, Path, description = "Id of goal to update"),
-        ("value" = Option<String>, Query, description = "Status value to update"),
+        ("value" = String, Query, description = "New status: not_started, in_progress, completed, on_hold or wont_do"),
     ),
     responses(
         (status = 200, description = "Successfully Updated Goal", body = domain::goals::Model),
+        (status = 400, description = "Missing value"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Goal not found"),
         (status = 405, description = "Method not allowed"),
+        (status = 422, description = "Unknown status value"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -197,7 +201,7 @@ pub async fn update(
 pub async fn update_status(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
-    Query(status): Query<String>,
+    Query(params): Query<status::UpdateParams>,
     Path(id): Path<Id>,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
@@ -207,7 +211,7 @@ pub async fn update_status(
         app_state.db_conn_ref(),
         app_state.event_publisher.as_ref(),
         id,
-        Status::try_from(status.as_str()).unwrap_or_default(),
+        params.status()?,
     )
     .await?;
 

@@ -27,13 +27,6 @@ pub(crate) struct IndexParams {
     pub(crate) sort_order: Option<SortOrder>,
 }
 
-/// Query parameters for setting an action's status.
-#[derive(Debug, Deserialize)]
-pub(crate) struct UpdateStatusParams {
-    /// The status's snake_case value, e.g. `completed`.
-    pub(crate) value: String,
-}
-
 impl IntoQueryFilterMap for IndexParams {
     fn into_query_filter_map(self) -> QueryFilterMap {
         let mut query_filter_map = QueryFilterMap::new();

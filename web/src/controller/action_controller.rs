@@ -3,7 +3,6 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use domain::action::ActionWithAssignees;
-use domain::status::Status;
 use domain::{
     action as ActionApi, actions::Model, coaching_relationship as CoachingRelationshipApi,
     coaching_relationships, emails as EmailsApi, goal as GoalApi, users, Id,
@@ -20,7 +19,8 @@ use crate::extractors::{
     action_access::ActionAccess, authenticated_user::AuthenticatedUser,
     coaching_session_access::authorize_session, compare_api_version::CompareApiVersion,
 };
-use crate::params::action::{IndexParams, SortField, UpdateStatusParams};
+use crate::params::action::{IndexParams, SortField};
+use crate::params::status;
 use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
 
@@ -297,20 +297,17 @@ pub async fn update_status(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     ActionAccess { action, .. }: ActionAccess,
-    Query(params): Query<UpdateStatusParams>,
+    Query(params): Query<status::UpdateParams>,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
     let id = action.id;
     debug!("PUT Update Action Status with id: {id}");
 
-    let status = Status::try_from(params.value.as_str())
-        .map_err(|_| Error::validation(format!("'{}' is not a known status.", params.value)))?;
-
     let action = ActionApi::update_status(
         app_state.db_conn_ref(),
         app_state.event_publisher.as_ref(),
         id,
-        status,
+        params.status()?,
     )
     .await?;
 
