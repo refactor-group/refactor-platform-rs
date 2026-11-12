@@ -44,4 +44,4 @@ Open with a count: "2 important, 1 nit." When there is nothing to fix, say "Noth
 - After the first pass, review only the new diff.
 - Flag a class of bug once and list every instance, so one fix round covers all of them.
 - Never repeat a finding that was fixed or answered.
-- After three rounds on one PR, stop and ask the author to reconsider the approach.
+- After three rounds with an Important finding on one PR, ask the author once to reconsider the approach, and keep reviewing new diffs.

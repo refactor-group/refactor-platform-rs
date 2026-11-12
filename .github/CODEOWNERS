@@ -22,6 +22,7 @@
 /web/src/controller/password_reset_controller.rs  @jhodapp
 /web/src/controller/jwt_controller.rs             @jhodapp
 /web/src/controller/webhook_controller.rs         @jhodapp
+/web/src/controller/user/password_controller.rs   @jhodapp
 /domain/src/magic_link_token.rs     @jhodapp
 /web/src/extractors/                @jhodapp
 /web/src/protect/                   @jhodapp

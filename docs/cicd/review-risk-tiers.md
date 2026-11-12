@@ -25,7 +25,7 @@ A code owner's own high-tier change needs no second person. The deep review and 
 
 `.github/CODEOWNERS` lists the paths. The reasons:
 
-- **Authentication and authorization**: `web/src/extractors/`, `web/src/protect/`, `web/src/middleware/`, `web/src/router.rs`, `web/src/lib.rs` (CORS and sessions), the login, magic-link, OAuth, password reset, JWT, and webhook controllers, `domain/src/jwt/`, `domain/src/magic_link_token.rs`, `meeting-auth/`, and the collab server's `auth.rs` and `rest.rs`. A mistake here exposes private coaching data.
+- **Authentication and authorization**: `web/src/extractors/`, `web/src/protect/`, `web/src/middleware/`, `web/src/router.rs`, `web/src/lib.rs` (CORS and sessions), the login, magic-link, OAuth, password reset, password change, JWT, and webhook controllers, `domain/src/jwt/`, `domain/src/magic_link_token.rs`, `meeting-auth/`, and the collab server's `auth.rs` and `rest.rs`. A mistake here exposes private coaching data.
 - **Real-time delivery**: `web/src/sse/`, `sse/`. These decide which user receives which event.
 - **Migrations**: `migration/`. A revert does not undo a schema change.
 - **CI, deploy, and runtime**: `.github/`, `Dockerfile`, `entrypoint.sh`, compose files, `nginx/`. These run with production secrets or decide what reaches production.
