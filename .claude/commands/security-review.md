@@ -1,4 +1,8 @@
-Conduct a security-focused review of this Rust/Axum/SeaORM code. Check for:
+Conduct a security-focused review of this Rust/Axum/SeaORM code.
+
+First read `.github/security-review-instructions.txt`. It names this repository's highest-risk areas (authorization by route, collab tokens, SSE, transcripts sent to a model, throttling); check those before the general list below.
+
+Check for:
 
 **INJECTION VULNERABILITIES**
 - SQL injection via raw queries or string interpolation
