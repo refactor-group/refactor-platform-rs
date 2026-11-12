@@ -81,6 +81,7 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Review
+        id: review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -108,7 +109,14 @@ jobs:
             not approve the PR. Post GitHub comments only.
 
             To search the PR's code use the Grep and Glob tools under
-            `pr-head/`; to read a file use the Read tool.
+            `pr-head/`; to read a file use the Read tool. Run one command
+            per Bash call: pipes, redirects, `cd`, command substitution, and
+            chained commands are denied.
+
+            Post each summary with a single `gh pr comment` command that
+            carries the text in `--body`, or in a heredoc on `--body-file -`.
+            Never write it to a file first. If a post is denied, retry in the
+            other form. Do not finish without posting the summary.
 
             1. Read REVIEW.md, AGENTS.md, .claude/coding-standards.md,
                docs/cicd/review-risk-tiers.md, and .github/CODEOWNERS from the
@@ -186,6 +194,16 @@ jobs:
                starts with that marker, names what keeps recurring, and asks
                the author to reconsider the approach. Post it once per PR.
 
+      # A review that posted no summary must not pass as green.
+      - name: Confirm the summary was posted
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
+          MARKER: "claude-review:code sha=${{ github.event.pull_request.head.sha }}"
+        run: |
+          jq -r '.. | objects | select(has("permission_denials")) | .permission_denials[]? | "denied: \(.tool_name) \(.tool_input.command // (.tool_input | tostring) | .[0:300])"' "$EXECUTION_FILE" || true
+          gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json comments --jq '.comments[].body' | grep -qF "$MARKER"
+
   security-review:
     name: Security Review
     needs: gate
@@ -219,6 +237,7 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Review
+        id: review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -245,7 +264,14 @@ jobs:
             not approve the PR. Post GitHub comments only.
 
             To search the PR's code use the Grep and Glob tools under
-            `pr-head/`; to read a file use the Read tool.
+            `pr-head/`; to read a file use the Read tool. Run one command
+            per Bash call: pipes, redirects, `cd`, command substitution, and
+            chained commands are denied.
+
+            Post each summary with a single `gh pr comment` command that
+            carries the text in `--body`, or in a heredoc on `--body-file -`.
+            Never write it to a file first. If a post is denied, retry in the
+            other form. Do not finish without posting the summary.
 
             1. Read .github/security-review-instructions.txt and AGENTS.md from
                the working directory, not from `pr-head/`.
@@ -288,3 +314,13 @@ jobs:
                is
                `<!-- claude-review:security sha=${{ github.event.pull_request.head.sha }} -->`
                followed by a count of findings, or "No security findings."
+
+      # A review that posted no summary must not pass as green.
+      - name: Confirm the summary was posted
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
+          MARKER: "claude-review:security sha=${{ github.event.pull_request.head.sha }}"
+        run: |
+          jq -r '.. | objects | select(has("permission_denials")) | .permission_denials[]? | "denied: \(.tool_name) \(.tool_input.command // (.tool_input | tostring) | .[0:300])"' "$EXECUTION_FILE" || true
+          gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json comments --jq '.comments[].body' | grep -qF "$MARKER"
