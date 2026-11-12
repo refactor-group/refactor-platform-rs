@@ -1,0 +1,13 @@
+Repository-specific guidance for this Rust backend (Axum, SeaORM, PostgreSQL). It stores private coaching notes, transcripts, and goals.
+
+Authorization is the highest-value target:
+- Route authorization uses Axum extractors in web/src/extractors/ named <resource>_access, plus older role rules in web/src/protect/.
+- For every route added or changed in web/src/router.rs, identify the extractor or rule that guards it. A route with no guard is a finding even if no changed line looks vulnerable.
+- Check that the extractor loads the same resource the handler acts on, and that queries are scoped to the caller's coaching relationship or organization. An id taken from the path or body and used without that scoping is an insecure direct object reference.
+
+Also check:
+- Secrets, tokens, transcript text, or note contents written to logs or returned in error responses.
+- Webhook handlers that act before verifying the signature.
+- OAuth and password reset flows: token reuse, missing expiry, user enumeration.
+- reqwest clients that send an Authorization default header to a pre-signed or third-party URL.
+- GitHub workflow changes that expose secrets to pull request code.
