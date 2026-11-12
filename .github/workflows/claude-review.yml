@@ -3,11 +3,14 @@ name: Claude Review
 # pull_request_target runs this file as it exists on main, so a PR cannot
 # rewrite the workflow to reach the token. The token itself lives in the
 # `claude-review` environment, which only main may use.
+#
+# A PR is reviewed once, when it opens ready or leaves draft. Later pushes are
+# not reviewed; add the `claude-review` label to ask for another round.
 on:
   pull_request_target:
     branches:
       - main
-    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    types: [opened, ready_for_review, labeled]
 
 concurrency:
   # An unrelated label must not cancel a review that is running.
@@ -30,8 +33,7 @@ env:
   REVIEW_SETTINGS: '{"disableAllHooks": true, "claudeMdExcludes": ["**/pr-head/**"]}'
 
 jobs:
-  # Drafts are skipped to save subscription quota; add the `claude-review`
-  # label to review one anyway. Fork PRs must never run: under
+  # The label reviews a draft too. Fork PRs must never run: under
   # pull_request_target they would otherwise receive the token.
   gate:
     name: Should review
@@ -41,12 +43,18 @@ jobs:
       github.actor != 'dependabot[bot]' &&
       (
         (github.event.action == 'labeled' && github.event.label.name == 'claude-review') ||
-        (github.event.action != 'labeled' &&
-          (!github.event.pull_request.draft ||
-            contains(github.event.pull_request.labels.*.name, 'claude-review')))
+        (github.event.action != 'labeled' && !github.event.pull_request.draft)
       )
     steps:
       - run: echo "Reviewing PR ${{ github.event.pull_request.number }}"
+
+      # With the label gone, asking again is one click: add it back.
+      - name: Clear the request label
+        if: github.event.action == 'labeled'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X DELETE "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/claude-review"
 
   code-review:
     name: Code Review
@@ -80,7 +88,12 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends bubblewrap socat
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      # Lets the check below tell this run's summary from an earlier one.
+      - name: Note the start time
+        run: echo "REVIEW_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       - name: Review
+        id: review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -90,7 +103,7 @@ jobs:
           settings: ${{ env.REVIEW_SETTINGS }}
           # No skills or commands: the reviewer needs none, and a PR could supply its own.
           claude_args: |
-            --model claude-fable-5-2
+            --model claude-opus-5-5
             --disable-slash-commands
             --allowedTools "${{ env.REVIEW_TOOLS }}"
           prompt: |
@@ -108,7 +121,15 @@ jobs:
             not approve the PR. Post GitHub comments only.
 
             To search the PR's code use the Grep and Glob tools under
-            `pr-head/`; to read a file use the Read tool.
+            `pr-head/`; to read a file use the Read tool. Run one command
+            per Bash call: pipes, `cd`, command substitution, chained
+            commands, and redirects other than the heredoc described below
+            are denied.
+
+            Post each summary with a single `gh pr comment` command that
+            carries the text in `--body`, or in a heredoc on `--body-file -`.
+            Never write it to a file first. If a post is denied, retry in the
+            other form. Do not finish without posting the summary.
 
             1. Read REVIEW.md, AGENTS.md, .claude/coding-standards.md,
                docs/cicd/review-risk-tiers.md, and .github/CODEOWNERS from the
@@ -177,14 +198,31 @@ jobs:
                **Pre-existing**. Then one `gh pr comment` whose first line is
                `<!-- claude-review:code sha=${{ github.event.pull_request.head.sha }} important=<n> -->`
                with <n> replaced by the number of Important findings in this
-               round, followed by the summary REVIEW.md asks for.
+               round, whose second line is `**Claude Code review**`, followed
+               by the summary REVIEW.md asks for. End every inline comment
+               with the line `_Claude Code review_`. Comments post from a
+               shared bot account, so these labels are how a reader knows who
+               wrote them.
 
             8. Convergence. Count the summaries, this one included, whose
                marker has important greater than 0. If there are three or more
                and no comment on the PR contains
                `<!-- claude-review:stalled -->`, post one more comment that
-               starts with that marker, names what keeps recurring, and asks
+               starts with that marker, has `**Claude Code review**` as its
+               second line, names what keeps recurring, and asks
                the author to reconsider the approach. Post it once per PR.
+
+      # A review that posted no summary must not pass as green.
+      - name: Confirm the summary was posted
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
+          MARKER: "claude-review:code sha=${{ github.event.pull_request.head.sha }}"
+        run: |
+          jq -r '.. | objects | select(has("permission_denials")) | .permission_denials[]? | "denied: \(.tool_name) \(.tool_input.command // (.tool_input | tostring) | .[0:300])"' "$EXECUTION_FILE" || true
+          jq -r '.[]? | select(.type == "result") | "result: subtype=\(.subtype) is_error=\(.is_error) \(.result // (.errors // []) | tostring | .[0:600])"' "$EXECUTION_FILE" || true
+          gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json comments | jq -e --arg marker "$MARKER" --arg started "$REVIEW_STARTED" 'any(.comments[]; (.body | contains($marker)) and .createdAt >= $started)' > /dev/null
 
   security-review:
     name: Security Review
@@ -218,7 +256,12 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends bubblewrap socat
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      # Lets the check below tell this run's summary from an earlier one.
+      - name: Note the start time
+        run: echo "REVIEW_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       - name: Review
+        id: review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -227,7 +270,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           settings: ${{ env.REVIEW_SETTINGS }}
           claude_args: |
-            --model claude-fable-5-2
+            --model claude-opus-5-5
             --disable-slash-commands
             --allowedTools "${{ env.REVIEW_TOOLS }}"
           prompt: |
@@ -245,7 +288,15 @@ jobs:
             not approve the PR. Post GitHub comments only.
 
             To search the PR's code use the Grep and Glob tools under
-            `pr-head/`; to read a file use the Read tool.
+            `pr-head/`; to read a file use the Read tool. Run one command
+            per Bash call: pipes, `cd`, command substitution, chained
+            commands, and redirects other than the heredoc described below
+            are denied.
+
+            Post each summary with a single `gh pr comment` command that
+            carries the text in `--body`, or in a heredoc on `--body-file -`.
+            Never write it to a file first. If a post is denied, retry in the
+            other form. Do not finish without posting the summary.
 
             1. Read .github/security-review-instructions.txt and AGENTS.md from
                the working directory, not from `pr-head/`.
@@ -287,4 +338,21 @@ jobs:
                **Security (medium)**. Then one `gh pr comment` whose first line
                is
                `<!-- claude-review:security sha=${{ github.event.pull_request.head.sha }} -->`
+               whose second line is `**Claude Code security review**`,
                followed by a count of findings, or "No security findings."
+               End every inline comment with the line
+               `_Claude Code security review_`. Comments post from a shared
+               bot account, so these labels are how a reader knows who wrote
+               them.
+
+      # A review that posted no summary must not pass as green.
+      - name: Confirm the summary was posted
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
+          MARKER: "claude-review:security sha=${{ github.event.pull_request.head.sha }}"
+        run: |
+          jq -r '.. | objects | select(has("permission_denials")) | .permission_denials[]? | "denied: \(.tool_name) \(.tool_input.command // (.tool_input | tostring) | .[0:300])"' "$EXECUTION_FILE" || true
+          jq -r '.[]? | select(.type == "result") | "result: subtype=\(.subtype) is_error=\(.is_error) \(.result // (.errors // []) | tostring | .[0:600])"' "$EXECUTION_FILE" || true
+          gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json comments | jq -e --arg marker "$MARKER" --arg started "$REVIEW_STARTED" 'any(.comments[]; (.body | contains($marker)) and .createdAt >= $started)' > /dev/null
