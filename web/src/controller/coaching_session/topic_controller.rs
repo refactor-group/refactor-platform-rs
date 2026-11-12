@@ -253,8 +253,8 @@ pub async fn set_status(
 /// Undo the most recent reversible change to a topic (a deferral or a deletion).
 ///
 /// Restores the topic to the state it held immediately before that change: its
-/// original session, status, priority, position, and timestamps are all brought
-/// back, so the reversal is a faithful no-op rather than a fresh write. The server
+/// original session, status, position, and timestamps are all brought back,
+/// so the reversal is a faithful no-op rather than a fresh write. The server
 /// decides what to reverse from the topic's own state, not from any request input:
 /// a deleted topic is un-deleted in place, a deferred or moved topic is returned to
 /// the session it came from, and a topic with nothing pending yields 422. Takes no

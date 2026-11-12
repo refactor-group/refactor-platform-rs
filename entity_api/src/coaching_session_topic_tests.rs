@@ -96,7 +96,6 @@ fn display_order_is_never_serialized() {
     assert!(value.get("coaching_session_id").is_some());
     assert!(value.get("user_id").is_some());
     // status and moved_from_session_id ARE on the wire.
-    assert!(value.get("priority").is_none());
     assert!(value.get("status").is_some());
     assert!(value.get("moved_from_session_id").is_some());
     // undo_snapshot and deleted_at are server-only (#[serde(skip)]).

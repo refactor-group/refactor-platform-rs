@@ -385,9 +385,6 @@ How to read the tables:
 | TOP-10 | DELETE /coaching_sessions/S1/topics/T2 | COACHEE | 200 | `web/src/extractors/coaching_session_topic_access.rs:78` | Author |
 | TOP-11 | DELETE /coaching_sessions/S1/topics/T1 | COACHEE | 404 | `web/src/extractors/coaching_session_topic_access.rs:94` | Not author, not coach |
 | TOP-12 | DELETE /coaching_sessions/S1/topics/T1 | non-participants | 403 | `web/src/extractors/coaching_session_topic_access.rs:72` | |
-| TOP-13 | PATCH /coaching_sessions/S1/topics/T1/rating | COACHEE | 200, T1 | `web/src/extractors/coaching_session_topic_access.rs:177` | Coachee only |
-| TOP-14 | PATCH /coaching_sessions/S1/topics/T1/rating | COACH | 403 | `web/src/extractors/coaching_session_topic_access.rs:177` | |
-| TOP-15 | PATCH /coaching_sessions/S1/topics/T1/rating | non-participants | 403 | `web/src/extractors/coaching_session_topic_access.rs:164` | |
 | TOP-16 | PATCH /coaching_sessions/S1/topics/T1/status | COACH, COACHEE | 200, T1 | `web/src/extractors/coaching_session_topic_access.rs:46` | Either participant |
 | TOP-17 | PATCH /coaching_sessions/S1/topics/T1/status | non-participants | 403 | `web/src/extractors/coaching_session_topic_access.rs:37` | |
 | TOP-18 | POST /coaching_sessions/S1/topics/T2/undo (T2 deleted by COACH) | COACH | 404 | `web/src/extractors/coaching_session_topic_access.rs:137` | Undoing a delete is author only |
