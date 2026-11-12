@@ -869,7 +869,26 @@ pub struct Delivered {
     pub coach: Delivery,
 }
 
+impl Delivered {
+    /// The participants this send skipped for no longer being members.
+    fn skipped(&self, participants: &Participants<'_>) -> Vec<Id> {
+        [
+            (self.coachee, participants.coachee.id),
+            (self.coach, participants.coach.id),
+        ]
+        .into_iter()
+        .filter(|(delivery, _)| *delivery == Delivery::NotAMember)
+        .map(|(_, id)| id)
+        .collect()
+    }
+}
+
 impl<'a> Participants<'a> {
+    /// Both participants, for a send that reaches them regardless of membership.
+    fn ids(&self) -> [Id; 2] {
+        [self.coach.id, self.coachee.id]
+    }
+
     /// Each participant's copy, coachee first, labelled with their role.
     fn copies(&self) -> [(&'static str, Recipient<'a>); 2] {
         [
@@ -1585,10 +1604,13 @@ pub async fn notify_session_cancelled(
         let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
         let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
-
-        let notify = notify_member_ids(db, &relationship).await?;
+        let participants = Participants {
+            coach: &coach,
+            coachee: &coachee,
+        };
 
         let series_zone = invite_zone(db, session, &coach).await?;
+        // Both, members or not: a removed member still holds the event.
         send_session_cancelled_email(
             config,
             &coach,
@@ -1596,7 +1618,7 @@ pub async fn notify_session_cancelled(
             session,
             &org,
             series_zone,
-            &notify,
+            &participants.ids(),
         )
         .await
     }
@@ -1870,7 +1892,7 @@ struct SeriesInviteKind<'a> {
 /// type `N` so the scheduled and reschedule flows share one body; they differ only by
 /// template (via `N`) and the `session_or_series` template variable. A reschedule passes
 /// an already-bumped `series`, so the `.ics` carries the next `SEQUENCE` under a stable
-/// `UID`.
+/// `UID`. A participant it skips still gets the orphan cancels, on their own emails.
 async fn send_series_invite_email<N: EmailNotification>(
     db: &DatabaseConnection,
     config: &Config,
@@ -1996,20 +2018,27 @@ async fn send_series_invite_email<N: EmailNotification>(
     let recurrence_summary = current_rule.recurrence.summary();
 
     let copies = participants.copies();
-    Ok(
-        send_to_participants(&copies, notify, N::notification_name(), |to| {
-            send_recurring_series_email_to_recipient(
-                &email_config,
-                to,
-                sessions,
-                organization,
-                &ics,
-                &recurrence_summary,
-                reschedule,
-            )
-        })
-        .await,
+    let delivered = send_to_participants(&copies, notify, N::notification_name(), |to| {
+        send_recurring_series_email_to_recipient(
+            &email_config,
+            to,
+            sessions,
+            organization,
+            &ics,
+            &recurrence_summary,
+            reschedule,
+        )
+    })
+    .await;
+    cancel_orphans_for(
+        config,
+        participants,
+        replaced,
+        organization,
+        &delivered.skipped(participants),
     )
+    .await;
+    Ok(delivered)
 }
 
 /// Send recurring-sessions-scheduled notification emails to the participants `audience`
@@ -2588,6 +2617,44 @@ async fn cancel_orphaned_standalones(
     }
 }
 
+/// Cancel the standalone events left by legacy members of `sessions` for `recipients`, each
+/// on its own session-cancelled email, so a participant a members-only series email
+/// skipped still loses the event without seeing the series details. Best-effort per session.
+async fn cancel_orphans_for(
+    config: &Config,
+    participants: &Participants<'_>,
+    sessions: &[coaching_sessions::Model],
+    organization: &organizations::Model,
+    recipients: &[Id],
+) {
+    if recipients.is_empty() {
+        return;
+    }
+    for session in sessions.iter().filter(|s| is_orphaned_standalone(s)) {
+        let cancelled = coaching_sessions::Model {
+            ical_sequence: orphan_cancel_sequence(session),
+            ..session.clone()
+        };
+        // An orphan is standalone, so its invite was anchored to the coach.
+        if let Err(e) = send_session_cancelled_email(
+            config,
+            participants.coach,
+            participants.coachee,
+            &cancelled,
+            organization,
+            anchor_tz(participants.coach),
+            recipients,
+        )
+        .await
+        {
+            warn!(
+                "Failed to cancel the standalone event of session {} for removed members: {e:?}",
+                session.id
+            );
+        }
+    }
+}
+
 /// Attach a cancellation for every standalone event a legacy member left behind, to a
 /// builder that already carries the series' own `.ics`.
 fn attach_orphan_cancels(
@@ -2723,17 +2790,18 @@ pub async fn notify_recurring_sessions_cancelled(
         let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
         let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
         let org = organization::find_by_id(db, relationship.organization_id).await?;
-        let notify = notify_member_ids(db, &relationship).await?;
+        let participants = Participants {
+            coach: &coach,
+            coachee: &coachee,
+        };
 
+        // Both, members or not: a removed member still holds the events.
         send_recurring_sessions_cancelled_email(
             config,
             series,
             &Audience {
-                participants: &Participants {
-                    coach: &coach,
-                    coachee: &coachee,
-                },
-                notify: &notify,
+                participants: &participants,
+                notify: &participants.ids(),
             },
             sessions,
             &org,

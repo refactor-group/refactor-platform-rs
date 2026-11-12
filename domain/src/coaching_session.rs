@@ -1,6 +1,6 @@
 pub(crate) mod recurrence;
 
-use crate::coaching_relationship::ensure_coachee_is_member;
+use crate::coaching_relationship::{coachee_not_a_member, ensure_coachee_is_member};
 use crate::coaching_relationships;
 use crate::coaching_session_hydration::{
     run_coaching_session_hydration_tasks, CoachingSessionHydrationContext,
@@ -560,7 +560,7 @@ pub async fn resend_invite(db: &DatabaseConnection, config: &Config, id: Id) -> 
         &notify,
     )
     .await?;
-    ensure_coachee_reached(&delivered)?;
+    ensure_coachee_reached(&delivered, &relationship)?;
     record_announced(db, &bumped).await;
     Ok(())
 }
@@ -571,11 +571,15 @@ pub(crate) fn resend_refused(message: &str, reason: &str) -> Error {
 }
 
 /// A resend is only done once the coachee has it. Missing the coach is not a failure: the
-/// coach is the one asking.
-pub(crate) fn ensure_coachee_reached(delivered: &emails::Delivered) -> Result<(), Error> {
+/// coach is the one asking. A coachee removed after the membership check gets its 409.
+pub(crate) fn ensure_coachee_reached(
+    delivered: &emails::Delivered,
+    relationship: &coaching_relationships::Model,
+) -> Result<(), Error> {
     match delivered.coachee {
         emails::Delivery::Sent => Ok(()),
-        _ => Err(Error {
+        emails::Delivery::NotAMember => Err(coachee_not_a_member(relationship)),
+        emails::Delivery::Failed => Err(Error {
             source: None,
             error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
         }),
@@ -2101,6 +2105,60 @@ mod tests {
         assert!(first.is_err(), "first attempt should surface the failure");
         assert!(second.is_err(), "second attempt should surface the failure");
         post_mock.assert_async().await;
+    }
+
+    fn coachee_delivery(coachee: emails::Delivery) -> emails::Delivered {
+        emails::Delivered {
+            coachee,
+            coach: emails::Delivery::Sent,
+        }
+    }
+
+    /// M7-06: a coachee removed after the resend's check gets the same 409 as the check.
+    #[test]
+    fn m7_06_a_coachee_skipped_as_not_a_member_is_the_resend_409() {
+        let relationship = test_coaching_relationship(Id::new_v4(), Id::new_v4());
+
+        let err = ensure_coachee_reached(
+            &coachee_delivery(emails::Delivery::NotAMember),
+            &relationship,
+        )
+        .unwrap_err();
+
+        let DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Conflict {
+            details: Some(details),
+            ..
+        })) = err.error_kind
+        else {
+            panic!("expected a conflict, got {err:?}");
+        };
+        assert_eq!(details["reason"], "coachee_not_a_member");
+        assert_eq!(
+            details["organization_id"],
+            serde_json::json!(relationship.organization_id)
+        );
+        assert_eq!(
+            details["user_id"],
+            serde_json::json!(relationship.coachee_id)
+        );
+    }
+
+    /// M7-07: a failed send to the coachee is still a network error.
+    #[test]
+    fn m7_07_a_failed_send_to_the_coachee_is_a_network_error() {
+        let relationship = test_coaching_relationship(Id::new_v4(), Id::new_v4());
+
+        let err =
+            ensure_coachee_reached(&coachee_delivery(emails::Delivery::Failed), &relationship)
+                .unwrap_err();
+
+        assert!(
+            matches!(
+                err.error_kind,
+                DomainErrorKind::External(ExternalErrorKind::Network)
+            ),
+            "{err:?}"
+        );
     }
 }
 

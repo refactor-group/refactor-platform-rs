@@ -2,7 +2,7 @@ use super::*;
 #[cfg(feature = "mock")]
 use crate::coaching_session::{Frequency, Recurrence};
 #[cfg(feature = "mock")]
-use crate::test_utils::mock::{both_participants_are_members, members};
+use crate::test_utils::mock::members;
 use crate::{coaching_sessions, organizations, users, Id};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -3924,7 +3924,6 @@ async fn test_a_reschedule_to_no_future_sessions_still_cancels_the_standalone_ev
         .append_query_results(vec![vec![coach]])
         .append_query_results(vec![vec![coachee]])
         .append_query_results(vec![vec![org]])
-        .append_query_results(vec![both_participants_are_members(&relationship)])
         .into_connection();
 
     notify_recurring_sessions_rescheduled(
@@ -4815,7 +4814,6 @@ async fn occurrence_cancel_uses_the_stored_series_zone() {
         .append_query_results(vec![vec![coach.clone()]])
         .append_query_results(vec![vec![coachee]])
         .append_query_results(vec![vec![org]])
-        .append_query_results(vec![both_participants_are_members(&relationship)])
         .append_query_results(vec![vec![series]])
         .into_connection();
 
@@ -5030,16 +5028,6 @@ impl MembershipFixture {
                 .append_query_results(vec![vec![self.org.clone()]]),
         )
     }
-
-    /// [`Self::loads`] for an entry point that checks membership itself, `member_ids`
-    /// holding a role.
-    fn db(
-        &self,
-        member_ids: &[Id],
-        rest: impl FnOnce(MockDatabase) -> MockDatabase,
-    ) -> MockDatabase {
-        self.loads(|db| rest(db.append_query_results(vec![members(member_ids)])))
-    }
 }
 
 /// Records who each Resend request was addressed to.
@@ -5101,7 +5089,7 @@ async fn send_relationship_email(
             notify_session_scheduled(&db.into_connection(), &config, &f.session, members).await;
         }
         RelationshipEmail::SessionCancelled => {
-            let db = f.db(members, |db| db).into_connection();
+            let db = f.loads(|db| db).into_connection();
             notify_session_cancelled(&db, &config, &f.session).await;
         }
         RelationshipEmail::SeriesScheduled => {
@@ -5144,23 +5132,30 @@ async fn send_relationship_email(
             );
         }
         RelationshipEmail::SeriesCancelled => {
-            let db = f.db(members, |db| db).into_connection();
+            let db = f.loads(|db| db).into_connection();
             notify_recurring_sessions_cancelled(&db, &config, &f.series, &sessions).await;
         }
     }
     (capture.captured(), told)
 }
 
-/// Every relationship email reaches only the participants still in the organization, and
-/// one with nobody left sends nothing without failing.
+#[cfg(feature = "mock")]
+const COACH_TO: &str = "\"Alex Smith\" <alex@example.com>";
+#[cfg(feature = "mock")]
+const COACHEE_TO: &str = "\"Jane Doe\" <jane@example.com>";
+
+#[cfg(feature = "mock")]
+fn addressed(to: &[&str]) -> BTreeSet<String> {
+    to.iter().map(|to| to.to_string()).collect()
+}
+
+/// Every relationship email but a cancellation reaches only the participants still in the
+/// organization, and one with nobody left sends nothing without failing.
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn relationship_emails_reach_only_current_members() {
     let f = MembershipFixture::new();
-    let (coach, coachee) = (
-        "\"Alex Smith\" <alex@example.com>".to_string(),
-        "\"Jane Doe\" <jane@example.com>".to_string(),
-    );
+    let (coach, coachee) = (COACH_TO.to_string(), COACHEE_TO.to_string());
     let rows = [
         (vec![f.coach.id, f.coachee.id], vec![&coach, &coachee]),
         (vec![f.coach.id], vec![&coach]),
@@ -5170,11 +5165,9 @@ async fn relationship_emails_reach_only_current_members() {
 
     for email in [
         RelationshipEmail::SessionScheduled,
-        RelationshipEmail::SessionCancelled,
         RelationshipEmail::SeriesScheduled,
         RelationshipEmail::SeriesRescheduled,
         RelationshipEmail::SeriesFollowing,
-        RelationshipEmail::SeriesCancelled,
     ] {
         for (members, expected) in &rows {
             let (mailed, _) = send_relationship_email(email, &f, members).await;
@@ -5182,6 +5175,191 @@ async fn relationship_emails_reach_only_current_members() {
             assert_eq!(mailed, expected, "{email:?} with members {members:?}");
         }
     }
+}
+
+/// Cancellations reach both participants whoever is still a member, so a removed member's
+/// calendar is cleaned up.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn cancellations_reach_both_participants_regardless_of_membership() {
+    let f = MembershipFixture::new();
+    let both = addressed(&[COACH_TO, COACHEE_TO]);
+    let rows = [
+        vec![f.coach.id, f.coachee.id],
+        vec![f.coach.id],
+        vec![f.coachee.id],
+        vec![],
+    ];
+
+    for email in [
+        RelationshipEmail::SessionCancelled,
+        RelationshipEmail::SeriesCancelled,
+    ] {
+        for members in &rows {
+            let (mailed, _) = send_relationship_email(email, &f, members).await;
+            assert_eq!(mailed, both, "{email:?} with members {members:?}");
+        }
+    }
+}
+
+/// M7-01
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn m7_01_single_cancel_with_the_coachee_removed_reaches_both() {
+    let f = MembershipFixture::new();
+    let (mailed, _) =
+        send_relationship_email(RelationshipEmail::SessionCancelled, &f, &[f.coach.id]).await;
+    assert_eq!(mailed, addressed(&[COACH_TO, COACHEE_TO]));
+}
+
+/// M7-02
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn m7_02_single_cancel_with_the_coach_removed_reaches_both() {
+    let f = MembershipFixture::new();
+    let (mailed, _) =
+        send_relationship_email(RelationshipEmail::SessionCancelled, &f, &[f.coachee.id]).await;
+    assert_eq!(mailed, addressed(&[COACH_TO, COACHEE_TO]));
+}
+
+/// M7-03
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn m7_03_series_cancel_with_the_coachee_removed_reaches_both() {
+    let f = MembershipFixture::new();
+    let (mailed, _) =
+        send_relationship_email(RelationshipEmail::SeriesCancelled, &f, &[f.coach.id]).await;
+    assert_eq!(mailed, addressed(&[COACH_TO, COACHEE_TO]));
+}
+
+/// M7-05: scheduling stays members-only.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn m7_05_session_scheduled_with_the_coachee_removed_reaches_only_the_coach() {
+    let f = MembershipFixture::new();
+    let (mailed, _) =
+        send_relationship_email(RelationshipEmail::SessionScheduled, &f, &[f.coach.id]).await;
+    assert_eq!(mailed, addressed(&[COACH_TO]));
+}
+
+/// One Resend request: its addressee, template, and decoded `.ics` attachments.
+#[cfg(feature = "mock")]
+#[derive(Clone, Debug)]
+struct Mail {
+    to: String,
+    template: String,
+    ics: Vec<String>,
+}
+
+/// Records every Resend request as a [`Mail`].
+#[cfg(feature = "mock")]
+#[derive(Clone, Default)]
+struct MailCapture(Arc<Mutex<Vec<Mail>>>);
+
+#[cfg(feature = "mock")]
+impl MailCapture {
+    fn recorder(&self) -> impl Fn(&mockito::Request) -> bool + Send + Sync + 'static {
+        let seen = self.0.clone();
+        move |request| {
+            let body = serde_json::from_slice::<serde_json::Value>(request.body().unwrap())
+                .unwrap_or_default();
+            let ics = body["attachments"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|attachment| {
+                    attachment["content"]
+                        .as_str()
+                        .and_then(|content| STANDARD.decode(content).ok())
+                        .and_then(|bytes| String::from_utf8(bytes).ok())
+                        .map(|ics| ics.replace("\r\n ", "").replace("\r\n\t", ""))
+                })
+                .collect();
+            seen.lock().unwrap().push(Mail {
+                to: body["to"][0].as_str().unwrap_or_default().to_string(),
+                template: body["template"]["id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                ics,
+            });
+            true
+        }
+    }
+
+    fn to(&self, recipient: &str) -> Vec<Mail> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|mail| mail.to == recipient)
+            .cloned()
+            .collect()
+    }
+}
+
+/// M7-04: a series edit that orphans a standalone event cancels it for a removed coachee on
+/// its own email, without sending them the reschedule.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn m7_04_a_series_edit_cancels_an_orphan_for_a_removed_coachee_without_the_reschedule() {
+    let f = MembershipFixture::new();
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = MailCapture::default();
+    let _mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .create_async()
+        .await;
+    let sessions = f.sessions();
+    let orphan = coaching_sessions::Model {
+        coaching_session_series_id: Some(f.series.id),
+        ical_recurrence_id: None,
+        ical_sequence: 1,
+        coaching_relationship_id: f.relationship.id,
+        ..create_test_session()
+    };
+    let db = f
+        .loads(|db| db.append_query_results::<entity::goals::Model, _, _>(vec![vec![]]))
+        .into_connection();
+
+    notify_recurring_sessions_rescheduled(
+        &db,
+        &config,
+        &f.series,
+        PreviousSeries(&f.series),
+        &sessions,
+        ReplacedSessions(std::slice::from_ref(&orphan)),
+        &[f.coach.id],
+    )
+    .await;
+
+    let orphan_uid = format!("UID:{}@myrefactor.com", orphan.id);
+    let coachee = capture.to(COACHEE_TO);
+    assert_eq!(coachee.len(), 1, "one email to the coachee: {coachee:?}");
+    let Mail { template, ics, .. } = &coachee[0];
+    assert_eq!(template, "session_cancel_template_abc");
+    assert_eq!(ics.len(), 1, "only the orphan cancel: {ics:?}");
+    assert!(ics[0].contains("METHOD:CANCEL") && ics[0].contains(&orphan_uid));
+    assert!(
+        !ics[0].contains("METHOD:REQUEST"),
+        "no reschedule: {}",
+        ics[0]
+    );
+
+    let coach = capture.to(COACH_TO);
+    assert_eq!(
+        coach.len(),
+        1,
+        "the coach gets the reschedule only: {coach:?}"
+    );
+    let Mail { template, ics, .. } = &coach[0];
+    assert_eq!(template, "series_reschedule_template_abc");
+    assert!(ics.iter().any(|ics| ics.contains(&orphan_uid)));
 }
 
 /// A "this and following" reschedule reports a coachee who left as skipped, not failed,

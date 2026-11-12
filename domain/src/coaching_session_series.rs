@@ -930,7 +930,7 @@ pub async fn resend_invite(
         &parties.organization,
     )
     .await?;
-    coaching_session::ensure_coachee_reached(&delivered)?;
+    coaching_session::ensure_coachee_reached(&delivered, &relationship)?;
     stream::iter(&upcoming)
         .for_each(|session| coaching_session::record_announced(db, session))
         .await;

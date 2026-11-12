@@ -86,14 +86,19 @@ pub(crate) async fn ensure_coachee_is_member(
     let members = notify_member_ids(db, relationship).await?;
     match members.contains(&relationship.coachee_id) {
         true => Ok(members),
-        false => Err(not_a_member(
-            "Your coachee is no longer a member of this organization. Re-add them to the \
-             organization first.",
-            NotAMember::Coachee,
-            relationship.organization_id,
-            relationship.coachee_id,
-        )),
+        false => Err(coachee_not_a_member(relationship)),
     }
+}
+
+/// The 409 for a relationship whose coachee no longer belongs to its organization.
+pub(crate) fn coachee_not_a_member(relationship: &Model) -> Error {
+    not_a_member(
+        "Your coachee is no longer a member of this organization. Re-add them to the \
+         organization first.",
+        NotAMember::Coachee,
+        relationship.organization_id,
+        relationship.coachee_id,
+    )
 }
 
 /// A 409 for the first of `assignee_ids`, in order, no longer in the relationship's
