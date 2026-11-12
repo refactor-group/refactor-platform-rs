@@ -42,6 +42,7 @@ pub async fn index(
     Path(user_id): Path<Id>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
+    super::ensure_self(&user, user_id)?;
     debug!("GET Coaching Relationships for User: {user_id}");
 
     let params = params.with_user_id(user_id);

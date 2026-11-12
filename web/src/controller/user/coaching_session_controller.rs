@@ -62,6 +62,7 @@ pub async fn index(
     Path(user_id): Path<Id>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
+    super::ensure_self(&user, user_id)?;
     debug!("GET Coaching Sessions for User: {user_id}");
     debug!("Query Params: {params:?}");
 
@@ -153,6 +154,7 @@ pub async fn nearest(
     Path(user_id): Path<Id>,
     Query(params): Query<NearestParams>,
 ) -> Result<impl IntoResponse, Error> {
+    super::ensure_self(&user, user_id)?;
     debug!("GET nearest Coaching Sessions for User: {user_id}, params: {params:?}");
 
     let sessions = CoachingSessionApi::find_nearest_by_user_with_includes(
@@ -207,6 +209,7 @@ pub async fn counts(
     Path(user_id): Path<Id>,
     Query(params): Query<CountsByMonthParams>,
 ) -> Result<impl IntoResponse, Error> {
+    super::ensure_self(&user, user_id)?;
     let params = params.with_user_id(user_id);
     debug!(
         "GET coaching session counts for user {user_id}, params: from={} to={} tz={} relationship={:?}",

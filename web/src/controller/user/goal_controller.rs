@@ -45,6 +45,7 @@ pub async fn index(
     Path(user_id): Path<Id>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
+    super::ensure_self(&user, user_id)?;
     debug!("GET Goals for User: {user_id}");
     debug!("Filter Params: {params:?}");
 

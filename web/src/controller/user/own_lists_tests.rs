@@ -1,15 +1,21 @@
 //! A user's own list routes through the router: each list query is held to the
-//! organizations the caller still belongs to, unless the caller is a SuperAdmin.
+//! organizations the caller still belongs to, unless the caller is a SuperAdmin. Each
+//! handler also refuses another user's path id on its own, without the guard.
 
 use std::sync::Arc;
 
-use axum::http::StatusCode;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderValue, StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
 use axum::{middleware::from_fn_with_state, routing::get, Router};
 use domain::coaching_relationships;
-use sea_orm::{DatabaseConnection, MockDatabase};
+use sea_orm::{DatabaseBackend, DatabaseConnection, MockDatabase};
+use serde::de::DeserializeOwned;
 
 use crate::controller::user::goal_controller;
 use crate::controller::user::{coaching_relationships_controller, coaching_session_controller};
+use crate::extractors::authenticated_user::AuthenticatedUser;
+use crate::extractors::compare_api_version::CompareApiVersion;
 use crate::extractors::relationship_access_test_support::{self as support, Caller, World};
 use crate::{protect, AppState};
 
@@ -138,4 +144,128 @@ async fn own_session_counts_are_held_to_member_orgs() {
 #[tokio::test]
 async fn own_goals_are_held_to_member_orgs() {
     assert_held_to_member_orgs("goals", "", "goals").await;
+}
+
+/// A handler's own parts for the coachee asking about the coach's id, against a database
+/// that answers nothing.
+struct Foreign {
+    w: World,
+    db: Arc<DatabaseConnection>,
+}
+
+impl Foreign {
+    fn new() -> Self {
+        Self {
+            w: support::world(),
+            db: Arc::new(MockDatabase::new(DatabaseBackend::Postgres).into_connection()),
+        }
+    }
+
+    fn version(&self) -> CompareApiVersion {
+        CompareApiVersion(HeaderValue::from_static("1.0.0"))
+    }
+
+    fn caller(&self) -> AuthenticatedUser {
+        AuthenticatedUser(self.w.coachee.clone())
+    }
+
+    fn state(&self) -> State<AppState> {
+        State(support::app_state(&self.db))
+    }
+
+    fn path(&self) -> Path<domain::Id> {
+        Path(self.w.coach.id)
+    }
+
+    /// Asserts `response` is the guard's 403 and nothing reached the database.
+    async fn assert_refused(&self, response: Response) {
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("the body reads");
+        assert_eq!(&body[..], b"FORBIDDEN");
+        assert!(
+            statements(&self.db).is_empty(),
+            "{:?}",
+            statements(&self.db)
+        );
+    }
+}
+
+fn query<T: DeserializeOwned>(query: &str) -> Query<T> {
+    let uri: Uri = format!("/?{query}").parse().expect("a valid uri");
+    Query::try_from_uri(&uri).expect("the query parses")
+}
+
+/// M8-03: the sessions list refuses another user's path id before any query.
+#[tokio::test]
+async fn m8_03_sessions_list_refuses_another_users_path_id() {
+    let f = Foreign::new();
+    let response =
+        coaching_session_controller::index(f.version(), f.caller(), f.state(), f.path(), query(""))
+            .await
+            .into_response();
+    f.assert_refused(response).await;
+}
+
+/// M8-03: the nearest sessions refuse another user's path id before any query.
+#[tokio::test]
+async fn m8_03_nearest_sessions_refuse_another_users_path_id() {
+    let f = Foreign::new();
+    let window = format!(
+        "coaching_relationship_id={}&around=2026-11-12T14:00:00Z&before=2&after=3",
+        f.w.relationship.id
+    );
+    let response = coaching_session_controller::nearest(
+        f.version(),
+        f.caller(),
+        f.state(),
+        f.path(),
+        query(&window),
+    )
+    .await
+    .into_response();
+    f.assert_refused(response).await;
+}
+
+/// M8-03: the session counts refuse another user's path id before any query.
+#[tokio::test]
+async fn m8_03_session_counts_refuse_another_users_path_id() {
+    let f = Foreign::new();
+    let response = coaching_session_controller::counts(
+        f.version(),
+        f.caller(),
+        f.state(),
+        f.path(),
+        query("from_date=2026-11-01&to_date=2026-11-30&group_by=month&tz=UTC"),
+    )
+    .await
+    .into_response();
+    f.assert_refused(response).await;
+}
+
+/// M8-03: the relationships list refuses another user's path id before any query.
+#[tokio::test]
+async fn m8_03_relationships_list_refuses_another_users_path_id() {
+    let f = Foreign::new();
+    let response = coaching_relationships_controller::index(
+        f.version(),
+        f.caller(),
+        f.state(),
+        f.path(),
+        query(""),
+    )
+    .await
+    .into_response();
+    f.assert_refused(response).await;
+}
+
+/// M8-03: the goals list refuses another user's path id before any query.
+#[tokio::test]
+async fn m8_03_goals_list_refuses_another_users_path_id() {
+    let f = Foreign::new();
+    let response = goal_controller::index(f.version(), f.caller(), f.state(), f.path(), query(""))
+        .await
+        .into_response();
+    f.assert_refused(response).await;
 }
