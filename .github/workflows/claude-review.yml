@@ -17,7 +17,6 @@ concurrency:
 permissions:
   contents: read
   pull-requests: write # review comments
-  id-token: write # Claude GitHub app token exchange
 
 env:
   # Strip Anthropic and Actions credentials from every command Claude runs.
@@ -85,6 +84,9 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The Claude app's token exchange rejects pull_request_target runs
+          # (anthropics/claude-code-action#713), so comment with the job's own token.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           settings: ${{ env.REVIEW_SETTINGS }}
           # No skills or commands: the reviewer needs none, and a PR could supply its own.
           claude_args: |
@@ -220,6 +222,9 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The Claude app's token exchange rejects pull_request_target runs
+          # (anthropics/claude-code-action#713), so comment with the job's own token.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           settings: ${{ env.REVIEW_SETTINGS }}
           claude_args: |
             --model claude-fable-5-2
