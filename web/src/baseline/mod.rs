@@ -201,9 +201,6 @@
 //! | TOP-10 | `topic_rows::top_10_a_coachee_deletes_their_own_topic` |
 //! | TOP-11 | `topic_rows::top_11_a_coachee_cannot_delete_the_coachs_topic` |
 //! | TOP-12 | `topic_rows::top_12_non_participants_cannot_delete_a_topic` |
-//! | TOP-13 | removed by rs#489 |
-//! | TOP-14 | removed by rs#489 |
-//! | TOP-15 | removed by rs#489 |
 //! | TOP-16 | `topic_rows::top_16_participants_set_a_topics_status` |
 //! | TOP-17 | `topic_rows::top_17_non_participants_cannot_set_a_topics_status` |
 //! | TOP-18 | `topic_rows::top_18_only_the_author_undoes_a_topics_delete` |

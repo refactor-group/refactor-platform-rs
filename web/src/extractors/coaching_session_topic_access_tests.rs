@@ -98,23 +98,6 @@ fn test_relationship(relationship_id: Id, coachee_id: Id) -> coaching_relationsh
     }
 }
 
-fn test_relationship_with_coach(
-    relationship_id: Id,
-    coach_id: Id,
-    coachee_id: Id,
-) -> coaching_relationships::Model {
-    let now = Utc::now();
-    coaching_relationships::Model {
-        id: relationship_id,
-        coach_id,
-        coachee_id,
-        organization_id: fixture_organization_id(),
-        slug: "test".to_string(),
-        created_at: now.into(),
-        updated_at: now.into(),
-    }
-}
-
 fn test_topic(
     topic_id: Id,
     coaching_session_id: Id,

@@ -533,7 +533,7 @@ pub async fn session_goals(db: &DatabaseConnection, session_id: Id) -> BTreeSet<
         .collect()
 }
 
-/// A topic as stored, without its priority.
+/// A topic as stored.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TopicRow {
     pub session: Id,
@@ -974,7 +974,6 @@ async fn seed_topic(db: &DatabaseConnection, session_id: Id, author: Id, display
         body: Set(format!("Topic {SEARCH_WORD}")),
         user_id: Set(author),
         display_order: Set(display_order),
-        priority: Set(None),
         status: Set(TopicStatus::Open),
         moved_from_session_id: Set(None),
         undo_snapshot: Set(None),
