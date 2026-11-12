@@ -2,14 +2,14 @@
 //! sessions it treats as holding content, against a real SQL engine.
 
 use chrono::{NaiveDate, TimeDelta, Utc};
-use entity::{
-    actions, agreements, coaching_session_series as series_entity, coaching_session_topics,
-    coaching_sessions, notes,
-};
+use entity::{coaching_session_series as series_entity, coaching_sessions, notes};
 use sea_orm::{ActiveModelTrait, ActiveValue::Unchanged, DatabaseConnection, EntityTrait, Set};
 
 use super::*;
-use crate::test_utils::sqlite::{database, seed_coaching_session, within_time_limit};
+use crate::test_utils::sqlite::{
+    database, seed_action, seed_agreement, seed_coaching_session, seed_note, seed_topic,
+    within_time_limit,
+};
 use entity_api::coaching_session::Landing;
 use entity_api::coaching_session_pending_reschedule::{self, Schedule};
 
@@ -114,77 +114,6 @@ async fn reread(db: &DatabaseConnection, id: Id) -> coaching_sessions::Model {
         .await
         .expect("the session reads")
         .expect("the session still exists")
-}
-
-async fn seed_note(db: &DatabaseConnection, session_id: Id, user_id: Id) -> Id {
-    let now = Utc::now();
-    notes::ActiveModel {
-        id: Set(Id::new_v4()),
-        coaching_session_id: Set(session_id),
-        body: Set(Some("Prep".to_string())),
-        user_id: Set(user_id),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-    }
-    .insert(db)
-    .await
-    .expect("the note is seeded")
-    .id
-}
-
-async fn seed_action(db: &DatabaseConnection, session_id: Id, user_id: Id) {
-    let now = Utc::now();
-    actions::ActiveModel {
-        id: Set(Id::new_v4()),
-        coaching_session_id: Set(session_id),
-        goal_id: Set(None),
-        user_id: Set(user_id),
-        body: Set(Some("Follow up".to_string())),
-        due_by: Set(None),
-        status: Set(Default::default()),
-        status_changed_at: Set(now.into()),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-    }
-    .insert(db)
-    .await
-    .expect("the action is seeded");
-}
-
-async fn seed_agreement(db: &DatabaseConnection, session_id: Id, user_id: Id) {
-    let now = Utc::now();
-    agreements::ActiveModel {
-        id: Set(Id::new_v4()),
-        coaching_session_id: Set(session_id),
-        body: Set(Some("Agreed".to_string())),
-        user_id: Set(user_id),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-    }
-    .insert(db)
-    .await
-    .expect("the agreement is seeded");
-}
-
-async fn seed_topic(db: &DatabaseConnection, session_id: Id, user_id: Id, deleted: bool) {
-    let now = Utc::now();
-    coaching_session_topics::ActiveModel {
-        id: Set(Id::new_v4()),
-        coaching_session_id: Set(session_id),
-        body: Set("Agenda".to_string()),
-        user_id: Set(user_id),
-        display_order: Set(0),
-        priority: Set(None),
-        status: Set(Default::default()),
-        moved_from_session_id: Set(None),
-        undo_snapshot: Set(None),
-        deleted_at: Set(deleted.then(|| now.into())),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-    }
-    .insert(db)
-    .await
-    .expect("the topic is seeded");
 }
 
 #[tokio::test]

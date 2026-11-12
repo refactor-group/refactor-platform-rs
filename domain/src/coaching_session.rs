@@ -507,10 +507,6 @@ pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<
         "Domain delete coaching_session id={id} relationship_id={} tiptap_doc={:?}",
         coaching_session.coaching_relationship_id, coaching_session.collab_document_name,
     );
-    if let Some(document_name) = coaching_session.collab_document_name.as_deref() {
-        let tiptap = TiptapDocument::new(config).await?;
-        tiptap.delete(document_name).await?;
-    }
 
     // Read before the delete: the image rows' FK cascades, and `storage_key` is the only
     // pointer to the bytes. Afterwards there is nothing left to find them by.
@@ -520,21 +516,52 @@ pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<
     // rather than from the model read above. An edit committing between that read and
     // this delete would otherwise claim the same next SEQUENCE as the cancellation, and a
     // calendar client that already applied the edit drops the equal-SEQUENCE cancellation
-    // as a duplicate, stranding a deleted session on both calendars. The window is not
-    // theoretical: the Tiptap call above sits inside it. The bump takes the row lock, so a
-    // competing edit either lands first with a lower SEQUENCE or blocks and finds no row.
+    // as a duplicate, stranding a deleted session on both calendars. The bump takes the row
+    // lock, so a competing edit either lands first with a lower SEQUENCE or blocks and
+    // finds no row.
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
     let cancelled = coaching_session::increment_ical_sequence(&txn, id).await?;
-    coaching_session::delete(&txn, id).await?;
+    coaching_session::delete(&txn, id).await.map_err(|err| {
+        if err.is_foreign_key_violation() {
+            has_content(id)
+        } else {
+            err.into()
+        }
+    })?;
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
-    // Best effort, and only after the rows are gone, for the same reason the Tiptap
-    // cleanup is: a storage failure must not undo a delete the database has committed.
+    // Best effort, and only after the rows are gone: a Tiptap or storage failure must not
+    // undo a delete the database has committed.
+    if let Some(document_name) = coaching_session.collab_document_name.as_deref() {
+        delete_notes_document(config, id, document_name).await;
+    }
     coaching_session_image::destroy_objects(config, &image_keys).await;
 
     // Announce only once the delete has committed.
     emails::notify_session_cancelled(db, config, &cancelled).await;
     Ok(())
+}
+
+/// A 409 refusing to delete a session that notes, actions or agreements still reference.
+fn has_content(coaching_session_id: Id) -> Error {
+    Error::conflict_because(
+        reason::SESSIONS_HAVE_CONTENT,
+        "This session has notes, actions or agreements, so it can't be deleted.",
+        serde_json::json!({ "coaching_session_id": coaching_session_id }),
+    )
+}
+
+/// Deletes a deleted session's Tiptap document, logging a failure rather than returning it.
+async fn delete_notes_document(config: &Config, coaching_session_id: Id, document_name: &str) {
+    let deleted = match TiptapDocument::new(config).await {
+        Ok(tiptap) => tiptap.delete(document_name).await,
+        Err(err) => Err(err),
+    };
+    if let Err(err) = deleted {
+        warn!(
+            "Tiptap cleanup failed for doc {document_name:?} after deleting session {coaching_session_id}: {err}"
+        );
+    }
 }
 
 /// Resend a session's invite to both participants, under a bumped SEQUENCE so calendars
@@ -2034,6 +2061,114 @@ mod tests {
         Ok(())
     }
 
+    /// An upcoming session holding a Tiptap document, and its bumped SEQUENCE.
+    fn session_with_document() -> (coaching_sessions::Model, coaching_sessions::Model) {
+        let session = coaching_sessions::Model {
+            collab_document_name: Some("org.rel.doc-v0".to_string()),
+            date: (chrono::Utc::now() + chrono::Duration::days(7)).naive_utc(),
+            ..test_session(Id::new_v4(), None)
+        };
+        let bumped = coaching_sessions::Model {
+            ical_sequence: session.ical_sequence + 1,
+            ..session.clone()
+        };
+        (session, bumped)
+    }
+
+    #[tokio::test]
+    async fn sd_04_a_refused_delete_leaves_the_document_and_sends_no_email() {
+        let mut server = Server::new_async().await;
+        let config = Config::from_args([
+            "test",
+            "--tiptap-auth-key=test-auth-key",
+            &format!("--tiptap-url={}", server.url()),
+            "--resend-api-key=test-resend-key",
+            &format!("--resend-base-url={}", server.url()),
+        ]);
+        let tiptap = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let resend = server
+            .mock("POST", "/emails")
+            .expect(0)
+            .create_async()
+            .await;
+
+        let (session, bumped) = session_with_document();
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([vec![session.clone()]])
+            .append_query_results([Vec::<coaching_session_images::Model>::new()])
+            .append_query_results([vec![bumped]])
+            .append_exec_errors([crate::test_utils::sqlite::foreign_key_violation().await])
+            .into_connection();
+
+        let err = delete(&db, &config, session.id)
+            .await
+            .expect_err("the foreign key refuses the delete");
+
+        let DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Conflict {
+            details: Some(details),
+            ..
+        })) = err.error_kind
+        else {
+            panic!("expected a conflict, got {err:?}");
+        };
+        assert_eq!(details["reason"], "sessions_have_content");
+        tiptap.assert_async().await;
+        resend.assert_async().await;
+        let sql: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .map(|stmt| stmt.sql.clone())
+            .collect();
+        assert!(
+            !sql.iter().any(|q| q.contains("coaching_relationships")),
+            "a refusal must not load the cancellation's recipients: {sql:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sd_05_a_failed_document_delete_does_not_fail_a_committed_delete() -> Result<(), Error>
+    {
+        let mut server = Server::new_async().await;
+        let config = test_config(&server.url());
+        let tiptap = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .with_status(500)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let (session, bumped) = session_with_document();
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([vec![session.clone()]])
+            .append_query_results([Vec::<coaching_session_images::Model>::new()])
+            .append_query_results([vec![bumped]])
+            .append_exec_results([sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        delete(&db, &config, session.id).await?;
+
+        tiptap.assert_async().await;
+        let sql: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .map(|stmt| stmt.sql.clone())
+            .collect();
+        assert!(
+            sql.iter().any(|q| q.contains("DELETE")),
+            "the row delete ran: {sql:?}"
+        );
+        Ok(())
+    }
+
     /// The deferred-doc formatter is a pure function of its inputs: identical
     /// inputs yield an identical name and distinct ids never collide. The
     /// id-bearing suffix carries no '.', so the collab-token scope split
@@ -2175,6 +2310,10 @@ mod tests {
 #[cfg(test)]
 #[path = "coaching_session_sqlite_tests.rs"]
 mod sqlite_tests;
+
+#[cfg(test)]
+#[path = "coaching_session_delete_sqlite_tests.rs"]
+mod delete_sqlite_tests;
 
 #[cfg(test)]
 #[path = "coaching_session_pending_reschedule_sqlite_tests.rs"]

@@ -22,8 +22,8 @@ use entity::{
     user_lookup_attempts, user_role_changes, user_roles, users, Id,
 };
 use sea_orm::{
-    ActiveModelTrait, ConnectOptions, ConnectionTrait, Database, DatabaseConnection, EntityTrait,
-    Set,
+    ActiveModelTrait, ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbErr,
+    EntityTrait, Set,
 };
 
 /// Ceiling on one SQLite test. Per-acquire timeouts still add up across many rows.
@@ -224,6 +224,101 @@ pub(crate) async fn seed_coaching_session(db: &DatabaseConnection) -> (Id, Id) {
     .expect("the coaching session is seeded");
 
     (session.id, user_id)
+}
+
+/// Inserts a note on `session_id` and returns its id.
+pub(crate) async fn seed_note(db: &DatabaseConnection, session_id: Id, user_id: Id) -> Id {
+    let now = Utc::now();
+    notes::ActiveModel {
+        id: Set(Id::new_v4()),
+        coaching_session_id: Set(session_id),
+        body: Set(Some("Prep".to_string())),
+        user_id: Set(user_id),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the note is seeded")
+    .id
+}
+
+/// Inserts an action on `session_id` and returns its id.
+pub(crate) async fn seed_action(db: &DatabaseConnection, session_id: Id, user_id: Id) -> Id {
+    let now = Utc::now();
+    actions::ActiveModel {
+        id: Set(Id::new_v4()),
+        coaching_session_id: Set(session_id),
+        goal_id: Set(None),
+        user_id: Set(user_id),
+        body: Set(Some("Follow up".to_string())),
+        due_by: Set(None),
+        status: Set(Default::default()),
+        status_changed_at: Set(now.into()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the action is seeded")
+    .id
+}
+
+/// Inserts an agreement on `session_id` and returns its id.
+pub(crate) async fn seed_agreement(db: &DatabaseConnection, session_id: Id, user_id: Id) -> Id {
+    let now = Utc::now();
+    agreements::ActiveModel {
+        id: Set(Id::new_v4()),
+        coaching_session_id: Set(session_id),
+        body: Set(Some("Agreed".to_string())),
+        user_id: Set(user_id),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the agreement is seeded")
+    .id
+}
+
+/// Inserts a topic on `session_id`, soft-deleted when `deleted`, and returns its id.
+pub(crate) async fn seed_topic(
+    db: &DatabaseConnection,
+    session_id: Id,
+    user_id: Id,
+    deleted: bool,
+) -> Id {
+    let now = Utc::now();
+    coaching_session_topics::ActiveModel {
+        id: Set(Id::new_v4()),
+        coaching_session_id: Set(session_id),
+        body: Set("Agenda".to_string()),
+        user_id: Set(user_id),
+        display_order: Set(0),
+        priority: Set(None),
+        status: Set(Default::default()),
+        moved_from_session_id: Set(None),
+        undo_snapshot: Set(None),
+        deleted_at: Set(deleted.then(|| now.into())),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the topic is seeded")
+    .id
+}
+
+/// A real SQLite foreign key violation, for a mock database to return.
+#[cfg(feature = "mock")]
+pub(crate) async fn foreign_key_violation() -> DbErr {
+    let db = database().await;
+    let (session_id, user_id) = seed_coaching_session(&db).await;
+    seed_note(&db, session_id, user_id).await;
+    coaching_sessions::Entity::delete_by_id(session_id)
+        .exec(&db)
+        .await
+        .expect_err("the note's foreign key refuses the delete")
 }
 
 /// Ids of a seeded completed transcription and the rows around it.
