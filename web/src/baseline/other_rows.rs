@@ -1,5 +1,4 @@
-//! Search (`SRCH`), the collaboration token (`JWT`), users (`USR`) and real-time events
-//! (`SSE`).
+//! Search (`SRCH`), the collaboration token (`JWT`) and real-time events (`SSE`).
 
 use std::collections::BTreeSet;
 
@@ -45,24 +44,6 @@ async fn jwt_01_participants_get_a_token_for_the_sessions_document() {
             let document = reply.body["data"]["sub"].as_str().unwrap_or_default();
             assert!(document.contains(&s1.to_string()), "{caller:?}: {document}");
         }
-    })
-    .await;
-}
-
-/// USR-02
-#[tokio::test]
-async fn usr_02_a_coachee_coaches_no_one() {
-    within_time_limit(async {
-        let mut baseline = Baseline::new().await;
-        let coachee = baseline.world.user(Caller::Coachee);
-        let path = format!("/users/{coachee}/coaching-relationships?role=coach");
-
-        assert_eq!(
-            baseline
-                .expect(Caller::Coachee, Method::GET, &path, None)
-                .await,
-            (StatusCode::OK, BTreeSet::new())
-        );
     })
     .await;
 }

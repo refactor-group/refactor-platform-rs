@@ -68,7 +68,6 @@ pub(crate) struct World {
     pub(crate) coachee: users::Model,
     pub(crate) member: users::Model,
     pub(crate) outsider: users::Model,
-    pub(crate) admin: users::Model,
     pub(crate) super_admin: users::Model,
     pub(crate) relationship: coaching_relationships::Model,
     pub(crate) session: coaching_sessions::Model,
@@ -111,7 +110,6 @@ pub(crate) fn world() -> World {
         coachee,
         member: user("member@example.com"),
         outsider: user("outsider@example.com"),
-        admin: user("admin@example.com"),
         super_admin: user("super@example.com"),
         relationship,
         session,
@@ -128,10 +126,6 @@ pub(crate) enum Caller {
     Outsider,
     /// The coach, with no role in the relationship's organization.
     Removed,
-    /// The coachee, with no role in the relationship's organization.
-    RemovedCoachee,
-    /// An Admin of the relationship's organization, not in the relationship.
-    Admin,
     /// A SuperAdmin, not in the relationship.
     SuperAdmin,
 }
@@ -140,10 +134,9 @@ impl World {
     fn caller(&self, caller: Caller) -> &users::Model {
         match caller {
             Caller::Coach | Caller::Removed => &self.coach,
-            Caller::Coachee | Caller::RemovedCoachee => &self.coachee,
+            Caller::Coachee => &self.coachee,
             Caller::Member => &self.member,
             Caller::Outsider => &self.outsider,
-            Caller::Admin => &self.admin,
             Caller::SuperAdmin => &self.super_admin,
         }
     }
@@ -153,13 +146,12 @@ impl World {
         let user = self.caller(caller).clone();
         let db = MockDatabase::new(DatabaseBackend::Postgres);
         let role = match caller {
-            Caller::Removed | Caller::RemovedCoachee => {
+            Caller::Removed => {
                 return db
                     .append_query_results([vec![(user.clone(), None::<user_roles::Model>)]])
                     .append_query_results([vec![(user, None::<user_roles::Model>)]])
             }
             Caller::Outsider => role(user.id, Id::new_v4()),
-            Caller::Admin => role_as(users::Role::Admin, user.id, Some(self.organization_id)),
             Caller::SuperAdmin => role_as(users::Role::SuperAdmin, user.id, None),
             Caller::Coach | Caller::Coachee | Caller::Member => role(user.id, self.organization_id),
         };

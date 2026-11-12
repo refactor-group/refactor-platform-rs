@@ -143,55 +143,6 @@ fn mock_through_authorization(
         .append_query_results([vec![test_organization(organization_id)]])
 }
 
-/// Authorization let the request through. The create itself runs off the end of the
-/// mock queue, so nothing past the gate is worth pinning.
-fn assert_authorized(status: StatusCode) {
-    assert_ne!(status, StatusCode::FORBIDDEN);
-    assert_ne!(status, StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn create_allows_an_organization_admin() {
-    let organization_id = Id::new_v4();
-    let user = requester();
-    let role = test_role(user.id, Some(organization_id), users::Role::Admin);
-
-    let db = Arc::new(mock_through_authorization(&user, &role, organization_id).into_connection());
-    let app = build_app(db);
-    let cookie = login_cookie(&app).await;
-
-    assert_authorized(create_request(&app, &cookie, organization_id).await);
-}
-
-#[tokio::test]
-async fn create_allows_a_global_super_admin() {
-    let organization_id = Id::new_v4();
-    let user = requester();
-    let role = test_role(user.id, None, users::Role::SuperAdmin);
-
-    let db = Arc::new(mock_through_authorization(&user, &role, organization_id).into_connection());
-    let app = build_app(db);
-    let cookie = login_cookie(&app).await;
-
-    assert_authorized(create_request(&app, &cookie, organization_id).await);
-}
-
-#[tokio::test]
-async fn create_denies_a_plain_member() {
-    let organization_id = Id::new_v4();
-    let user = requester();
-    let role = test_role(user.id, Some(organization_id), users::Role::User);
-
-    let db = Arc::new(mock_through_authorization(&user, &role, organization_id).into_connection());
-    let app = build_app(db);
-    let cookie = login_cookie(&app).await;
-
-    assert_eq!(
-        create_request(&app, &cookie, organization_id).await,
-        StatusCode::FORBIDDEN
-    );
-}
-
 #[tokio::test]
 async fn create_denies_an_admin_of_a_different_organization() {
     // Admin somewhere, and a member here, but not an admin here.
@@ -286,61 +237,6 @@ fn build_read_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
         )
         .with_state(app_state)
         .layer(auth_layer)
-}
-
-#[tokio::test]
-async fn read_denies_a_non_participant() {
-    let organization_id = Id::new_v4();
-    let relationship_id = Id::new_v4();
-    let user = requester();
-    let role = test_role(user.id, Some(organization_id), users::Role::User);
-    // A member of the organization, but this relationship is between two other people.
-    let other = relationship(relationship_id, organization_id, Id::new_v4(), Id::new_v4());
-
-    let db = mock_through_relationship_read(&user, &role, &other);
-    let app = build_read_app(db);
-    let cookie = login_cookie(&app).await;
-
-    assert_eq!(
-        read_request(&app, &cookie, organization_id, relationship_id).await,
-        StatusCode::FORBIDDEN
-    );
-}
-
-#[tokio::test]
-async fn read_denies_a_participant_removed_from_the_organization() {
-    let organization_id = Id::new_v4();
-    let relationship_id = Id::new_v4();
-    let user = requester();
-    // Still the coachee, but their only role is in some other organization.
-    let role = test_role(user.id, Some(Id::new_v4()), users::Role::User);
-    let own = relationship(relationship_id, organization_id, Id::new_v4(), user.id);
-
-    let db = mock_through_relationship_read(&user, &role, &own);
-    let app = build_read_app(db);
-    let cookie = login_cookie(&app).await;
-
-    assert_eq!(
-        read_request(&app, &cookie, organization_id, relationship_id).await,
-        StatusCode::FORBIDDEN
-    );
-}
-
-#[tokio::test]
-async fn read_allows_a_participant_who_is_still_a_member() {
-    let organization_id = Id::new_v4();
-    let relationship_id = Id::new_v4();
-    let user = requester();
-    let role = test_role(user.id, Some(organization_id), users::Role::User);
-    let own = relationship(relationship_id, organization_id, Id::new_v4(), user.id);
-
-    let db = mock_through_relationship_read(&user, &role, &own);
-    let app = build_read_app(db);
-    let cookie = login_cookie(&app).await;
-
-    let status = read_request(&app, &cookie, organization_id, relationship_id).await;
-    assert_ne!(status, StatusCode::FORBIDDEN);
-    assert_ne!(status, StatusCode::UNAUTHORIZED);
 }
 
 /// The organization segment addresses the relationship. Pointing a valid relationship

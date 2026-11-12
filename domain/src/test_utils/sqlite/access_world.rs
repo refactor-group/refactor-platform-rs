@@ -19,9 +19,10 @@ use entity::transcript_suggestion_target::Target;
 use entity::transcription::TranscriptionStatus;
 use entity::{
     actions, actions_users, agreements, coaching_relationships, coaching_session_images,
-    coaching_session_series, coaching_session_topics, coaching_sessions, coaching_sessions_goals,
-    goals, meeting_recording, notes, transcript_analysis, transcript_participant,
-    transcript_segment, transcript_suggestion, transcription, user_roles, users, Id,
+    coaching_session_series, coaching_session_topics, coaching_session_views, coaching_sessions,
+    coaching_sessions_goals, goals, meeting_recording, notes, transcript_analysis,
+    transcript_participant, transcript_segment, transcript_suggestion, transcription,
+    user_role_changes, user_roles, users, Id,
 };
 use entity_api::user::generate_hash;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
@@ -321,6 +322,135 @@ pub async fn action_assignees(db: &DatabaseConnection, action_id: Id) -> Option<
             .map(|assignment| assignment.user_id)
             .collect(),
     )
+}
+
+/// The session's title, or `None` once it is deleted.
+pub async fn session_title(db: &DatabaseConnection, session_id: Id) -> Option<Option<String>> {
+    coaching_sessions::Entity::find_by_id(session_id)
+        .one(db)
+        .await
+        .expect("the session reads")
+        .map(|session| session.title)
+}
+
+/// Ids of every session in the relationship.
+pub async fn relationship_sessions(db: &DatabaseConnection, relationship_id: Id) -> BTreeSet<Id> {
+    coaching_sessions::Entity::find()
+        .filter(coaching_sessions::Column::CoachingRelationshipId.eq(relationship_id))
+        .all(db)
+        .await
+        .expect("the sessions read")
+        .into_iter()
+        .map(|session| session.id)
+        .collect()
+}
+
+/// Ids of every series in the relationship.
+pub async fn relationship_series(db: &DatabaseConnection, relationship_id: Id) -> BTreeSet<Id> {
+    coaching_session_series::Entity::find()
+        .filter(coaching_session_series::Column::CoachingRelationshipId.eq(relationship_id))
+        .all(db)
+        .await
+        .expect("the series read")
+        .into_iter()
+        .map(|series| series.id)
+        .collect()
+}
+
+/// The series' rule, calendar SEQUENCE and sessions with their starts, or `None` once it is
+/// deleted.
+pub async fn series_state(
+    db: &DatabaseConnection,
+    series_id: Id,
+) -> Option<(serde_json::Value, i32, BTreeSet<(Id, NaiveDateTime)>)> {
+    let series = coaching_session_series::Entity::find_by_id(series_id)
+        .one(db)
+        .await
+        .expect("the series reads")?;
+    let sessions = coaching_sessions::Entity::find()
+        .filter(coaching_sessions::Column::CoachingSessionSeriesId.eq(series_id))
+        .all(db)
+        .await
+        .expect("the series sessions read")
+        .into_iter()
+        .map(|session| (session.id, session.date))
+        .collect();
+    Some((series.rule, series.ical_sequence, sessions))
+}
+
+/// Ids of the users who marked the session viewed.
+pub async fn session_viewers(db: &DatabaseConnection, session_id: Id) -> BTreeSet<Id> {
+    coaching_session_views::Entity::find()
+        .filter(coaching_session_views::Column::CoachingSessionId.eq(session_id))
+        .all(db)
+        .await
+        .expect("the views read")
+        .into_iter()
+        .map(|view| view.user_id)
+        .collect()
+}
+
+/// Ids of every relationship from `coach_id` to `coachee_id`.
+pub async fn relationships_between(
+    db: &DatabaseConnection,
+    coach_id: Id,
+    coachee_id: Id,
+) -> BTreeSet<Id> {
+    coaching_relationships::Entity::find()
+        .filter(coaching_relationships::Column::CoachId.eq(coach_id))
+        .filter(coaching_relationships::Column::CoacheeId.eq(coachee_id))
+        .all(db)
+        .await
+        .expect("the relationships read")
+        .into_iter()
+        .map(|relationship| relationship.id)
+        .collect()
+}
+
+/// The id of the user with `email`, if there is one.
+pub async fn user_with_email(db: &DatabaseConnection, email: &str) -> Option<Id> {
+    users::Entity::find()
+        .filter(users::Column::Email.eq(email))
+        .one(db)
+        .await
+        .expect("the user reads")
+        .map(|user| user.id)
+}
+
+/// Whether the user still exists.
+pub async fn user_exists(db: &DatabaseConnection, user_id: Id) -> bool {
+    users::Entity::find_by_id(user_id)
+        .one(db)
+        .await
+        .expect("the user reads")
+        .is_some()
+}
+
+/// Drops every role `user_id` holds in `organization_id`, with no audit row.
+pub async fn remove_roles(db: &DatabaseConnection, user_id: Id, organization_id: Id) {
+    user_roles::Entity::delete_many()
+        .filter(user_roles::Column::UserId.eq(user_id))
+        .filter(user_roles::Column::OrganizationId.eq(organization_id))
+        .exec(db)
+        .await
+        .expect("the roles are removed");
+}
+
+/// The audit row an admin's removal of `user_id` from `organization_id` leaves, which lets
+/// that organization's admins attach the user again.
+pub async fn record_removal(db: &DatabaseConnection, user_id: Id, organization_id: Id) {
+    user_role_changes::ActiveModel {
+        id: Set(Id::new_v4()),
+        actor_user_id: Set(None),
+        target_user_id: Set(user_id),
+        organization_id: Set(Some(organization_id)),
+        previous_role: Set(Some(Role::User)),
+        new_role: Set(None),
+        changed_at: Set(Utc::now().into()),
+    }
+    .insert(db)
+    .await
+    .expect("the removal is recorded");
 }
 
 /// The suggestion's status and the entity accepting it created.

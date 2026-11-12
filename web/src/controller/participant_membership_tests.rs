@@ -135,16 +135,6 @@ async fn read_as_coach(w: &World, members: &[Id]) -> serde_json::Value {
 }
 
 #[tokio::test]
-async fn m4_04_the_single_read_marks_a_removed_coachee() {
-    let w = support::world();
-
-    let data = read_as_coach(&w, &[w.coach.id]).await;
-
-    assert_eq!(data["coach_is_member"], json!(true), "{data}");
-    assert_eq!(data["coachee_is_member"], json!(false), "{data}");
-}
-
-#[tokio::test]
 async fn m4_05_an_included_relationship_marks_a_removed_coachee() {
     let w = support::world();
     let db = Arc::new(

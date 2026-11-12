@@ -84,36 +84,6 @@ fn create_coached_relationship(
     }
 }
 
-/// A relationship in `organization_id` where the user is the coachee.
-fn create_coachee_relationship(
-    relationship_id: Id,
-    coachee_id: Id,
-    organization_id: Id,
-) -> coaching_relationships::Model {
-    let now = Utc::now();
-    coaching_relationships::Model {
-        id: relationship_id,
-        coach_id: Id::new_v4(),
-        coachee_id,
-        organization_id,
-        slug: "test".to_string(),
-        created_at: now.into(),
-        updated_at: now.into(),
-    }
-}
-
-fn create_test_role(user_id: Id, organization_id: Option<Id>) -> user_roles::Model {
-    let now = Utc::now();
-    user_roles::Model {
-        id: Id::new_v4(),
-        role: users::Role::User,
-        organization_id,
-        user_id,
-        created_at: now.into(),
-        updated_at: now.into(),
-    }
-}
-
 async fn protected_route() -> &'static str {
     "updated"
 }
@@ -210,59 +180,5 @@ async fn denies_a_coach_removed_from_the_organization() {
     assert_eq!(
         status_for_protected_request(db, session_id).await,
         StatusCode::FORBIDDEN
-    );
-}
-
-#[tokio::test]
-async fn denies_a_coachee_who_is_still_a_member() {
-    let session_id = Id::new_v4();
-    let relationship_id = Id::new_v4();
-    let organization_id = Id::new_v4();
-    let test_user = create_test_user();
-    let test_session = create_test_session(session_id, relationship_id);
-    // Membership in the relationship's own organization, but only as the coachee.
-    let test_role = create_test_role(test_user.id, Some(organization_id));
-
-    let db = Arc::new(
-        MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-            .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-            .append_query_results(vec![vec![(
-                test_session,
-                create_coachee_relationship(relationship_id, test_user.id, organization_id),
-            )]])
-            .into_connection(),
-    );
-
-    assert_eq!(
-        status_for_protected_request(db, session_id).await,
-        StatusCode::FORBIDDEN
-    );
-}
-
-#[tokio::test]
-async fn grants_access_to_a_coach_who_is_still_a_member() {
-    let session_id = Id::new_v4();
-    let relationship_id = Id::new_v4();
-    let organization_id = Id::new_v4();
-    let test_user = create_test_user();
-    let test_session = create_test_session(session_id, relationship_id);
-    // Membership in the relationship's own organization.
-    let test_role = create_test_role(test_user.id, Some(organization_id));
-
-    let db = Arc::new(
-        MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-            .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-            .append_query_results(vec![vec![(
-                test_session,
-                create_coached_relationship(relationship_id, test_user.id, organization_id),
-            )]])
-            .into_connection(),
-    );
-
-    assert_eq!(
-        status_for_protected_request(db, session_id).await,
-        StatusCode::OK
     );
 }

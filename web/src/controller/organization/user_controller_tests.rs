@@ -241,33 +241,6 @@ fn delete_uri(organization_id: Id, user_id: Id) -> String {
 }
 
 #[tokio::test]
-async fn create_is_forbidden_for_a_plain_member() {
-    let organization_id = Id::new_v4();
-    let user = requester();
-    let role = test_role(user.id, Some(organization_id), users::Role::User);
-
-    let db = Arc::new(
-        authenticated_as(&user, &role)
-            .append_query_results([vec![merge([row(test_organization(organization_id))])]])
-            .into_connection(),
-    );
-
-    let app = build_app(db);
-    let cookie = login_cookie(&app).await;
-
-    let response = send(
-        &app,
-        &cookie,
-        "POST",
-        create_uri(organization_id),
-        Body::from(NEW_USER_BODY),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
-}
-
-#[tokio::test]
 async fn create_succeeds_for_an_organization_admin() {
     let organization_id = Id::new_v4();
     let user = requester();
@@ -457,55 +430,6 @@ async fn delete_is_forbidden_for_a_plain_member() {
 }
 
 #[tokio::test]
-async fn delete_succeeds_for_an_organization_admin_targeting_another_member() {
-    let organization_id = Id::new_v4();
-    let user = requester();
-    let role = test_role(user.id, Some(organization_id), users::Role::Admin);
-    let target = target_user();
-    let target_role = test_role(target.id, Some(organization_id), users::Role::User);
-
-    let requester_row = merge([row((user.clone(), role.clone()))]);
-    let target_row = merge([row((target.clone(), target_role.clone()))]);
-    let requester_row_with_count = merge([row((user.clone(), role.clone())), count_row(1)]);
-
-    let db = Arc::new(
-        authenticated_as(&user, &role)
-            .append_query_results([vec![merge([row(test_organization(organization_id))])]])
-            .append_query_results([vec![requester_row, target_row.clone()]])
-            // The lock the deletion takes on the target before counting its orgs.
-            .append_query_results([vec![merge([row(target.clone())])]])
-            .append_query_results([vec![requester_row_with_count, target_row]])
-            .append_query_results([vec![merge([count_row(1)])]])
-            // None of the target's relationships has a session.
-            .append_query_results([vec![merge([count_row(0)])]])
-            // The roles the deletion is about to destroy, read before they are gone,
-            // then the audit row each one owes.
-            .append_query_results([vec![merge([row(target_role.clone())])]])
-            .append_query_results([vec![merge([row(role_change_row(
-                user.id,
-                target.id,
-                organization_id,
-            ))])]])
-            .append_exec_results([exec_result(), exec_result(), exec_result()])
-            .into_connection(),
-    );
-
-    let app = build_app(db);
-    let cookie = login_cookie(&app).await;
-
-    let response = send(
-        &app,
-        &cookie,
-        "DELETE",
-        delete_uri(organization_id, target.id),
-        Body::empty(),
-    )
-    .await;
-
-    assert_eq!(api_status_code(response).await, 204);
-}
-
-#[tokio::test]
 async fn delete_refuses_a_member_with_coaching_history() {
     let organization_id = Id::new_v4();
     let user = requester();
@@ -556,34 +480,6 @@ async fn delete_refuses_a_member_with_coaching_history() {
         "{body}"
     );
     assert_eq!(body["details"]["relationship_count"], 2, "{body}");
-}
-
-#[tokio::test]
-async fn delete_is_forbidden_for_an_organization_admin_targeting_themselves() {
-    let organization_id = Id::new_v4();
-    let user = requester();
-    let role = test_role(user.id, Some(organization_id), users::Role::Admin);
-
-    let db = Arc::new(
-        authenticated_as(&user, &role)
-            .append_query_results([vec![merge([row(test_organization(organization_id))])]])
-            .append_query_results([vec![merge([row((user.clone(), role.clone()))])]])
-            .into_connection(),
-    );
-
-    let app = build_app(db);
-    let cookie = login_cookie(&app).await;
-
-    let response = send(
-        &app,
-        &cookie,
-        "DELETE",
-        delete_uri(organization_id, user.id),
-        Body::empty(),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

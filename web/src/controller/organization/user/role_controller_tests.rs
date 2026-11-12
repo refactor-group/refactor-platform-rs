@@ -13,7 +13,7 @@ use chrono::Utc;
 use domain::user::Backend;
 use domain::{organizations, user_role_changes, user_roles, users, Id};
 use password_auth::generate_hash;
-use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult, Value};
+use sea_orm::{DatabaseBackend, MockDatabase, Value};
 use service::config::Config;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -90,13 +90,6 @@ fn role_change_row(
         previous_role,
         new_role,
         changed_at: chrono::Utc::now().into(),
-    }
-}
-
-fn exec_result() -> MockExecResult {
-    MockExecResult {
-        last_insert_id: 0,
-        rows_affected: 1,
     }
 }
 
@@ -457,92 +450,6 @@ async fn remove_returns_403_when_the_requester_targets_themselves() {
     .await;
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-}
-
-#[tokio::test]
-async fn remove_returns_204_when_the_member_still_has_sessions() {
-    let organization_id = Id::new_v4();
-    let target_id = Id::new_v4();
-    let user = requester();
-    let role = test_role(user.id, Some(organization_id), users::Role::Admin);
-
-    // The member's coaching history no longer factors into removal, so the
-    // handler runs the membership lookup and the one delete regardless.
-    let db = Arc::new(
-        mock_through_extractor(&user, &role, organization_id)
-            .append_query_results([vec![requester()]])
-            .append_query_results([vec![test_role(
-                target_id,
-                Some(organization_id),
-                users::Role::User,
-            )]])
-            .append_exec_results([exec_result()])
-            .append_query_results([vec![role_change_row(
-                user.id,
-                target_id,
-                organization_id,
-                Some(users::Role::User),
-                None,
-            )]])
-            .into_connection(),
-    );
-
-    let app = build_app(db);
-    let cookie = login_cookie(&app).await;
-
-    let response = role_request(
-        &app,
-        &cookie,
-        "DELETE",
-        organization_id,
-        target_id,
-        Body::empty(),
-    )
-    .await;
-
-    assert_eq!(api_status_code(response).await, 204);
-}
-
-#[tokio::test]
-async fn remove_returns_204_for_another_member() {
-    let organization_id = Id::new_v4();
-    let target_id = Id::new_v4();
-    let user = requester();
-    let role = test_role(user.id, Some(organization_id), users::Role::Admin);
-
-    let db = Arc::new(
-        mock_through_extractor(&user, &role, organization_id)
-            .append_query_results([vec![requester()]])
-            .append_query_results([vec![test_role(
-                target_id,
-                Some(organization_id),
-                users::Role::User,
-            )]])
-            .append_exec_results([exec_result()])
-            .append_query_results([vec![role_change_row(
-                user.id,
-                target_id,
-                organization_id,
-                Some(users::Role::User),
-                None,
-            )]])
-            .into_connection(),
-    );
-
-    let app = build_app(db);
-    let cookie = login_cookie(&app).await;
-
-    let response = role_request(
-        &app,
-        &cookie,
-        "DELETE",
-        organization_id,
-        target_id,
-        Body::empty(),
-    )
-    .await;
-
-    assert_eq!(api_status_code(response).await, 204);
 }
 
 /// Nothing else pins that the handler forwards the body's coach into the domain

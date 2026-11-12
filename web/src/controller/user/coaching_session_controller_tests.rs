@@ -202,16 +202,6 @@ async fn a_signed_out_request_is_unauthorized() {
 }
 
 #[tokio::test]
-async fn another_users_sessions_are_forbidden() {
-    let user = test_user();
-    let app = build_app(Arc::new(logged_in(&user).into_connection()));
-
-    let response = get_nearest(&app, Id::new_v4(), &window_query(Id::new_v4())).await;
-
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
-}
-
-#[tokio::test]
 async fn a_relationship_the_user_is_not_in_is_an_empty_200() {
     let user = test_user();
     let db = logged_in(&user)

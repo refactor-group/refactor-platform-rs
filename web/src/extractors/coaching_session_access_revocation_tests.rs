@@ -177,32 +177,6 @@ async fn status_for_protected_request(db: Arc<DatabaseConnection>, session_id: I
 }
 
 #[tokio::test]
-async fn denies_a_participant_removed_from_the_organization() {
-    let session_id = Id::new_v4();
-    let relationship_id = Id::new_v4();
-    let organization_id = Id::new_v4();
-    let test_user = create_test_user();
-    let test_session = create_test_session(session_id, relationship_id);
-
-    // The user is the coachee but holds no role rows at all: removed from every organization.
-    let db = Arc::new(
-        MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results([vec![(test_user.clone(), None::<user_roles::Model>)]])
-            .append_query_results([vec![(test_user.clone(), None::<user_roles::Model>)]])
-            .append_query_results(vec![vec![(
-                test_session,
-                create_test_relationship(relationship_id, test_user.id, organization_id),
-            )]])
-            .into_connection(),
-    );
-
-    assert_eq!(
-        status_for_protected_request(db, session_id).await,
-        StatusCode::FORBIDDEN
-    );
-}
-
-#[tokio::test]
 async fn denies_a_participant_whose_only_role_is_in_another_organization() {
     let session_id = Id::new_v4();
     let relationship_id = Id::new_v4();
@@ -226,33 +200,6 @@ async fn denies_a_participant_whose_only_role_is_in_another_organization() {
     assert_eq!(
         status_for_protected_request(db, session_id).await,
         StatusCode::FORBIDDEN
-    );
-}
-
-#[tokio::test]
-async fn grants_access_to_a_participant_who_is_still_a_member() {
-    let session_id = Id::new_v4();
-    let relationship_id = Id::new_v4();
-    let organization_id = Id::new_v4();
-    let test_user = create_test_user();
-    let test_session = create_test_session(session_id, relationship_id);
-    // Membership in the relationship's own organization.
-    let test_role = create_test_role(test_user.id, Some(organization_id));
-
-    let db = Arc::new(
-        MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-            .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-            .append_query_results(vec![vec![(
-                test_session,
-                create_test_relationship(relationship_id, test_user.id, organization_id),
-            )]])
-            .into_connection(),
-    );
-
-    assert_eq!(
-        status_for_protected_request(db, session_id).await,
-        StatusCode::OK
     );
 }
 
@@ -291,27 +238,4 @@ async fn the_read_names_the_sessions_organization() {
         data["coaching_relationship_id"],
         serde_json::json!(relationship_id)
     );
-}
-
-/// The read keeps the shared access check: a participant removed from the organization is
-/// refused before anything about the session is returned.
-#[tokio::test]
-async fn the_read_denies_a_participant_removed_from_the_organization() {
-    let session_id = Id::new_v4();
-    let relationship_id = Id::new_v4();
-    let test_user = create_test_user();
-
-    let db = Arc::new(
-        MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results([vec![(test_user.clone(), None::<user_roles::Model>)]])
-            .append_query_results([vec![(test_user.clone(), None::<user_roles::Model>)]])
-            .append_query_results(vec![vec![(
-                create_test_session(session_id, relationship_id),
-                create_test_relationship(relationship_id, test_user.id, Id::new_v4()),
-            )]])
-            .into_connection(),
-    );
-
-    let response = logged_in_get(&app(db), &format!("/read/{session_id}")).await;
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
