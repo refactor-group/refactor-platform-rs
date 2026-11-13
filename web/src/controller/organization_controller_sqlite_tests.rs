@@ -345,6 +345,17 @@ async fn non_members_cannot_read_an_organization() {
                 .await;
             assert_eq!(status, StatusCode::FORBIDDEN, "{caller:?}");
         }
+        let (outsider, o2) = (app.fixture.user(Caller::Outsider), app.fixture.o2);
+        set_scoped_super_admin(app.db(), outsider, o2).await;
+        let (status, _) = app
+            .expect(
+                Caller::Outsider,
+                Method::GET,
+                &format!("/organizations/{o1}"),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "scoped SuperAdmin");
     })
     .await;
 }
@@ -356,16 +367,17 @@ async fn an_unknown_organization_is_not_found() {
         let mut app = TestApp::new().await;
         let unknown = Id::new_v4();
 
-        let (status, _) = app
-            .expect(
-                Caller::Super,
-                Method::GET,
-                &format!("/organizations/{unknown}"),
-                None,
-            )
-            .await;
-
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        for caller in [Caller::Super, Caller::Outsider] {
+            let (status, _) = app
+                .expect(
+                    caller,
+                    Method::GET,
+                    &format!("/organizations/{unknown}"),
+                    None,
+                )
+                .await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{caller:?}");
+        }
     })
     .await;
 }

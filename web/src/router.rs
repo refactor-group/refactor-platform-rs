@@ -603,18 +603,12 @@ pub fn organization_routes(app_state: AppState) -> Router {
         // except we can use axum-extras `or` like is show here:
         // https://gist.github.com/davidpdrsn/eb4e703e7e068ece3efd975b8f6bc340#file-content_type_or-rs-L17
         .route("/organizations", get(organization_controller::index))
-        .route(
-            "/organizations/:organization_id",
-            get(organization_controller::read),
-        )
         .route("/organizations", post(organization_controller::create))
         .route(
             "/organizations/:organization_id",
-            put(organization_controller::update),
-        )
-        .route(
-            "/organizations/:organization_id",
-            delete(organization_controller::delete),
+            get(organization_controller::read)
+                .put(organization_controller::update)
+                .delete(organization_controller::delete),
         )
         .route(
             "/organizations/:organization_id/archive",

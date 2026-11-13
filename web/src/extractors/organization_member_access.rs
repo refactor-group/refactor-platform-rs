@@ -6,7 +6,7 @@ use axum::{
     http::{request::Parts, StatusCode},
 };
 use domain::error::{DomainErrorKind, EntityErrorKind, Error as DomainError, InternalErrorKind};
-use domain::{organization as OrganizationApi, user as UserApi, Id};
+use domain::{organization as OrganizationApi, Id};
 
 use crate::{
     extractors::{authenticated_user::AuthenticatedUser, RejectionType},
@@ -82,23 +82,11 @@ where
             return Ok(OrganizationMemberAccess(organization_id));
         }
 
-        let user_organization_role_exists = match UserApi::find_by_organization(
-            state.db_conn_ref(),
-            organization_id,
-        )
-        .await
-        {
-            Ok(users) => users.iter().any(|user| user.id == authenticated_user.id),
-            Err(err) => {
-                error!(
-                        "find_by_organization({organization_id:?}) failed while verifying membership: {err:?}"
-                    );
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to verify organization membership".to_string(),
-                ));
-            }
-        };
+        // Roles load with the user on every request, so a removal applies immediately.
+        let user_organization_role_exists = authenticated_user
+            .roles
+            .iter()
+            .any(|role| role.organization_id == Some(organization_id));
 
         if !user_organization_role_exists {
             return Err((
