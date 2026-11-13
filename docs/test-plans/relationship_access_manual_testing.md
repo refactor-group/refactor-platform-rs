@@ -338,7 +338,7 @@ How to read the tables:
 | ACT-27 | GET /actions/A1 | COACH, COACHEE | 200, A1 | `web/src/extractors/action_access.rs:50` | [tightened] |
 | ACT-28 | POST /actions `{coaching_session_id: S1, assignee_ids: [COACHEE_ID]}` | COACH, COACHEE | 200 (201), new action | `web/src/controller/action_controller.rs:118` | [tightened] Sends MAIL-11 |
 | ACT-29 | PUT /actions/A1 | COACH, COACHEE | 200, A1 updated | `web/src/extractors/action_access.rs:50` | [tightened] Newly added assignees get MAIL-11 |
-| ACT-30 | PUT /actions/A1/status?value=completed | COACH, COACHEE | 200, A1 | `web/src/extractors/action_access.rs:50` | [tightened] |
+| ACT-30 | PUT /actions/A1/status?value=on_hold | COACH, COACHEE | 200, A1 | `web/src/extractors/action_access.rs:50` | [tightened] |
 | ACT-31 | DELETE /actions/A1 | COACH, COACHEE | 200, `{id}` | `web/src/extractors/action_access.rs:50` | [tightened] Run last in this table |
 | ACT-32 | GET /actions/A1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403 | `web/src/extractors/action_access.rs:50` | [tightened] Unknown action: 404 |
 | ACT-33 | POST /actions `{coaching_session_id: S1}` | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, nothing written, no email | `web/src/controller/action_controller.rs:118` | [tightened] Unknown session: 404 |

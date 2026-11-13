@@ -224,7 +224,7 @@ async fn participants_update_the_action_status() {
                 .send(
                     caller,
                     Method::PUT,
-                    &format!("/actions/{a1}/status?value=completed"),
+                    &format!("/actions/{a1}/status?value=on_hold"),
                     None,
                 )
                 .await;
@@ -233,9 +233,9 @@ async fn participants_update_the_action_status() {
                 (StatusCode::OK, ids([a1])),
                 "{caller:?}"
             );
-            assert_eq!(reply.body["data"]["status"], "Completed", "{caller:?}");
+            assert_eq!(reply.body["data"]["status"], "OnHold", "{caller:?}");
             let status = action_state(app.db(), a1).await.map(|(_, status)| status);
-            assert_eq!(status, Some(Status::Completed), "{caller:?}");
+            assert_eq!(status, Some(Status::OnHold), "{caller:?}");
         }
     })
     .await;
