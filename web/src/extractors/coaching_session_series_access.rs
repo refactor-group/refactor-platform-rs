@@ -2,14 +2,13 @@ use std::collections::HashMap;
 
 use axum::{
     async_trait,
-    extract::{FromRef, FromRequestParts, Path, Query},
+    extract::{FromRef, FromRequestParts, Path},
     http::{request::Parts, StatusCode},
 };
 use domain::{
     coaching_relationship as CoachingRelationshipApi, coaching_relationships,
     coaching_session_series as CoachingSessionSeriesApi, Id,
 };
-use serde::Deserialize;
 
 use crate::{
     extractors::{authenticated_user::AuthenticatedUser, RejectionType},
@@ -35,58 +34,6 @@ where
         let (series, relationship, user) = resolve(parts, state).await?;
         if relationship.grants_access_to(&user) {
             Ok(CoachingSessionSeriesAccess(series))
-        } else {
-            Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()))
-        }
-    }
-}
-
-/// Extracts the coaching relationship referenced by the `coaching_relationship_id`
-/// query parameter and verifies the authenticated user is a participant
-/// (coach OR coachee). Used by `GET /coaching_session_series` (list).
-pub(crate) struct CoachingRelationshipQueryAccess(pub coaching_relationships::Model);
-
-#[derive(Debug, Deserialize)]
-struct RelationshipIdQuery {
-    coaching_relationship_id: Id,
-}
-
-#[async_trait]
-impl<S> FromRequestParts<S> for CoachingRelationshipQueryAccess
-where
-    AppState: FromRef<S>,
-    S: Send + Sync,
-{
-    type Rejection = RejectionType;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let state = AppState::from_ref(state);
-        let AuthenticatedUser(user) = AuthenticatedUser::from_request_parts(parts, &state).await?;
-
-        let Query(params) = Query::<RelationshipIdQuery>::from_request_parts(parts, &state)
-            .await
-            .map_err(|_| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    "Missing or invalid coaching_relationship_id query parameter".to_string(),
-                )
-            })?;
-
-        let relationship = CoachingRelationshipApi::find_by_id(
-            state.db_conn_ref(),
-            params.coaching_relationship_id,
-        )
-        .await
-        .map_err(|e| {
-            error!(
-                "Error finding coaching relationship {}: {e:?}",
-                params.coaching_relationship_id
-            );
-            (StatusCode::NOT_FOUND, "NOT FOUND".to_string())
-        })?;
-
-        if relationship.grants_access_to(&user) {
-            Ok(CoachingRelationshipQueryAccess(relationship))
         } else {
             Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()))
         }

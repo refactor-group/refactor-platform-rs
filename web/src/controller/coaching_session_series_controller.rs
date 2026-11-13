@@ -1,10 +1,10 @@
 use crate::controller::ApiResponse;
 use crate::extractors::coaching_session_series_access::{
-    CoachingRelationshipQueryAccess, CoachingSessionSeriesAccess, CoachingSessionSeriesCoachAccess,
+    CoachingSessionSeriesAccess, CoachingSessionSeriesCoachAccess,
 };
 use crate::extractors::{
     authenticated_user::AuthenticatedUser,
-    coaching_relationship_access::authorize_relationship_coach,
+    coaching_relationship_access::{authorize_relationship_coach, CoachingRelationshipQueryAccess},
     compare_api_version::CompareApiVersion,
 };
 use crate::params::coaching_session_series::{

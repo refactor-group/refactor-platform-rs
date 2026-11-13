@@ -1,10 +1,10 @@
 use crate::controller::ApiResponse;
 use crate::extractors::coaching_session_access::{
-    CoachingSessionAccess, CoachingSessionContextAccess,
+    CoachingSessionAccess, CoachingSessionCoachAccess, CoachingSessionContextAccess,
 };
 use crate::extractors::{
     authenticated_user::AuthenticatedUser,
-    coaching_relationship_access::authorize_relationship_coach,
+    coaching_relationship_access::{authorize_relationship_coach, CoachingRelationshipQueryAccess},
     compare_api_version::CompareApiVersion,
 };
 use crate::params::coaching_session::{
@@ -12,7 +12,7 @@ use crate::params::coaching_session::{
 };
 use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -121,6 +121,7 @@ pub async fn view(
     responses(
         (status = 200, description = "Successfully retrieved all Coaching Sessions", body = [domain::coaching_session::SessionWithDisplayTitle]),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -129,10 +130,9 @@ pub async fn view(
     )
 )]
 pub async fn index(
+    CoachingRelationshipQueryAccess(_relationship): CoachingRelationshipQueryAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
     State(app_state): State<AppState>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
@@ -223,6 +223,7 @@ pub async fn create(
     responses(
         (status = 204, description = "Successfully updated a Coaching Session", body = ()),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 409, description = "A new `date` or `duration_minutes` while the coachee is no longer a member of the organization; `details.reason` is `coachee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status = 503, description = "Service temporarily unavailable"),
     ),
@@ -231,13 +232,13 @@ pub async fn create(
     )
 )]
 pub async fn update(
+    CoachingSessionCoachAccess(coaching_session, _relationship): CoachingSessionCoachAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(coaching_session_id): Path<Id>,
     Json(params): Json<UpdateParams>,
 ) -> Result<impl IntoResponse, Error> {
-    CoachingSessionApi::update(app_state.db_conn_ref(), coaching_session_id, params).await?;
+    CoachingSessionApi::update(app_state.db_conn_ref(), coaching_session.id, params).await?;
     Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
 }
 
@@ -288,6 +289,7 @@ pub async fn update_title(
     responses(
         (status = 204, description = "Successfully deleted a Coaching Session", body = ()),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 409, description = "The session has notes, actions or agreements; `details.reason` is `sessions_have_content`, with `details.coaching_session_id`"),
         (status = 503, description = "Service temporarily unavailable"),
     ),
@@ -296,15 +298,15 @@ pub async fn update_title(
     )
 )]
 pub async fn delete(
+    CoachingSessionCoachAccess(coaching_session, _relationship): CoachingSessionCoachAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(coaching_session_id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
     CoachingSessionApi::delete(
         app_state.db_conn_ref(),
         &app_state.config,
-        coaching_session_id,
+        coaching_session.id,
     )
     .await?;
 
@@ -331,14 +333,14 @@ pub async fn delete(
     )
 )]
 pub async fn resend_invite(
+    CoachingSessionCoachAccess(coaching_session, _relationship): CoachingSessionCoachAccess,
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    Path(coaching_session_id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
     CoachingSessionApi::resend_invite(
         app_state.db_conn_ref(),
         &app_state.config,
-        coaching_session_id,
+        coaching_session.id,
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)

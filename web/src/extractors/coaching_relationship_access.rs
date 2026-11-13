@@ -2,10 +2,11 @@ use std::collections::HashMap;
 
 use axum::{
     async_trait,
-    extract::{FromRef, FromRequestParts, Path},
+    extract::{FromRef, FromRequestParts, Path, Query},
     http::{request::Parts, StatusCode},
 };
 use domain::{coaching_relationship as CoachingRelationshipApi, coaching_relationships, users, Id};
+use serde::Deserialize;
 
 use crate::{
     extractors::{authenticated_user::AuthenticatedUser, lookup_rejection, RejectionType},
@@ -83,6 +84,42 @@ where
         }
 
         Ok(CoachingRelationshipAccess(relationship))
+    }
+}
+
+/// Relationship access for the relationship named by the `coaching_relationship_id` query
+/// parameter. A missing or invalid parameter is a 400.
+pub(crate) struct CoachingRelationshipQueryAccess(pub coaching_relationships::Model);
+
+#[derive(Debug, Deserialize)]
+struct RelationshipIdQuery {
+    coaching_relationship_id: Id,
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for CoachingRelationshipQueryAccess
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = RejectionType;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let state = AppState::from_ref(state);
+        let AuthenticatedUser(user) = AuthenticatedUser::from_request_parts(parts, &state).await?;
+
+        let Query(params) = Query::<RelationshipIdQuery>::from_request_parts(parts, &state)
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    "Missing or invalid coaching_relationship_id query parameter".to_string(),
+                )
+            })?;
+
+        authorize_relationship(&state, &user, params.coaching_relationship_id)
+            .await
+            .map(CoachingRelationshipQueryAccess)
     }
 }
 

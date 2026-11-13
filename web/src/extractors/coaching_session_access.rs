@@ -36,6 +36,12 @@ pub(crate) struct CoachingSessionQueryAccess(
     pub coaching_relationships::Model,
 );
 
+/// Coach-only [`CoachingSessionContextAccess`]: the caller must coach the session's relationship.
+pub(crate) struct CoachingSessionCoachAccess(
+    pub coaching_sessions::Model,
+    pub coaching_relationships::Model,
+);
+
 #[derive(Deserialize)]
 struct SessionQueryParams {
     coaching_session_id: Id,
@@ -66,6 +72,35 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let (session, relationship) = authorize(parts, &AppState::from_ref(state)).await?;
         Ok(CoachingSessionContextAccess(session, relationship))
+    }
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for CoachingSessionCoachAccess
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = RejectionType;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let (session, relationship) = authorize(parts, &AppState::from_ref(state)).await?;
+        let AuthenticatedUser(user) = AuthenticatedUser::from_request_parts(parts, state).await?;
+        let operation = format!("{} {}", parts.method, parts.uri.path());
+
+        if relationship.coach_id != user.id {
+            warn!(
+                "{operation} auth denied (not coach): coaching_session_id={} relationship_id={} user_id={}",
+                session.id, relationship.id, user.id
+            );
+            return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
+        }
+
+        debug!(
+            "{operation} auth passed: coaching_session_id={} relationship_id={} user_id={}",
+            session.id, relationship.id, user.id
+        );
+        Ok(CoachingSessionCoachAccess(session, relationship))
     }
 }
 

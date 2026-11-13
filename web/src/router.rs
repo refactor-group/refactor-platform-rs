@@ -349,75 +349,34 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
             "/coaching_sessions",
             post(coaching_session_controller::create),
         )
-        .merge(
-            // Get /coaching_sessions
-            Router::new()
-                .route(
-                    "/coaching_sessions",
-                    get(coaching_session_controller::index),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::coaching_sessions::index,
-                )),
+        .route(
+            "/coaching_sessions",
+            get(coaching_session_controller::index),
         )
-        .merge(
-            // GET /coaching_sessions/:id
-            Router::new().route(
-                "/coaching_sessions/:id",
-                get(coaching_session_controller::read),
-            ),
+        .route(
+            "/coaching_sessions/:id",
+            get(coaching_session_controller::read),
         )
-        .merge(
-            // POST /coaching_sessions/:coaching_session_id/view
-            Router::new().route(
-                "/coaching_sessions/:coaching_session_id/view",
-                post(coaching_session_controller::view),
-            ),
+        .route(
+            "/coaching_sessions/:coaching_session_id/view",
+            post(coaching_session_controller::view),
         )
-        .merge(
-            // PUT /coaching_sessions/:id
-            Router::new()
-                .route(
-                    "/coaching_sessions/:id",
-                    put(coaching_session_controller::update),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::coaching_sessions::update,
-                )),
+        .route(
+            "/coaching_sessions/:id",
+            put(coaching_session_controller::update),
         )
-        .merge(
-            // PATCH /coaching_sessions/:id/title — either participant (authz via the
-            // CoachingSessionAccess extractor); the coach-only PUT keeps the scheduling fields.
-            Router::new().route(
-                "/coaching_sessions/:id/title",
-                patch(coaching_session_controller::update_title),
-            ),
+        // Either participant; the coach-only PUT keeps the scheduling fields.
+        .route(
+            "/coaching_sessions/:id/title",
+            patch(coaching_session_controller::update_title),
         )
-        .merge(
-            // DELETE /coaching_sessions
-            Router::new()
-                .route(
-                    "/coaching_sessions/:id",
-                    delete(coaching_session_controller::delete),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::coaching_sessions::delete,
-                )),
+        .route(
+            "/coaching_sessions/:id",
+            delete(coaching_session_controller::delete),
         )
-        .merge(
-            // POST /coaching_sessions/:id/resend_invite
-            Router::new()
-                .route(
-                    "/coaching_sessions/:id/resend_invite",
-                    post(coaching_session_controller::resend_invite),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::coaching_sessions::resend_invite,
-                )),
+        .route(
+            "/coaching_sessions/:id/resend_invite",
+            post(coaching_session_controller::resend_invite),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
