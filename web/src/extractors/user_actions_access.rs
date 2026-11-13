@@ -8,7 +8,10 @@ use domain::{coaching_relationship, Id};
 use log::*;
 
 use crate::{
-    extractors::{authenticated_user::AuthenticatedUser, parse_path_id_from_parts, RejectionType},
+    extractors::{
+        authenticated_user::AuthenticatedUser, lookup_rejection, parse_path_id_from_parts,
+        RejectionType,
+    },
     AppState,
 };
 
@@ -34,20 +37,20 @@ where
             return Ok(UserActionsAccess(user_id));
         }
 
-        match coaching_relationship::is_coach_of(
+        let is_coach = coaching_relationship::is_coach_of(
             state.db_conn_ref(),
             &visibility_for(&user),
             user_id,
         )
         .await
-        {
-            Ok(true) => {
-                debug!("Coach {} accessing coachee {user_id}'s actions", user.id);
-                return Ok(UserActionsAccess(user_id));
-            }
-            Ok(false) => {}
-            // Deny on error.
-            Err(e) => error!("Error checking coaching relationship: {e:?}"),
+        .map_err(|e| {
+            error!("Error checking coaching relationship: {e:?}");
+            lookup_rejection(e.into())
+        })?;
+
+        if is_coach {
+            debug!("Coach {} accessing coachee {user_id}'s actions", user.id);
+            return Ok(UserActionsAccess(user_id));
         }
 
         error!(
@@ -55,5 +58,44 @@ where
             user.id
         );
         Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()))
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::{routing::get, Router};
+    use sea_orm::DbErr;
+
+    use super::*;
+    use crate::extractors::relationship_access_test_support::{self as support, Caller};
+
+    async fn protected_route(_access: UserActionsAccess) -> &'static str {
+        "extracted_success"
+    }
+
+    #[tokio::test]
+    async fn a_failed_coach_lookup_is_a_server_error() {
+        let w = support::fixture();
+        let db = Arc::new(
+            w.signed_in(Caller::Coach)
+                .append_query_errors([DbErr::Custom("connection lost".to_string())])
+                .into_connection(),
+        );
+        let routes = Router::new().route("/users/:user_id/actions", get(protected_route));
+
+        let response = support::send(
+            routes,
+            &db,
+            &w.coach.email,
+            "GET",
+            &format!("/users/{}/actions", w.coachee.id),
+            None,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }
