@@ -4,12 +4,11 @@ use axum::{
     http::request::Parts,
 };
 use domain::{action as ActionApi, actions, coaching_relationships};
-use log::*;
 
 use crate::{
     extractors::{
         authenticated_user::AuthenticatedUser, coaching_session_access::authorize_session,
-        not_found, parse_path_id_from_parts, RejectionType,
+        lookup_rejection, parse_path_id_from_parts, RejectionType,
     },
     AppState,
 };
@@ -41,10 +40,7 @@ where
 
         let action = ActionApi::find_by_id(app_state.db_conn_ref(), action_id)
             .await
-            .map_err(|e| {
-                warn!("Authorization error finding action {action_id}: {e:?}");
-                not_found()
-            })?;
+            .map_err(|e| lookup_rejection(e.into()))?;
 
         let (_, relationship) =
             authorize_session(&app_state, &user, action.coaching_session_id).await?;

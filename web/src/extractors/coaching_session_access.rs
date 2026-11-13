@@ -8,7 +8,7 @@ use axum::{
 use domain::{coaching_session, Id};
 
 use crate::{
-    extractors::{authenticated_user::AuthenticatedUser, RejectionType},
+    extractors::{authenticated_user::AuthenticatedUser, lookup_rejection, RejectionType},
     AppState,
 };
 use domain::{coaching_relationships, coaching_sessions, users};
@@ -110,10 +110,7 @@ pub(crate) async fn authorize_session(
             coaching_session_id,
         )
         .await
-        .map_err(|e| {
-            error!("Authorization error finding coaching session {coaching_session_id}: {e:?}");
-            (StatusCode::NOT_FOUND, "NOT FOUND".to_string())
-        })?;
+        .map_err(lookup_rejection)?;
 
     if !coaching_relationship.grants_access_to(user) {
         return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
@@ -130,6 +127,7 @@ mod tests {
     use crate::middleware::auth::require_auth;
 
     use super::*;
+    use crate::extractors::relationship_access_test_support::{self as support, Caller};
     use axum::{body::Body, middleware::from_fn};
     use axum::{extract::Request, routing::get, Router};
     use axum_login::{
@@ -141,7 +139,7 @@ mod tests {
     use domain::user_roles;
     use domain::users;
     use password_auth::generate_hash;
-    use sea_orm::{DatabaseBackend, MockDatabase};
+    use sea_orm::{DatabaseBackend, DbErr, MockDatabase};
     use service::config::Config;
     use time::Duration;
     use tower::ServiceExt;
@@ -216,7 +214,10 @@ mod tests {
             MockDatabase::new(DatabaseBackend::Postgres)
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-                .append_query_results(vec![vec![test_session.clone()]])
+                .append_query_results(vec![vec![(
+                    test_session.clone(),
+                    None::<coaching_relationships::Model>,
+                )]])
                 .into_connection(),
         );
 
@@ -281,5 +282,31 @@ mod tests {
 
         let response = app.clone().oneshot(protected_request).await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_failed_session_lookup_is_a_server_error() {
+        let w = support::fixture();
+        let db = Arc::new(
+            w.signed_in(Caller::Coach)
+                .append_query_errors([DbErr::Custom("connection lost".to_string())])
+                .into_connection(),
+        );
+        let routes = Router::new().route(
+            "/coaching_sessions/:coaching_session_id",
+            get(protected_route),
+        );
+
+        let response = support::send(
+            routes,
+            &db,
+            &w.coach.email,
+            "GET",
+            &format!("/coaching_sessions/{}", w.session.id),
+            None,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }
