@@ -305,29 +305,3 @@ pub(crate) fn assert_nothing_written(row: &str, db: &DatabaseConnection) {
         "{row}: the refused request wrote to the database"
     );
 }
-
-/// Asserts `body` is the 409 refusing `user_id`, no longer in the organization, for `reason`.
-pub(crate) fn assert_not_a_member(
-    row: &str,
-    body: &serde_json::Value,
-    reason: &str,
-    user_id: Id,
-    organization_id: Id,
-) {
-    assert_eq!(body["error"], "conflict", "{row}: {body}");
-    assert_eq!(body["details"]["reason"], reason, "{row}: {body}");
-    assert_eq!(
-        body["details"]["user_id"],
-        serde_json::json!(user_id),
-        "{row}: {body}"
-    );
-    assert_eq!(
-        body["details"]["organization_id"],
-        serde_json::json!(organization_id),
-        "{row}: {body}"
-    );
-    assert!(
-        body["message"].as_str().is_some_and(|m| !m.is_empty()),
-        "{row}: {body}"
-    );
-}

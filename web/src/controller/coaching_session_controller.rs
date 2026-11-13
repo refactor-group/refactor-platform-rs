@@ -458,10 +458,5 @@ mod tests {
 }
 
 #[cfg(test)]
-#[cfg(feature = "mock")]
-#[path = "coaching_session_create_tests.rs"]
-pub(super) mod coaching_session_create_tests;
-
-#[cfg(test)]
 #[path = "coaching_session_controller_sqlite_tests.rs"]
 mod sqlite_tests;

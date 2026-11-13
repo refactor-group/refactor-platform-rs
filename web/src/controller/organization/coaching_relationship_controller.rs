@@ -21,11 +21,6 @@ use service::config::ApiVersion;
 
 use log::*;
 
-#[cfg(test)]
-#[cfg(feature = "mock")]
-#[path = "coaching_relationship_authz_tests.rs"]
-mod authz_tests;
-
 /// CREATE a new CoachingRelationship.
 ///
 /// Restricted to administrators of the organization named in the path. Idempotent:

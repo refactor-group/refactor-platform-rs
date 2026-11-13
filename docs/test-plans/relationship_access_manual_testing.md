@@ -192,6 +192,9 @@ How to read the tables:
 | REL-16 | POST /organizations/O1/coaching_relationships | COACH, COACHEE, MEMBER, OUTSIDER | 403 | `web/src/extractors/organization_admin_access.rs:48` | |
 | REL-17 | GET /users/{REMOVED_ID}/coaching-relationships | REMOVED | 200, empty list | `web/src/protect/users/mod.rs:26`; `entity_api/src/coaching_relationship.rs:671`, `:426` | [membership] self list leaves out R3; was 200, R3 |
 | REL-18 | GET /organizations/O1/coaching_relationships | ADMIN | 200; R3 has `coach_is_member` true and `coachee_is_member` false, R1 and R2 have both true | `entity_api/src/coaching_relationship.rs:236` | [membership] Both fields are on every relationship object: org list, single read, `GET /users/{id}/coaching-relationships`, the create response (both true), and `include=relationship` on session reads |
+| REL-19 | GET /organizations/{unknown}/coaching_relationships | COACH, ADMIN, SUPER | 404 | `web/src/extractors/organization_member_access.rs:59` | Checked before membership |
+| REL-20 | POST /organizations/O1/coaching_relationships | OUTSIDER made an `Admin` of O2 | 403, nothing written | `web/src/extractors/organization_admin_access.rs:48` | An admin of another organization is not an admin of O1 |
+| REL-21 | any relationship route | not signed in | 401 | `web/src/middleware/auth.rs:25` | |
 
 ### 4.2 Sessions (`SES`)
 
@@ -234,6 +237,11 @@ How to read the tables:
 | SES-35 | POST /coaching_sessions/S3/resend_invite | COACH | 409 `coachee_not_a_member`, no email | `domain/src/coaching_session.rs:565` | [membership] |
 | SES-36 | DELETE /coaching_sessions/S5 | COACH | 200 (204) | `web/src/protect/coaching_sessions.rs:129` | [membership] Deleting stays allowed. Sends MAIL-03 to both COACH and REMOVED |
 | SES-37 | DELETE /coaching_sessions/S1 | COACH | 409 `sessions_have_content`, `details: {reason, coaching_session_id}`; S1, its content and its notes document untouched, no email | `domain/src/coaching_session.rs:525` | S1 holds N1, AG1 and A1 to A3 |
+| SES-38 | POST /coaching_sessions `{coaching_relationship_id: R1}` | COACH after removal from O1 | 403, nothing written, no email | `web/src/controller/coaching_session_controller.rs:186`; `web/src/extractors/coaching_relationship_access.rs:109` | [tightened] Restore the role afterwards |
+| SES-39 | POST /coaching_sessions `{coaching_relationship_id: unknown}` | COACH | 404, nothing written, no email | `web/src/extractors/coaching_relationship_access.rs:105` | |
+| SES-40 | GET /coaching_sessions/{unknown}, POST /coaching_sessions/{unknown}/resend_invite | COACH | 404, no email | `web/src/extractors/coaching_session_access.rs:115`; `web/src/protect/coaching_sessions.rs:125` | |
+| SES-41 | PUT /coaching_sessions/S1 | COACH after removal from O1 | 403, S1 unchanged | `web/src/protect/coaching_sessions.rs:129` | [tightened] Restore the role afterwards |
+| SES-42 | any /coaching_sessions route | not signed in | 401 | `web/src/middleware/auth.rs:25` | |
 
 ### 4.3 Series (`SER`)
 
@@ -260,6 +268,8 @@ How to read the tables:
 | SER-19 | POST /coaching_session_series/SR3/reschedule | COACH | 409 `coachee_not_a_member`, SR3 unchanged | `domain/src/coaching_session_series.rs:645` | [membership] |
 | SER-20 | POST /coaching_session_series/SR3/resend_invite | COACH | 409 `coachee_not_a_member`, no email | `domain/src/coaching_session_series.rs:913` | [membership] |
 | SER-21 | DELETE /coaching_session_series/SR3 | COACH | 204 | `web/src/extractors/coaching_session_series_access.rs:110` | [membership] Cancelling stays allowed. Sends MAIL-08 to both COACH and REMOVED. Run after SER-18 to SER-20 |
+| SER-22 | GET /coaching_session_series/{unknown}; POST its `/resend_invite`, `/reschedule` | COACH | 404, no email | `web/src/extractors/coaching_session_series_access.rs:165` | |
+| SER-23 | any /coaching_session_series route | not signed in | 401 | `web/src/middleware/auth.rs:25` | |
 
 ### 4.4 Notes (`NOTE`)
 
@@ -475,6 +485,13 @@ Rows here cover user routes that return relationship data and are not covered ab
 | USR-01 | GET /users/{COACHEE_ID}/coaching_sessions?include=relationship | COACHEE | 200, S1 S2 SR1-* each with `relationship`, `coach`, `coachee` | `web/src/protect/users/coaching_sessions.rs:20`; `entity_api/src/coaching_session.rs:1159`, `:1347` | [rows] |
 | USR-02 | GET /users/{COACHEE_ID}/coaching-relationships?role=coach | COACHEE | 200, empty list | `entity_api/src/coaching_relationship.rs:662` | [rows] |
 | USR-03 | GET /users/{COACH_ID}/coaching-relationships?role=coach | COACH | 200, R1 R3 | `entity_api/src/coaching_relationship.rs:662` | [rows] |
+| USR-04 | any /users route | not signed in | 401 | `web/src/middleware/auth.rs:25` | |
+| USR-05 | PUT /users/{COACHEE_ID} `{working_hours_start}` | COACH, MEMBER, ADMIN, SUPER | 403, COACHEE unchanged | `web/src/protect/users/mod.rs:47` | Self only |
+| USR-06 | GET /users?email={MEMBER email} | COACH, COACHEE, MEMBER, OUTSIDER | 403 | `web/src/controller/user_controller.rs:57` | Only an org `Admin` or SUPER may look users up |
+| USR-07 | GET /users?email={MEMBER email} | ADMIN | 200, MEMBER | `domain/src/user_role.rs:279`; `entity_api/src/user_role.rs:331` | [rows] the lookup's rate limit takes a Postgres advisory lock, so the route is checked by hand and the scope in `domain` |
+| USR-08 | GET /users?email={OUTSIDER email} | ADMIN | 200, empty list, also once OUTSIDER has role history in O2 | `domain/src/user_role.rs:279`; `entity_api/src/user_role.rs:331`; `entity_api/src/user_role_change.rs:58` | [rows] Not found and not visible look the same |
+| USR-09 | GET /users?email={REMOVED email} after ORG-04 | ADMIN | 200, REMOVED; ADMIN may also attach them (ORG-03) | `domain/src/user_role.rs:279`, `:297`; `entity_api/src/user_role_change.rs:58` | [rows] Without O1 role history: empty list |
+| USR-10 | GET /users?email={any fixture email} | SUPER | 200, that user | `domain/src/user_role.rs:279` | [rows] |
 
 ### 4.14 Organizations (`ORG`)
 
@@ -490,6 +507,26 @@ Organization membership changes decide `grants_access_to`; these rows create or 
 | ORG-06 | DELETE /organizations/O1/users/{user} (single-org user, no relationship with a session) | ADMIN, SUPER | 200 (204) | `web/src/extractors/organization_admin_access.rs:42`; `domain/src/user.rs:249` | Deletes the account and every relationship it is in (their goals and series go too). Multi-org user: 409. With coaching history: ORG-08 |
 | ORG-07 | DELETE /organizations/O1/users/{ADMIN_ID} | ADMIN | 403 | `web/src/controller/organization/user_controller.rs:183` | Cannot delete self |
 | ORG-08 | DELETE /organizations/O1/users/{COACHEE_ID} | ADMIN, SUPER | 409 `user_has_coaching_history`, `details: {reason, user_id, relationship_count: 2}`; nothing deleted | `domain/src/user.rs:244`, `:253` | [membership] R1 and R2 have sessions. A session created mid-delete gets the same 409 without `relationship_count`. Remove from the organization instead (ORG-04) |
+| ORG-09 | POST /organizations/O1/users/{user}/resend-invite | COACH, COACHEE, MEMBER, OUTSIDER | 403, no email | `web/src/extractors/organization_admin_access.rs:48` | |
+| ORG-10 | POST /organizations/O1/users/{user}/resend-invite (an O1 member who never set a password) | ADMIN, SUPER | 200, the user; sends MAIL-12 | `web/src/extractors/organization_admin_access.rs:42`; `web/src/extractors/organization_user_access.rs:62`; `web/src/controller/organization/user_controller.rs:140` | A user with a password: 422 |
+| ORG-11 | DELETE /organizations/O1/users/{MEMBER_ID} | COACH, COACHEE, MEMBER, OUTSIDER | 403, MEMBER kept | `web/src/extractors/organization_admin_access.rs:48` | |
+| ORG-12 | POST /organizations/O1/users; POST `.../users/{user}/resend-invite`; DELETE `.../users/{user}`; GET, POST, PUT, DELETE `.../users/{user}/role` | OUTSIDER made an `Admin` of O2 | 403 for MEMBER, an unknown user or an unknown organization alike; nothing changed, no email | `web/src/extractors/organization_admin_access.rs:48` | |
+| ORG-13 | POST /organizations/{unknown}/users | SUPER | 404, nothing written | `web/src/extractors/organization_admin_access.rs:55` | |
+| ORG-14 | POST /organizations/{O2 or unknown}/users | MEMBER, ADMIN | 403 for both, same body | `web/src/extractors/organization_admin_access.rs:48` | The admin check runs before the lookup, so a non-admin cannot tell which organizations exist |
+| ORG-15 | DELETE /organizations/O1/users/{OUTSIDER_ID or unknown} | ADMIN, SUPER | 404, OUTSIDER kept | `web/src/extractors/organization_user_access.rs:66` | The target must hold a role in the path organization |
+| ORG-16 | POST /organizations/O1/users/{OUTSIDER_ID}/role `{role: User}` | ADMIN | 404, no role written, no email | `web/src/controller/organization/user/role_controller.rs:80`; `domain/src/user_role.rs:297` | A user the caller may not administer looks missing |
+| ORG-17 | GET /organizations/O1/users/{OUTSIDER_ID or unknown}/role | ADMIN | 404 for both, same body | `domain/src/user_role.rs:156` | |
+| ORG-18 | POST /organizations/O1/users/{OUTSIDER_ID}/role `{role: User}` | ADMIN made an `Admin` of O2 too | 200 (201), OUTSIDER holds `User` in O1 | `web/src/controller/organization/user/role_controller.rs:80`; `domain/src/user_role.rs:297`; `entity_api/src/user_role.rs:331` | An admin may attach a current member of another org they administer |
+| ORG-19 | POST /organizations/O1/users/{MEMBER_ID}/role | ADMIN, SUPER | 409, MEMBER keeps `User` | `web/src/controller/organization/user/role_controller.rs:80`; `domain/src/user_role.rs:70` | MEMBER is visible, so the answer is the conflict, not 404 |
+| ORG-20 | DELETE /organizations/O1/users/{ADMIN_ID}/role | ADMIN | 403, ADMIN keeps `Admin` | `web/src/controller/organization/user/role_controller.rs:252` | Cannot remove self |
+| ORG-21 | GET, PUT /organizations/O1/users/{ADMIN_ID or unknown}/role | COACH, COACHEE, MEMBER, OUTSIDER | 403 for both, same body; ADMIN unchanged | `web/src/extractors/organization_admin_access.rs:48` | |
+| ORG-22 | PUT /organizations/O1/users/{ADMIN_ID}/role `{role: Admin or User}` | ADMIN | 403, ADMIN keeps `Admin` | `web/src/controller/organization/user/role_controller.rs:196` | Cannot change own role |
+| ORG-23 | GET /organizations/O1/users/{MEMBER_ID}/role | ADMIN, SUPER | 200, `User` in O1 for MEMBER | `web/src/extractors/organization_admin_access.rs:42`; `domain/src/user_role.rs:156` | |
+| ORG-24 | PUT /organizations/O1/users/{MEMBER_ID}/role `{role: Admin}` | ADMIN, SUPER | 200, MEMBER holds `Admin` | `web/src/extractors/organization_admin_access.rs:42`; `web/src/controller/organization/user/role_controller.rs:173` | SUPER holds no O1 role |
+| ORG-25 | POST /organizations `{name}` | SUPER | 200 (201), new organization | `web/src/extractors/super_admin_access.rs:27` | Same gate: PUT, DELETE `/organizations/{id}`, POST `/archive`, `/unarchive` |
+| ORG-26 | POST /organizations | ADMIN, COACH, MEMBER, OUTSIDER | 403, nothing written | `web/src/extractors/super_admin_access.rs:29` | |
+| ORG-27 | POST /organizations | OUTSIDER holding `SuperAdmin` scoped to O2 | 403, nothing written | `web/src/extractors/super_admin_access.rs:27`; `entity/src/users.rs:95` | Only a `SuperAdmin` role with no organization counts. The model refuses to save a scoped one, so set it in the database by hand |
+| ORG-28 | any /organizations route | not signed in | 401 | `web/src/middleware/auth.rs:25` | |
 
 ### 4.15 Real-time events (`SSE`)
 
@@ -555,6 +592,9 @@ a frozen `domain` test, or by hand with the reason.
 | REL-16 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::non_admins_cannot_create_a_relationship` |
 | REL-17 | `web/src/controller/user/coaching_relationships_controller_sqlite_tests.rs::a_removed_coachee_lists_none_of_their_own_relationships`; `domain/src/coaching_relationship_sqlite_tests.rs::a_users_own_relationships_skip_an_org_they_left` |
 | REL-18 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::an_admin_sees_who_is_still_a_member` |
+| REL-19 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::an_unknown_organizations_relationships_are_not_found` |
+| REL-20 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::an_admin_of_another_org_cannot_create_a_relationship` |
+| REL-21 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_relationships` |
 | SES-01 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::participants_list_the_relationships_sessions` |
 | SES-02 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::non_participants_cannot_list_the_relationships_sessions` |
 | SES-03 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_removed_coachee_cannot_list_their_relationships_sessions` |
@@ -592,6 +632,11 @@ a frozen `domain` test, or by hand with the reason.
 | SES-35 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::resending_to_a_coachee_who_left_is_refused` |
 | SES-36 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coach_deletes_a_session_whose_coachee_left` |
 | SES-37 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::deleting_a_session_with_content_is_refused` |
+| SES-38 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coach_removed_from_the_org_cannot_create_a_session` |
+| SES-39 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::creating_a_session_in_an_unknown_relationship_is_not_found` |
+| SES-40 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::an_unknown_session_is_not_found` |
+| SES-41 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coach_removed_from_the_org_cannot_update_a_session` |
+| SES-42 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_sessions` |
 | SER-01 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_coach_creates_a_series_with_its_sessions` |
 | SER-02 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_coachee_cannot_create_a_series` |
 | SER-03 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::non_participants_cannot_create_a_series` |
@@ -613,6 +658,8 @@ a frozen `domain` test, or by hand with the reason.
 | SER-19 | by hand: reschedule takes Postgres advisory locks before the membership check |
 | SER-20 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::resending_a_series_to_a_coachee_who_left_is_refused` |
 | SER-21 | by hand: the series delete takes Postgres advisory locks |
+| SER-22 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::an_unknown_series_is_not_found` |
+| SER-23 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_series` |
 | NOTE-01 | `web/src/controller/note_controller_sqlite_tests.rs::participants_list_the_sessions_notes` |
 | NOTE-02 | `web/src/controller/note_controller_sqlite_tests.rs::non_participants_cannot_list_the_sessions_notes` |
 | NOTE-03 | `web/src/controller/note_controller_sqlite_tests.rs::a_removed_coachee_cannot_list_their_sessions_notes` |
@@ -770,6 +817,13 @@ a frozen `domain` test, or by hand with the reason.
 | USR-01 | `web/src/controller/user/coaching_session_controller_sqlite_tests.rs::a_coachees_sessions_include_their_relationships` |
 | USR-02 | `web/src/controller/user/coaching_relationships_controller_sqlite_tests.rs::a_coachee_coaches_no_one` |
 | USR-03 | `web/src/controller/user/coaching_relationships_controller_sqlite_tests.rs::a_coach_lists_the_relationships_they_coach` |
+| USR-04 | `web/src/controller/user_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_user_routes` |
+| USR-05 | `web/src/controller/user_controller_sqlite_tests.rs::only_the_user_changes_their_own_settings` |
+| USR-06 | `web/src/controller/user_controller_sqlite_tests.rs::only_admins_look_up_users_by_email` |
+| USR-07 | `domain/src/user_role_sqlite_tests.rs::an_admin_finds_a_member_of_their_org` |
+| USR-08 | `domain/src/user_role_sqlite_tests.rs::an_admin_cannot_find_a_member_of_another_org_even_with_history_there` |
+| USR-09 | `domain/src/user_role_sqlite_tests.rs::an_admin_finds_and_may_administer_a_former_member_of_their_org` |
+| USR-10 | `domain/src/user_role_sqlite_tests.rs::a_super_admin_finds_anyone` |
 | ORG-01 | `web/src/controller/organization/user_controller_sqlite_tests.rs::admins_add_a_member_with_a_coach` |
 | ORG-02 | `web/src/controller/organization/user_controller_sqlite_tests.rs::non_admins_cannot_add_a_member` |
 | ORG-03 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::admins_attach_a_member_with_a_coach` |
@@ -778,6 +832,26 @@ a frozen `domain` test, or by hand with the reason.
 | ORG-06 | `web/src/controller/organization/user_controller_sqlite_tests.rs::admins_delete_a_member_without_coaching_history` |
 | ORG-07 | `web/src/controller/organization/user_controller_sqlite_tests.rs::an_admin_cannot_delete_themselves` |
 | ORG-08 | `web/src/controller/organization/user_controller_sqlite_tests.rs::deleting_a_member_with_coaching_history_is_refused` |
+| ORG-09 | `web/src/controller/organization/user_controller_sqlite_tests.rs::non_admins_cannot_resend_a_members_invite` |
+| ORG-10 | `web/src/controller/organization/user_controller_sqlite_tests.rs::admins_resend_a_pending_members_invite` |
+| ORG-11 | `web/src/controller/organization/user_controller_sqlite_tests.rs::non_admins_cannot_delete_a_member` |
+| ORG-12 | `web/src/controller/organization/user_controller_sqlite_tests.rs::an_admin_of_another_org_cannot_manage_its_members` |
+| ORG-13 | `web/src/controller/organization/user_controller_sqlite_tests.rs::an_unknown_organization_is_not_found` |
+| ORG-14 | `web/src/controller/organization/user_controller_sqlite_tests.rs::a_non_admin_cannot_tell_whether_an_organization_exists` |
+| ORG-15 | `web/src/controller/organization/user_controller_sqlite_tests.rs::a_user_outside_the_organization_is_not_found` |
+| ORG-16 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::an_admin_cannot_attach_a_user_they_cannot_see` |
+| ORG-17 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::an_admin_cannot_tell_a_missing_user_from_one_in_another_org` |
+| ORG-18 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::an_admin_of_both_orgs_attaches_a_member_of_the_other` |
+| ORG-19 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::attaching_a_current_member_is_a_conflict` |
+| ORG-20 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::an_admin_cannot_remove_their_own_role` |
+| ORG-21 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::non_admins_cannot_read_or_change_a_role` |
+| ORG-22 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::an_admin_cannot_change_their_own_role` |
+| ORG-23 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::admins_read_a_members_role` |
+| ORG-24 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::admins_change_a_members_role` |
+| ORG-25 | `web/src/controller/organization_controller_sqlite_tests.rs::a_super_admin_creates_an_organization` |
+| ORG-26 | `web/src/controller/organization_controller_sqlite_tests.rs::only_a_super_admin_creates_an_organization` |
+| ORG-27 | `web/src/controller/organization_controller_sqlite_tests.rs::a_super_admin_role_held_in_one_org_cannot_create_an_organization` |
+| ORG-28 | `web/src/controller/organization/user_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_organizations` |
 | SSE-01 | `web/src/sse/handler_sqlite_tests.rs::every_caller_opens_an_event_stream` |
 | SSE-02 | `web/src/sse/handler_sqlite_tests.rs::both_participants_hear_of_an_action_assigned_to_the_coach` |
 | SSE-03 | `web/src/sse/handler_sqlite_tests.rs::a_removed_coachee_hears_nothing_of_their_relationship` |

@@ -10,7 +10,9 @@ use std::collections::BTreeSet;
 
 use axum::http::{Method, StatusCode};
 use chrono::{TimeDelta, Utc};
-use domain::test_utils::sqlite::fixture::{seed_content_free_session, set_google_meeting_url};
+use domain::test_utils::sqlite::fixture::{
+    remove_roles, seed_content_free_session, set_google_meeting_url,
+};
 use domain::test_utils::sqlite::read_back::{
     relationship_sessions, session_content, session_ical_sequence, session_meeting_url,
     session_relationship, session_schedule, session_title, session_viewers,
@@ -20,7 +22,8 @@ use domain::Id;
 use serde_json::{json, Value};
 
 use crate::test_utils::sqlite::{
-    assert_removed_coach_resend_refused, assert_resend_mails_both, ids, TestApp, NON_PARTICIPANTS,
+    assert_coachee_not_a_member, assert_removed_coach_resend_refused, assert_resend_mails_both,
+    assert_signed_out_refused, ids, TestApp, NON_PARTICIPANTS,
 };
 
 /// S1's invite resend path.
@@ -74,10 +77,7 @@ async fn assert_create_refused(
             .await;
         assert_eq!(reply.status, expected, "{caller:?}");
         if expected == StatusCode::CONFLICT {
-            assert_eq!(
-                reply.body["details"]["reason"], "coachee_not_a_member",
-                "{caller:?}"
-            );
+            assert_coachee_not_a_member(&app, &reply);
         }
         assert_eq!(
             relationship_sessions(app.db(), relationship).await,
@@ -163,10 +163,7 @@ async fn assert_resend_refused(
             .await;
         assert_eq!(reply.status, expected, "{caller:?}");
         if expected == StatusCode::CONFLICT {
-            assert_eq!(
-                reply.body["details"]["reason"], "coachee_not_a_member",
-                "{caller:?}"
-            );
+            assert_coachee_not_a_member(&app, &reply);
         }
         assert_eq!(
             session_ical_sequence(app.db(), session).await,
@@ -341,7 +338,7 @@ async fn a_removed_coachee_cannot_list_their_relationships_sessions() {
 async fn participants_read_a_session_with_its_organization() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (o1, s1) = (app.fixture.o1, app.fixture.s1);
+        let (o1, r1, s1) = (app.fixture.o1, app.fixture.r1, app.fixture.s1);
 
         for caller in [Caller::Coach, Caller::Coachee] {
             let reply = app
@@ -358,6 +355,11 @@ async fn participants_read_a_session_with_its_organization() {
             assert_eq!(
                 reply.body["data"]["organization_id"],
                 o1.to_string(),
+                "{caller:?}"
+            );
+            assert_eq!(
+                reply.body["data"]["coaching_relationship_id"],
+                r1.to_string(),
                 "{caller:?}"
             );
         }
@@ -811,5 +813,125 @@ async fn deleting_a_session_with_content_is_refused() {
         documents_deleted.assert_async().await;
         emails.assert_async().await;
     })
+    .await;
+}
+
+/// SES-38
+#[tokio::test]
+async fn a_coach_removed_from_the_org_cannot_create_a_session() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (coach, o1, r1) = (
+            app.fixture.user(Caller::Coach),
+            app.fixture.o1,
+            app.fixture.r1,
+        );
+        remove_roles(app.db(), coach, o1).await;
+        let before = relationship_sessions(app.db(), r1).await;
+        let documents = app.expect_tiptap("POST", 0).await;
+        let emails = app.expect_emails(0).await;
+
+        let (status, _) = app
+            .expect(
+                Caller::Coach,
+                Method::POST,
+                "/coaching_sessions",
+                Some(create_body(r1)),
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(relationship_sessions(app.db(), r1).await, before);
+        documents.assert_async().await;
+        emails.assert_async().await;
+    })
+    .await;
+}
+
+/// SES-39
+#[tokio::test]
+async fn creating_a_session_in_an_unknown_relationship_is_not_found() {
+    within_time_limit(assert_create_refused(
+        &[Caller::Coach],
+        |_| Id::new_v4(),
+        StatusCode::NOT_FOUND,
+    ))
+    .await;
+}
+
+/// SES-40
+#[tokio::test]
+async fn an_unknown_session_is_not_found() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let unknown = Id::new_v4();
+        let emails = app.expect_emails(0).await;
+
+        for (method, path) in [
+            (Method::GET, format!("/coaching_sessions/{unknown}")),
+            (
+                Method::POST,
+                format!("/coaching_sessions/{unknown}/resend_invite"),
+            ),
+        ] {
+            let (status, _) = app.expect(Caller::Coach, method.clone(), &path, None).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}");
+        }
+        emails.assert_async().await;
+    })
+    .await;
+}
+
+/// SES-41
+#[tokio::test]
+async fn a_coach_removed_from_the_org_cannot_update_a_session() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (coach, o1, s1) = (
+            app.fixture.user(Caller::Coach),
+            app.fixture.o1,
+            app.fixture.s1,
+        );
+        remove_roles(app.db(), coach, o1).await;
+        let schedule = session_schedule(app.db(), s1).await;
+        let title = session_title(app.db(), s1).await;
+        let body = retitle_body(&app, s1).await;
+
+        let (status, _) = app
+            .expect(
+                Caller::Coach,
+                Method::PUT,
+                &format!("/coaching_sessions/{s1}"),
+                Some(body),
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(session_schedule(app.db(), s1).await, schedule);
+        assert_eq!(session_title(app.db(), s1).await, title);
+    })
+    .await;
+}
+
+/// SES-42
+#[tokio::test]
+async fn signed_out_callers_cannot_reach_sessions() {
+    within_time_limit(assert_signed_out_refused(|app| {
+        let (r1, s1) = (app.fixture.r1, app.fixture.s1);
+        vec![
+            (
+                Method::GET,
+                format!("/coaching_sessions?coaching_relationship_id={r1}&{DATE_RANGE}"),
+            ),
+            (Method::GET, format!("/coaching_sessions/{s1}")),
+            (Method::POST, "/coaching_sessions".to_string()),
+            (Method::PUT, format!("/coaching_sessions/{s1}")),
+            (Method::DELETE, format!("/coaching_sessions/{s1}")),
+            (
+                Method::POST,
+                format!("/coaching_sessions/{s1}/resend_invite"),
+            ),
+        ]
+    }))
     .await;
 }

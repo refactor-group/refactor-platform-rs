@@ -280,6 +280,14 @@ impl TestApp {
         self.send_with(caller, method, path, &[JSON], body).await
     }
 
+    /// Sends a request with no session cookie.
+    pub(crate) async fn send_signed_out(&mut self, method: Method, path: &str) -> Reply {
+        let response = self
+            .respond(None, method, path, &[JSON], Body::empty())
+            .await;
+        read_reply(response).await
+    }
+
     /// Sends a request as `caller` with `headers` and a raw `body`.
     pub(crate) async fn send_with(
         &mut self,
@@ -456,6 +464,7 @@ fn config(server_url: &str, store_root: &StoreRoot) -> Config {
         "--session-cancelled-email-template-id=session-cancelled",
         "--recurring-sessions-cancelled-email-template-id=recurring-sessions-cancelled",
         "--action-assigned-email-template-id=action-assigned",
+        "--welcome-email-template-id=welcome",
         "--assembly-ai-api-key=access-test-assembly-ai-key",
         &format!("--assembly-ai-llm-base-url={server_url}"),
         &format!(
@@ -563,6 +572,43 @@ pub(crate) async fn assert_removed_coach_resend_refused(path: impl Fn(&TestApp) 
 
     assert_eq!(reply.status, StatusCode::FORBIDDEN);
     assert_eq!(app.take_emailed(), Vec::<String>::new());
+}
+
+/// Asserts the reply is the 409 naming REMOVED as the coachee who left O1.
+pub(crate) fn assert_coachee_not_a_member(app: &TestApp, reply: &Reply) {
+    let body = &reply.body;
+    assert_eq!(body["error"], "conflict", "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|message| !message.is_empty()),
+        "{body}"
+    );
+    assert_eq!(body["details"]["reason"], "coachee_not_a_member", "{body}");
+    assert_eq!(
+        body["details"]["user_id"],
+        app.fixture.user(Caller::Removed).to_string(),
+        "{body}"
+    );
+    assert_eq!(
+        body["details"]["organization_id"],
+        app.fixture.o1.to_string(),
+        "{body}"
+    );
+}
+
+/// Each request, sent signed out, is refused with 401 and nobody is mailed.
+pub(crate) async fn assert_signed_out_refused(
+    requests: impl Fn(&TestApp) -> Vec<(Method, String)>,
+) {
+    let mut app = TestApp::new().await;
+    let emails = app.expect_emails(0).await;
+
+    for (method, path) in requests(&app) {
+        let reply = app.send_signed_out(method.clone(), &path).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{method} {path}");
+    }
+    emails.assert_async().await;
 }
 
 /// TRN-02, TRN-04 and TRN-06: every non-participant is refused each transcription read.

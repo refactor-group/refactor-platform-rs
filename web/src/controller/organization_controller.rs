@@ -252,3 +252,7 @@ pub async fn unarchive(
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), organization)))
 }
+
+#[cfg(test)]
+#[path = "organization_controller_sqlite_tests.rs"]
+mod sqlite_tests;

@@ -9,7 +9,7 @@ use axum_login::{
 };
 use chrono::{NaiveDate, Utc};
 use domain::user::Backend;
-use domain::{coaching_relationships, coaching_sessions, user_roles, users, Id};
+use domain::{coaching_sessions, user_roles, users, Id};
 use password_auth::generate_hash;
 use sea_orm::{DatabaseBackend, MockDatabase};
 use serde_json::{json, Value};
@@ -178,43 +178,6 @@ async fn an_invalid_window_is_a_400_with_the_invalid_nearest_window_slug() {
             "error": "invalid_nearest_window",
             "message": "`coaching_relationship_ids` is required.",
         })
-    );
-}
-
-#[tokio::test]
-async fn a_signed_out_request_is_unauthorized() {
-    let app = build_app(Arc::new(
-        MockDatabase::new(DatabaseBackend::Postgres).into_connection(),
-    ));
-    let request = Request::builder()
-        .uri(format!(
-            "/users/{}/coaching_sessions/nearest?{}",
-            Id::new_v4(),
-            window_query(Id::new_v4())
-        ))
-        .header("x-version", "1.0.0")
-        .body(Body::empty())
-        .unwrap();
-
-    let response = app.oneshot(request).await.unwrap();
-
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn a_relationship_the_user_is_not_in_is_an_empty_200() {
-    let user = test_user();
-    let db = logged_in(&user)
-        .append_query_results::<coaching_relationships::Model, Vec<_>, _>(vec![vec![]])
-        .into_connection();
-    let app = build_app(Arc::new(db));
-
-    let response = get_nearest(&app, user.id, &window_query(Id::new_v4())).await;
-
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        json_body(response).await,
-        json!({ "status_code": 200, "data": [] })
     );
 }
 

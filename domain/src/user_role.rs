@@ -320,3 +320,7 @@ pub async fn count_organizations(db: &impl ConnectionTrait, user_id: Id) -> Resu
 #[cfg(feature = "mock")]
 #[path = "user_role_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "user_role_sqlite_tests.rs"]
+mod sqlite_tests;

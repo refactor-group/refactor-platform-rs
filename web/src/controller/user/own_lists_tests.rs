@@ -1,6 +1,6 @@
-//! A user's own list routes through the router: each list query is held to the
-//! organizations the caller still belongs to, unless the caller is a SuperAdmin. Each
-//! handler also refuses another user's path id on its own, without the guard.
+//! A user's own session counts query is held to the organizations the caller still belongs
+//! to, unless the caller is a SuperAdmin. Each own-list handler also refuses another user's
+//! path id on its own, without the guard.
 
 use std::sync::Arc;
 
@@ -26,40 +26,15 @@ const ORG_FILTER: &str = r#""organization_id" IN ("#;
 const NO_ORG: &str = " AND $";
 
 fn routes(db: &Arc<DatabaseConnection>) -> Router<AppState> {
-    let state = support::app_state(db);
     Router::new()
-        .merge(
-            Router::new()
-                .route(
-                    "/users/:user_id/coaching-relationships",
-                    get(coaching_relationships_controller::index),
-                )
-                .route_layer(from_fn_with_state(state.clone(), protect::users::read)),
+        .route(
+            "/users/:user_id/coaching_sessions/counts",
+            get(coaching_session_controller::counts),
         )
-        .merge(
-            Router::new()
-                .route(
-                    "/users/:user_id/coaching_sessions",
-                    get(coaching_session_controller::index),
-                )
-                .route(
-                    "/users/:user_id/coaching_sessions/counts",
-                    get(coaching_session_controller::counts),
-                )
-                .route(
-                    "/users/:user_id/coaching_sessions/nearest",
-                    get(coaching_session_controller::nearest),
-                )
-                .route_layer(from_fn_with_state(
-                    state.clone(),
-                    protect::users::coaching_sessions::index,
-                )),
-        )
-        .merge(
-            Router::new()
-                .route("/users/:user_id/goals", get(goal_controller::index))
-                .route_layer(from_fn_with_state(state, protect::users::goals::index)),
-        )
+        .route_layer(from_fn_with_state(
+            support::app_state(db),
+            protect::users::coaching_sessions::index,
+        ))
 }
 
 /// The SQL of every statement `db` ran.
@@ -119,25 +94,6 @@ async fn assert_held_to_member_orgs(path: &str, query: &str, table: &str) {
 }
 
 #[tokio::test]
-async fn own_relationships_are_held_to_member_orgs() {
-    assert_held_to_member_orgs("coaching-relationships", "", "coaching_relationships").await;
-}
-
-#[tokio::test]
-async fn own_sessions_are_held_to_member_orgs() {
-    assert_held_to_member_orgs("coaching_sessions", "", "coaching_sessions").await;
-}
-
-#[tokio::test]
-async fn own_nearest_sessions_are_held_to_member_orgs() {
-    let relationship_id = support::fixture().relationship.id;
-    let query = format!(
-        "coaching_relationship_id={relationship_id}&around=2026-11-12T14:00:00Z&before=2&after=3"
-    );
-    assert_held_to_member_orgs("coaching_sessions/nearest", &query, "coaching_sessions").await;
-}
-
-#[tokio::test]
 async fn own_session_counts_are_held_to_member_orgs() {
     assert_held_to_member_orgs(
         "coaching_sessions/counts",
@@ -145,11 +101,6 @@ async fn own_session_counts_are_held_to_member_orgs() {
         "coaching_sessions",
     )
     .await;
-}
-
-#[tokio::test]
-async fn own_goals_are_held_to_member_orgs() {
-    assert_held_to_member_orgs("goals", "", "goals").await;
 }
 
 /// A handler's own parts for the coachee asking about the coach's id, against a database

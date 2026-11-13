@@ -140,8 +140,3 @@ async fn require_coach(
         (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
     }
 }
-
-#[cfg(test)]
-#[cfg(feature = "mock")]
-#[path = "coaching_sessions_revocation_tests.rs"]
-mod revocation_tests;

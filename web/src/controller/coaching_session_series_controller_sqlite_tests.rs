@@ -21,8 +21,8 @@ use domain::Id;
 use serde_json::{json, Value};
 
 use crate::test_utils::sqlite::{
-    assert_removed_coach_resend_refused, assert_resend_mails_both, ids, ids_in, TestApp,
-    NON_PARTICIPANTS,
+    assert_coachee_not_a_member, assert_removed_coach_resend_refused, assert_resend_mails_both,
+    assert_signed_out_refused, ids, ids_in, TestApp, NON_PARTICIPANTS,
 };
 
 /// SR1's invite resend path.
@@ -95,10 +95,7 @@ async fn assert_create_refused(
             .await;
         assert_eq!(reply.status, expected, "{caller:?}");
         if expected == StatusCode::CONFLICT {
-            assert_eq!(
-                reply.body["details"]["reason"], "coachee_not_a_member",
-                "{caller:?}"
-            );
+            assert_coachee_not_a_member(app, &reply);
         }
         assert_eq!(
             relationship_series(app.db(), relationship).await,
@@ -139,10 +136,7 @@ async fn assert_series_write_refused(
             .await;
         assert_eq!(reply.status, expected, "{caller:?}");
         if expected == StatusCode::CONFLICT {
-            assert_eq!(
-                reply.body["details"]["reason"], "coachee_not_a_member",
-                "{caller:?}"
-            );
+            assert_coachee_not_a_member(&app, &reply);
         }
         assert!(before.is_some(), "{caller:?}");
         assert_eq!(series_state(app.db(), series).await, before, "{caller:?}");
@@ -451,5 +445,59 @@ async fn resending_a_series_to_a_coachee_who_left_is_refused() {
         |_| None,
         StatusCode::CONFLICT,
     ))
+    .await;
+}
+
+/// SER-22
+#[tokio::test]
+async fn an_unknown_series_is_not_found() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let unknown = Id::new_v4();
+        let session = app.fixture.sr1_sessions[0];
+        let emails = app.expect_emails(0).await;
+
+        for (method, suffix, body) in [
+            (Method::GET, "", None),
+            (Method::POST, "/resend_invite", None),
+            (
+                Method::POST,
+                "/reschedule",
+                Some(reschedule_following_body(session)),
+            ),
+        ] {
+            let path = format!("/coaching_session_series/{unknown}{suffix}");
+            let (status, _) = app.expect(Caller::Coach, method.clone(), &path, body).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}");
+        }
+        emails.assert_async().await;
+    })
+    .await;
+}
+
+/// SER-23
+#[tokio::test]
+async fn signed_out_callers_cannot_reach_series() {
+    within_time_limit(assert_signed_out_refused(|app| {
+        let (r1, sr1) = (app.fixture.r1, app.fixture.sr1);
+        vec![
+            (
+                Method::GET,
+                format!("/coaching_session_series?coaching_relationship_id={r1}"),
+            ),
+            (Method::GET, format!("/coaching_session_series/{sr1}")),
+            (Method::POST, "/coaching_session_series".to_string()),
+            (Method::PUT, format!("/coaching_session_series/{sr1}")),
+            (
+                Method::POST,
+                format!("/coaching_session_series/{sr1}/reschedule"),
+            ),
+            (Method::DELETE, format!("/coaching_session_series/{sr1}")),
+            (
+                Method::POST,
+                format!("/coaching_session_series/{sr1}/resend_invite"),
+            ),
+        ]
+    }))
     .await;
 }

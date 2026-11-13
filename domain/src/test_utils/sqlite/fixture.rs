@@ -250,6 +250,30 @@ pub async fn remove_roles(db: &DatabaseConnection, user_id: Id, organization_id:
         .expect("the roles are removed");
 }
 
+/// Replaces every role `user_id` holds in `organization_id` with `role`, with no audit row.
+pub async fn set_role(db: &DatabaseConnection, user_id: Id, role: Role, organization_id: Id) {
+    remove_roles(db, user_id, organization_id).await;
+    seed_role(db, user_id, role, Some(organization_id)).await;
+}
+
+/// Replaces `user_id`'s roles in `organization_id` with a SuperAdmin role scoped to it. The
+/// model refuses to save such a row, so it is inserted directly, as older data may hold one.
+pub async fn set_scoped_super_admin(db: &DatabaseConnection, user_id: Id, organization_id: Id) {
+    remove_roles(db, user_id, organization_id).await;
+    let now = Utc::now();
+    user_roles::Entity::insert(user_roles::ActiveModel {
+        id: Set(Id::new_v4()),
+        role: Set(Role::SuperAdmin),
+        organization_id: Set(Some(organization_id)),
+        user_id: Set(user_id),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    })
+    .exec(db)
+    .await
+    .expect("the scoped role is seeded");
+}
+
 /// The audit row an admin's removal of `user_id` from `organization_id` leaves, which lets
 /// that organization's admins attach the user again.
 pub async fn record_removal(db: &DatabaseConnection, user_id: Id, organization_id: Id) {

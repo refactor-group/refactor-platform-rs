@@ -2,14 +2,15 @@
 
 use std::collections::BTreeSet;
 
-use chrono::NaiveDateTime;
+use chrono::{NaiveDateTime, NaiveTime};
+use entity::roles::Role;
 use entity::status::Status;
 use entity::topic_status::Status as TopicStatus;
 use entity::transcript_suggestion::Status as SuggestionStatus;
 use entity::{
     actions, actions_users, agreements, coaching_relationships, coaching_session_images,
     coaching_session_series, coaching_session_topics, coaching_session_views, coaching_sessions,
-    coaching_sessions_goals, goals, meeting_recording, notes, oauth_connections,
+    coaching_sessions_goals, goals, meeting_recording, notes, oauth_connections, organizations,
     transcript_analysis, transcript_segment, transcript_suggestion, user_roles, users, Id,
 };
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
@@ -23,6 +24,36 @@ pub async fn holds_role(db: &DatabaseConnection, user_id: Id, organization_id: I
         .await
         .expect("the role reads")
         .is_some()
+}
+
+/// The role `user_id` holds in `organization_id`, if any.
+pub async fn role_in(db: &DatabaseConnection, user_id: Id, organization_id: Id) -> Option<Role> {
+    user_roles::Entity::find()
+        .filter(user_roles::Column::UserId.eq(user_id))
+        .filter(user_roles::Column::OrganizationId.eq(organization_id))
+        .one(db)
+        .await
+        .expect("the role reads")
+        .map(|role| role.role)
+}
+
+/// The id of the organization named `name`, if there is one.
+pub async fn organization_named(db: &DatabaseConnection, name: &str) -> Option<Id> {
+    organizations::Entity::find()
+        .filter(organizations::Column::Name.eq(name))
+        .one(db)
+        .await
+        .expect("the organization reads")
+        .map(|organization| organization.id)
+}
+
+/// The user's stored working hours, start and end.
+pub async fn working_hours(db: &DatabaseConnection, user_id: Id) -> Option<(NaiveTime, NaiveTime)> {
+    users::Entity::find_by_id(user_id)
+        .one(db)
+        .await
+        .expect("the user reads")
+        .map(|user| (user.working_hours_start, user.working_hours_end))
 }
 
 /// The session's stored start and duration, or `None` once it is deleted.

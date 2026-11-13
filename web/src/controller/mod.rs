@@ -38,11 +38,6 @@ mod resend_invite_tests;
 
 #[cfg(test)]
 #[cfg(feature = "mock")]
-#[path = "coaching_session_delete_tests.rs"]
-mod coaching_session_delete_tests;
-
-#[cfg(test)]
-#[cfg(feature = "mock")]
 #[path = "reschedule_following_tests.rs"]
 mod reschedule_following_tests;
 

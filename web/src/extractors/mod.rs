@@ -24,16 +24,6 @@ pub(crate) mod relationship_access_test_support;
 #[cfg(feature = "mock")]
 mod session_renewal_tests;
 
-#[cfg(test)]
-#[cfg(feature = "mock")]
-#[path = "organization_user_access_tests.rs"]
-mod organization_user_access_tests;
-
-#[cfg(test)]
-#[cfg(feature = "mock")]
-#[path = "organization_admin_access_tests.rs"]
-mod organization_admin_access_tests;
-
 use axum::{
     extract::{FromRequestParts, Path},
     http::{request::Parts, StatusCode},

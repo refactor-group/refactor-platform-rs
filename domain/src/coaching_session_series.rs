@@ -1487,45 +1487,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
-    async fn create_with_sessions_refuses_a_caller_who_is_not_the_coach() {
-        let relationship_id = Id::new_v4();
-        let now = chrono::Utc::now();
-        let relationship = entity::coaching_relationships::Model {
-            id: relationship_id,
-            organization_id: Id::new_v4(),
-            coach_id: Id::new_v4(),
-            coachee_id: Id::new_v4(),
-            slug: "test".into(),
-            created_at: now.into(),
-            updated_at: now.into(),
-        };
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![relationship.clone()]])
-            .into_connection();
-
-        let err = create_with_sessions(
-            &db,
-            &test_config(),
-            relationship_id,
-            relationship.coachee_id,
-            start(),
-            weekly_rule_count(3),
-            None,
-        )
-        .await
-        .expect_err("a non-coach must be refused");
-
-        assert!(
-            matches!(
-                err.error_kind,
-                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Forbidden))
-            ),
-            "expected Forbidden, got {err:?}"
-        );
-        assert!(writes(&written_sql(db)).is_empty());
-    }
-
     /// Happy-path reschedule over unhydrated future sessions, with the duration
     /// omitted: validates inputs, reuses the duration persisted on the existing
     /// series rule (no coach lookup), deletes the old future rows, rewrites the
@@ -2205,36 +2166,6 @@ mod tests {
             details["organization_id"],
             serde_json::json!(relationship.organization_id)
         );
-    }
-
-    #[tokio::test]
-    async fn reschedule_with_a_coachee_no_longer_in_the_organization_is_refused() {
-        let (series, _, sessions) = following_fixture(3);
-        let relationship = member_relationship(series.coaching_relationship_id);
-
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![coach_row("UTC")]])
-            .append_query_results(vec![vec![series.clone()]])
-            .append_query_results(vec![sessions.clone()])
-            .append_query_results(vec![vec![relationship.clone()]])
-            .append_query_results(vec![members(&[relationship.coach_id])])
-            .into_connection();
-
-        let err = reschedule(
-            &db,
-            &test_config(),
-            series.id,
-            Id::new_v4(),
-            start() + chrono::Duration::hours(1),
-            weekly_rule_count(3),
-            None,
-        )
-        .await
-        .unwrap_err();
-
-        assert_coachee_not_a_member(err, &relationship);
-        let sql = written_sql(db);
-        assert!(writes(&sql).is_empty(), "a refusal must not write: {sql:?}");
     }
 
     #[tokio::test]
