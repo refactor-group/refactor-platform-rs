@@ -563,26 +563,16 @@ pub fn organization_routes(app_state: AppState) -> Router {
 pub fn goal_routes(app_state: AppState) -> Router {
     Router::new()
         .route("/goals", post(goal_controller::create))
-        .merge(
-            // GET /goals — protected by coaching_relationship_id query param
-            Router::new()
-                .route("/goals", get(goal_controller::index))
-                .route_layer(from_fn_with_state(app_state.clone(), protect::goals::index)),
+        .route("/goals", get(goal_controller::index))
+        .route("/goals/:id", put(goal_controller::update))
+        .route("/goals/:id", delete(goal_controller::delete))
+        .route("/goals/:id", get(goal_controller::read))
+        .route("/goals/:id/status", put(goal_controller::update_status))
+        .route(
+            "/goals/:id/sessions",
+            get(goal_controller::coaching_sessions_by_goal),
         )
-        .merge(
-            // Routes protected by goal :id path param
-            Router::new()
-                .route("/goals/:id", put(goal_controller::update))
-                .route("/goals/:id", delete(goal_controller::delete))
-                .route("/goals/:id", get(goal_controller::read))
-                .route("/goals/:id/status", put(goal_controller::update_status))
-                .route(
-                    "/goals/:id/sessions",
-                    get(goal_controller::coaching_sessions_by_goal),
-                )
-                .route("/goals/:id/progress", get(goal_controller::progress))
-                .route_layer(from_fn_with_state(app_state.clone(), protect::goals::by_id)),
-        )
+        .route("/goals/:id/progress", get(goal_controller::progress))
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
@@ -597,29 +587,13 @@ fn coaching_session_goal_routes(app_state: AppState) -> Router {
             "/coaching_sessions/:coaching_session_id/goals/:id",
             delete(coaching_session::goal_controller::delete),
         )
-        .merge(
-            // GET goals by session — protected by coaching_session_id path param
-            Router::new()
-                .route(
-                    "/coaching_sessions/:coaching_session_id/goals",
-                    get(coaching_session::goal_controller::index),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::goals::by_coaching_session_id,
-                )),
+        .route(
+            "/coaching_sessions/:coaching_session_id/goals",
+            get(coaching_session::goal_controller::index),
         )
-        .merge(
-            // GET batch session goals — protected by relationship or session ownership
-            Router::new()
-                .route(
-                    "/coaching_sessions/goals",
-                    get(coaching_session::goal_controller::batch_index),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::goals::batch_by_session,
-                )),
+        .route(
+            "/coaching_sessions/goals",
+            get(coaching_session::goal_controller::batch_index),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

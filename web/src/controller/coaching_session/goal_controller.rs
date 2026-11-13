@@ -5,6 +5,7 @@ use crate::error::WebErrorKind;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser,
     coaching_session_access::{CoachingSessionAccess, CoachingSessionContextAccess},
+    coaching_session_goal_access::CoachingSessionGoalBatchAccess,
     compare_api_version::CompareApiVersion,
 };
 use crate::params::coaching_session::goal::{BatchIndexParams, LinkParams};
@@ -122,6 +123,7 @@ pub async fn delete(
     responses(
         (status = 200, description = "Successfully retrieved goals linked to session", body = [domain::goals::Model]),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -129,6 +131,7 @@ pub async fn delete(
     )
 )]
 pub async fn index(
+    CoachingSessionAccess(_session): CoachingSessionAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
@@ -160,6 +163,7 @@ pub async fn index(
         (status = 200, description = "Successfully retrieved goals grouped by session"),
         (status = 400, description = "Bad Request — exactly one filter required"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -167,6 +171,7 @@ pub async fn index(
     )
 )]
 pub async fn batch_index(
+    _access: CoachingSessionGoalBatchAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,

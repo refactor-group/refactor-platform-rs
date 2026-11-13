@@ -8,7 +8,6 @@
 //! separate submodules, we can maintain a clear and modular structure, making the codebase easier
 //! to understand and maintain.
 
-pub(crate) mod goals;
 pub(crate) mod tiptap_metrics;
 pub(crate) mod users;
 
