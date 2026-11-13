@@ -1,4 +1,4 @@
-//! Who can create, update, delete, archive and unarchive organizations.
+//! Who can read, create, update, delete, archive and unarchive organizations.
 //!
 //! Each test signs in as one kind of person, calls one of this module's routes against a
 //! real database, and checks that the right people get through and everyone else is refused
@@ -9,6 +9,7 @@ use axum::http::{Method, StatusCode};
 use domain::test_utils::sqlite::fixture::{archive_organization, set_scoped_super_admin};
 use domain::test_utils::sqlite::read_back::{organization_named, organization_state};
 use domain::test_utils::sqlite::{seed_organization, within_time_limit, Caller};
+use domain::Id;
 use serde_json::{json, Value};
 
 use crate::test_utils::sqlite::{ids, TestApp};
@@ -302,6 +303,69 @@ async fn only_a_super_admin_unarchives_an_organization() {
         .await;
 
         assert_eq!(organization_state(app.db(), o1).await, before);
+    })
+    .await;
+}
+
+/// ORG-37
+#[tokio::test]
+async fn members_and_super_admins_read_an_organization() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let o1 = app.fixture.o1;
+
+        for caller in [
+            Caller::Coach,
+            Caller::Coachee,
+            Caller::OtherCoach,
+            Caller::Member,
+            Caller::Admin,
+            Caller::Super,
+        ] {
+            let (status, ids_returned) = app
+                .expect(caller, Method::GET, &format!("/organizations/{o1}"), None)
+                .await;
+            assert_eq!(status, StatusCode::OK, "{caller:?}");
+            assert_eq!(ids_returned, ids([o1]), "{caller:?}");
+        }
+    })
+    .await;
+}
+
+/// ORG-38
+#[tokio::test]
+async fn non_members_cannot_read_an_organization() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let o1 = app.fixture.o1;
+
+        for caller in [Caller::Outsider, Caller::Removed] {
+            let (status, _) = app
+                .expect(caller, Method::GET, &format!("/organizations/{o1}"), None)
+                .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{caller:?}");
+        }
+    })
+    .await;
+}
+
+/// ORG-39
+#[tokio::test]
+async fn an_unknown_organization_is_not_found() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let unknown = Id::new_v4();
+
+        let (status, _) = app
+            .expect(
+                Caller::Super,
+                Method::GET,
+                &format!("/organizations/{unknown}"),
+                None,
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
     })
     .await;
 }

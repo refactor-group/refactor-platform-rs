@@ -556,6 +556,9 @@ Organization membership changes decide `grants_access_to`; these rows create or 
 | ORG-34 | POST /organizations/O1/archive | ADMIN, COACH, MEMBER, OUTSIDER; OUTSIDER holding `SuperAdmin` scoped to O2 | 403, O1 not archived | `web/src/controller/organization_controller.rs:215`; `web/src/extractors/super_admin_access.rs:29`; `entity/src/users.rs:95` | |
 | ORG-35 | POST /organizations/O1/unarchive (O1 archived) | SUPER | 200, O1 no longer archived | `web/src/controller/organization_controller.rs:245`; `web/src/extractors/super_admin_access.rs:27` | Idempotent |
 | ORG-36 | POST /organizations/O1/unarchive (O1 archived) | ADMIN, COACH, MEMBER, OUTSIDER; OUTSIDER holding `SuperAdmin` scoped to O2 | 403, O1 stays archived | `web/src/controller/organization_controller.rs:245`; `web/src/extractors/super_admin_access.rs:29`; `entity/src/users.rs:95` | Unarchive as SUPER afterwards |
+| ORG-37 | GET /organizations/O1 | COACH, COACHEE, OTHER_COACH, MEMBER, ADMIN, SUPER | 200, O1 | `web/src/extractors/organization_member_access.rs:81`, `:85` | |
+| ORG-38 | GET /organizations/O1 | OUTSIDER, REMOVED | 403 | `web/src/extractors/organization_member_access.rs:103` | Not a member of O1 |
+| ORG-39 | GET /organizations/{unknown} | SUPER | 404 | `web/src/extractors/organization_member_access.rs:60` | |
 
 ### 4.15 Real-time events (`SSE`)
 
@@ -911,6 +914,9 @@ a frozen `domain` test, or by hand with the reason.
 | ORG-34 | `web/src/controller/organization_controller_sqlite_tests.rs::only_a_super_admin_archives_an_organization` |
 | ORG-35 | `web/src/controller/organization_controller_sqlite_tests.rs::a_super_admin_unarchives_an_organization` |
 | ORG-36 | `web/src/controller/organization_controller_sqlite_tests.rs::only_a_super_admin_unarchives_an_organization` |
+| ORG-37 | `web/src/controller/organization_controller_sqlite_tests.rs::members_and_super_admins_read_an_organization` |
+| ORG-38 | `web/src/controller/organization_controller_sqlite_tests.rs::non_members_cannot_read_an_organization` |
+| ORG-39 | `web/src/controller/organization_controller_sqlite_tests.rs::an_unknown_organization_is_not_found` |
 | SSE-01 | `web/src/sse/handler_sqlite_tests.rs::every_caller_opens_an_event_stream` |
 | SSE-02 | `web/src/sse/handler_sqlite_tests.rs::both_participants_hear_of_an_action_assigned_to_the_coach` |
 | SSE-03 | `web/src/sse/handler_sqlite_tests.rs::a_removed_coachee_hears_nothing_of_their_relationship` |
