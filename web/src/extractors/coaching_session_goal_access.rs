@@ -1,15 +1,17 @@
+use std::collections::HashMap;
+
 use axum::{
     async_trait,
     extract::{FromRef, FromRequestParts, Query},
-    http::request::Parts,
+    http::{request::Parts, StatusCode},
 };
-use domain::{users, Id};
+use domain::{coaching_session as CoachingSessionApi, users, Id};
 
 use crate::{
     extractors::{
         authenticated_user::AuthenticatedUser,
-        coaching_relationship_access::authorize_relationship,
-        coaching_session_access::authorize_session, RejectionType,
+        coaching_relationship_access::authorize_relationship, lookup_rejection, not_found,
+        RejectionType,
     },
     params::coaching_session::goal::BatchIndexParams,
     AppState,
@@ -49,14 +51,33 @@ where
     }
 }
 
-/// Admits `user` only if every session's relationship grants them access.
+/// Admits `user` only if every session's relationship grants them access. Loads the sessions
+/// in one query, then walks the ids in request order: the first unknown id is a 404, the
+/// first session of someone else's relationship a 403.
 async fn authorize_sessions(
     state: &AppState,
     user: &users::Model,
     coaching_session_ids: &[Id],
 ) -> Result<(), RejectionType> {
-    for coaching_session_id in coaching_session_ids {
-        authorize_session(state, user, *coaching_session_id).await?;
-    }
-    Ok(())
+    let relationships: HashMap<Id, _> = CoachingSessionApi::find_by_ids_with_coaching_relationship(
+        state.db_conn_ref(),
+        coaching_session_ids,
+    )
+    .await
+    .map_err(lookup_rejection)?
+    .into_iter()
+    .map(|(session, relationship)| (session.id, relationship))
+    .collect();
+
+    coaching_session_ids.iter().try_for_each(|id| {
+        let relationship = relationships.get(id).ok_or_else(not_found)?;
+        match relationship.grants_access_to(user) {
+            true => Ok(()),
+            false => Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string())),
+        }
+    })
 }
+
+#[cfg(test)]
+#[path = "coaching_session_goal_access_sqlite_tests.rs"]
+mod sqlite_tests;

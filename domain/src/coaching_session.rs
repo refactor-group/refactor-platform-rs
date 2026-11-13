@@ -57,6 +57,14 @@ pub async fn find_by_id_with_coaching_relationship(
     Ok(coaching_session::find_by_id_with_coaching_relationship(db, id).await?)
 }
 
+/// Wraps the entity_api batch loader, as [`find_by_id_with_coaching_relationship`] does.
+pub async fn find_by_ids_with_coaching_relationship(
+    db: &DatabaseConnection,
+    ids: &[Id],
+) -> Result<Vec<(Model, coaching_relationships::Model)>, Error> {
+    Ok(coaching_session::find_by_ids_with_coaching_relationship(db, ids).await?)
+}
+
 #[derive(Debug, Clone)]
 struct SessionDate(NaiveDateTime);
 
@@ -2294,3 +2302,7 @@ mod pending_reschedule_sqlite_tests;
 #[cfg(test)]
 #[path = "coaching_session_update_sqlite_tests.rs"]
 mod update_sqlite_tests;
+
+#[cfg(test)]
+#[path = "coaching_session_lookup_sqlite_tests.rs"]
+mod lookup_sqlite_tests;
