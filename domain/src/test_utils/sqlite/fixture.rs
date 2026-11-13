@@ -363,6 +363,21 @@ pub async fn seed_unscanned_transcription(
         .0
 }
 
+/// Moves every session of the series a year back, so the series has none upcoming.
+pub async fn move_series_into_the_past(db: &DatabaseConnection, series_id: Id) {
+    let sessions = coaching_sessions::Entity::find()
+        .filter(coaching_sessions::Column::CoachingSessionSeriesId.eq(series_id))
+        .all(db)
+        .await
+        .expect("the sessions read");
+    for session in sessions {
+        let date = session.date - TimeDelta::days(365);
+        let mut active: coaching_sessions::ActiveModel = session.into();
+        active.date = Set(date);
+        active.update(db).await.expect("the session moves");
+    }
+}
+
 /// Gives the session a Google meeting link, which later sessions in its relationship reuse.
 pub async fn set_google_meeting_url(db: &DatabaseConnection, session_id: Id, url: &str) {
     let session = coaching_sessions::Entity::find_by_id(session_id)

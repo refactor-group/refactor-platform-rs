@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 
 use axum::http::{Method, StatusCode};
 use chrono::{TimeDelta, Utc};
-use domain::test_utils::sqlite::fixture::remove_roles;
+use domain::test_utils::sqlite::fixture::{move_series_into_the_past, remove_roles};
 use domain::test_utils::sqlite::read_back::{
     relationship_series, relationship_sessions, series_state,
 };
@@ -354,6 +354,30 @@ async fn only_the_coach_deletes_a_series() {
         |_| None,
         StatusCode::FORBIDDEN,
     ))
+    .await;
+}
+
+/// SER-12
+#[tokio::test]
+async fn the_coach_deletes_a_series_with_no_upcoming_sessions() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let sr1 = app.fixture.sr1;
+        // Deleting upcoming sessions takes Postgres advisory locks; past ones are kept.
+        move_series_into_the_past(app.db(), sr1).await;
+
+        let (status, _) = app
+            .expect(
+                Caller::Coach,
+                Method::DELETE,
+                &format!("/coaching_session_series/{sr1}"),
+                None,
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(series_state(app.db(), sr1).await, None);
+    })
     .await;
 }
 

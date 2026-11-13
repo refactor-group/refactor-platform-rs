@@ -674,7 +674,7 @@ a frozen `domain` test, or by hand with the reason.
 | SER-09 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::only_the_coach_reschedules_a_series` |
 | SER-10 | by hand: reschedule takes Postgres advisory locks |
 | SER-11 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::only_the_coach_reschedules_following_sessions` |
-| SER-12 | by hand: the series delete takes Postgres advisory locks; the coach passing the gate in `web/src/controller/coaching_session_series_controller_tests.rs::the_coach_gets_past_the_gate_to_delete_a_series` (mock, a series with no upcoming sessions) |
+| SER-12 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::the_coach_deletes_a_series_with_no_upcoming_sessions`; by hand with upcoming sessions and for MAIL-08: deleting them takes Postgres advisory locks |
 | SER-13 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::only_the_coach_deletes_a_series` |
 | SER-14 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_coach_resends_a_series_invite` |
 | SER-15 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::only_the_coach_resends_a_series_invite` |

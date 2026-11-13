@@ -145,10 +145,11 @@ extractor cannot break one.
   it every create through the API fails. It is a hand-made copy, so a migration that adds a
   default an API create relies on must be mirrored there.
 - **External services:** Tiptap, Resend and the AssemblyAI model point at a local `mockito`
-  server through their existing base-URL settings; images use the local object store.
+  server through their existing base-URL settings; images use the local object store; the
+  recording bot is a fake provider that records what it was asked to do.
 - **Coverage:** the matrix's section 6 names, for every row, the test that checks it, or why
   it is checked by hand: Postgres-only SQL (`NOW()`, `AT TIME ZONE`, advisory locks,
-  full-text search) or Recall, whose base URL is fixed.
+  full-text search).
 - **Frozen:** later rs#399 phases must keep these tests and the domain tests section 6 names
   passing without editing them. Adding a matrix row adds a test; it never changes one.
 
