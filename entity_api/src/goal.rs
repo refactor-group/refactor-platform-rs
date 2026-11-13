@@ -374,6 +374,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_status_writes_the_sent_status_with_the_enum_cast() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let existing = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            created_in_session_id: None,
+            title: Some("title".to_owned()),
+            body: Some("This is a goal".to_owned()),
+            user_id: Id::new_v4(),
+            completed_at: None,
+            status_changed_at: None,
+            status: Status::InProgress,
+            target_date: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let on_hold = Model {
+            status: Status::OnHold,
+            ..existing.clone()
+        };
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()], vec![on_hold]])
+            .into_connection();
+
+        update_status(&db, existing.id, Status::OnHold).await?;
+
+        // SQLite stores enums as text, so only the recorded statement shows the cast.
+        let updates: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|transaction| transaction.statements().iter().map(|s| s.to_string()))
+            .filter(|sql| sql.starts_with("UPDATE"))
+            .collect();
+        let [update] = updates.as_slice() else {
+            panic!("expected one UPDATE, got {updates:?}");
+        };
+        let set = update.split(" WHERE ").next().unwrap_or_default();
+        assert!(
+            set.contains(r#""status" = CAST('on_hold' AS "status")"#),
+            "{set}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn update_status_returns_error_when_goal_not_found() -> Result<(), Error> {
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 

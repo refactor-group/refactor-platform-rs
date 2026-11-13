@@ -231,14 +231,26 @@ fn with_default(sql: &str, column: &str, default: &str) -> String {
 /// Inserts a user with every column set and returns its id.
 pub async fn seed_user(db: &DatabaseConnection) -> Id {
     let id = Id::new_v4();
+    seed_user_as(db, id, format!("{id}@example.com"), ("Test", "User"), None).await
+}
+
+/// Inserts user `id` with `email`, a first and last `name` and a `password` hash, every
+/// column set, and returns the id.
+pub async fn seed_user_as(
+    db: &DatabaseConnection,
+    id: Id,
+    email: String,
+    name: (&str, &str),
+    password: Option<String>,
+) -> Id {
     let now = Utc::now();
     users::ActiveModel {
         id: Set(id),
-        email: Set(format!("{id}@example.com")),
-        first_name: Set("Test".to_string()),
-        last_name: Set("User".to_string()),
+        email: Set(email),
+        first_name: Set(name.0.to_string()),
+        last_name: Set(name.1.to_string()),
         display_name: Set(None),
-        password: Set(None),
+        password: Set(password),
         github_username: Set(None),
         github_profile_url: Set(None),
         timezone: Set("UTC".to_string()),
@@ -276,11 +288,21 @@ pub async fn seed_organization(db: &DatabaseConnection) -> Id {
 
 /// Gives `user_id` a User role in `organization_id`.
 pub async fn seed_membership(db: &DatabaseConnection, user_id: Id, organization_id: Id) {
+    seed_role(db, user_id, Role::User, Some(organization_id)).await;
+}
+
+/// Gives `user_id` `role` in `organization_id`, or globally when there is none.
+pub async fn seed_role(
+    db: &DatabaseConnection,
+    user_id: Id,
+    role: Role,
+    organization_id: Option<Id>,
+) {
     let now = Utc::now();
     user_roles::ActiveModel {
         id: Set(Id::new_v4()),
-        role: Set(Role::User),
-        organization_id: Set(Some(organization_id)),
+        role: Set(role),
+        organization_id: Set(organization_id),
         user_id: Set(user_id),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
@@ -349,13 +371,13 @@ pub async fn seed_coaching_session(db: &DatabaseConnection) -> (Id, Id) {
     (session.id, user_id)
 }
 
-/// Inserts a note on `session_id` and returns its id.
-pub async fn seed_note(db: &DatabaseConnection, session_id: Id, user_id: Id) -> Id {
+/// Inserts a note reading `body` on `session_id` and returns its id.
+pub async fn seed_note(db: &DatabaseConnection, session_id: Id, user_id: Id, body: &str) -> Id {
     let now = Utc::now();
     notes::ActiveModel {
         id: Set(Id::new_v4()),
         coaching_session_id: Set(session_id),
-        body: Set(Some("Prep".to_string())),
+        body: Set(Some(body.to_string())),
         user_id: Set(user_id),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
@@ -366,15 +388,15 @@ pub async fn seed_note(db: &DatabaseConnection, session_id: Id, user_id: Id) -> 
     .id
 }
 
-/// Inserts an action on `session_id` and returns its id.
-pub async fn seed_action(db: &DatabaseConnection, session_id: Id, user_id: Id) -> Id {
+/// Inserts an unassigned action reading `body` on `session_id` and returns its id.
+pub async fn seed_action(db: &DatabaseConnection, session_id: Id, user_id: Id, body: &str) -> Id {
     let now = Utc::now();
     actions::ActiveModel {
         id: Set(Id::new_v4()),
         coaching_session_id: Set(session_id),
         goal_id: Set(None),
         user_id: Set(user_id),
-        body: Set(Some("Follow up".to_string())),
+        body: Set(Some(body.to_string())),
         due_by: Set(None),
         status: Set(Default::default()),
         status_changed_at: Set(now.into()),
@@ -387,13 +409,18 @@ pub async fn seed_action(db: &DatabaseConnection, session_id: Id, user_id: Id) -
     .id
 }
 
-/// Inserts an agreement on `session_id` and returns its id.
-pub async fn seed_agreement(db: &DatabaseConnection, session_id: Id, user_id: Id) -> Id {
+/// Inserts an agreement reading `body` on `session_id` and returns its id.
+pub async fn seed_agreement(
+    db: &DatabaseConnection,
+    session_id: Id,
+    user_id: Id,
+    body: &str,
+) -> Id {
     let now = Utc::now();
     agreements::ActiveModel {
         id: Set(Id::new_v4()),
         coaching_session_id: Set(session_id),
-        body: Set(Some("Agreed".to_string())),
+        body: Set(Some(body.to_string())),
         user_id: Set(user_id),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
@@ -404,15 +431,23 @@ pub async fn seed_agreement(db: &DatabaseConnection, session_id: Id, user_id: Id
     .id
 }
 
-/// Inserts a topic on `session_id`, soft-deleted when `deleted`, and returns its id.
-pub async fn seed_topic(db: &DatabaseConnection, session_id: Id, user_id: Id, deleted: bool) -> Id {
+/// Inserts a topic reading `body` at `display_order` on `session_id`, soft-deleted when
+/// `deleted`, and returns its id.
+pub async fn seed_topic(
+    db: &DatabaseConnection,
+    session_id: Id,
+    user_id: Id,
+    body: &str,
+    display_order: i32,
+    deleted: bool,
+) -> Id {
     let now = Utc::now();
     coaching_session_topics::ActiveModel {
         id: Set(Id::new_v4()),
         coaching_session_id: Set(session_id),
-        body: Set("Agenda".to_string()),
+        body: Set(body.to_string()),
         user_id: Set(user_id),
-        display_order: Set(0),
+        display_order: Set(display_order),
         status: Set(Default::default()),
         moved_from_session_id: Set(None),
         undo_snapshot: Set(None),
@@ -431,7 +466,7 @@ pub async fn seed_topic(db: &DatabaseConnection, session_id: Id, user_id: Id, de
 pub(crate) async fn foreign_key_violation() -> DbErr {
     let db = database().await;
     let (session_id, user_id) = seed_coaching_session(&db).await;
-    seed_note(&db, session_id, user_id).await;
+    seed_note(&db, session_id, user_id, "Prep").await;
     coaching_sessions::Entity::delete_by_id(session_id)
         .exec(&db)
         .await

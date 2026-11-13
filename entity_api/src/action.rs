@@ -884,6 +884,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_status_writes_the_sent_status_with_the_enum_cast() -> Result<(), Error> {
+        let existing = action_with_status(Status::InProgress);
+        let on_hold = Model {
+            status: Status::OnHold,
+            ..existing.clone()
+        };
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()], vec![on_hold]])
+            .into_connection();
+
+        update_status(&db, existing.id, Status::OnHold).await?;
+
+        // SQLite stores enums as text, so only the recorded statement shows the cast.
+        let updates: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|transaction| transaction.statements().iter().map(|s| s.to_string()))
+            .filter(|sql| sql.starts_with("UPDATE"))
+            .collect();
+        let [update] = updates.as_slice() else {
+            panic!("expected one UPDATE, got {updates:?}");
+        };
+        let set = update.split(" WHERE ").next().unwrap_or_default();
+        assert!(
+            set.contains(r#""status" = CAST('on_hold' AS "status")"#),
+            "{set}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn update_status_returns_error_when_action_not_found() -> Result<(), Error> {
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 

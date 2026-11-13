@@ -7,12 +7,16 @@
 //! `web/src/test_utils/README.md` describes the people and the database.
 
 use axum::http::{Method, StatusCode};
-use domain::test_utils::sqlite::read_back::session_recordings;
+use domain::meeting_recording::MeetingRecordingStatus;
+use domain::test_utils::sqlite::fixture::seed_active_recording;
+use domain::test_utils::sqlite::read_back::{recording_state, session_recordings};
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 use serde_json::json;
 
-use crate::test_utils::sqlite::{TestApp, NON_PARTICIPANTS};
+use crate::test_utils::sqlite::{created_id, BotRequest, TestApp, NON_PARTICIPANTS};
+
+const MEETING_URL: &str = "https://meet.google.com/abc-defg-hij";
 
 /// Asserts each caller is refused every recording route on `session`, with no recording
 /// written. The POST is refused before any bot is sent.
@@ -54,6 +58,88 @@ async fn participants_read_the_latest_recording() {
                 (StatusCode::OK, expected.clone()),
                 "{caller:?}"
             );
+        }
+    })
+    .await;
+}
+
+/// TRN-19 and MEET-04
+#[tokio::test]
+async fn either_participant_starts_a_recording_bot() {
+    within_time_limit(async {
+        for caller in [Caller::Coach, Caller::Coachee] {
+            // A fresh app each: a second start on the same session answers 409.
+            let mut app = TestApp::new().await;
+            let s1 = app.fixture.s1;
+            let path = format!("/coaching_sessions/{s1}/meeting_recording");
+            let before = session_recordings(app.db(), s1).await;
+
+            let reply = app
+                .send(
+                    caller,
+                    Method::POST,
+                    &path,
+                    Some(json!({ "meeting_url": MEETING_URL })),
+                )
+                .await;
+
+            assert_eq!(reply.status, StatusCode::OK, "{caller:?}");
+            assert_eq!(reply.body["status_code"], 201, "{caller:?}");
+            let recording = created_id(&reply);
+            assert!(!before.contains(&recording), "{caller:?}");
+            let requests = app.take_bot_requests();
+            let [BotRequest::Create {
+                bot_id,
+                meeting_url,
+                coaching_session_id,
+            }] = requests.as_slice()
+            else {
+                panic!("{caller:?}: one bot sent, got {requests:?}");
+            };
+            assert_eq!(meeting_url, MEETING_URL, "{caller:?}");
+            assert_eq!(coaching_session_id, &Some(s1.to_string()), "{caller:?}");
+            assert_eq!(
+                recording_state(app.db(), recording).await,
+                Some((bot_id.clone(), MeetingRecordingStatus::Pending)),
+                "{caller:?}"
+            );
+            assert_eq!(
+                session_recordings(app.db(), s1).await.len(),
+                before.len() + 1,
+                "{caller:?}"
+            );
+        }
+    })
+    .await;
+}
+
+/// TRN-20
+#[tokio::test]
+async fn either_participant_stops_the_recording_bot() {
+    within_time_limit(async {
+        for caller in [Caller::Coach, Caller::Coachee] {
+            let mut app = TestApp::new().await;
+            let s1 = app.fixture.s1;
+            let path = format!("/coaching_sessions/{s1}/meeting_recording");
+            let bot_id = seed_active_recording(app.db(), s1).await;
+            let before = session_recordings(app.db(), s1).await;
+
+            let reply = app.send(caller, Method::DELETE, &path, None).await;
+
+            assert_eq!(reply.status, StatusCode::OK, "{caller:?}");
+            assert_eq!(
+                app.take_bot_requests(),
+                vec![BotRequest::Stop {
+                    bot_id: bot_id.clone()
+                }],
+                "{caller:?}"
+            );
+            assert_eq!(
+                recording_state(app.db(), created_id(&reply)).await,
+                Some((bot_id, MeetingRecordingStatus::Cancelled)),
+                "{caller:?}"
+            );
+            assert_eq!(session_recordings(app.db(), s1).await, before, "{caller:?}");
         }
     })
     .await;

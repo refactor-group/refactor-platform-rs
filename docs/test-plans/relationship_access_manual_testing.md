@@ -242,6 +242,7 @@ How to read the tables:
 | SES-40 | GET /coaching_sessions/{unknown}, POST /coaching_sessions/{unknown}/resend_invite | COACH | 404, no email | `web/src/extractors/coaching_session_access.rs:115`; `web/src/protect/coaching_sessions.rs:125` | |
 | SES-41 | PUT /coaching_sessions/S1 | COACH after removal from O1 | 403, S1 unchanged | `web/src/protect/coaching_sessions.rs:129` | [tightened] Restore the role afterwards |
 | SES-42 | any /coaching_sessions route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
+| SES-43 | GET /users/{REMOVED_ID}/coaching_sessions/nearest?coaching_relationship_ids=R3 | REMOVED | 200, empty list | `web/src/protect/users/coaching_sessions.rs:20`; `entity_api/src/coaching_session.rs:1226`; `entity_api/src/coaching_relationship.rs:426` | [membership] R3's sessions are left out, as in SES-30 |
 
 ### 4.3 Series (`SER`)
 
@@ -389,6 +390,7 @@ How to read the tables:
 | GOAL-31 | PUT /goals/G1/status, GET /goals/G1/progress | non-participants | 403, G1 unchanged | `web/src/protect/goals.rs:73` | Unknown goal: 404 |
 | GOAL-32 | POST /goals `{coaching_relationship_id: R1, created_in_session_id: S1}` | COACH | 200 (201), new goal linked to S1 | `web/src/controller/goal_controller.rs:89` | The allowed side of GOAL-28 |
 | GOAL-33 | any goal route (`/goals`, `/coaching_sessions/.../goals`, `/users/{id}/goals`, `goal_progress`) | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
+| GOAL-34 | GET /users/{REMOVED_ID}/goals, REMOVED having created a goal in R3 | REMOVED | 200, empty list | `web/src/protect/users/goals.rs:20`; `entity_api/src/goal.rs:38`; `entity_api/src/coaching_relationship.rs:426` | [membership] self list leaves out goals in R3 |
 
 ### 4.8 Topics (`TOP`)
 
@@ -491,8 +493,8 @@ relationship's org) via `entity_api/src/search/visibility.rs:18`; SuperAdmins sk
 ### 4.13 Users (`USR`)
 
 Rows here cover user routes that return relationship data and are not covered above
-(`REL-13`, `REL-14`, `REL-17`, `SES-27` to `SES-32`, `ACT-18` to `ACT-26`, `GOAL-22` to
-`GOAL-24`).
+(`REL-13`, `REL-14`, `REL-17`, `SES-27` to `SES-32`, `SES-43`, `ACT-18` to `ACT-26`,
+`GOAL-22` to `GOAL-24`, `GOAL-34`).
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
@@ -537,10 +539,18 @@ Organization membership changes decide `grants_access_to`; these rows create or 
 | ORG-22 | PUT /organizations/O1/users/{ADMIN_ID}/role `{role: Admin or User}` | ADMIN | 403, ADMIN keeps `Admin` | `web/src/controller/organization/user/role_controller.rs:196` | Cannot change own role |
 | ORG-23 | GET /organizations/O1/users/{MEMBER_ID}/role | ADMIN, SUPER | 200, `User` in O1 for MEMBER | `web/src/extractors/organization_admin_access.rs:42`; `domain/src/user_role.rs:156` | |
 | ORG-24 | PUT /organizations/O1/users/{MEMBER_ID}/role `{role: Admin}` | ADMIN, SUPER | 200, MEMBER holds `Admin` | `web/src/extractors/organization_admin_access.rs:42`; `web/src/controller/organization/user/role_controller.rs:173` | SUPER holds no O1 role |
-| ORG-25 | POST /organizations `{name}` | SUPER | 200 (201), new organization | `web/src/extractors/super_admin_access.rs:27` | Same gate: PUT, DELETE `/organizations/{id}`, POST `/archive`, `/unarchive` |
+| ORG-25 | POST /organizations `{name}` | SUPER | 200 (201), new organization | `web/src/extractors/super_admin_access.rs:27` | PUT, DELETE, archive and unarchive each take the same extractor: ORG-29 to ORG-36 |
 | ORG-26 | POST /organizations | ADMIN, COACH, MEMBER, OUTSIDER | 403, nothing written | `web/src/extractors/super_admin_access.rs:29` | |
 | ORG-27 | POST /organizations | OUTSIDER holding `SuperAdmin` scoped to O2 | 403, nothing written | `web/src/extractors/super_admin_access.rs:27`; `entity/src/users.rs:95` | Only a `SuperAdmin` role with no organization counts. The model refuses to save a scoped one, so set it in the database by hand |
 | ORG-28 | any /organizations route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
+| ORG-29 | PUT /organizations/O1 `{name}` | SUPER | 200, O1 renamed | `web/src/controller/organization_controller.rs:147`; `web/src/extractors/super_admin_access.rs:27` | Name or slug taken by another organization: 409 |
+| ORG-30 | PUT /organizations/O1 `{name}` | ADMIN, COACH, MEMBER, OUTSIDER; OUTSIDER holding `SuperAdmin` scoped to O2 | 403, O1 unchanged | `web/src/controller/organization_controller.rs:147`; `web/src/extractors/super_admin_access.rs:29`; `entity/src/users.rs:95` | |
+| ORG-31 | DELETE /organizations/{id} (an organization with no members and no relationships) | SUPER | 200, `{id}`; the organization is gone | `web/src/controller/organization_controller.rs:187`; `web/src/extractors/super_admin_access.rs:27` | With members or relationships: 409 |
+| ORG-32 | DELETE /organizations/{id} (the same empty organization) | ADMIN, COACH, MEMBER, OUTSIDER; OUTSIDER holding `SuperAdmin` scoped to O2 | 403, the organization is kept | `web/src/controller/organization_controller.rs:187`; `web/src/extractors/super_admin_access.rs:29`; `entity/src/users.rs:95` | |
+| ORG-33 | POST /organizations/O1/archive | SUPER | 200, O1 archived | `web/src/controller/organization_controller.rs:215`; `web/src/extractors/super_admin_access.rs:27` | Idempotent. Unarchive afterwards (ORG-35) |
+| ORG-34 | POST /organizations/O1/archive | ADMIN, COACH, MEMBER, OUTSIDER; OUTSIDER holding `SuperAdmin` scoped to O2 | 403, O1 not archived | `web/src/controller/organization_controller.rs:215`; `web/src/extractors/super_admin_access.rs:29`; `entity/src/users.rs:95` | |
+| ORG-35 | POST /organizations/O1/unarchive (O1 archived) | SUPER | 200, O1 no longer archived | `web/src/controller/organization_controller.rs:245`; `web/src/extractors/super_admin_access.rs:27` | Idempotent |
+| ORG-36 | POST /organizations/O1/unarchive (O1 archived) | ADMIN, COACH, MEMBER, OUTSIDER; OUTSIDER holding `SuperAdmin` scoped to O2 | 403, O1 stays archived | `web/src/controller/organization_controller.rs:245`; `web/src/extractors/super_admin_access.rs:29`; `entity/src/users.rs:95` | Unarchive as SUPER afterwards |
 
 ### 4.15 Real-time events (`SSE`)
 
@@ -652,6 +662,7 @@ a frozen `domain` test, or by hand with the reason.
 | SES-40 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::an_unknown_session_is_not_found` |
 | SES-41 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coach_removed_from_the_org_cannot_update_a_session` |
 | SES-42 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_sessions` |
+| SES-43 | `web/src/controller/user/coaching_session_controller_sqlite_tests.rs::a_removed_coachee_reads_no_nearest_session`; `domain/src/coaching_session_sqlite_tests.rs::a_users_own_nearest_sessions_skip_an_org_they_left` |
 | SER-01 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_coach_creates_a_series_with_its_sessions` |
 | SER-02 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_coachee_cannot_create_a_series` |
 | SER-03 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::non_participants_cannot_create_a_series` |
@@ -663,7 +674,7 @@ a frozen `domain` test, or by hand with the reason.
 | SER-09 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::only_the_coach_reschedules_a_series` |
 | SER-10 | by hand: reschedule takes Postgres advisory locks |
 | SER-11 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::only_the_coach_reschedules_following_sessions` |
-| SER-12 | by hand: the series delete takes Postgres advisory locks |
+| SER-12 | by hand: the series delete takes Postgres advisory locks; the coach passing the gate in `web/src/controller/coaching_session_series_controller_tests.rs::the_coach_gets_past_the_gate_to_delete_a_series` (mock, a series with no upcoming sessions) |
 | SER-13 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::only_the_coach_deletes_a_series` |
 | SER-14 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_coach_resends_a_series_invite` |
 | SER-15 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::only_the_coach_resends_a_series_invite` |
@@ -728,7 +739,7 @@ a frozen `domain` test, or by hand with the reason.
 | ACT-27 | `web/src/controller/action_controller_sqlite_tests.rs::participants_read_the_action` |
 | ACT-28 | `web/src/controller/action_controller_sqlite_tests.rs::participants_create_an_action_assigned_to_the_coachee` |
 | ACT-29 | `web/src/controller/action_controller_sqlite_tests.rs::participants_update_the_action` |
-| ACT-30 | `web/src/controller/action_controller_sqlite_tests.rs::participants_update_the_action_status` |
+| ACT-30 | `web/src/controller/action_controller_sqlite_tests.rs::participants_update_the_action_status`; SQL shape (the enum cast) in `entity_api/src/action.rs::tests::update_status_writes_the_sent_status_with_the_enum_cast` |
 | ACT-31 | `web/src/controller/action_controller_sqlite_tests.rs::participants_delete_the_action` |
 | ACT-32 | `web/src/controller/action_controller_sqlite_tests.rs::non_participants_cannot_read_the_action` |
 | ACT-33 | `web/src/controller/action_controller_sqlite_tests.rs::non_participants_cannot_create_an_action_in_the_session` |
@@ -769,11 +780,12 @@ a frozen `domain` test, or by hand with the reason.
 | GOAL-26 | `web/src/controller/coaching_session/goal_controller_sqlite_tests.rs::non_participants_cannot_change_the_sessions_goal_links` |
 | GOAL-27 | `web/src/controller/coaching_session/goal_controller_sqlite_tests.rs::linking_a_goal_from_another_relationship_is_refused` |
 | GOAL-28 | `web/src/controller/goal_controller_sqlite_tests.rs::a_created_in_session_from_another_relationship_is_refused` |
-| GOAL-29 | `web/src/controller/goal_controller_sqlite_tests.rs::participants_update_the_goal_status` |
+| GOAL-29 | `web/src/controller/goal_controller_sqlite_tests.rs::participants_update_the_goal_status`; SQL shape (the enum cast) in `entity_api/src/goal.rs::tests::update_status_writes_the_sent_status_with_the_enum_cast` |
 | GOAL-30 | `web/src/controller/goal_controller_sqlite_tests.rs::participants_read_the_goals_progress` |
 | GOAL-31 | `web/src/controller/goal_controller_sqlite_tests.rs::non_participants_cannot_set_the_goal_status_or_read_its_progress` |
 | GOAL-32 | `web/src/controller/goal_controller_sqlite_tests.rs::a_coach_creates_a_goal_from_a_session_of_the_relationship` |
 | GOAL-33 | `web/src/controller/goal_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_goals` |
+| GOAL-34 | `web/src/controller/user/goal_controller_sqlite_tests.rs::a_removed_coachee_lists_none_of_their_own_goals`; `domain/src/goal_sqlite_tests.rs::a_users_own_goals_skip_an_org_they_left` |
 | TOP-01 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::participants_list_the_sessions_topics` |
 | TOP-02 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::non_participants_cannot_list_the_sessions_topics` |
 | TOP-03 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::participants_add_a_topic_authored_by_themselves` |
@@ -811,8 +823,8 @@ a frozen `domain` test, or by hand with the reason.
 | TRN-16 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::a_coachee_cannot_dismiss_or_restore_a_coach_only_suggestion` |
 | TRN-17 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::non_participants_cannot_dismiss_or_restore_a_suggestion` |
 | TRN-18 | `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::participants_read_the_latest_recording` |
-| TRN-19 | by hand: Recall base URL is hard-coded |
-| TRN-20 | by hand: stopping the bot needs Recall, whose base URL is hard-coded |
+| TRN-19 | `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::either_participant_starts_a_recording_bot` (a stand-in bot provider; Recall itself is not called) |
+| TRN-20 | `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::either_participant_stops_the_recording_bot` (a stand-in bot provider; Recall itself is not called) |
 | TRN-21 | `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::non_participants_cannot_reach_the_sessions_recording` |
 | TRN-22 | `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::a_removed_coachee_cannot_reach_their_sessions_recording` |
 | TRN-23 | `web/src/controller/coaching_session/image_controller_sqlite_tests.rs::participants_upload_a_note_image` |
@@ -825,7 +837,7 @@ a frozen `domain` test, or by hand with the reason.
 | MEET-01 | by hand: first-read hydration takes `pg_advisory_xact_lock` and creates the link with the provider |
 | MEET-02 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::only_the_coachs_create_attaches_a_meeting_link` (a reused R1 link; a new provider link needs Google or Zoom) |
 | MEET-03 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coach_sets_the_sessions_meeting_link` |
-| MEET-04 | by hand: Recall base URL is hard-coded |
+| MEET-04 | `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::either_participant_starts_a_recording_bot` |
 | MEET-05 | `web/src/controller/oauth_controller_sqlite_tests.rs::every_caller_reaches_only_their_own_connections` |
 | MEET-06 | `web/src/controller/oauth_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_connections` |
 | SRCH-01 | by hand: full-text search |
@@ -881,6 +893,14 @@ a frozen `domain` test, or by hand with the reason.
 | ORG-26 | `web/src/controller/organization_controller_sqlite_tests.rs::only_a_super_admin_creates_an_organization` |
 | ORG-27 | `web/src/controller/organization_controller_sqlite_tests.rs::a_super_admin_role_held_in_one_org_cannot_create_an_organization` |
 | ORG-28 | `web/src/controller/organization/user_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_organizations` |
+| ORG-29 | `web/src/controller/organization_controller_sqlite_tests.rs::a_super_admin_renames_an_organization` |
+| ORG-30 | `web/src/controller/organization_controller_sqlite_tests.rs::only_a_super_admin_renames_an_organization` |
+| ORG-31 | `web/src/controller/organization_controller_sqlite_tests.rs::a_super_admin_deletes_an_empty_organization` |
+| ORG-32 | `web/src/controller/organization_controller_sqlite_tests.rs::only_a_super_admin_deletes_an_organization` |
+| ORG-33 | `web/src/controller/organization_controller_sqlite_tests.rs::a_super_admin_archives_an_organization` |
+| ORG-34 | `web/src/controller/organization_controller_sqlite_tests.rs::only_a_super_admin_archives_an_organization` |
+| ORG-35 | `web/src/controller/organization_controller_sqlite_tests.rs::a_super_admin_unarchives_an_organization` |
+| ORG-36 | `web/src/controller/organization_controller_sqlite_tests.rs::only_a_super_admin_unarchives_an_organization` |
 | SSE-01 | `web/src/sse/handler_sqlite_tests.rs::every_caller_opens_an_event_stream` |
 | SSE-02 | `web/src/sse/handler_sqlite_tests.rs::both_participants_hear_of_an_action_assigned_to_the_coach` |
 | SSE-03 | `web/src/sse/handler_sqlite_tests.rs::a_removed_coachee_hears_nothing_of_their_relationship` |

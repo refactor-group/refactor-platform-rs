@@ -6,9 +6,8 @@
 //! `web/src/test_utils/README.md` describes the people and the database.
 
 use axum::http::{Method, StatusCode};
-use domain::test_utils::sqlite::fixture::seed_note;
 use domain::test_utils::sqlite::read_back::{note_body, session_content};
-use domain::test_utils::sqlite::{within_time_limit, Caller};
+use domain::test_utils::sqlite::{seed_note, within_time_limit, Caller};
 use domain::Id;
 use serde_json::{json, Value};
 
@@ -219,7 +218,13 @@ async fn a_removed_coachee_cannot_reach_their_sessions_notes() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
         let s3 = app.fixture.s3;
-        let n3 = seed_note(app.db(), s3, app.fixture.user(Caller::Coach)).await;
+        let n3 = seed_note(
+            app.db(),
+            s3,
+            app.fixture.user(Caller::Coach),
+            "Note kumquat",
+        )
+        .await;
         let body = note_body(app.db(), n3).await;
         let content = session_content(app.db(), s3).await;
         let path = format!("/notes/{n3}");

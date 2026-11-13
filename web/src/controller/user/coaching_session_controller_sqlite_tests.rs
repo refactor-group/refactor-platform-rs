@@ -131,6 +131,27 @@ async fn a_coachee_reads_the_nearest_session_of_each_relationship() {
     .await;
 }
 
+/// SES-43
+#[tokio::test]
+async fn a_removed_coachee_reads_no_nearest_session() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (removed, r3) = (app.fixture.user(Caller::Removed), app.fixture.r3);
+        let around = Utc::now().format("%Y-%m-%dT%H:%M:%S");
+        // S3 and SR3's sessions lie after `around` in R3.
+        let path = format!(
+            "/users/{removed}/coaching_sessions/nearest\
+             ?coaching_relationship_ids={r3}&around={around}&before=1&after=1"
+        );
+
+        assert_eq!(
+            app.expect(Caller::Removed, Method::GET, &path, None).await,
+            (StatusCode::OK, BTreeSet::new())
+        );
+    })
+    .await;
+}
+
 /// USR-01
 #[tokio::test]
 async fn a_coachees_sessions_include_their_relationships() {

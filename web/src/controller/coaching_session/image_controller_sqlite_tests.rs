@@ -13,7 +13,7 @@ use domain::test_utils::sqlite::read_back::{image_deleted, session_images};
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 
-use crate::test_utils::sqlite::{ids, Reply, TestApp, NON_PARTICIPANTS};
+use crate::test_utils::sqlite::{created_id, ids, Reply, TestApp, NON_PARTICIPANTS};
 
 /// A valid 2x3 PNG, so the upload sees a real image.
 const TINY_PNG: [u8; 73] = [
@@ -65,10 +65,7 @@ async fn participants_upload_a_note_image() {
 
             assert_eq!(reply.status, StatusCode::OK, "{caller:?}");
             assert_eq!(reply.body["status_code"], 201, "{caller:?}");
-            let created: Vec<Id> = reply.ids().into_iter().collect();
-            let [image] = created[..] else {
-                panic!("{caller:?}: one new image id, got {created:?}");
-            };
+            let image = created_id(&reply);
             assert!(!before.contains(&image), "{caller:?}");
             assert!(
                 session_images(app.db(), s1).await.contains(&image),

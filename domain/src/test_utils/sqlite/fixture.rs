@@ -12,18 +12,16 @@ use entity::meeting_provider::Provider;
 use entity::meeting_recording::MeetingRecordingStatus;
 use entity::roles::Role;
 use entity::status::Status;
-use entity::topic_status::Status as TopicStatus;
 use entity::transcript_analysis::Status as AnalysisStatus;
 use entity::transcript_participant::MatchSource;
 use entity::transcript_suggestion::Status as SuggestionStatus;
 use entity::transcript_suggestion_target::Target;
 use entity::transcription::TranscriptionStatus;
 use entity::{
-    actions, actions_users, agreements, coaching_relationships, coaching_session_images,
-    coaching_session_series, coaching_session_topics, coaching_sessions, coaching_sessions_goals,
-    goals, meeting_recording, notes, oauth_connections, transcript_analysis,
-    transcript_participant, transcript_segment, transcript_suggestion, transcription,
-    user_role_changes, user_roles, users, Id,
+    actions, actions_users, coaching_relationships, coaching_session_images,
+    coaching_session_series, coaching_sessions, coaching_sessions_goals, goals, meeting_recording,
+    oauth_connections, organizations, transcript_analysis, transcript_participant,
+    transcript_segment, transcript_suggestion, transcription, user_role_changes, user_roles, Id,
 };
 use entity_api::user::generate_hash;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
@@ -31,13 +29,20 @@ use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, Qu
 use crate::action::ActionWithAssignees;
 use crate::transcript_suggestion::ActionProposal;
 
-use super::seed_organization;
+use super::{
+    seed_action, seed_agreement, seed_note, seed_organization, seed_role, seed_topic, seed_user_as,
+};
 
 /// The password every fixture person logs in with.
 pub const PASSWORD: &str = "kumquat-password";
 
 /// The search rows look for this word, which every seeded body and title holds.
 const SEARCH_WORD: &str = "kumquat";
+
+/// `label` followed by the search word, the body every fixture row carries.
+fn searchable(label: &str) -> String {
+    format!("{label} {SEARCH_WORD}")
+}
 
 /// IMG1's stored bytes: a PNG signature.
 pub const IMG1_BYTES: &[u8] = b"\x89PNG\r\n\x1a\n";
@@ -171,18 +176,18 @@ pub async fn seed_fixture(db: &DatabaseConnection) -> Fixture {
 
     let coach = id(Caller::Coach);
     let other_coach = id(Caller::OtherCoach);
-    let a1 = seed_action(db, s1, coach, Some(coach)).await;
-    let a2 = seed_action(db, s1, coach, Some(id(Caller::Coachee))).await;
-    let a3 = seed_action(db, s1, coach, None).await;
-    let a4 = seed_action(db, s2, other_coach, Some(other_coach)).await;
-    let a5 = seed_action(db, s2, other_coach, Some(id(Caller::Coachee))).await;
-    let a6 = seed_action(db, s3, coach, Some(id(Caller::Removed))).await;
-    let a7 = seed_action(db, s3, coach, None).await;
+    let a1 = seed_assigned_action(db, s1, coach, Some(coach)).await;
+    let a2 = seed_assigned_action(db, s1, coach, Some(id(Caller::Coachee))).await;
+    let a3 = seed_assigned_action(db, s1, coach, None).await;
+    let a4 = seed_assigned_action(db, s2, other_coach, Some(other_coach)).await;
+    let a5 = seed_assigned_action(db, s2, other_coach, Some(id(Caller::Coachee))).await;
+    let a6 = seed_assigned_action(db, s3, coach, Some(id(Caller::Removed))).await;
+    let a7 = seed_assigned_action(db, s3, coach, None).await;
 
-    let n1 = seed_note(db, s1, coach).await;
-    let ag1 = seed_agreement(db, s1, coach).await;
-    let t1 = seed_topic(db, s1, coach, 0).await;
-    let t2 = seed_topic(db, s1, id(Caller::Coachee), 1).await;
+    let n1 = seed_note(db, s1, coach, &searchable("Note")).await;
+    let ag1 = seed_agreement(db, s1, coach, &searchable("Agreement")).await;
+    let t1 = seed_topic(db, s1, coach, &searchable("Topic"), 0, false).await;
+    let t2 = seed_topic(db, s1, id(Caller::Coachee), &searchable("Topic"), 1, false).await;
     let (img1, img1_storage_key) = seed_image(db, s1, coach).await;
 
     let tr1 = seed_transcript(db, s1, coach, id(Caller::Coachee)).await;
@@ -251,9 +256,9 @@ pub async fn seed_relationship_with_actions(
     let relationship = seed_relationship(db, organization_id, coach, coachee).await;
     let session = seed_content_free_session(db, relationship).await;
     let actions = [
-        seed_action(db, session, coach, Some(coach)).await,
-        seed_action(db, session, coach, Some(coachee)).await,
-        seed_action(db, session, coach, None).await,
+        seed_assigned_action(db, session, coach, Some(coach)).await,
+        seed_assigned_action(db, session, coach, Some(coachee)).await,
+        seed_assigned_action(db, session, coach, None).await,
     ];
     (relationship, actions)
 }
@@ -290,6 +295,19 @@ pub async fn set_scoped_super_admin(db: &DatabaseConnection, user_id: Id, organi
     .exec(db)
     .await
     .expect("the scoped role is seeded");
+}
+
+/// Marks `organization_id` archived by `archived_by`.
+pub async fn archive_organization(db: &DatabaseConnection, organization_id: Id, archived_by: Id) {
+    organizations::ActiveModel {
+        id: Set(organization_id),
+        archived_at: Set(Some(Utc::now().into())),
+        archived_by: Set(Some(archived_by)),
+        ..Default::default()
+    }
+    .update(db)
+    .await
+    .expect("the organization is archived");
 }
 
 /// The audit row an admin's removal of `user_id` from `organization_id` leaves, which lets
@@ -392,42 +410,14 @@ fn whole_seconds(at: chrono::DateTime<Utc>) -> NaiveDateTime {
 }
 
 async fn seed_person(db: &DatabaseConnection, caller: Caller) -> Id {
-    let now = Utc::now();
-    users::ActiveModel {
-        id: Set(Id::new_v4()),
-        email: Set(caller.email()),
-        first_name: Set(format!("{caller:?}")),
-        last_name: Set("Access".to_string()),
-        display_name: Set(None),
-        password: Set(Some(password_hash())),
-        github_username: Set(None),
-        github_profile_url: Set(None),
-        timezone: Set("UTC".to_string()),
-        default_coaching_session_duration_minutes: Set(60),
-        working_hours_start: Set(crate::working_hours::default_start()),
-        working_hours_end: Set(crate::working_hours::default_end()),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-    }
-    .insert(db)
+    seed_user_as(
+        db,
+        Id::new_v4(),
+        caller.email(),
+        (&format!("{caller:?}"), "Access"),
+        Some(password_hash()),
+    )
     .await
-    .expect("the person is seeded")
-    .id
-}
-
-async fn seed_role(db: &DatabaseConnection, user_id: Id, role: Role, organization_id: Option<Id>) {
-    let now = Utc::now();
-    user_roles::ActiveModel {
-        id: Set(Id::new_v4()),
-        role: Set(role),
-        organization_id: Set(organization_id),
-        user_id: Set(user_id),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-    }
-    .insert(db)
-    .await
-    .expect("the role is seeded");
 }
 
 async fn seed_relationship(
@@ -519,16 +509,22 @@ async fn seed_series(db: &DatabaseConnection, relationship_id: Id, creator: Id) 
     (series_id, [first, second])
 }
 
-/// A goal created in `session_id` and linked to it.
-async fn seed_goal(db: &DatabaseConnection, relationship_id: Id, session_id: Id, author: Id) -> Id {
+/// A goal created in `session_id` and linked to it. Beyond G1 and G2, seed it per test so
+/// list rows never see it.
+pub async fn seed_goal(
+    db: &DatabaseConnection,
+    relationship_id: Id,
+    session_id: Id,
+    author: Id,
+) -> Id {
     let now = Utc::now();
     let id = goals::ActiveModel {
         id: Set(Id::new_v4()),
         coaching_relationship_id: Set(relationship_id),
         created_in_session_id: Set(Some(session_id)),
         user_id: Set(author),
-        title: Set(Some(format!("Goal {SEARCH_WORD}"))),
-        body: Set(Some(format!("Goal body {SEARCH_WORD}"))),
+        title: Set(Some(searchable("Goal"))),
+        body: Set(Some(searchable("Goal body"))),
         status: Set(Status::InProgress),
         status_changed_at: Set(None),
         completed_at: Set(None),
@@ -553,30 +549,16 @@ async fn seed_goal(db: &DatabaseConnection, relationship_id: Id, session_id: Id,
     id
 }
 
-async fn seed_action(
+/// An action in `session_id`, assigned to `assignee` when there is one.
+async fn seed_assigned_action(
     db: &DatabaseConnection,
     session_id: Id,
     author: Id,
     assignee: Option<Id>,
 ) -> Id {
-    let now = Utc::now();
-    let id = actions::ActiveModel {
-        id: Set(Id::new_v4()),
-        coaching_session_id: Set(session_id),
-        goal_id: Set(None),
-        user_id: Set(author),
-        body: Set(Some(format!("Action {SEARCH_WORD}"))),
-        due_by: Set(None),
-        status: Set(Status::InProgress),
-        status_changed_at: Set(now.into()),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-    }
-    .insert(db)
-    .await
-    .expect("the action is seeded")
-    .id;
+    let id = seed_action(db, session_id, author, &searchable("Action")).await;
     if let Some(user_id) = assignee {
+        let now = Utc::now();
         actions_users::ActiveModel {
             id: Set(Id::new_v4()),
             action_id: Set(id),
@@ -589,61 +571,6 @@ async fn seed_action(
         .expect("the assignment is seeded");
     }
     id
-}
-
-/// A note in `session_id`. Beyond N1, seed it per test so list rows never see it.
-pub async fn seed_note(db: &DatabaseConnection, session_id: Id, author: Id) -> Id {
-    let now = Utc::now();
-    notes::ActiveModel {
-        id: Set(Id::new_v4()),
-        coaching_session_id: Set(session_id),
-        body: Set(Some(format!("Note {SEARCH_WORD}"))),
-        user_id: Set(author),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-    }
-    .insert(db)
-    .await
-    .expect("the note is seeded")
-    .id
-}
-
-/// An agreement in `session_id`. Beyond AG1, seed it per test so list rows never see it.
-pub async fn seed_agreement(db: &DatabaseConnection, session_id: Id, author: Id) -> Id {
-    let now = Utc::now();
-    agreements::ActiveModel {
-        id: Set(Id::new_v4()),
-        coaching_session_id: Set(session_id),
-        body: Set(Some(format!("Agreement {SEARCH_WORD}"))),
-        user_id: Set(author),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-    }
-    .insert(db)
-    .await
-    .expect("the agreement is seeded")
-    .id
-}
-
-async fn seed_topic(db: &DatabaseConnection, session_id: Id, author: Id, display_order: i32) -> Id {
-    let now = Utc::now();
-    coaching_session_topics::ActiveModel {
-        id: Set(Id::new_v4()),
-        coaching_session_id: Set(session_id),
-        body: Set(format!("Topic {SEARCH_WORD}")),
-        user_id: Set(author),
-        display_order: Set(display_order),
-        status: Set(TopicStatus::Open),
-        moved_from_session_id: Set(None),
-        undo_snapshot: Set(None),
-        deleted_at: Set(None),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-    }
-    .insert(db)
-    .await
-    .expect("the topic is seeded")
-    .id
 }
 
 /// A note image row in `session_id`; the bytes are the caller's to store at the key.

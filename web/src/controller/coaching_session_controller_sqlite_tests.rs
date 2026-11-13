@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 
 use crate::test_utils::sqlite::{
     assert_coachee_not_a_member, assert_removed_coach_resend_refused, assert_resend_mails_both,
-    assert_signed_out_refused, ids, TestApp, NON_PARTICIPANTS,
+    assert_signed_out_refused, created_id, ids, TestApp, NON_PARTICIPANTS,
 };
 
 /// S1's invite resend path.
@@ -237,10 +237,7 @@ async fn only_the_coachs_create_attaches_a_meeting_link() {
             .await;
         assert_eq!(reply.status, StatusCode::OK);
         assert_eq!(reply.body["status_code"], 201);
-        let created: Vec<Id> = reply.ids().into_iter().collect();
-        let [session] = created[..] else {
-            panic!("one new session id, got {created:?}");
-        };
+        let session = created_id(&reply);
         assert_eq!(
             session_meeting_url(app.db(), session).await,
             Some(Some(R1_LINK.to_string()))
@@ -438,10 +435,7 @@ async fn a_coach_creates_a_session_with_its_notes_document() {
 
         assert_eq!(reply.status, StatusCode::OK);
         assert_eq!(reply.body["status_code"], 201);
-        let created: Vec<Id> = reply.ids().into_iter().collect();
-        let [session] = created[..] else {
-            panic!("one new session id, got {created:?}");
-        };
+        let session = created_id(&reply);
         assert_eq!(session_relationship(app.db(), session).await, Some(r1));
         documents_created.assert_async().await;
     })

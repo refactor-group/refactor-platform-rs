@@ -20,7 +20,7 @@ use domain::transcript_suggestion::Status;
 use domain::Id;
 use serde_json::json;
 
-use crate::test_utils::sqlite::{ids, TestApp, NON_PARTICIPANTS};
+use crate::test_utils::sqlite::{created_id, ids, TestApp, NON_PARTICIPANTS};
 
 /// COACH's `verb` on SG1 under S3, a session COACH is in and SG1 is not.
 async fn sg1_under_s3(app: &mut TestApp, verb: &str) -> StatusCode {
@@ -173,10 +173,7 @@ async fn a_coach_accepts_a_coach_only_suggestion() {
 
         assert_eq!(reply.status, StatusCode::OK);
         assert_eq!(reply.body["status_code"], 201);
-        let created: Vec<Id> = reply.ids().into_iter().collect();
-        let [action] = created[..] else {
-            panic!("one new action id, got {created:?}");
-        };
+        let action = created_id(&reply);
         assert!(!before.contains(&action));
         assert!(session_content(app.db(), s1).await.contains(&action));
         assert_eq!(action_assignees(app.db(), action).await, Some(ids([coach])));
@@ -254,10 +251,7 @@ async fn a_coachee_accepts_their_own_suggestion() {
 
         assert_eq!(reply.status, StatusCode::OK);
         assert_eq!(reply.body["status_code"], 201);
-        let created: Vec<Id> = reply.ids().into_iter().collect();
-        let [action] = created[..] else {
-            panic!("one new action id, got {created:?}");
-        };
+        let action = created_id(&reply);
         assert!(!before.contains(&action));
         assert_eq!(
             action_assignees(app.db(), action).await,

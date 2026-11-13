@@ -7,6 +7,8 @@
 use std::collections::BTreeSet;
 
 use axum::http::{Method, StatusCode};
+use domain::test_utils::sqlite::fixture::seed_goal;
+use domain::test_utils::sqlite::read_back::relationship_goals;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 
 use crate::test_utils::sqlite::{ids, TestApp};
@@ -65,6 +67,33 @@ async fn only_the_user_lists_their_own_goals() {
             let (status, _) = app.expect(caller, Method::GET, &path, None).await;
             assert_eq!(status, StatusCode::FORBIDDEN, "{caller:?}");
         }
+    })
+    .await;
+}
+
+/// GOAL-34
+#[tokio::test]
+async fn a_removed_coachee_lists_none_of_their_own_goals() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (removed, r3, s3) = (
+            app.fixture.user(Caller::Removed),
+            app.fixture.r3,
+            app.fixture.s3,
+        );
+        let own_goal = seed_goal(app.db(), r3, s3, removed).await;
+        assert_eq!(relationship_goals(app.db(), r3).await, ids([own_goal]));
+
+        assert_eq!(
+            app.expect(
+                Caller::Removed,
+                Method::GET,
+                &format!("/users/{removed}/goals"),
+                None
+            )
+            .await,
+            (StatusCode::OK, BTreeSet::new())
+        );
     })
     .await;
 }

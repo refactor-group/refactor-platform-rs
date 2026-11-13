@@ -14,7 +14,9 @@ use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 use serde_json::{json, Value};
 
-use crate::test_utils::sqlite::{assert_signed_out_refused, ids, TestApp, NON_PARTICIPANTS};
+use crate::test_utils::sqlite::{
+    assert_signed_out_refused, created_id, ids, TestApp, NON_PARTICIPANTS,
+};
 
 /// An action body in `session` with `assignee_ids`.
 fn action(session: Id, assignee_ids: &[Id]) -> Value {
@@ -164,10 +166,7 @@ async fn participants_create_an_action_assigned_to_the_coachee() {
                 json!([coachee]),
                 "{caller:?}"
             );
-            let created: Vec<Id> = reply.ids().into_iter().collect();
-            let [new_action] = created[..] else {
-                panic!("{caller:?}: one new action id, got {created:?}");
-            };
+            let new_action = created_id(&reply);
             assert!(!before.contains(&new_action), "{caller:?}");
             assert!(
                 session_content(app.db(), s1).await.contains(&new_action),

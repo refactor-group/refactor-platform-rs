@@ -4,9 +4,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration as StdDuration;
 
+use async_trait::async_trait;
 use axum::body::{to_bytes, Body, BodyDataStream, Bytes};
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Method, Request, StatusCode};
@@ -26,6 +28,8 @@ use domain::user::Backend;
 use domain::Id;
 use futures::StreamExt;
 use hmac::{Hmac, Mac};
+use meeting_ai::traits::recording_bot;
+use meeting_ai::types::recording::{Config as BotConfig, Filters, Info, Status as BotStatus};
 use mockito::{Matcher, Mock, ServerGuard};
 use sea_orm::DatabaseConnection;
 use serde_json::{json, Value};
@@ -81,7 +85,8 @@ pub(crate) struct Reply {
     pub(crate) body: Value,
 }
 
-/// Tiptap, Resend and AssemblyAI answered by one local server, and a local object store.
+/// Tiptap, Resend and AssemblyAI answered by one local server, a local object store and a
+/// recording bot that only keeps what it was asked.
 ///
 /// Every Tiptap and Resend call succeeds. AssemblyAI has no answer: the scan routes only need
 /// its key set, and the server keeps a stray model call off the network.
@@ -92,6 +97,7 @@ struct StandIns {
     config: Config,
     store: Arc<dyn ObjectStore>,
     store_root: StoreRoot,
+    bot: Arc<FakeBot>,
 }
 
 impl StandIns {
@@ -117,7 +123,83 @@ impl StandIns {
             config,
             store,
             store_root,
+            bot: Arc::default(),
         }
+    }
+}
+
+/// What the recording bot provider was asked to do.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum BotRequest {
+    /// Send `bot_id` to `meeting_url` for `coaching_session_id`.
+    Create {
+        bot_id: String,
+        meeting_url: String,
+        coaching_session_id: Option<String>,
+    },
+    Stop {
+        bot_id: String,
+    },
+}
+
+/// A recording bot provider that reaches no one: it numbers the bots it is asked to send and
+/// keeps every request.
+#[derive(Default)]
+struct FakeBot {
+    sent: AtomicUsize,
+    requests: Mutex<Vec<BotRequest>>,
+}
+
+impl FakeBot {
+    fn record(&self, request: BotRequest) {
+        self.requests
+            .lock()
+            .expect("the bot request log locks")
+            .push(request);
+    }
+}
+
+fn bot_info(id: String, meeting_url: String) -> Info {
+    Info {
+        id,
+        meeting_url,
+        meeting_id: None,
+        status: BotStatus::Pending,
+        artifacts: None,
+        error_message: None,
+        status_history: vec![],
+    }
+}
+
+#[async_trait]
+impl recording_bot::Provider for FakeBot {
+    async fn create_bot(&self, config: BotConfig) -> Result<Info, meeting_ai::Error> {
+        let bot_id = format!("fake-bot-{}", self.sent.fetch_add(1, Ordering::SeqCst));
+        self.record(BotRequest::Create {
+            bot_id: bot_id.clone(),
+            meeting_url: config.meeting_url.clone(),
+            coaching_session_id: config.provider_options.get("coaching_session_id").cloned(),
+        });
+        Ok(bot_info(bot_id, config.meeting_url))
+    }
+
+    async fn get_bot_status(&self, bot_id: &str) -> Result<Info, meeting_ai::Error> {
+        Ok(bot_info(bot_id.to_string(), String::new()))
+    }
+
+    async fn stop_bot(&self, bot_id: &str) -> Result<(), meeting_ai::Error> {
+        self.record(BotRequest::Stop {
+            bot_id: bot_id.to_string(),
+        });
+        Ok(())
+    }
+
+    async fn list_bots(&self, _: Option<Filters>) -> Result<Vec<Info>, meeting_ai::Error> {
+        Ok(vec![])
+    }
+
+    fn provider_id(&self) -> &str {
+        "fake_bot"
     }
 }
 
@@ -184,6 +266,15 @@ impl Reply {
     pub(crate) fn ids(&self) -> BTreeSet<Id> {
         ids_in(&self.body["data"])
     }
+}
+
+/// The one new id a create reply returned.
+pub(crate) fn created_id(reply: &Reply) -> Id {
+    let created: Vec<Id> = reply.ids().into_iter().collect();
+    let [id] = created[..] else {
+        panic!("one new id, got {created:?}");
+    };
+    id
 }
 
 /// Ids under each key of an object keyed by id, such as actions or goals per relationship.
@@ -254,6 +345,18 @@ impl TestApp {
         );
         emailed.sort();
         emailed
+    }
+
+    /// What the recording bot provider was asked since the last call, in order.
+    pub(crate) fn take_bot_requests(&mut self) -> Vec<BotRequest> {
+        std::mem::take(
+            &mut *self
+                .stand_ins
+                .bot
+                .requests
+                .lock()
+                .expect("the bot request log locks"),
+        )
     }
 
     /// One request: the status and the ids `data` returned.
@@ -498,7 +601,7 @@ fn app(db: &Arc<DatabaseConnection>, stand_ins: &StandIns) -> Router {
         service::AppState::new(stand_ins.config.clone(), db),
         sse_manager,
         events,
-        None,
+        Some(stand_ins.bot.clone()),
         None,
         Some(stand_ins.store.clone()),
     );

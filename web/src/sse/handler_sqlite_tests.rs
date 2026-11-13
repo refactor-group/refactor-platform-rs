@@ -15,7 +15,7 @@ use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 use serde_json::{json, Value};
 
-use crate::test_utils::sqlite::{assert_signed_out_refused, Listener, Reply, TestApp};
+use crate::test_utils::sqlite::{assert_signed_out_refused, created_id, Listener, TestApp};
 
 /// A goal body in `relationship`.
 fn goal(relationship: Id) -> Value {
@@ -25,15 +25,6 @@ fn goal(relationship: Id) -> Value {
         "body": "Goal body kumquat",
         "status": "InProgress",
     })
-}
-
-/// The new entity's id from a create reply.
-fn created_id(reply: &Reply) -> Id {
-    let created: Vec<Id> = reply.ids().into_iter().collect();
-    let [id] = created[..] else {
-        panic!("one new id, got {created:?}");
-    };
-    id
 }
 
 /// The `field` entity ids carried by the `event` events in `received`.

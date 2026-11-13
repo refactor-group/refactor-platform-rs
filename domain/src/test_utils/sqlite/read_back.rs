@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use chrono::{NaiveDateTime, NaiveTime};
+use entity::meeting_recording::MeetingRecordingStatus;
 use entity::roles::Role;
 use entity::status::Status;
 use entity::topic_status::Status as TopicStatus;
@@ -45,6 +46,18 @@ pub async fn organization_named(db: &DatabaseConnection, name: &str) -> Option<I
         .await
         .expect("the organization reads")
         .map(|organization| organization.id)
+}
+
+/// The organization's name and whether it is archived, or `None` once it is deleted.
+pub async fn organization_state(
+    db: &DatabaseConnection,
+    organization_id: Id,
+) -> Option<(String, bool)> {
+    organizations::Entity::find_by_id(organization_id)
+        .one(db)
+        .await
+        .expect("the organization reads")
+        .map(|organization| (organization.name, organization.archived_at.is_some()))
 }
 
 /// The user's stored working hours, start and end.
@@ -372,6 +385,18 @@ pub async fn session_recordings(db: &DatabaseConnection, session_id: Id) -> BTre
         .into_iter()
         .map(|recording| recording.id)
         .collect()
+}
+
+/// The recording's bot id and status.
+pub async fn recording_state(
+    db: &DatabaseConnection,
+    recording_id: Id,
+) -> Option<(String, MeetingRecordingStatus)> {
+    meeting_recording::Entity::find_by_id(recording_id)
+        .one(db)
+        .await
+        .expect("the recording reads")
+        .map(|recording| (recording.bot_id, recording.status))
 }
 
 /// Whether the transcription has an action scan, in any state.

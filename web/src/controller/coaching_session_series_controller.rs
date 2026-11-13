@@ -318,5 +318,10 @@ pub async fn resend_invite(
 }
 
 #[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "coaching_session_series_controller_tests.rs"]
+mod tests;
+
+#[cfg(test)]
 #[path = "coaching_session_series_controller_sqlite_tests.rs"]
 mod sqlite_tests;

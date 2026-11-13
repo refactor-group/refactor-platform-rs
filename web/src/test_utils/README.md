@@ -9,7 +9,7 @@ the module it covers: mock tests in `<module>_tests.rs`, SQLite tests in
 
 | Module | Provides | For |
 |---|---|---|
-| `sqlite` | `TestApp` (the production route table on in-memory SQLite, seeded with `domain`'s `seed_fixture`, signed in per `Caller`, with local Tiptap, Resend, AssemblyAI and object store stand-ins), `Reply`, `Listener`, `NON_PARTICIPANTS`, the id helpers (`ids`, `ids_in`, `ids_by_key`, `field_ids`) and the assertions more than one test file uses | route tests in `*_sqlite_tests.rs` |
+| `sqlite` | `TestApp` (the production route table on in-memory SQLite, seeded with `domain`'s `seed_fixture`, signed in per `Caller`, with local Tiptap, Resend, AssemblyAI, object store and recording bot stand-ins), `Reply`, `Listener`, `BotRequest`, `NON_PARTICIPANTS`, the id helpers (`ids`, `ids_in`, `ids_by_key`, `field_ids`, `created_id`) and the assertions more than one test file uses | route tests in `*_sqlite_tests.rs` |
 
 ## Which kind of test
 

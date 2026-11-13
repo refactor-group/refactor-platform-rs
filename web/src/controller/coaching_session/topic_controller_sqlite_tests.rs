@@ -12,7 +12,9 @@ use domain::topic_status::Status;
 use domain::Id;
 use serde_json::json;
 
-use crate::test_utils::sqlite::{assert_signed_out_refused, ids, TestApp, NON_PARTICIPANTS};
+use crate::test_utils::sqlite::{
+    assert_signed_out_refused, created_id, ids, TestApp, NON_PARTICIPANTS,
+};
 
 /// The path of `topic` under `session`, plus `suffix`.
 fn topic_path(session: Id, topic: Id, suffix: &str) -> String {
@@ -157,10 +159,7 @@ async fn participants_add_a_topic_authored_by_themselves() {
 
             assert_eq!(reply.status, StatusCode::OK, "{caller:?}");
             assert_eq!(reply.body["status_code"], 201, "{caller:?}");
-            let created: Vec<Id> = reply.ids().into_iter().collect();
-            let [new] = created[..] else {
-                panic!("{caller:?}: one new topic id, got {created:?}");
-            };
+            let new = created_id(&reply);
             assert!(!before.contains(&new), "{caller:?}");
             let stored = topic(&app, new).await;
             assert_eq!(
