@@ -1,7 +1,9 @@
 use crate::controller::ApiResponse;
 use crate::extractors::{
-    authenticated_user::AuthenticatedUser, coaching_session_access::authorize_session,
-    compare_api_version::CompareApiVersion, note_access::NoteAccess,
+    authenticated_user::AuthenticatedUser,
+    coaching_session_access::{authorize_session, CoachingSessionQueryAccess},
+    compare_api_version::CompareApiVersion,
+    note_access::NoteAccess,
 };
 use crate::{AppState, Error};
 use axum::extract::{Query, State};
@@ -102,6 +104,7 @@ pub async fn update(
     responses(
         (status = 200, description = "Successfully retrieved all Notes", body = [domain::notes::Model]),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -110,10 +113,9 @@ pub async fn update(
     )
 )]
 pub async fn index(
+    CoachingSessionQueryAccess(_session, _relationship): CoachingSessionQueryAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
     State(app_state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, Error> {

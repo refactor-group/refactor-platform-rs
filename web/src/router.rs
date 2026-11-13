@@ -327,15 +327,7 @@ fn action_routes(app_state: AppState) -> Router {
         .route("/actions/:id", get(action_controller::read))
         .route("/actions/:id/status", put(action_controller::update_status))
         .route("/actions/:id", delete(action_controller::delete))
-        .merge(
-            // GET /actions
-            Router::new()
-                .route("/actions", get(action_controller::index))
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::actions::index,
-                )),
-        )
+        .route("/actions", get(action_controller::index))
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
@@ -344,15 +336,7 @@ fn agreement_routes(app_state: AppState) -> Router {
     Router::new()
         .route("/agreements", post(agreement_controller::create))
         .route("/agreements/:id", put(agreement_controller::update))
-        .merge(
-            // GET /agreements
-            Router::new()
-                .route("/agreements", get(agreement_controller::index))
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::agreements::index,
-                )),
-        )
+        .route("/agreements", get(agreement_controller::index))
         .route("/agreements/:id", get(agreement_controller::read))
         .route("/agreements/:id", delete(agreement_controller::delete))
         .route_layer(from_fn(require_auth))
@@ -512,12 +496,7 @@ fn note_routes(app_state: AppState) -> Router {
     Router::new()
         .route("/notes", post(note_controller::create))
         .route("/notes/:id", put(note_controller::update))
-        .merge(
-            // GET /notes
-            Router::new()
-                .route("/notes", get(note_controller::index))
-                .route_layer(from_fn_with_state(app_state.clone(), protect::notes::index)),
-        )
+        .route("/notes", get(note_controller::index))
         .route("/notes/:id", get(note_controller::read))
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
@@ -789,10 +768,6 @@ fn jwt_routes(app_state: AppState) -> Router {
             "/jwt/generate_collab_token",
             get(jwt_controller::generate_collab_token),
         )
-        .route_layer(from_fn_with_state(
-            app_state.clone(),
-            protect::jwt::generate_collab_token,
-        ))
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
@@ -816,16 +791,9 @@ fn user_organizations_routes(app_state: AppState) -> Router {
 
 fn user_actions_routes(app_state: AppState) -> Router {
     Router::new()
-        .merge(
-            Router::new()
-                .route(
-                    "/users/:user_id/actions",
-                    get(user::action_controller::index),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::users::actions::index,
-                )),
+        .route(
+            "/users/:user_id/actions",
+            get(user::action_controller::index),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

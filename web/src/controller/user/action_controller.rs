@@ -1,15 +1,16 @@
 use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    user_actions_access::UserActionsAccess,
 };
 use crate::params::user::action::{AssigneeFilter, IndexParams, Scope};
 use crate::{AppState, Error};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use domain::search::visibility_for;
-use domain::{action as ActionApi, Id, QuerySort};
+use domain::{action as ActionApi, QuerySort};
 use service::config::ApiVersion;
 
 use log::*;
@@ -47,10 +48,10 @@ use log::*;
     )
 )]
 pub async fn index(
+    UserActionsAccess(user_id): UserActionsAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(user_id): Path<Id>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET Actions for User: {user_id}");

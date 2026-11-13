@@ -1,6 +1,7 @@
 use crate::controller::ApiResponse;
 use crate::extractors::{
-    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    authenticated_user::AuthenticatedUser, coaching_session_access::CoachingSessionQueryAccess,
+    compare_api_version::CompareApiVersion,
 };
 use crate::params::jwt::GenerateCollabTokenParams;
 use crate::{AppState, Error};
@@ -22,6 +23,7 @@ use service::config::ApiVersion;
     ),
     responses(
         (status = 200, description = "Successfully generated a collaboration token", body = domain::jwts::Jwt),  
+        (status = 403, description = "Forbidden"),
         (status = 500, description = "Internal Server Error"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -30,6 +32,7 @@ use service::config::ApiVersion;
     )
 )]
 pub async fn generate_collab_token(
+    CoachingSessionQueryAccess(_session, _relationship): CoachingSessionQueryAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,

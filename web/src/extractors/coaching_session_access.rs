@@ -2,10 +2,11 @@ use std::collections::HashMap;
 
 use axum::{
     async_trait,
-    extract::{FromRef, FromRequestParts, Path},
+    extract::{FromRef, FromRequestParts, Path, Query},
     http::{request::Parts, StatusCode},
 };
 use domain::{coaching_session, Id};
+use serde::Deserialize;
 
 use crate::{
     extractors::{authenticated_user::AuthenticatedUser, lookup_rejection, RejectionType},
@@ -28,6 +29,17 @@ pub(crate) struct CoachingSessionContextAccess(
     pub coaching_sessions::Model,
     pub coaching_relationships::Model,
 );
+
+/// Session access for the session named by the `coaching_session_id` query parameter.
+pub(crate) struct CoachingSessionQueryAccess(
+    pub coaching_sessions::Model,
+    pub coaching_relationships::Model,
+);
+
+#[derive(Deserialize)]
+struct SessionQueryParams {
+    coaching_session_id: Id,
+}
 
 #[async_trait]
 impl<S> FromRequestParts<S> for CoachingSessionAccess
@@ -54,6 +66,28 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let (session, relationship) = authorize(parts, &AppState::from_ref(state)).await?;
         Ok(CoachingSessionContextAccess(session, relationship))
+    }
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for CoachingSessionQueryAccess
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = RejectionType;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let state = AppState::from_ref(state);
+        let AuthenticatedUser(user) = AuthenticatedUser::from_request_parts(parts, &state).await?;
+
+        let Query(params) = Query::<SessionQueryParams>::from_request_parts(parts, &state)
+            .await
+            .map_err(|rejection| (rejection.status(), rejection.body_text()))?;
+
+        let (session, relationship) =
+            authorize_session(&state, &user, params.coaching_session_id).await?;
+        Ok(CoachingSessionQueryAccess(session, relationship))
     }
 }
 

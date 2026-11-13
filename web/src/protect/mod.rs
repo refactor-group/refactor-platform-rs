@@ -8,12 +8,8 @@
 //! separate submodules, we can maintain a clear and modular structure, making the codebase easier
 //! to understand and maintain.
 
-pub(crate) mod actions;
-pub(crate) mod agreements;
 pub(crate) mod coaching_sessions;
 pub(crate) mod goals;
-pub(crate) mod jwt;
-pub(crate) mod notes;
 pub(crate) mod tiptap_metrics;
 pub(crate) mod users;
 
