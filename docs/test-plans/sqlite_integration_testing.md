@@ -27,6 +27,13 @@ The deciding check: plant the bug you are worried about. If the mock suite still
 behaviour needs a SQLite test. Keep the assertions a mock can make in the mock suite; the
 SQLite test covers only what the mock cannot see.
 
+**Access rules are the exception: test each one once, in a SQLite route test.** An access
+rule is who gets through a route (versus a 401, 403 or 404), a membership 409, which records
+a list returns for a caller, or who an email reaches after someone was removed. Don't add a
+mock test of the same rule. Mock tests still cover what those tests can't see: query counts,
+Postgres-only SQL, states no request reaches, and behaviour after access is granted.
+Functions that decide access from in-memory values keep their plain unit tests.
+
 ## What SQLite cannot prove
 
 Production runs Postgres. These gaps stay covered some other way:
