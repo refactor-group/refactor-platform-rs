@@ -26,6 +26,9 @@ async fn participants_list_the_sessions_agreements() {
         let fixture = &app.fixture;
         let path = format!("/agreements?coaching_session_id={}", fixture.s1);
         let expected = ids([fixture.ag1]);
+        // R2's session holds one too, which S1's list must leave out.
+        let other_coach = fixture.user(Caller::OtherCoach);
+        seed_agreement(app.db(), fixture.s2, other_coach, "Other kumquat").await;
 
         for caller in [Caller::Coach, Caller::Coachee] {
             assert_eq!(

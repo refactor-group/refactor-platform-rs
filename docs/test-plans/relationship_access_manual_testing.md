@@ -146,7 +146,7 @@ done
 # O1=... O2=... R1=... R2=... R3=... S1=... S2=... S3=... SR1=... SR3=...
 # A1=... A2=... A3=... A4=... A5=... A6=... A7=... G1=... G2=... N1=... AG1=...
 # T1=... T2=... IMG1=... TR1=... SG1=... SG2=...
-# COACH_ID=... COACHEE_ID=... MEMBER_ID=... REMOVED_ID=...
+# COACH_ID=... COACHEE_ID=... MEMBER_ID=... REMOVED_ID=... SUPER_ID=...
 
 call coachee GET "/organizations/$O1/coaching_relationships/$R1/actions"
 ```
@@ -195,6 +195,7 @@ How to read the tables:
 | REL-19 | GET /organizations/{unknown}/coaching_relationships | COACH, ADMIN, SUPER | 404 | `web/src/extractors/organization_member_access.rs:59` | Checked before membership |
 | REL-20 | POST /organizations/O1/coaching_relationships | OUTSIDER made an `Admin` of O2 | 403, nothing written | `web/src/extractors/organization_admin_access.rs:48` | An admin of another organization is not an admin of O1 |
 | REL-21 | any relationship route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
+| REL-22 | GET /users/{SUPER_ID}/coaching-relationships | SUPER, once they also coach OUTSIDER in a new O2 relationship R5 | 200, R5 | `web/src/protect/users/mod.rs:26`; `web/src/controller/user/coaching_relationships_controller.rs:53`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in. SUPER holds no O2 role |
 
 ### 4.2 Sessions (`SES`)
 
@@ -243,6 +244,8 @@ How to read the tables:
 | SES-41 | PUT /coaching_sessions/S1 | COACH after removal from O1 | 403, S1 unchanged | `web/src/protect/coaching_sessions.rs:129` | [tightened] Restore the role afterwards |
 | SES-42 | any /coaching_sessions route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 | SES-43 | GET /users/{REMOVED_ID}/coaching_sessions/nearest?coaching_relationship_ids=R3 | REMOVED | 200, empty list | `web/src/protect/users/coaching_sessions.rs:20`; `entity_api/src/coaching_session.rs:1226`; `entity_api/src/coaching_relationship.rs:426` | [membership] R3's sessions are left out, as in SES-30 |
+| SES-44 | GET /users/{SUPER_ID}/coaching_sessions | SUPER, once they also coach OUTSIDER in a new O2 relationship R5 with one session | 200, R5's session | `web/src/protect/users/coaching_sessions.rs:20`; `web/src/controller/user/coaching_session_controller.rs:93`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in |
+| SES-45 | GET /users/{SUPER_ID}/coaching_sessions/nearest?coaching_relationship_ids=R5 | SUPER, once they also coach OUTSIDER in a new O2 relationship R5 with one session | 200, R5's session | `web/src/protect/users/coaching_sessions.rs:20`; `web/src/controller/user/coaching_session_controller.rs:162`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in |
 
 ### 4.3 Series (`SER`)
 
@@ -352,6 +355,7 @@ How to read the tables:
 | ACT-40 | POST /actions `{coaching_session_id: S1, goal_id: G2}` | COACH | 422, nothing written | `web/src/controller/action_controller.rs:81` | [tightened] G2 belongs to R2; an action's goal must be in its relationship |
 | ACT-41 | GET /organizations/O1/coaching_relationships/actions | COACHEE, once they also coach MEMBER in a new O1 relationship R4 whose session holds one action each for COACHEE, MEMBER and nobody | 200, R1 [A2 A3], R2 [A5], R4 [all three] | `entity_api/src/action.rs:615`, `:497` | [rows] Visibility is decided per relationship: everything where the caller coaches, own or unassigned where they are the coachee |
 | ACT-42 | any actions route (`/actions`, `/users/{id}/actions`, the organization action lists) | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
+| ACT-43 | GET /users/{SUPER_ID}/actions (scope=sessions) | SUPER, once they also coach OUTSIDER in a new O2 relationship R5 whose session holds one action each for SUPER, OUTSIDER and nobody | 200, all three | `web/src/protect/users/actions.rs:24`; `web/src/controller/user/action_controller.rs:87`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in. `scope=assigned`: SUPER's action |
 
 ### 4.7 Goals (`GOAL`)
 
@@ -391,6 +395,7 @@ How to read the tables:
 | GOAL-32 | POST /goals `{coaching_relationship_id: R1, created_in_session_id: S1}` | COACH | 200 (201), new goal linked to S1 | `web/src/controller/goal_controller.rs:89` | The allowed side of GOAL-28 |
 | GOAL-33 | any goal route (`/goals`, `/coaching_sessions/.../goals`, `/users/{id}/goals`, `goal_progress`) | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 | GOAL-34 | GET /users/{REMOVED_ID}/goals, REMOVED having created a goal in R3 | REMOVED | 200, empty list | `web/src/protect/users/goals.rs:20`; `entity_api/src/goal.rs:38`; `entity_api/src/coaching_relationship.rs:426` | [membership] self list leaves out goals in R3 |
+| GOAL-35 | GET /users/{SUPER_ID}/goals | SUPER, once they also coach OUTSIDER in a new O2 relationship R5, SUPER having created a goal in R5 | 200, that goal | `web/src/protect/users/goals.rs:20`; `web/src/controller/user/goal_controller.rs:56`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in |
 
 ### 4.8 Topics (`TOP`)
 
@@ -620,6 +625,7 @@ a frozen `domain` test, or by hand with the reason.
 | REL-19 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::an_unknown_organizations_relationships_are_not_found` |
 | REL-20 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::an_admin_of_another_org_cannot_create_a_relationship` |
 | REL-21 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_relationships` |
+| REL-22 | `web/src/controller/user/coaching_relationships_controller_sqlite_tests.rs::a_super_admin_lists_their_own_relationship_in_an_org_they_hold_no_role_in` |
 | SES-01 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::participants_list_the_relationships_sessions` |
 | SES-02 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::non_participants_cannot_list_the_relationships_sessions` |
 | SES-03 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_removed_coachee_cannot_list_their_relationships_sessions` |
@@ -663,6 +669,8 @@ a frozen `domain` test, or by hand with the reason.
 | SES-41 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coach_removed_from_the_org_cannot_update_a_session` |
 | SES-42 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_sessions` |
 | SES-43 | `web/src/controller/user/coaching_session_controller_sqlite_tests.rs::a_removed_coachee_reads_no_nearest_session`; `domain/src/coaching_session_sqlite_tests.rs::a_users_own_nearest_sessions_skip_an_org_they_left` |
+| SES-44 | `web/src/controller/user/coaching_session_controller_sqlite_tests.rs::a_super_admin_lists_their_own_session_in_an_org_they_hold_no_role_in` |
+| SES-45 | `web/src/controller/user/coaching_session_controller_sqlite_tests.rs::a_super_admin_reads_their_nearest_session_in_an_org_they_hold_no_role_in` |
 | SER-01 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_coach_creates_a_series_with_its_sessions` |
 | SER-02 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_coachee_cannot_create_a_series` |
 | SER-03 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::non_participants_cannot_create_a_series` |
@@ -752,6 +760,7 @@ a frozen `domain` test, or by hand with the reason.
 | ACT-40 | `web/src/controller/action_controller_sqlite_tests.rs::a_goal_from_another_relationship_is_refused` |
 | ACT-41 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::a_coachee_who_also_coaches_lists_each_relationship_by_their_role_in_it` |
 | ACT-42 | `web/src/controller/action_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_actions` |
+| ACT-43 | `web/src/controller/user/action_controller_sqlite_tests.rs::a_super_admin_lists_their_own_actions_in_an_org_they_hold_no_role_in` |
 | GOAL-01 | `web/src/controller/goal_controller_sqlite_tests.rs::participants_list_the_relationships_goals` |
 | GOAL-02 | `web/src/controller/goal_controller_sqlite_tests.rs::non_participants_cannot_list_the_relationships_goals` |
 | GOAL-03 | `web/src/controller/goal_controller_sqlite_tests.rs::a_removed_coachee_cannot_list_their_relationships_goals` |
@@ -786,6 +795,7 @@ a frozen `domain` test, or by hand with the reason.
 | GOAL-32 | `web/src/controller/goal_controller_sqlite_tests.rs::a_coach_creates_a_goal_from_a_session_of_the_relationship` |
 | GOAL-33 | `web/src/controller/goal_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_goals` |
 | GOAL-34 | `web/src/controller/user/goal_controller_sqlite_tests.rs::a_removed_coachee_lists_none_of_their_own_goals`; `domain/src/goal_sqlite_tests.rs::a_users_own_goals_skip_an_org_they_left` |
+| GOAL-35 | `web/src/controller/user/goal_controller_sqlite_tests.rs::a_super_admin_lists_their_own_goal_in_an_org_they_hold_no_role_in` |
 | TOP-01 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::participants_list_the_sessions_topics` |
 | TOP-02 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::non_participants_cannot_list_the_sessions_topics` |
 | TOP-03 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::participants_add_a_topic_authored_by_themselves` |

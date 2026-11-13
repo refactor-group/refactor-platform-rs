@@ -7,7 +7,7 @@
 
 use axum::http::{Method, StatusCode};
 use domain::test_utils::sqlite::read_back::{session_topics, topic_row, TopicRow};
-use domain::test_utils::sqlite::{within_time_limit, Caller};
+use domain::test_utils::sqlite::{seed_topic, within_time_limit, Caller};
 use domain::topic_status::Status;
 use domain::Id;
 use serde_json::json;
@@ -112,6 +112,9 @@ async fn participants_list_the_sessions_topics() {
         let fixture = &app.fixture;
         let path = format!("/coaching_sessions/{}/topics", fixture.s1);
         let expected = ids([fixture.t1, fixture.t2]);
+        // R2's session holds one too, which S1's list must leave out.
+        let other_coach = fixture.user(Caller::OtherCoach);
+        seed_topic(app.db(), fixture.s2, other_coach, "Other kumquat", 0, false).await;
 
         for caller in [Caller::Coach, Caller::Coachee] {
             assert_eq!(

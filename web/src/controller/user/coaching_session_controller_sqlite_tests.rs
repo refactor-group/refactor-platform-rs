@@ -12,7 +12,7 @@ use chrono::Utc;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 
-use crate::test_utils::sqlite::{ids, TestApp};
+use crate::test_utils::sqlite::{ids, seed_super_coaching, TestApp};
 
 /// Asserts `caller`'s own session list is `expected`.
 async fn assert_own_sessions(caller: Caller, expected: impl Fn(&TestApp) -> BTreeSet<Id>) {
@@ -177,6 +177,46 @@ async fn a_coachees_sessions_include_their_relationships() {
             }
             assert_eq!(session["coachee"]["id"], coachee.to_string(), "{session}");
         }
+    })
+    .await;
+}
+
+/// SES-44
+#[tokio::test]
+async fn a_super_admin_lists_their_own_session_in_an_org_they_hold_no_role_in() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let super_admin = app.fixture.user(Caller::Super);
+        let expected = ids([seed_super_coaching(&app).await.session]);
+        let path = format!("/users/{super_admin}/coaching_sessions");
+
+        assert_eq!(
+            app.expect(Caller::Super, Method::GET, &path, None).await,
+            (StatusCode::OK, expected)
+        );
+    })
+    .await;
+}
+
+/// SES-45
+#[tokio::test]
+async fn a_super_admin_reads_their_nearest_session_in_an_org_they_hold_no_role_in() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let super_admin = app.fixture.user(Caller::Super);
+        let seeded = seed_super_coaching(&app).await;
+        let around = Utc::now().format("%Y-%m-%dT%H:%M:%S");
+        // The session lies after `around`.
+        let path = format!(
+            "/users/{super_admin}/coaching_sessions/nearest\
+             ?coaching_relationship_ids={}&around={around}&before=1&after=1",
+            seeded.relationship
+        );
+
+        assert_eq!(
+            app.expect(Caller::Super, Method::GET, &path, None).await,
+            (StatusCode::OK, ids([seeded.session]))
+        );
     })
     .await;
 }

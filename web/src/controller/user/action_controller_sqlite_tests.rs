@@ -11,7 +11,7 @@ use domain::test_utils::sqlite::fixture::remove_roles;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 
-use crate::test_utils::sqlite::{ids, TestApp};
+use crate::test_utils::sqlite::{ids, seed_super_coaching, TestApp};
 
 /// ACT-18 and ACT-19
 async fn assert_own_actions(scope: &str, expected: impl Fn(&TestApp) -> BTreeSet<Id>) {
@@ -187,6 +187,30 @@ async fn a_coach_removed_from_the_org_cannot_list_their_coachees_actions() {
 
         let (status, _) = app.expect(Caller::Coach, Method::GET, &path, None).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+    })
+    .await;
+}
+
+/// ACT-43
+#[tokio::test]
+async fn a_super_admin_lists_their_own_actions_in_an_org_they_hold_no_role_in() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let super_admin = app.fixture.user(Caller::Super);
+        let seeded = seed_super_coaching(&app).await;
+        let path = format!("/users/{super_admin}/actions");
+
+        for (scope, expected) in [
+            ("", ids(seeded.actions)),
+            ("?scope=assigned", ids([seeded.own_action])),
+        ] {
+            assert_eq!(
+                app.expect(Caller::Super, Method::GET, &format!("{path}{scope}"), None)
+                    .await,
+                (StatusCode::OK, expected),
+                "{scope}"
+            );
+        }
     })
     .await;
 }

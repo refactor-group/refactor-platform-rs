@@ -20,7 +20,11 @@ use axum_login::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use domain::gateway::object_storage::{self, ObjectStore};
-use domain::test_utils::sqlite::fixture::{remove_roles, IMG1_BYTES, IMG1_CONTENT_TYPE, PASSWORD};
+use domain::test_utils::sqlite::fixture::{
+    remove_roles, seed_goal, seed_relationship_with_actions, IMG1_BYTES, IMG1_CONTENT_TYPE,
+    PASSWORD,
+};
+use domain::test_utils::sqlite::read_back::relationship_sessions;
 use domain::test_utils::sqlite::{
     database, mirror_migration_defaults, seed_fixture, Caller, Fixture,
 };
@@ -262,9 +266,19 @@ impl Drop for StoreRoot {
 }
 
 impl Reply {
-    /// Ids of the envelope's `data`: the object's own id, or each element's.
+    /// Ids of the envelope's `data`: the object's own id, or each element's. Panics when the
+    /// reply carries no such data, as a refusal or a 204 does.
     pub(crate) fn ids(&self) -> BTreeSet<Id> {
         ids_in(&self.body["data"])
+    }
+
+    /// The reply's ids, or none when it was refused or has no body.
+    fn ids_if_answered(&self) -> BTreeSet<Id> {
+        if self.status.is_success() && !self.bytes.is_empty() {
+            self.ids()
+        } else {
+            BTreeSet::new()
+        }
     }
 }
 
@@ -287,13 +301,21 @@ pub(crate) fn ids_by_key(value: &Value) -> BTreeMap<Id, BTreeSet<Id>> {
         .collect()
 }
 
-/// The `id` of an object, or of every object in an array.
+/// The `id` of an object, or of every object in an array. Panics on anything else, and on
+/// an array element with no valid id.
 pub(crate) fn ids_in(value: &Value) -> BTreeSet<Id> {
-    let id_of = |item: &Value| item["id"].as_str().and_then(|id| id.parse().ok());
     match value {
-        Value::Array(items) => items.iter().filter_map(id_of).collect(),
-        item => id_of(item).into_iter().collect(),
+        Value::Array(items) => items.iter().map(|item| id_at(item, "id")).collect(),
+        item => BTreeSet::from([id_at(item, "id")]),
     }
+}
+
+/// The id `item` holds under `field`. Panics, showing `item`, when it holds none.
+fn id_at(item: &Value, field: &str) -> Id {
+    item.get(field)
+        .and_then(Value::as_str)
+        .and_then(|id| id.parse().ok())
+        .unwrap_or_else(|| panic!("an object with a valid `{field}`, got {item}"))
 }
 
 impl TestApp {
@@ -359,7 +381,8 @@ impl TestApp {
         )
     }
 
-    /// One request: the status and the ids `data` returned.
+    /// One request: the status and the ids `data` returned. A refusal or an empty body has
+    /// none; an answered request must carry an object or a list with valid ids.
     pub(crate) async fn expect(
         &mut self,
         caller: Caller,
@@ -368,7 +391,7 @@ impl TestApp {
         body: Option<Value>,
     ) -> (StatusCode, BTreeSet<Id>) {
         let reply = self.send(caller, method, path, body).await;
-        (reply.status, reply.ids())
+        (reply.status, reply.ids_if_answered())
     }
 
     /// Sends a request as `caller`, signing in first if needed.
@@ -639,14 +662,49 @@ async fn login(app: &Router, caller: Caller) -> String {
         .to_string()
 }
 
-/// `field` of every object in `value`, as ids.
+/// `field` of every object in the array `value`, as ids. Panics when `value` is not an array
+/// or an element holds no valid id under `field`.
 pub(crate) fn field_ids(value: &Value, field: &str) -> BTreeSet<Id> {
     value
         .as_array()
-        .expect("an array")
+        .unwrap_or_else(|| panic!("an array, got {value}"))
         .iter()
-        .filter_map(|item| item[field].as_str().and_then(|id| id.parse().ok()))
+        .map(|item| id_at(item, field))
         .collect()
+}
+
+/// What SUPER holds in O2, an organization SUPER has no role in.
+pub(crate) struct SuperCoaching {
+    pub(crate) relationship: Id,
+    pub(crate) session: Id,
+    /// Written by SUPER.
+    pub(crate) goal: Id,
+    /// Assigned to SUPER.
+    pub(crate) own_action: Id,
+    /// Every action of the session: SUPER's, OUTSIDER's and an unassigned one.
+    pub(crate) actions: [Id; 3],
+}
+
+/// Makes SUPER the coach of OUTSIDER in O2, with one session, a goal and three actions.
+pub(crate) async fn seed_super_coaching(app: &TestApp) -> SuperCoaching {
+    let (db, fixture) = (app.db(), &app.fixture);
+    let (super_admin, outsider) = (fixture.user(Caller::Super), fixture.user(Caller::Outsider));
+    let (relationship, actions) =
+        seed_relationship_with_actions(db, fixture.o2, super_admin, outsider).await;
+    let sessions: Vec<Id> = relationship_sessions(db, relationship)
+        .await
+        .into_iter()
+        .collect();
+    let [session] = sessions[..] else {
+        panic!("one session, got {sessions:?}");
+    };
+    SuperCoaching {
+        relationship,
+        session,
+        goal: seed_goal(db, relationship, session, super_admin).await,
+        own_action: actions[0],
+        actions,
+    }
 }
 
 /// COACH resends the invite at `path`; exactly COACH and COACHEE are mailed.
