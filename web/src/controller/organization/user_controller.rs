@@ -208,3 +208,7 @@ pub async fn delete(
         StatusCode::NO_CONTENT.into(),
     )))
 }
+
+#[cfg(test)]
+#[path = "user_controller_sqlite_tests.rs"]
+mod sqlite_tests;

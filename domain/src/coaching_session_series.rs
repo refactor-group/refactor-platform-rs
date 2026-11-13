@@ -1112,58 +1112,6 @@ mod tests {
             .collect()
     }
 
-    /// M5-08: with the coach removed, a new series invites only the coachee.
-    #[tokio::test]
-    async fn m5_08_series_create_invites_only_current_members() -> Result<(), Error> {
-        let mailbox = Mailbox::new().await;
-        let p = LapsedCoach::new(Id::new_v4());
-        let now = chrono::Utc::now();
-        let series = Model {
-            id: Id::new_v4(),
-            coaching_relationship_id: p.relationship.id,
-            rule: serde_json::to_value(SeriesRule {
-                start_at: start(),
-                recurrence: weekly_rule_count(3),
-                duration_minutes: 60,
-                timezone: "UTC".into(),
-            })?,
-            ical_sequence: 0,
-            created_by_user_id: p.coach.id,
-            created_at: now.into(),
-            updated_at: now.into(),
-        };
-        let sessions = occurrences(&series, start(), 3);
-
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![p.relationship.clone()]])
-            .append_query_results(vec![p.members()])
-            .append_query_results(vec![vec![coach_row("UTC")]])
-            .append_query_results::<(entity::users::Model, Option<entity::user_roles::Model>), _, _>(
-                vec![vec![(p.coach.clone(), None)]],
-            )
-            .append_exec_results(vec![exec_ok()])
-            .append_query_results(vec![vec![series.clone()]])
-            .append_query_results(vec![sessions])
-            .append_exec_results(vec![exec_ok()]);
-        let db = invite_loads(db, p.relationship.organization_id, &p.coach, &p.coachee)
-            .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
-            .into_connection();
-
-        create_with_sessions(
-            &db,
-            &mailbox.config(),
-            p.relationship.id,
-            p.coach.id,
-            start(),
-            weekly_rule_count(3),
-            None,
-        )
-        .await?;
-
-        mailbox.assert_only_to("coachee@example.com");
-        Ok(())
-    }
-
     /// M5-09: with the coach removed, a series reschedule emails only the coachee.
     #[tokio::test]
     async fn m5_09_series_reschedule_emails_only_current_members() -> Result<(), Error> {
@@ -1485,45 +1433,6 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn create_with_sessions_refuses_a_caller_who_is_not_the_coach() {
-        let relationship_id = Id::new_v4();
-        let now = chrono::Utc::now();
-        let relationship = entity::coaching_relationships::Model {
-            id: relationship_id,
-            organization_id: Id::new_v4(),
-            coach_id: Id::new_v4(),
-            coachee_id: Id::new_v4(),
-            slug: "test".into(),
-            created_at: now.into(),
-            updated_at: now.into(),
-        };
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![relationship.clone()]])
-            .into_connection();
-
-        let err = create_with_sessions(
-            &db,
-            &test_config(),
-            relationship_id,
-            relationship.coachee_id,
-            start(),
-            weekly_rule_count(3),
-            None,
-        )
-        .await
-        .expect_err("a non-coach must be refused");
-
-        assert!(
-            matches!(
-                err.error_kind,
-                DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Forbidden))
-            ),
-            "expected Forbidden, got {err:?}"
-        );
-        assert!(writes(&written_sql(db)).is_empty());
     }
 
     /// Happy-path reschedule over unhydrated future sessions, with the duration
@@ -2205,36 +2114,6 @@ mod tests {
             details["organization_id"],
             serde_json::json!(relationship.organization_id)
         );
-    }
-
-    #[tokio::test]
-    async fn reschedule_with_a_coachee_no_longer_in_the_organization_is_refused() {
-        let (series, _, sessions) = following_fixture(3);
-        let relationship = member_relationship(series.coaching_relationship_id);
-
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![coach_row("UTC")]])
-            .append_query_results(vec![vec![series.clone()]])
-            .append_query_results(vec![sessions.clone()])
-            .append_query_results(vec![vec![relationship.clone()]])
-            .append_query_results(vec![members(&[relationship.coach_id])])
-            .into_connection();
-
-        let err = reschedule(
-            &db,
-            &test_config(),
-            series.id,
-            Id::new_v4(),
-            start() + chrono::Duration::hours(1),
-            weekly_rule_count(3),
-            None,
-        )
-        .await
-        .unwrap_err();
-
-        assert_coachee_not_a_member(err, &relationship);
-        let sql = written_sql(db);
-        assert!(writes(&sql).is_empty(), "a refusal must not write: {sql:?}");
     }
 
     #[tokio::test]

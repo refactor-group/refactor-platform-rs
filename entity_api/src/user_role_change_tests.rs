@@ -160,35 +160,6 @@ fn logged_statements(db: sea_orm::DatabaseConnection) -> Vec<Statement> {
         .collect()
 }
 
-#[tokio::test]
-async fn was_member_reports_a_prior_change_in_an_administered_organization() -> Result<(), Error> {
-    let organization_id = Id::new_v4();
-
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results([vec![column_row("organization_id", organization_id)]])
-        .append_query_results([vec![column_row("id", Id::new_v4())]])
-        .into_connection();
-
-    assert!(was_member_of_administered_organization(&db, Id::new_v4(), Id::new_v4()).await?);
-
-    Ok(())
-}
-
-/// I-C2. The whole security argument for this reach is that the caller learns only
-/// about their own organization's history. History elsewhere must stay invisible, or
-/// the predicate quietly becomes the general exact-email match that was rejected.
-#[tokio::test]
-async fn was_member_ignores_history_outside_the_administered_organizations() -> Result<(), Error> {
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results([vec![column_row("organization_id", Id::new_v4())]])
-        .append_query_results([Vec::<std::collections::BTreeMap<String, Value>>::new()])
-        .into_connection();
-
-    assert!(!was_member_of_administered_organization(&db, Id::new_v4(), Id::new_v4()).await?);
-
-    Ok(())
-}
-
 /// A requester who administers nothing can match nothing, and the probe still runs.
 #[tokio::test]
 async fn was_member_is_false_for_a_requester_who_administers_nothing() -> Result<(), Error> {

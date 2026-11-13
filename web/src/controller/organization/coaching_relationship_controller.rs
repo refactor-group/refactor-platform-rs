@@ -21,11 +21,6 @@ use service::config::ApiVersion;
 
 use log::*;
 
-#[cfg(test)]
-#[cfg(feature = "mock")]
-#[path = "coaching_relationship_authz_tests.rs"]
-mod authz_tests;
-
 /// CREATE a new CoachingRelationship.
 ///
 /// Restricted to administrators of the organization named in the path. Idempotent:
@@ -231,3 +226,7 @@ pub async fn goal_progress(
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), progress)))
 }
+
+#[cfg(test)]
+#[path = "coaching_relationship_controller_sqlite_tests.rs"]
+mod sqlite_tests;

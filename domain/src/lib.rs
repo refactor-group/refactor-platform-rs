@@ -64,8 +64,8 @@ pub mod user_role;
 pub mod gateway;
 pub mod webhook;
 
-#[cfg(test)]
-mod test_utils;
+#[cfg(any(test, feature = "test-sqlite"))]
+pub mod test_utils;
 
 // Re-export events crate as the events module to maintain existing API
 pub use events;

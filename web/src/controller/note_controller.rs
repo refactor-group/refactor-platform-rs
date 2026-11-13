@@ -155,3 +155,7 @@ pub async fn read(
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), note)))
 }
+
+#[cfg(test)]
+#[path = "note_controller_sqlite_tests.rs"]
+mod sqlite_tests;

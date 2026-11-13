@@ -414,3 +414,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }
+
+#[cfg(test)]
+#[path = "meeting_recording_controller_sqlite_tests.rs"]
+mod sqlite_tests;

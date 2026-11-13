@@ -1,7 +1,8 @@
 # `domain::test_utils`
 
 Support code shared by `domain`'s tests: harnesses, fakes and fixtures. It compiles only
-under `cfg(test)`, so none of it reaches the production binary.
+under `cfg(test)` or the `test-sqlite` feature, which `web` enables as a dev-dependency
+feature only, so none of it reaches the production binary.
 
 This directory holds what several tests share, not the tests themselves. A test lives beside
 the code it covers: mock tests in that module's `tests` module or `<module>_tests.rs`, SQLite
@@ -10,8 +11,10 @@ items, which `domain/tests/` could not.
 
 | Module | Compiled when | Provides | For |
 |---|---|---|---|
-| `mock` | the `mock` feature is on | `recording_publisher`, `both_participants_are_members` | mock database tests (the default) |
-| `sqlite` | always, in tests | `database`, `within_time_limit`, `seed_user`, `seed_organization`, `seed_coaching_session`, `seed_note`, `seed_action`, `seed_agreement`, `seed_topic`, `seed_lapsed_membership`, `foreign_key_violation` (with `mock`) | SQLite tier tests |
+| `mock` | `domain`'s tests with the `mock` feature | `recording_publisher`, `both_participants_are_members` | mock database tests (the default) |
+| `sqlite` | `domain`'s tests, or `test-sqlite` | `database`, `within_time_limit`, `seed_user`, `seed_organization`, `seed_coaching_session`, `seed_note`, `seed_action`, `seed_agreement`, `seed_topic`, `seed_lapsed_membership`, `foreign_key_violation` (with `mock`) | SQLite tier tests |
+| `sqlite::fixture` | as `sqlite` | `seed_fixture` (the access matrix's fixture), the per-test seeders and mutators, `mirror_migration_defaults` (in `sqlite`) | `web`'s SQLite route tests (`web/src/test_utils/sqlite.rs`) |
+| `sqlite::read_back` | as `sqlite` | reads of the stored rows, for asserting what a request left in the database | `web`'s SQLite route tests |
 
 ## Which kind of test
 

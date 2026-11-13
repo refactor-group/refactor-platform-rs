@@ -332,3 +332,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "actions_controller_sqlite_tests.rs"]
+mod sqlite_tests;

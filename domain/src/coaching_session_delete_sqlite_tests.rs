@@ -64,7 +64,7 @@ async fn sd_01_a_session_with_an_action_is_refused_and_unchanged() {
     within_time_limit(async {
         let db = database().await;
         let (session_id, user_id) = seed_coaching_session(&db).await;
-        seed_action(&db, session_id, user_id).await;
+        seed_action(&db, session_id, user_id, "Follow up").await;
 
         assert_refused(&db, session_id).await;
     })
@@ -76,9 +76,9 @@ async fn sd_02_a_session_with_a_note_or_an_agreement_is_refused() {
     within_time_limit(async {
         let db = database().await;
         let (with_note, user_id) = seed_coaching_session(&db).await;
-        seed_note(&db, with_note, user_id).await;
+        seed_note(&db, with_note, user_id, "Prep").await;
         let (with_agreement, user_id) = seed_coaching_session(&db).await;
-        seed_agreement(&db, with_agreement, user_id).await;
+        seed_agreement(&db, with_agreement, user_id, "Agreed").await;
 
         assert_refused(&db, with_note).await;
         assert_refused(&db, with_agreement).await;
@@ -91,7 +91,7 @@ async fn sd_03_a_session_without_content_is_deleted_with_its_topics_and_views() 
     within_time_limit(async {
         let db = database().await;
         let (session_id, user_id) = seed_coaching_session(&db).await;
-        let topic_id = seed_topic(&db, session_id, user_id, false).await;
+        let topic_id = seed_topic(&db, session_id, user_id, "Agenda", 0, false).await;
         let view_id = seed_view(&db, session_id, user_id).await;
 
         delete(&db, &Config::default(), session_id)

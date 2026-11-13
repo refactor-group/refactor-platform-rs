@@ -269,3 +269,7 @@ pub(crate) async fn remove_role(
         StatusCode::NO_CONTENT.into(),
     )))
 }
+
+#[cfg(test)]
+#[path = "role_controller_sqlite_tests.rs"]
+mod sqlite_tests;

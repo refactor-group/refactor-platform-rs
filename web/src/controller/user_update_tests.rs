@@ -222,34 +222,3 @@ async fn put_own_user_saves_valid_working_hours() {
         updates[0]
     );
 }
-
-#[tokio::test]
-async fn put_another_users_working_hours_is_forbidden_and_writes_nothing() {
-    let user = requester();
-    let db = signed_in(&user, |db| db);
-    let app = build_app(db.clone());
-    let cookie = login_cookie(&app).await;
-
-    let response = put_user(
-        app,
-        Some(cookie),
-        Id::new_v4(),
-        r#"{"working_hours_start":"09:30"}"#,
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert!(updates(&db).is_empty());
-}
-
-#[tokio::test]
-async fn put_user_without_a_session_is_unauthorized_and_writes_nothing() {
-    let user = requester();
-    let db = signed_in(&user, |db| db);
-    let app = build_app(db.clone());
-
-    let response = put_user(app, None, user.id, r#"{"working_hours_start":"09:30"}"#).await;
-
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert!(updates(&db).is_empty());
-}

@@ -55,11 +55,6 @@ fn user_model(roles: Vec<Model>) -> entity::users::Model {
     }
 }
 
-/// A single-column mock row, for the id-only selects.
-fn column_row(column: &str, value: Id) -> BTreeMap<String, Value> {
-    BTreeMap::from([(column.to_string(), value.into())])
-}
-
 /// The row shape `count()` reads back.
 fn count_row(count: i64) -> BTreeMap<String, Value> {
     BTreeMap::from([("num_items".to_string(), count.into())])
@@ -200,21 +195,6 @@ async fn create_leaves_an_unparsed_database_error_as_a_system_error() {
 }
 
 #[tokio::test]
-async fn shares_administered_organization_is_true_for_an_admin_of_a_shared_org() -> Result<(), Error>
-{
-    let organization_id = Id::new_v4();
-
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results([vec![column_row("organization_id", organization_id)]])
-        .append_query_results([vec![column_row("id", Id::new_v4())]])
-        .into_connection();
-
-    assert!(shares_administered_organization(&db, Id::new_v4(), Id::new_v4()).await?);
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn shares_administered_organization_is_false_for_a_mere_member() -> Result<(), Error> {
     // The requester holds `User` in the shared org, so the admin-scoped first query
     // finds nothing and the membership probe can only match on an empty id set.
@@ -237,18 +217,6 @@ async fn shares_administered_organization_is_false_for_a_mere_member() -> Result
         "membership probe must match nothing when the admin org set is empty: {:?}",
         log[1]
     );
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn shares_administered_organization_is_false_without_overlap() -> Result<(), Error> {
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results([vec![column_row("organization_id", Id::new_v4())]])
-        .append_query_results([Vec::<BTreeMap<String, Value>>::new()])
-        .into_connection();
-
-    assert!(!shares_administered_organization(&db, Id::new_v4(), Id::new_v4()).await?);
 
     Ok(())
 }

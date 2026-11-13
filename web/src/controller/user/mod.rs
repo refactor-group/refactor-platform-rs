@@ -24,10 +24,5 @@ mod coaching_session_controller_tests;
 
 #[cfg(test)]
 #[cfg(feature = "mock")]
-#[path = "action_controller_tests.rs"]
-mod action_controller_tests;
-
-#[cfg(test)]
-#[cfg(feature = "mock")]
 #[path = "own_lists_tests.rs"]
 mod own_lists_tests;

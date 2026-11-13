@@ -51,8 +51,3 @@ where
         Ok(NoteAccess { note })
     }
 }
-
-#[cfg(test)]
-#[cfg(feature = "mock")]
-#[path = "note_access_tests.rs"]
-mod tests;

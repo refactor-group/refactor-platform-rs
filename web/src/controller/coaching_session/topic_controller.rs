@@ -294,3 +294,7 @@ pub async fn undo(
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), updated)))
 }
+
+#[cfg(test)]
+#[path = "topic_controller_sqlite_tests.rs"]
+mod sqlite_tests;

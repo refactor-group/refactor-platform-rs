@@ -210,32 +210,3 @@ async fn a_body_without_a_start_is_refused_by_the_route() {
 
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
-
-/// Only the series' coach may reschedule it; no cookie is a 401 and an unknown series a
-/// 404.
-#[tokio::test]
-async fn the_route_is_gated_like_the_other_series_writes() {
-    let f = Fixture::new();
-    let series = f.series(start_in(7));
-    let rows = f.members(&series);
-    let unknown = format!("/coaching_session_series/{}/reschedule", Id::new_v4());
-    let body = move_to(&rows[0], rows[0].date);
-
-    let cases = [
-        (
-            f.gate(&f.coachee, &series, path(&series)),
-            StatusCode::FORBIDDEN,
-        ),
-        (Fixture::anonymous(path(&series)), StatusCode::UNAUTHORIZED),
-        (
-            f.login(&f.coach, unknown)
-                .then(|db| db.append_query_results([Vec::<Series>::new()])),
-            StatusCode::NOT_FOUND,
-        ),
-    ];
-
-    for (case, (call, expected)) in cases.into_iter().enumerate() {
-        let (status, _) = post_json(call, body.clone()).await;
-        assert_eq!(status, expected, "case {case}");
-    }
-}

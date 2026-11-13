@@ -38,6 +38,8 @@ pub(crate) mod params;
 pub(crate) mod protect;
 mod router;
 pub mod sse;
+#[cfg(test)]
+mod test_utils;
 
 /// Web-layer application state that includes both infrastructure and domain concerns.
 /// This wraps the service-level state and adds the event publisher for domain events.

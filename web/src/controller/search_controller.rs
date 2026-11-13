@@ -46,3 +46,7 @@ pub async fn index(
     let results = SearchApi::search(app_state.db_conn_ref(), &visibility, spec).await?;
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), results)))
 }
+
+#[cfg(test)]
+#[path = "search_controller_sqlite_tests.rs"]
+mod sqlite_tests;

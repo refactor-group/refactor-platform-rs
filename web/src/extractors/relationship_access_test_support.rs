@@ -1,7 +1,6 @@
 //! Shared scaffold for the relationship-scoped access tests: one relationship with one
 //! session, callers inside and outside it, and a signed-in request through the router.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
@@ -14,7 +13,7 @@ use chrono::Utc;
 use domain::user::Backend;
 use domain::{coaching_relationships, coaching_sessions, user_roles, users, Id};
 use password_auth::generate_hash;
-use sea_orm::{DatabaseBackend, DatabaseConnection, MockDatabase, Value};
+use sea_orm::{DatabaseBackend, DatabaseConnection, MockDatabase};
 use service::config::Config;
 use time::Duration;
 use tower::ServiceExt;
@@ -62,19 +61,16 @@ fn role_as(role: users::Role, user_id: Id, organization_id: Option<Id>) -> user_
 }
 
 /// A relationship with one session, plus callers outside it.
-pub(crate) struct World {
+pub(crate) struct Fixture {
     pub(crate) organization_id: Id,
     pub(crate) coach: users::Model,
     pub(crate) coachee: users::Model,
-    pub(crate) member: users::Model,
-    pub(crate) outsider: users::Model,
-    pub(crate) admin: users::Model,
     pub(crate) super_admin: users::Model,
     pub(crate) relationship: coaching_relationships::Model,
     pub(crate) session: coaching_sessions::Model,
 }
 
-pub(crate) fn world() -> World {
+pub(crate) fn fixture() -> Fixture {
     let now = Utc::now();
     let organization_id = Id::new_v4();
     let coach = user("coach@example.com");
@@ -105,13 +101,10 @@ pub(crate) fn world() -> World {
         hydrated_at: Some(now.into()),
         notice_given_at: now.into(),
     };
-    World {
+    Fixture {
         organization_id,
         coach,
         coachee,
-        member: user("member@example.com"),
-        outsider: user("outsider@example.com"),
-        admin: user("admin@example.com"),
         super_admin: user("super@example.com"),
         relationship,
         session,
@@ -122,28 +115,15 @@ pub(crate) fn world() -> World {
 pub(crate) enum Caller {
     Coach,
     Coachee,
-    /// In the relationship's organization, not in the relationship.
-    Member,
-    /// In another organization only.
-    Outsider,
-    /// The coach, with no role in the relationship's organization.
-    Removed,
-    /// The coachee, with no role in the relationship's organization.
-    RemovedCoachee,
-    /// An Admin of the relationship's organization, not in the relationship.
-    Admin,
     /// A SuperAdmin, not in the relationship.
     SuperAdmin,
 }
 
-impl World {
+impl Fixture {
     fn caller(&self, caller: Caller) -> &users::Model {
         match caller {
-            Caller::Coach | Caller::Removed => &self.coach,
-            Caller::Coachee | Caller::RemovedCoachee => &self.coachee,
-            Caller::Member => &self.member,
-            Caller::Outsider => &self.outsider,
-            Caller::Admin => &self.admin,
+            Caller::Coach => &self.coach,
+            Caller::Coachee => &self.coachee,
             Caller::SuperAdmin => &self.super_admin,
         }
     }
@@ -153,33 +133,12 @@ impl World {
         let user = self.caller(caller).clone();
         let db = MockDatabase::new(DatabaseBackend::Postgres);
         let role = match caller {
-            Caller::Removed | Caller::RemovedCoachee => {
-                return db
-                    .append_query_results([vec![(user.clone(), None::<user_roles::Model>)]])
-                    .append_query_results([vec![(user, None::<user_roles::Model>)]])
-            }
-            Caller::Outsider => role(user.id, Id::new_v4()),
-            Caller::Admin => role_as(users::Role::Admin, user.id, Some(self.organization_id)),
             Caller::SuperAdmin => role_as(users::Role::SuperAdmin, user.id, None),
-            Caller::Coach | Caller::Coachee | Caller::Member => role(user.id, self.organization_id),
+            Caller::Coach | Caller::Coachee => role(user.id, self.organization_id),
         };
         db.append_query_results([vec![(user.clone(), role.clone())]])
             .append_query_results([vec![(user, role)]])
     }
-
-    /// `caller` signed in, with the session queued for the create's session check.
-    pub(crate) fn reaching_session(&self, caller: Caller) -> MockDatabase {
-        self.signed_in(caller)
-            .append_query_results([vec![(self.session.clone(), self.relationship.clone())]])
-    }
-}
-
-/// Rows for the organization-membership filter, keeping exactly `user_ids`.
-pub(crate) fn members(user_ids: &[Id]) -> Vec<BTreeMap<String, Value>> {
-    user_ids
-        .iter()
-        .map(|&user_id| BTreeMap::from([("user_id".to_string(), user_id.into())]))
-        .collect()
 }
 
 /// The app state over `db`, for routes layered with `from_fn_with_state`.
@@ -288,24 +247,6 @@ fn wrote(db: &DatabaseConnection) -> bool {
     })
 }
 
-/// Asserts the one UPDATE run set `status` to `value`, judged by its SET clause.
-pub(crate) fn assert_status_written(row: &str, db: &DatabaseConnection, value: &str) {
-    let set_clauses: Vec<String> = db
-        .clone()
-        .into_transaction_log()
-        .iter()
-        .flat_map(|t| t.statements().iter().map(|s| s.to_string()))
-        .filter(|sql| sql.trim_start().to_uppercase().starts_with("UPDATE"))
-        .filter_map(|sql| sql.split(" WHERE ").next().map(str::to_string))
-        .collect();
-    assert_eq!(set_clauses.len(), 1, "{row}: {set_clauses:?}");
-    assert!(
-        set_clauses[0].contains(&format!(r#""status" = CAST('{value}' AS "status")"#)),
-        "{row}: {}",
-        set_clauses[0]
-    );
-}
-
 /// Asserts `response` is the refusal `expected` and nothing was written.
 pub(crate) fn assert_refusal(
     row: &str,
@@ -322,31 +263,5 @@ pub(crate) fn assert_nothing_written(row: &str, db: &DatabaseConnection) {
     assert!(
         !wrote(db),
         "{row}: the refused request wrote to the database"
-    );
-}
-
-/// Asserts `body` is the 409 refusing `user_id`, no longer in the organization, for `reason`.
-pub(crate) fn assert_not_a_member(
-    row: &str,
-    body: &serde_json::Value,
-    reason: &str,
-    user_id: Id,
-    organization_id: Id,
-) {
-    assert_eq!(body["error"], "conflict", "{row}: {body}");
-    assert_eq!(body["details"]["reason"], reason, "{row}: {body}");
-    assert_eq!(
-        body["details"]["user_id"],
-        serde_json::json!(user_id),
-        "{row}: {body}"
-    );
-    assert_eq!(
-        body["details"]["organization_id"],
-        serde_json::json!(organization_id),
-        "{row}: {body}"
-    );
-    assert!(
-        body["message"].as_str().is_some_and(|m| !m.is_empty()),
-        "{row}: {body}"
     );
 }

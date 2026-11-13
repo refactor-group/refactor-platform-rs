@@ -123,7 +123,7 @@ async fn move_to_slot_moves_only_the_target_and_keeps_what_hangs_off_it() {
         let seeded = seed_series(&db).await;
         let target = opened(&db, seed_series_session(&db, &seeded, monday()).await).await;
         let bystander = seed_series_session(&db, &seeded, monday() + TimeDelta::weeks(1)).await;
-        let note_id = seed_note(&db, target.id, seeded.user_id).await;
+        let note_id = seed_note(&db, target.id, seeded.user_id, "Prep").await;
         let new_series = series_entity::ActiveModel {
             id: Set(Id::new_v4()),
             coaching_relationship_id: Set(seeded.relationship_id),
@@ -262,12 +262,12 @@ async fn find_ids_with_content_flags_each_kind_of_content_and_nothing_else() {
             .await
             .id;
 
-        seed_note(&db, with_note, seeded.user_id).await;
-        seed_action(&db, with_action, seeded.user_id).await;
-        seed_agreement(&db, with_agreement, seeded.user_id).await;
-        seed_topic(&db, with_topic, seeded.user_id, false).await;
-        seed_topic(&db, with_deleted_topic, seeded.user_id, true).await;
-        seed_note(&db, not_asked_about, seeded.user_id).await;
+        seed_note(&db, with_note, seeded.user_id, "Prep").await;
+        seed_action(&db, with_action, seeded.user_id, "Follow up").await;
+        seed_agreement(&db, with_agreement, seeded.user_id, "Agreed").await;
+        seed_topic(&db, with_topic, seeded.user_id, "Agenda", 0, false).await;
+        seed_topic(&db, with_deleted_topic, seeded.user_id, "Agenda", 0, true).await;
+        seed_note(&db, not_asked_about, seeded.user_id, "Prep").await;
 
         let flagged = entity_api::coaching_session::find_ids_with_content(
             &db,

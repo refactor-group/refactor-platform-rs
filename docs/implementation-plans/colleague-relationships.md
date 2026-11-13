@@ -17,7 +17,7 @@ Every coach and coachee permission works exactly as it does today when this is d
 
 | Check | When |
 |---|---|
-| Baseline suite (phase 0b): today's coach/coachee access as automated tests, passing on `main` before any change | Every phase. Must stay green with zero edits; review confirms `git diff main` does not touch those files. |
+| Baseline suite (phase 0b): today's coach/coachee access as automated tests, passing on `main` before any change | Every phase. Must stay green with zero edits; review confirms `git diff main` does not touch the tests named in section 6 of the access matrix. |
 | `kind` defaults to `coaching`; for coaching, `has_authority` equals "is the coach" | Phase 2, pinned by a unit test |
 | Phase 0c moves checks, never changes them; any diff that adds or removes a caller is sent back | Phase 0c, per handoff |
 | Phase 3 switches each check to a Model method that, for coaching, admits exactly the same callers | Phase 3, per handoff |

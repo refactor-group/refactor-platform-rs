@@ -52,6 +52,8 @@ features = [
 mock = ["sea-orm/mock"]
 
 [dev-dependencies]
+# The SQLite route tests seed their fixture through domain's SQLite support.
+domain = { path = "../domain", features = ["test-sqlite"] }
 anyhow = "1.0.89"
 regex = "1"
 base64 = "0.22"

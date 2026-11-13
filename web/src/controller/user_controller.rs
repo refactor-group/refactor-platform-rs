@@ -139,3 +139,7 @@ pub async fn update(
 #[cfg(feature = "mock")]
 #[path = "user_update_tests.rs"]
 mod update_tests;
+
+#[cfg(test)]
+#[path = "user_controller_sqlite_tests.rs"]
+mod sqlite_tests;

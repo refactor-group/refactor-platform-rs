@@ -246,3 +246,7 @@ pub async fn counts(
         CountsResponse { counts },
     )))
 }
+
+#[cfg(test)]
+#[path = "coaching_session_controller_sqlite_tests.rs"]
+mod sqlite_tests;

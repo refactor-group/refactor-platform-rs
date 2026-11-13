@@ -142,8 +142,3 @@ where
         Ok(CoachingSessionTopicUndoAccess(topic))
     }
 }
-
-#[cfg(test)]
-#[cfg(feature = "mock")]
-#[path = "coaching_session_topic_access_tests.rs"]
-mod tests;

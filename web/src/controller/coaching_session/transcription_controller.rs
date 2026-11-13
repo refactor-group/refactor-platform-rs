@@ -247,3 +247,7 @@ fn negotiate(headers: &HeaderMap) -> Option<Representation> {
 #[cfg(feature = "mock")]
 #[path = "transcription_controller_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "transcription_controller_sqlite_tests.rs"]
+mod sqlite_tests;

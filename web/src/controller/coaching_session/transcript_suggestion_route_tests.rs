@@ -1,5 +1,5 @@
 //! The suggestion routes end to end through the router, sign-in and access checks, against a
-//! mock database: who may call them, what they reject, and that they succeed for a participant.
+//! mock database: what they reject for a participant and the statements they run.
 
 use std::sync::Arc;
 
@@ -19,10 +19,7 @@ use chrono::{NaiveDate, Utc};
 use domain::action::ActionWithAssignees;
 use domain::transcript_suggestion::{self as suggestion, ActionProposal, Target};
 use domain::user::Backend;
-use domain::{
-    actions, coaching_relationships, coaching_sessions, transcript_analysis, transcription,
-    user_roles, users, Id,
-};
+use domain::{actions, coaching_relationships, coaching_sessions, user_roles, users, Id};
 use password_auth::generate_hash;
 use sea_orm::{DatabaseBackend, DatabaseConnection, MockDatabase};
 use service::config::Config;
@@ -118,44 +115,6 @@ fn world() -> World {
         coachee,
         relationship,
         session,
-    }
-}
-
-fn completed_transcription(session_id: Id) -> transcription::Model {
-    let now = Utc::now();
-    transcription::Model {
-        id: Id::new_v4(),
-        coaching_session_id: session_id,
-        meeting_recording_id: Id::new_v4(),
-        external_id: "ext-1".to_string(),
-        recall_recording_id: None,
-        status: transcription::TranscriptionStatus::Completed,
-        language_code: None,
-        speaker_count: None,
-        word_count: None,
-        duration_seconds: None,
-        confidence: None,
-        error_message: None,
-        created_at: now.into(),
-        updated_at: now.into(),
-    }
-}
-
-fn completed_analysis(transcription_id: Id) -> transcript_analysis::Model {
-    let now = Utc::now();
-    transcript_analysis::Model {
-        id: Id::new_v4(),
-        transcription_id,
-        target: Target::Action,
-        status: transcript_analysis::Status::Completed,
-        attempts: 1,
-        claimed_at: Some(now.into()),
-        error_message: None,
-        model: Some("model".to_string()),
-        input_tokens: Some(1),
-        output_tokens: Some(1),
-        created_at: now.into(),
-        updated_at: now.into(),
     }
 }
 
@@ -328,141 +287,6 @@ fn only_update(db: &DatabaseConnection) -> String {
     updates[0].clone()
 }
 
-/// Every suggestion route, as (method, path suffix after the session's suggestions path).
-fn every_route(suggestion_id: Id) -> Vec<(&'static str, String)> {
-    vec![
-        ("GET", String::new()),
-        ("GET", "/scan".to_string()),
-        ("POST", "/scan".to_string()),
-        ("POST", format!("/{suggestion_id}/accept")),
-        ("POST", format!("/{suggestion_id}/dismiss")),
-        ("POST", format!("/{suggestion_id}/restore")),
-    ]
-}
-
-/// How a route refuses a non-participant: a suggestion route hides the session behind a 404.
-fn refused(suffix: &str) -> StatusCode {
-    let on_a_suggestion = ["/accept", "/dismiss", "/restore"]
-        .iter()
-        .any(|verb| suffix.ends_with(verb));
-    if on_a_suggestion {
-        StatusCode::NOT_FOUND
-    } else {
-        StatusCode::FORBIDDEN
-    }
-}
-
-/// Sends `method` to `suffix` as `outsider`, holding `outsider_role`; returns status and writes.
-async fn as_outsider(
-    method: &str,
-    suffix: &str,
-    world: &World,
-    outsider: &users::Model,
-    outsider_role: &user_roles::Model,
-) -> (StatusCode, bool) {
-    let db = Arc::new(signed_in(outsider, outsider_role, world).into_connection());
-    let app = build_app(db.clone());
-    let cookie = login_cookie(&app, &outsider.email).await;
-
-    let status = send(&app, method, Some(&cookie), world.session.id, suffix, "")
-        .await
-        .status();
-    (status, wrote(&db))
-}
-
-#[tokio::test]
-async fn a_user_outside_the_session_is_403_on_every_route_and_nothing_is_written() {
-    for (method, suffix) in every_route(Id::new_v4()) {
-        let world = world();
-        let outsider = user("outsider@example.com");
-        let outsider_role = role(outsider.id, Id::new_v4());
-
-        let (status, wrote) = as_outsider(method, &suffix, &world, &outsider, &outsider_role).await;
-
-        assert_eq!(status, refused(&suffix), "{method} {suffix}");
-        assert!(!wrote, "{method} {suffix}");
-    }
-}
-
-#[tokio::test]
-async fn an_organization_member_outside_the_relationship_is_refused_on_every_route() {
-    for (method, suffix) in every_route(Id::new_v4()) {
-        let world = world();
-        let member = user("member@example.com");
-        let member_role = role(member.id, world.organization_id);
-
-        let (status, wrote) = as_outsider(method, &suffix, &world, &member, &member_role).await;
-
-        assert_eq!(status, refused(&suffix), "{method} {suffix}");
-        assert!(!wrote, "{method} {suffix}");
-    }
-}
-
-#[tokio::test]
-async fn an_unauthenticated_request_is_401_on_every_route() {
-    for (method, suffix) in every_route(Id::new_v4()) {
-        let world = world();
-        let app = build_app(Arc::new(
-            MockDatabase::new(DatabaseBackend::Postgres).into_connection(),
-        ));
-
-        let response = send(&app, method, None, world.session.id, &suffix, "").await;
-
-        assert_eq!(
-            response.status(),
-            StatusCode::UNAUTHORIZED,
-            "{method} {suffix}"
-        );
-    }
-}
-
-#[tokio::test]
-async fn the_coach_and_the_coachee_each_see_the_scan_state() {
-    let world = world();
-    for participant in [&world.coach, &world.coachee] {
-        let participant_role = role(participant.id, world.organization_id);
-        let transcription = completed_transcription(world.session.id);
-        let db = signed_in(participant, &participant_role, &world)
-            .append_query_results([vec![transcription.clone()]])
-            .append_query_results([vec![completed_analysis(transcription.id)]])
-            .into_connection();
-        let app = build_app(Arc::new(db));
-        let cookie = login_cookie(&app, &participant.email).await;
-
-        let response = send(&app, "GET", Some(&cookie), world.session.id, "/scan", "").await;
-
-        assert_eq!(response.status(), StatusCode::OK, "{}", participant.email);
-        assert_eq!(
-            json_body(response).await["data"],
-            serde_json::json!({ "status": "completed" })
-        );
-    }
-}
-
-#[tokio::test]
-async fn starting_a_scan_of_a_never_scanned_transcript_is_202_pending() {
-    let world = world();
-    let transcription = completed_transcription(world.session.id);
-    let mut queued = completed_analysis(transcription.id);
-    queued.status = transcript_analysis::Status::Pending;
-    queued.attempts = 0;
-    let (app, cookie, db) = as_coach(&world, |db| {
-        db.append_query_results([vec![transcription.clone()]])
-            .append_query_results([Vec::<transcript_analysis::Model>::new()])
-            .append_query_results([vec![queued.clone()]])
-    })
-    .await;
-
-    let response = send(&app, "POST", Some(&cookie), world.session.id, "/scan", "").await;
-
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
-    assert_eq!(
-        json_body(response).await["data"],
-        serde_json::json!({ "status": "pending" })
-    );
-    assert!(wrote(&db), "the pending analysis is inserted");
-}
-
 #[tokio::test]
 async fn listing_returns_the_sessions_suggestions_and_rejects_an_unknown_filter() {
     let world = world();
@@ -483,25 +307,6 @@ async fn listing_returns_the_sessions_suggestions_and_rejects_an_unknown_filter(
             "{query}"
         );
         assert!(!wrote(&db), "{query}");
-    }
-}
-
-#[tokio::test]
-async fn a_suggestion_from_another_session_is_404_on_accept_dismiss_and_restore() {
-    for verb in ["accept", "dismiss", "restore"] {
-        let world = world();
-        let mut elsewhere = pending_suggestion(&world);
-        elsewhere.coaching_session_id = Id::new_v4();
-        let (app, cookie, db) = as_coach(&world, |db| {
-            db.append_query_results([vec![elsewhere.clone()]])
-        })
-        .await;
-
-        let suffix = format!("/{}/{verb}", elsewhere.id);
-        let response = send(&app, "POST", Some(&cookie), world.session.id, &suffix, "").await;
-
-        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{verb}");
-        assert!(!wrote(&db), "{verb}");
     }
 }
 
@@ -530,7 +335,7 @@ async fn accepting_with_a_malformed_body_is_400_and_nothing_is_written() {
 }
 
 #[tokio::test]
-async fn the_coach_dismisses_a_pending_suggestion_with_204() {
+async fn a_dismissal_is_one_update_of_a_pending_suggestion() {
     let world = world();
     let pending = pending_suggestion(&world);
     let mut dismissed = pending.clone();
@@ -546,7 +351,11 @@ async fn the_coach_dismisses_a_pending_suggestion_with_204() {
     let suffix = format!("/{}/dismiss", pending.id);
     let response = send(&app, "POST", Some(&cookie), world.session.id, &suffix, "").await;
 
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        response.status(),
+        StatusCode::NO_CONTENT,
+        "the dismissal ran"
+    );
     let update = only_update(&db);
     let (set, condition) = update
         .split_once(" WHERE ")

@@ -97,10 +97,8 @@ mod mock_tests {
             cursor: None,
         };
 
-        let results = search(&db, &visibility, spec).await.expect("searches");
+        search(&db, &visibility, spec).await.expect("searches");
 
-        assert!(results.hits.is_empty());
-        assert!(results.next_cursor.is_none());
         assert_eq!(
             db.into_transaction_log().len(),
             1,

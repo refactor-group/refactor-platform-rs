@@ -190,15 +190,6 @@ impl Fixture {
         }
     }
 
-    /// No login, so no loads.
-    pub(super) fn anonymous(path: String) -> Call {
-        Call {
-            caller: None,
-            path,
-            db: MockDatabase::new(DatabaseBackend::Postgres),
-        }
-    }
-
     /// The loads `InviteParties::load` makes.
     fn parties(&self, db: MockDatabase) -> MockDatabase {
         db.append_query_results([vec![self.coach.clone()]])
@@ -469,7 +460,7 @@ async fn resend(call: Call, mail: Mail) -> Outcome {
     }
 }
 
-/// Each refusal, by its 409 reason (`None` is a 403), sends nothing and bumps nothing.
+/// Each refusal, by its 409 reason, sends nothing and bumps nothing.
 #[tokio::test]
 async fn refusals_send_nothing_and_bump_nothing() {
     let f = Fixture::new();
@@ -477,68 +468,25 @@ async fn refusals_send_nothing_and_bump_nothing() {
     let past_series = f.series(start_in(-30));
     let mut legacy_rows = f.members(&series);
     legacy_rows[1].ical_recurrence_id = None;
-    let one_off = f.session(start_in(7));
     let member = f.members(&series).remove(0);
 
     let cases = [
-        (f.series_gate(&f.coachee, &series), None),
         (
             f.series_loaded(&past_series, f.members(&past_series)),
-            Some("no_upcoming_sessions"),
+            "no_upcoming_sessions",
         ),
-        (f.series_loaded(&series, legacy_rows), Some("legacy_series")),
-        (f.session_gate(&f.coachee, &one_off), None),
-        (f.session_loaded(&member), Some("series_member")),
+        (f.series_loaded(&series, legacy_rows), "legacy_series"),
+        (f.session_loaded(&member), "series_member"),
         (
             f.session_loaded(&f.session(start_in(-30))),
-            Some("no_upcoming_sessions"),
+            "no_upcoming_sessions",
         ),
     ];
 
     for (case, (call, reason)) in cases.into_iter().enumerate() {
-        let status = match reason {
-            Some(_) => StatusCode::CONFLICT,
-            None => StatusCode::FORBIDDEN,
-        };
         let out = resend(call, Mail::NONE).await;
-        assert_eq!(out.status, status, "case {case}");
-        assert_eq!(out.reason.as_deref(), reason, "case {case}");
-        assert!(out.sequence_updates.is_empty(), "case {case}");
-    }
-}
-
-/// No cookie is a 401 and an unknown id a 404; neither sends nor bumps.
-#[tokio::test]
-async fn unauthenticated_and_unknown_send_nothing_and_bump_nothing() {
-    let f = Fixture::new();
-    let series_path = format!("/coaching_session_series/{}/resend_invite", Id::new_v4());
-    let session_path = format!("/coaching_sessions/{}/resend_invite", Id::new_v4());
-
-    let cases = [
-        (
-            Fixture::anonymous(series_path.clone()),
-            StatusCode::UNAUTHORIZED,
-        ),
-        (
-            Fixture::anonymous(session_path.clone()),
-            StatusCode::UNAUTHORIZED,
-        ),
-        (
-            f.login(&f.coach, series_path)
-                .then(|db| db.append_query_results([Vec::<Series>::new()])),
-            StatusCode::NOT_FOUND,
-        ),
-        (
-            f.login(&f.coach, session_path).then(|db| {
-                db.append_query_results([Vec::<(Session, coaching_relationships::Model)>::new()])
-            }),
-            StatusCode::NOT_FOUND,
-        ),
-    ];
-
-    for (case, (call, status)) in cases.into_iter().enumerate() {
-        let out = resend(call, Mail::NONE).await;
-        assert_eq!(out.status, status, "case {case}");
+        assert_eq!(out.status, StatusCode::CONFLICT, "case {case}");
+        assert_eq!(out.reason.as_deref(), Some(reason), "case {case}");
         assert!(out.sequence_updates.is_empty(), "case {case}");
     }
 }
@@ -603,26 +551,21 @@ async fn session_resend_bumps_a_one_off() {
     assert!(out.updated("coaching_sessions", "ical_sequence"));
 }
 
-/// A coachee no longer in the organization is refused before anything is bumped or sent,
-/// with the coachee named so the coach can re-add them. Both resends, coachee alone or
-/// both removed.
+/// With both participants gone from the organization, a resend is refused before anything
+/// is bumped or sent, naming the coachee. Both resends.
 #[tokio::test]
 async fn resend_to_a_removed_coachee_is_refused() {
     let f = Fixture::new();
     let series = f.series(start_in(7));
     let session = f.session(start_in(7));
-    let removed = [vec![f.coach.id], vec![]];
 
-    let calls = removed.iter().flat_map(|members| {
-        [
-            f.series_loaded(&series, f.members(&series))
-                .then(|db| f.membership(db, members)),
-            f.session_loaded(&session)
-                .then(|db| f.membership(db, members)),
-        ]
-    });
+    let calls = [
+        f.series_loaded(&series, f.members(&series))
+            .then(|db| f.membership(db, &[])),
+        f.session_loaded(&session).then(|db| f.membership(db, &[])),
+    ];
 
-    for (case, call) in calls.enumerate() {
+    for (case, call) in calls.into_iter().enumerate() {
         let out = resend(call, Mail::NONE).await;
         assert_eq!(out.status, StatusCode::CONFLICT, "case {case}");
         assert_eq!(
