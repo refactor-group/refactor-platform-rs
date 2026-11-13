@@ -70,11 +70,12 @@ async fn authorize_sessions(
     .collect();
 
     coaching_session_ids.iter().try_for_each(|id| {
-        let relationship = relationships.get(id).ok_or_else(not_found)?;
-        match relationship.grants_access_to(user) {
-            true => Ok(()),
-            false => Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string())),
-        }
+        relationships
+            .get(id)
+            .ok_or_else(not_found)?
+            .grants_access_to(user)
+            .then_some(())
+            .ok_or_else(|| (StatusCode::FORBIDDEN, "FORBIDDEN".to_string()))
     })
 }
 

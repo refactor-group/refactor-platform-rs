@@ -378,7 +378,7 @@ How to read the tables:
 | GOAL-15 | GET /coaching_sessions/goals?coaching_relationship_id=R1 | COACH, COACHEE | 200, `session_goals` S1 [G1], SR1-* [] | `web/src/extractors/coaching_session_goal_access.rs:45` | [rows] |
 | GOAL-16 | GET /coaching_sessions/goals?coaching_relationship_id=R1 | non-participants | 403 | `web/src/extractors/coaching_session_goal_access.rs:45` | |
 | GOAL-17 | GET /coaching_sessions/goals?coaching_session_ids=S1,S2 | COACH | 403 | `web/src/extractors/coaching_session_goal_access.rs:47` | [tightened] Every id is authorized; S2 is in R2. `S1` alone: 200, S1 [G1] |
-| GOAL-18 | GET /coaching_sessions/goals?coaching_session_ids=S1 | non-participants | 403 | `web/src/extractors/coaching_session_goal_access.rs:74` | |
+| GOAL-18 | GET /coaching_sessions/goals?coaching_session_ids=S1 | non-participants | 403 | `web/src/extractors/coaching_session_goal_access.rs:76` | |
 | GOAL-19 | GET /organizations/O1/coaching_relationships/R1/goal_progress | COACH, COACHEE | 200, progress for G1 | `web/src/extractors/coaching_relationship_access.rs:82` | [rows] `assignee=coach`/`coachee`/participant id allowed |
 | GOAL-20 | GET /organizations/O1/coaching_relationships/R1/goal_progress?assignee={MEMBER_ID} | COACH | 400 | `web/src/controller/organization/coaching_relationship_controller.rs:214` | Non-participant id rejected |
 | GOAL-21 | GET /organizations/O1/coaching_relationships/R1/goal_progress | non-participants | 403 | `web/src/extractors/coaching_relationship_access.rs:82` | No separate member extractor on this route |
