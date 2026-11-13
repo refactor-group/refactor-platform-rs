@@ -352,7 +352,7 @@ fn header(response: &axum::response::Response, name: &str) -> String {
         .to_string()
 }
 
-/// Everything a single request needs, wired for one participation outcome.
+/// Everything a single request needs.
 struct World {
     app: Router,
     cookie: String,
@@ -360,25 +360,19 @@ struct World {
     image_id: Id,
 }
 
-/// Builds a fetch world. `participant` decides whether the logged-in user is the coach of
-/// the image's session or a stranger holding a valid image id.
-async fn fetch_world(participant: bool, object_store: Option<Arc<dyn ObjectStore>>) -> World {
-    fetch_world_for(participant, object_store, false).await
+/// Builds a fetch world: the logged-in user is the coach of the image's session.
+async fn fetch_world(object_store: Option<Arc<dyn ObjectStore>>) -> World {
+    fetch_world_for(object_store, false).await
 }
 
 /// As `fetch_world`, with control over whether the stored row is already marked deleted.
-async fn fetch_world_for(
-    participant: bool,
-    object_store: Option<Arc<dyn ObjectStore>>,
-    deleted: bool,
-) -> World {
+async fn fetch_world_for(object_store: Option<Arc<dyn ObjectStore>>, deleted: bool) -> World {
     let organization_id = Id::new_v4();
     let user = coach();
     let role = role(user.id, organization_id);
-    let coach_id = if participant { user.id } else { Id::new_v4() };
-    let relationship = relationship(organization_id, coach_id, Id::new_v4());
+    let relationship = relationship(organization_id, user.id, Id::new_v4());
     let session = session(relationship.id);
-    let image = image(session.id, coach_id, deleted);
+    let image = image(session.id, user.id, deleted);
 
     let db = authenticated(&user, &role)
         .append_query_results([vec![image.clone()]])
@@ -396,15 +390,14 @@ async fn fetch_world_for(
     }
 }
 
-/// Builds an upload world, with the same participation switch.
-async fn upload_world(participant: bool, object_store: Option<Arc<dyn ObjectStore>>) -> World {
+/// Builds an upload world for the same coach.
+async fn upload_world(object_store: Option<Arc<dyn ObjectStore>>) -> World {
     let organization_id = Id::new_v4();
     let user = coach();
     let role = role(user.id, organization_id);
-    let coach_id = if participant { user.id } else { Id::new_v4() };
-    let relationship = relationship(organization_id, coach_id, Id::new_v4());
+    let relationship = relationship(organization_id, user.id, Id::new_v4());
     let session = session(relationship.id);
-    let image = image(session.id, coach_id, false);
+    let image = image(session.id, user.id, false);
 
     let db = authenticated(&user, &role)
         .append_query_results([vec![(session.clone(), relationship.clone())]])
@@ -438,7 +431,7 @@ fn max_age(response: &axum::response::Response) -> u64 {
 
 #[tokio::test]
 async fn a_participant_is_redirected_to_a_presigned_url() {
-    let world = fetch_world(true, presigning_store()).await;
+    let world = fetch_world(presigning_store()).await;
 
     let response = fetch(&world.app, Some(&world.cookie), world.image_id).await;
 
@@ -452,7 +445,7 @@ async fn a_participant_is_redirected_to_a_presigned_url() {
 /// none and must still be served.
 #[tokio::test]
 async fn a_fetch_without_an_api_version_header_is_served() {
-    let world = fetch_world(true, presigning_store()).await;
+    let world = fetch_world(presigning_store()).await;
 
     let status = fetch(&world.app, Some(&world.cookie), world.image_id)
         .await
@@ -468,7 +461,7 @@ async fn a_fetch_without_an_api_version_header_is_served() {
 /// it carries, whatever the configured TTL happens to be.
 #[tokio::test]
 async fn the_cache_lifetime_is_shorter_than_the_presign_ttl() {
-    let world = fetch_world(true, presigning_store()).await;
+    let world = fetch_world(presigning_store()).await;
     let presign_ttl = Config::default().coaching_session_image_presign_ttl_seconds();
 
     let response = fetch(&world.app, Some(&world.cookie), world.image_id).await;
@@ -484,7 +477,7 @@ async fn the_cache_lifetime_is_shorter_than_the_presign_ttl() {
 /// cache directives still apply.
 #[tokio::test]
 async fn a_backend_that_cannot_presign_streams_the_bytes() {
-    let world = fetch_world(true, streaming_store()).await;
+    let world = fetch_world(streaming_store()).await;
     let presign_ttl = Config::default().coaching_session_image_presign_ttl_seconds();
 
     let response = fetch(&world.app, Some(&world.cookie), world.image_id).await;
@@ -500,20 +493,11 @@ async fn a_backend_that_cannot_presign_streams_the_bytes() {
     assert_eq!(bytes.as_ref(), TINY_PNG);
 }
 
-#[tokio::test]
-async fn an_unauthenticated_fetch_is_unauthorized() {
-    let world = fetch_world(true, presigning_store()).await;
-
-    let status = fetch(&world.app, None, world.image_id).await.status();
-
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-}
-
 /// The envelope carries 201, matching every other create in this API, and the storage key
 /// stays behind: it is `#[serde(skip)]` so the bucket layout never reaches a client.
 #[tokio::test]
 async fn a_participant_uploads_an_image() {
-    let world = upload_world(true, presigning_store()).await;
+    let world = upload_world(presigning_store()).await;
 
     let response = upload_response(
         &world.app,
@@ -544,7 +528,7 @@ async fn a_participant_uploads_an_image() {
 #[tokio::test]
 async fn an_upload_streams_its_bytes_to_storage_and_leaves_no_spool_file() {
     let spy = Arc::new(SpyObjectStore::default());
-    let world = upload_world(true, Some(Arc::clone(&spy) as Arc<dyn ObjectStore>)).await;
+    let world = upload_world(Some(Arc::clone(&spy) as Arc<dyn ObjectStore>)).await;
 
     let status = upload(
         &world.app,
@@ -573,7 +557,7 @@ async fn an_upload_streams_its_bytes_to_storage_and_leaves_no_spool_file() {
 
 #[tokio::test]
 async fn an_upload_without_a_file_part_is_a_bad_request() {
-    let world = upload_world(true, presigning_store()).await;
+    let world = upload_world(presigning_store()).await;
 
     let status = upload(
         &world.app,
@@ -590,7 +574,7 @@ async fn an_upload_without_a_file_part_is_a_bad_request() {
 /// gets. The frontend branches on the difference.
 #[tokio::test]
 async fn an_unsupported_type_is_refused_as_unsupported_media() {
-    let world = upload_world(true, presigning_store()).await;
+    let world = upload_world(presigning_store()).await;
 
     let status = upload(
         &world.app,
@@ -606,7 +590,7 @@ async fn an_unsupported_type_is_refused_as_unsupported_media() {
 /// An unconfigured deployment is a deployment problem, not a caller error or a crash.
 #[tokio::test]
 async fn an_upload_without_object_storage_is_service_unavailable() {
-    let world = upload_world(true, None).await;
+    let world = upload_world(None).await;
 
     let status = upload(
         &world.app,
@@ -621,7 +605,7 @@ async fn an_upload_without_object_storage_is_service_unavailable() {
 
 #[tokio::test]
 async fn a_fetch_without_object_storage_is_service_unavailable() {
-    let world = fetch_world(true, None).await;
+    let world = fetch_world(None).await;
 
     let status = fetch(&world.app, Some(&world.cookie), world.image_id)
         .await
@@ -643,15 +627,14 @@ struct Signal {
 /// response. The row the update returns is given a distinct `updated_at` instead and
 /// compared whole: that is what fails if a handler stops delegating and simply echoes the
 /// extractor's row back.
-async fn signal_world(participant: bool, returns_deleted: bool) -> Signal {
+async fn signal_world(returns_deleted: bool) -> Signal {
     let organization_id = Id::new_v4();
     let user = coach();
     let role = role(user.id, organization_id);
-    let coach_id = if participant { user.id } else { Id::new_v4() };
-    let relationship = relationship(organization_id, coach_id, Id::new_v4());
+    let relationship = relationship(organization_id, user.id, Id::new_v4());
     let session = session(relationship.id);
     // The stored row starts in the opposite state, so the update has something to change.
-    let stored = image(session.id, coach_id, !returns_deleted);
+    let stored = image(session.id, user.id, !returns_deleted);
     let updated = coaching_session_images::Model {
         deleted_at: returns_deleted.then(|| Utc::now().into()),
         updated_at: (Utc::now() + chrono::Duration::seconds(1)).into(),
@@ -720,7 +703,7 @@ async fn json_body(response: axum::response::Response) -> serde_json::Value {
 
 #[tokio::test]
 async fn a_participant_marks_an_image_deleted() {
-    let signal = signal_world(true, true).await;
+    let signal = signal_world(true).await;
     let world = &signal.world;
 
     let response = soft_delete(&world.app, Some(&world.cookie), world.image_id).await;
@@ -737,7 +720,7 @@ async fn a_participant_marks_an_image_deleted() {
 
 #[tokio::test]
 async fn a_participant_restores_a_deleted_image() {
-    let signal = signal_world(true, false).await;
+    let signal = signal_world(false).await;
     let world = &signal.world;
 
     let response = undo(&world.app, Some(&world.cookie), world.image_id).await;
@@ -757,7 +740,7 @@ async fn a_participant_restores_a_deleted_image() {
 /// fails the moment someone filters soft-deleted rows out of `read`.
 #[tokio::test]
 async fn a_fetch_still_serves_an_image_that_is_marked_deleted() {
-    let world = fetch_world_for(true, presigning_store(), true).await;
+    let world = fetch_world_for(presigning_store(), true).await;
 
     let status = fetch(&world.app, Some(&world.cookie), world.image_id)
         .await
@@ -767,27 +750,4 @@ async fn a_fetch_still_serves_an_image_that_is_marked_deleted() {
         status == StatusCode::FOUND || status == StatusCode::OK,
         "a soft-deleted image must still be served during the grace window, got {status}"
     );
-}
-
-#[tokio::test]
-async fn a_non_participant_cannot_restore_an_image_it_holds_the_id_for() {
-    let world = signal_world(false, false).await.world;
-
-    let status = undo(&world.app, Some(&world.cookie), world.image_id)
-        .await
-        .status();
-
-    assert!(
-        status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND,
-        "a non-participant must be refused, got {status}"
-    );
-}
-
-#[tokio::test]
-async fn an_unauthenticated_delete_is_unauthorized() {
-    let world = signal_world(true, true).await.world;
-
-    let status = soft_delete(&world.app, None, world.image_id).await.status();
-
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

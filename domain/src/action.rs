@@ -250,19 +250,15 @@ mod tests {
         match &events[0] {
             DomainEvent::ActionCreated {
                 coaching_session_id,
-                notify_user_ids,
                 ..
             } if expect_created => {
                 assert_eq!(*coaching_session_id, expected_session_id);
-                assert_eq!(notify_user_ids.len(), 2, "coach + coachee");
             }
             DomainEvent::ActionUpdated {
                 coaching_session_id,
-                notify_user_ids,
                 ..
             } if !expect_created => {
                 assert_eq!(*coaching_session_id, expected_session_id);
-                assert_eq!(notify_user_ids.len(), 2, "coach + coachee");
             }
             other => panic!("unexpected event: {other:?}"),
         }

@@ -10,7 +10,9 @@ use axum::body::Body;
 use axum::http::{Method, StatusCode};
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 
-use crate::test_utils::sqlite::{assert_transcription_reads_refused, ids, TestApp};
+use crate::test_utils::sqlite::{
+    assert_signed_out_refused, assert_transcription_reads_refused, ids, TestApp,
+};
 
 /// The coach's and the coachee's transcript lines, as seeded.
 const COACH_LINE: &str = "What will you do next, kumquat?";
@@ -85,8 +87,45 @@ async fn non_participants_cannot_read_a_transcription() {
             "/coaching_sessions/{}/transcriptions/{}",
             app.fixture.s3, app.fixture.tr1
         );
-        let (status, _) = app.expect(Caller::Coach, Method::GET, &path, None).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        let reply = app.send(Caller::Coach, Method::GET, &path, None).await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND);
+        assert_eq!(reply.body["error"], "transcription_not_found");
     })
+    .await;
+}
+
+/// TRN-29
+#[tokio::test]
+async fn signed_out_callers_cannot_reach_transcripts_suggestions_recordings_or_images() {
+    within_time_limit(assert_signed_out_refused(|app| {
+        let fixture = &app.fixture;
+        let session = format!("/coaching_sessions/{}", fixture.s1);
+        let transcription = format!("{session}/transcriptions/{}", fixture.tr1);
+        let suggestions = format!("{session}/transcript_suggestions");
+        let suggestion = format!("{suggestions}/{}", fixture.sg1);
+        let recording = format!("{session}/meeting_recording");
+        let image = format!("/coaching_session_images/{}", fixture.img1);
+        vec![
+            (Method::GET, format!("{session}/transcriptions")),
+            (Method::GET, transcription.clone()),
+            (
+                Method::GET,
+                format!("{transcription}/transcription_segments"),
+            ),
+            (Method::GET, suggestions.clone()),
+            (Method::GET, format!("{suggestions}/scan")),
+            (Method::POST, format!("{suggestions}/scan")),
+            (Method::POST, format!("{suggestion}/accept")),
+            (Method::POST, format!("{suggestion}/dismiss")),
+            (Method::POST, format!("{suggestion}/restore")),
+            (Method::GET, recording.clone()),
+            (Method::POST, recording.clone()),
+            (Method::DELETE, recording),
+            (Method::POST, format!("{session}/images")),
+            (Method::GET, image.clone()),
+            (Method::DELETE, image.clone()),
+            (Method::POST, format!("{image}/restore")),
+        ]
+    }))
     .await;
 }

@@ -156,3 +156,93 @@ async fn a_super_admin_searches_every_relationship_unrestricted() {
     })
     .await;
 }
+
+/// The relationship ids `user_id` may search under the two filters, sorted.
+async fn visible_under(
+    db: &DatabaseConnection,
+    user_id: Id,
+    organization_id: Option<Id>,
+    relationship_id: Option<Id>,
+) -> Option<Vec<Id>> {
+    let user = load_user(db, user_id).await;
+    let visibility = visibility_for(&user);
+    resolve_visible_relationship_ids(db, &visibility, organization_id, relationship_id)
+        .await
+        .expect("visibility resolves")
+        .map(|mut ids| {
+            ids.sort();
+            ids
+        })
+}
+
+fn sorted<const N: usize>(mut ids: [Id; N]) -> Option<Vec<Id>> {
+    ids.sort();
+    Some(ids.to_vec())
+}
+
+/// SRCH-07
+#[tokio::test]
+async fn a_members_filters_narrow_but_never_widen_what_they_search() {
+    within_time_limit(async {
+        let db = sqlite::database().await;
+        let (org_a, org_b) = (seed_organization(&db).await, seed_organization(&db).await);
+        let coach = seed_user(&db).await;
+        let (first, second) = (seed_user(&db).await, seed_user(&db).await);
+        seed_role(&db, coach, Role::User, Some(org_a)).await;
+        let with_first = seed_relationship(&db, coach, first, org_a).await.id;
+        let with_second = seed_relationship(&db, coach, second, org_a).await.id;
+        // In the coach's organization, but not the coach's.
+        let of_others = seed_relationship(&db, first, second, org_a).await.id;
+        // The coach's, but in an organization where the coach holds no role.
+        let in_b = seed_relationship(&db, coach, first, org_b).await.id;
+
+        for (organization, relationship, expected) in [
+            (None, None, sorted([with_first, with_second])),
+            (Some(org_a), None, sorted([with_first, with_second])),
+            (None, Some(with_first), sorted([with_first])),
+            (Some(org_a), Some(with_first), sorted([with_first])),
+            (None, Some(of_others), sorted([])),
+            (Some(org_a), Some(of_others), sorted([])),
+            (None, Some(in_b), sorted([])),
+            (Some(org_b), None, sorted([])),
+            (Some(org_b), Some(with_first), sorted([])),
+        ] {
+            assert_eq!(
+                visible_under(&db, coach, organization, relationship).await,
+                expected,
+                "organization {organization:?}, relationship {relationship:?}"
+            );
+        }
+    })
+    .await;
+}
+
+/// SRCH-09
+#[tokio::test]
+async fn a_super_admins_filters_narrow_an_otherwise_unrestricted_search() {
+    within_time_limit(async {
+        let db = sqlite::database().await;
+        let (org_a, org_b) = (seed_organization(&db).await, seed_organization(&db).await);
+        let super_admin = seed_user(&db).await;
+        seed_role(&db, super_admin, Role::SuperAdmin, None).await;
+        let (coach, coachee) = (seed_user(&db).await, seed_user(&db).await);
+        let first_in_a = seed_relationship(&db, coach, coachee, org_a).await.id;
+        let second_in_a = seed_relationship(&db, coachee, coach, org_a).await.id;
+        let in_b = seed_relationship(&db, coach, coachee, org_b).await.id;
+
+        for (organization, relationship, expected) in [
+            (Some(org_a), None, sorted([first_in_a, second_in_a])),
+            (Some(org_b), None, sorted([in_b])),
+            (Some(org_a), Some(first_in_a), sorted([first_in_a])),
+            (Some(org_b), Some(first_in_a), sorted([])),
+            (Some(org_a), Some(in_b), sorted([])),
+        ] {
+            assert_eq!(
+                visible_under(&db, super_admin, organization, relationship).await,
+                expected,
+                "organization {organization:?}, relationship {relationship:?}"
+            );
+        }
+    })
+    .await;
+}

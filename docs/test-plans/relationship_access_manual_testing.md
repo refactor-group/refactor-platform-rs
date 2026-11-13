@@ -405,13 +405,14 @@ How to read the tables:
 | TOP-09 | DELETE /coaching_sessions/S1/topics/T2 | COACH | 200 | `web/src/extractors/coaching_session_topic_access.rs:90` | Coach deletes any topic |
 | TOP-10 | DELETE /coaching_sessions/S1/topics/T2 | COACHEE | 200 | `web/src/extractors/coaching_session_topic_access.rs:78` | Author |
 | TOP-11 | DELETE /coaching_sessions/S1/topics/T1 | COACHEE | 404 | `web/src/extractors/coaching_session_topic_access.rs:94` | Not author, not coach |
-| TOP-12 | DELETE /coaching_sessions/S1/topics/T1 | non-participants | 403 | `web/src/extractors/coaching_session_topic_access.rs:72` | |
+| TOP-12 | DELETE /coaching_sessions/S1/topics/T1 | non-participants | 403 | `web/src/extractors/coaching_session_topic_access.rs:72`, `:47` | Topic not in S1: 404 |
 | TOP-16 | PATCH /coaching_sessions/S1/topics/T1/status | COACH, COACHEE | 200, T1 | `web/src/extractors/coaching_session_topic_access.rs:46` | Either participant |
 | TOP-17 | PATCH /coaching_sessions/S1/topics/T1/status | non-participants | 403 | `web/src/extractors/coaching_session_topic_access.rs:37` | |
 | TOP-18 | POST /coaching_sessions/S1/topics/T2/undo (T2 deleted by COACH) | COACH | 404 | `web/src/extractors/coaching_session_topic_access.rs:137` | Undoing a delete is author only |
 | TOP-19 | POST /coaching_sessions/S1/topics/T2/undo (T2 deleted) | COACHEE | 200, T2 restored | `web/src/extractors/coaching_session_topic_access.rs:137` | |
 | TOP-20 | POST /coaching_sessions/{dest}/topics/T1/undo (T1 deferred) | COACH, COACHEE | 200, T1 back in S1 | `web/src/extractors/coaching_session_topic_access.rs:134` | Defer undo open to either participant |
-| TOP-21 | POST /coaching_sessions/S1/topics/T1/undo | non-participants | 403 | `web/src/extractors/coaching_session_topic_access.rs:120` | |
+| TOP-21 | POST /coaching_sessions/S1/topics/T1/undo | non-participants | 403 | `web/src/extractors/coaching_session_topic_access.rs:120`, `:130` | Topic not in S1: 404 |
+| TOP-22 | any topic route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 
 ### 4.9 Transcripts, recordings and images (`TRN`)
 
@@ -420,9 +421,9 @@ How to read the tables:
 | TRN-01 | GET /coaching_sessions/S1/transcriptions | COACH, COACHEE | 200, TR1 with `speakers` | `web/src/extractors/coaching_session_access.rs:118` | |
 | TRN-02 | GET /coaching_sessions/S1/transcriptions | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:118` | |
 | TRN-03 | GET /coaching_sessions/S1/transcriptions/TR1 (`Accept: text/plain`, `speaker=coach`) | COACH, COACHEE | 200, coach lines only | `web/src/extractors/coaching_session_access.rs:118`; `domain/src/transcription.rs:579` | 422 if no speaker attributed to the role |
-| TRN-04 | GET /coaching_sessions/S1/transcriptions/TR1 | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:118` | TR1 under another session: 404 |
+| TRN-04 | GET /coaching_sessions/S1/transcriptions/TR1 | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:118`; `domain/src/transcription.rs:554` | TR1 under another session: 404 `transcription_not_found` |
 | TRN-05 | GET /coaching_sessions/S1/transcriptions/TR1/transcription_segments | COACH, COACHEE | 200, TR1 segments | `web/src/extractors/coaching_session_access.rs:118` | |
-| TRN-06 | GET /coaching_sessions/S1/transcriptions/TR1/transcription_segments | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:118` | |
+| TRN-06 | GET /coaching_sessions/S1/transcriptions/TR1/transcription_segments | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:118`; `entity_api/src/transcript_segment.rs:41` | TR1 under another session: 200, no segments |
 | TRN-07 | GET /coaching_sessions/S1/transcript_suggestions | COACH, COACHEE | 200, SG1 SG2 | `web/src/extractors/coaching_session_access.rs:118`; `domain/src/transcript_suggestion/review.rs:246` | [rows] coachee also sees coach-only SG1 |
 | TRN-08 | GET /coaching_sessions/S1/transcript_suggestions | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:118` | |
 | TRN-09 | GET, POST /coaching_sessions/S1/transcript_suggestions/scan | COACH, COACHEE | GET 200, POST 202; scan status | `web/src/extractors/coaching_session_access.rs:118` | POST: 409 if running or done |
@@ -430,10 +431,10 @@ How to read the tables:
 | TRN-11 | POST /coaching_sessions/S1/transcript_suggestions/SG1/accept | COACH | 200 (201), new action | `domain/src/transcript_suggestion/review.rs:333`, `:553`, `:202` | Coach may always act. Sends MAIL-11 |
 | TRN-12 | POST /coaching_sessions/S1/transcript_suggestions/SG1/accept | COACHEE | 403 | `domain/src/transcript_suggestion/review.rs:206` | Coach-only suggestion |
 | TRN-13 | POST /coaching_sessions/S1/transcript_suggestions/SG2/accept | COACHEE | 200 (201), new action | `domain/src/transcript_suggestion/review.rs:206` | Edits that add or remove the coach: 403 |
-| TRN-14 | POST /coaching_sessions/S1/transcript_suggestions/SG1/accept | non-participants | 404 | `web/src/extractors/transcript_suggestion_access.rs:40` | All failures collapse to 404 |
+| TRN-14 | POST /coaching_sessions/S1/transcript_suggestions/SG1/accept | non-participants | 404 | `web/src/extractors/transcript_suggestion_access.rs:40`, `:51` | All failures collapse to 404. SG1 under another session: 404 |
 | TRN-15 | POST .../SG1/dismiss, .../SG1/restore | COACH | 204 | `domain/src/transcript_suggestion/review.rs:438`, `:553` | |
 | TRN-16 | POST .../SG1/dismiss, .../SG1/restore | COACHEE | 403 | `domain/src/transcript_suggestion/review.rs:206` | SG2: 204 |
-| TRN-17 | POST .../SG1/dismiss, .../SG1/restore | non-participants | 404 | `web/src/extractors/transcript_suggestion_access.rs:40` | |
+| TRN-17 | POST .../SG1/dismiss, .../SG1/restore | non-participants | 404 | `web/src/extractors/transcript_suggestion_access.rs:40`, `:48`, `:51` | SG1 under another session, or an unknown suggestion: 404 |
 | TRN-18 | GET /coaching_sessions/S1/meeting_recording | COACH, COACHEE | 200, latest recording or null | `web/src/extractors/coaching_session_access.rs:118` | |
 | TRN-19 | POST /coaching_sessions/S1/meeting_recording `{meeting_url}` | COACH, COACHEE | 200 (201), recording | `web/src/extractors/coaching_session_access.rs:118` | Either participant starts a bot; 409 if one is active |
 | TRN-20 | DELETE /coaching_sessions/S1/meeting_recording | COACH, COACHEE | 200 | `web/src/extractors/coaching_session_access.rs:118` | |
@@ -443,8 +444,9 @@ How to read the tables:
 | TRN-24 | POST /coaching_sessions/S1/images | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:118` | |
 | TRN-25 | GET /coaching_session_images/IMG1 | COACH, COACHEE | 302 to storage, or 200 bytes | `web/src/extractors/coaching_session_image_access.rs:54` | |
 | TRN-26 | DELETE, POST restore /coaching_session_images/IMG1 | COACH, COACHEE | 200, IMG1 | `web/src/extractors/coaching_session_image_access.rs:54` | Either participant, not only the uploader |
-| TRN-27 | GET, DELETE /coaching_session_images/IMG1 | non-participants | 403 | `web/src/extractors/coaching_session_image_access.rs:54` | Unknown image: 404 |
+| TRN-27 | GET, DELETE, POST restore /coaching_session_images/IMG1 | non-participants | 403 | `web/src/extractors/coaching_session_image_access.rs:54` | Unknown image: 404 |
 | TRN-28 | POST /coaching_sessions/S3/transcript_suggestions/SG3/accept | COACH | 409 `assignee_not_a_member`, no action written, no email | `domain/src/transcript_suggestion/review.rs:339` | [membership] |
+| TRN-29 | any transcription, suggestion, recording or image route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 
 ### 4.10 Meeting links and OAuth-dependent flows (`MEET`)
 
@@ -455,6 +457,7 @@ How to read the tables:
 | MEET-03 | PUT /coaching_sessions/S1 `{meeting_url, provider}` | COACH | 200 (204) | `web/src/protect/coaching_sessions.rs:129` | Coach only; COACHEE 403 (SES-16) |
 | MEET-04 | POST /coaching_sessions/S1/meeting_recording `{meeting_url}` | COACHEE | 200 (201) | `web/src/extractors/coaching_session_access.rs:118` | URL is caller supplied; not tied to an account |
 | MEET-05 | GET /oauth/connections, GET/DELETE /oauth/connections/{provider} | any authenticated caller | 200, caller's own connections | `web/src/router.rs:904`, `:906` (auth only) | Self scoped, no relationship data. Listed so MEET-01 has its prerequisite |
+| MEET-06 | GET /oauth/{provider}/authorize, GET /oauth/connections, GET/DELETE /oauth/connections/{provider} | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | The provider's callback takes no session |
 
 ### 4.11 Search (`SRCH`)
 
@@ -474,6 +477,7 @@ relationship's org) via `entity_api/src/search/visibility.rs:18`; SuperAdmins sk
 | SRCH-08 | GET /search?q=kumquat&types=actions&coaching_relationship_id=R1 | MEMBER | 200, no hits | `entity_api/src/search/visibility.rs:42` | [rows] not 403 |
 | SRCH-09 | GET /search?q=kumquat&types=actions&organization_id=O1 | SUPER | 200, A1 to A7 | `entity_api/src/search/visibility.rs:39` | [rows] Automated: SQL-shape mock and visible-relationship SQLite only; check hits by hand. |
 | SRCH-10 | GET /search?q=kumquat (all types) | COACHEE | 200, R1 and R2 hits of every type (S1 S2, G1 G2, A1 to A5, AG1, T1 T2, SG1 SG2) | `entity_api/src/search/visibility.rs:36` | [rows] notes are not searched. Automated: SQL-shape mock and visible-relationship SQLite only; check hits by hand. |
+| SRCH-11 | GET /search?q=kumquat&types=actions | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 
 ### 4.12 Collaboration token (`JWT`)
 
@@ -482,6 +486,7 @@ relationship's org) via `entity_api/src/search/visibility.rs:18`; SuperAdmins sk
 | JWT-01 | GET /jwt/generate_collab_token?coaching_session_id=S1 | COACH, COACHEE | 200, token for S1's document | `web/src/protect/jwt.rs:30` | |
 | JWT-02 | GET /jwt/generate_collab_token?coaching_session_id=S1 | non-participants | 403 | `web/src/protect/jwt.rs:30` | Unknown session: 404 |
 | JWT-03 | GET /jwt/generate_collab_token?coaching_session_id=S3 | REMOVED | 403 | `web/src/protect/jwt.rs:30` | |
+| JWT-04 | GET /jwt/generate_collab_token?coaching_session_id=S1 | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 
 ### 4.13 Users (`USR`)
 
@@ -545,11 +550,12 @@ Check with two browsers or `curl -N -b /tmp/<jar>.jar -H "$VER" $BASE/sse`.
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
 | SSE-01 | GET /sse | any authenticated caller | 200, event stream | `web/src/sse/handler.rs:12` | No relationship check; delivery is per user id |
-| SSE-02 | POST /actions in S1 (assigned to COACH) | streams of COACH, COACHEE | both get `action_created` with the full action | `domain/src/action.rs:69`, `:83`; `entity_api/src/coaching_relationship.rs:194` | [rows] coachee receives coach-assigned actions here |
+| SSE-02 | POST /actions in S1 (assigned to COACH), then PUT its status | streams of COACH, COACHEE | both get `action_created`, then `action_updated`, each with the full action | `domain/src/action.rs:69`, `:83`; `entity_api/src/coaching_relationship.rs:194` | [rows] coachee receives coach-assigned actions here |
 | SSE-03 | any action, goal, link, title or topic change in R3 | stream of REMOVED | nothing delivered | `entity_api/src/coaching_relationship.rs:194` | [rows] recipients filtered to current org members |
 | SSE-04 | goal create/update in R1 | streams of COACH, COACHEE | both get the goal event | `domain/src/goal.rs:130` | [rows] |
 | SSE-05 | transcript suggestions ready for S1 (JOB-03) | streams of COACH, COACHEE | both get `transcript_suggestions_changed` | `domain/src/transcript_suggestion/extract.rs:240` | [rows] |
 | SSE-06 | POST /webhooks/recall_ai (recording or transcript update for S1) | streams of COACH, COACHEE | both get the recording/transcription event | `entity_api/src/coaching_session.rs:655` | [rows] webhook is signature-authenticated, no user |
+| SSE-07 | GET /sse | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 
 ## 5. Background jobs and emails
 
@@ -786,6 +792,7 @@ a frozen `domain` test, or by hand with the reason.
 | TOP-19 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::the_author_undoes_a_topics_delete` |
 | TOP-20 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::participants_undo_a_topics_defer` |
 | TOP-21 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::non_participants_cannot_undo_a_topic_change` |
+| TOP-22 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_topics` |
 | TRN-01 | `web/src/controller/coaching_session/transcription_controller_sqlite_tests.rs::participants_read_the_latest_transcription` |
 | TRN-02 | `web/src/controller/coaching_session/transcription_controller_sqlite_tests.rs::non_participants_cannot_read_the_latest_transcription` |
 | TRN-03 | `web/src/controller/coaching_session/transcription_controller_sqlite_tests.rs::participants_download_only_the_coachs_lines` |
@@ -812,26 +819,30 @@ a frozen `domain` test, or by hand with the reason.
 | TRN-24 | `web/src/controller/coaching_session/image_controller_sqlite_tests.rs::non_participants_cannot_upload_a_note_image` |
 | TRN-25 | `web/src/controller/coaching_session/image_controller_sqlite_tests.rs::participants_read_a_note_image` |
 | TRN-26 | `web/src/controller/coaching_session/image_controller_sqlite_tests.rs::either_participant_deletes_and_restores_a_note_image` |
-| TRN-27 | `web/src/controller/coaching_session/image_controller_sqlite_tests.rs::non_participants_cannot_read_or_delete_a_note_image` |
+| TRN-27 | `web/src/controller/coaching_session/image_controller_sqlite_tests.rs::non_participants_cannot_read_delete_or_restore_a_note_image` |
 | TRN-28 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::accepting_for_a_coachee_who_left_is_refused` |
+| TRN-29 | `web/src/controller/coaching_session/transcription_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_transcripts_suggestions_recordings_or_images` |
 | MEET-01 | by hand: first-read hydration takes `pg_advisory_xact_lock` and creates the link with the provider |
 | MEET-02 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::only_the_coachs_create_attaches_a_meeting_link` (a reused R1 link; a new provider link needs Google or Zoom) |
 | MEET-03 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coach_sets_the_sessions_meeting_link` |
 | MEET-04 | by hand: Recall base URL is hard-coded |
 | MEET-05 | `web/src/controller/oauth_controller_sqlite_tests.rs::every_caller_reaches_only_their_own_connections` |
+| MEET-06 | `web/src/controller/oauth_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_connections` |
 | SRCH-01 | by hand: full-text search |
 | SRCH-02 | by hand: full-text search |
 | SRCH-03 | by hand: full-text search |
 | SRCH-04 | `web/src/controller/search_controller_sqlite_tests.rs::members_outside_every_relationship_find_nothing` |
 | SRCH-05 | by hand: full-text search |
 | SRCH-06 | `web/src/controller/search_controller_sqlite_tests.rs::a_removed_coachee_finds_nothing` |
-| SRCH-07 | by hand: full-text search |
+| SRCH-07 | by hand: full-text search; the relationships the filters leave in `domain/src/search_sqlite_tests.rs::a_members_filters_narrow_but_never_widen_what_they_search` |
 | SRCH-08 | `web/src/controller/search_controller_sqlite_tests.rs::a_relationship_filter_never_widens_a_members_search` |
-| SRCH-09 | by hand: full-text search |
+| SRCH-09 | by hand: full-text search; the relationships the filters leave in `domain/src/search_sqlite_tests.rs::a_super_admins_filters_narrow_an_otherwise_unrestricted_search` |
 | SRCH-10 | by hand: full-text search |
+| SRCH-11 | `web/src/controller/search_controller_sqlite_tests.rs::signed_out_callers_cannot_search` |
 | JWT-01 | `web/src/controller/jwt_controller_sqlite_tests.rs::participants_get_a_token_for_the_sessions_document` |
 | JWT-02 | `web/src/controller/jwt_controller_sqlite_tests.rs::non_participants_get_no_token` |
 | JWT-03 | `web/src/controller/jwt_controller_sqlite_tests.rs::a_removed_coachee_gets_no_token` |
+| JWT-04 | `web/src/controller/jwt_controller_sqlite_tests.rs::signed_out_callers_get_no_token` |
 | USR-01 | `web/src/controller/user/coaching_session_controller_sqlite_tests.rs::a_coachees_sessions_include_their_relationships` |
 | USR-02 | `web/src/controller/user/coaching_relationships_controller_sqlite_tests.rs::a_coachee_coaches_no_one` |
 | USR-03 | `web/src/controller/user/coaching_relationships_controller_sqlite_tests.rs::a_coach_lists_the_relationships_they_coach` |
@@ -876,22 +887,23 @@ a frozen `domain` test, or by hand with the reason.
 | SSE-04 | `web/src/sse/handler_sqlite_tests.rs::both_participants_hear_of_a_goal_change` |
 | SSE-05 | `web/src/sse/handler_sqlite_tests.rs::both_participants_hear_that_suggestions_changed` (through a scan start, which shares the sweep's `extract::notify`); `domain/src/transcript_suggestion/extract_sqlite_tests.rs::every_completed_run_announces_once_with_or_without_suggestions` |
 | SSE-06 | `web/src/sse/handler_sqlite_tests.rs::both_participants_hear_of_a_recording_update` |
+| SSE-07 | `web/src/sse/handler_sqlite_tests.rs::signed_out_callers_cannot_open_an_event_stream` |
 | JOB-01 | by hand: raw Postgres SQL; SQL shape in `entity_api/src/coaching_session.rs::tests::claim_due_reminders_skips_former_organization_members`, `entity_api/src/coaching_session.rs::tests::claim_due_reminders_membership_mirrors_is_member`, `entity_api/src/coaching_session.rs::tests::claim_due_reminders_skips_sessions_booked_on_short_notice` |
 | JOB-02 | `domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_due_change_is_emailed_and_settled`, `domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_coachee_no_longer_in_the_organization_is_not_emailed` |
 | JOB-03 | `domain/src/transcript_suggestion/prompt_tests.rs::render_writes_the_session_existing_actions_and_transcript`; events as SSE-05 |
 | JOB-04 | `domain/src/jobs/coaching_session_image_purge_sqlite_tests.rs` (no recipients) |
 | JOB-05 | `domain/src/password_reset.rs::tests::sweep_old_attempts_returns_deleted_count` (no recipients) |
-| MAIL-01 | `domain/src/emails_tests.rs::relationship_emails_reach_only_current_members`; `domain/src/emails_sqlite_tests.rs::session_scheduled_with_the_coachee_holding_no_role_reaches_only_the_coach` |
+| MAIL-01 | `domain/src/emails_sqlite_tests.rs::members_only_emails_reach_only_participants_holding_a_role`, `domain/src/emails_sqlite_tests.rs::session_scheduled_with_the_coachee_holding_no_role_reaches_only_the_coach`, `domain/src/emails_sqlite_tests.rs::session_create_with_the_coach_holding_no_role_reaches_only_the_coachee` |
 | MAIL-02 | `domain/src/emails_tests.rs::test_send_session_rescheduled_email`; `domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_coachee_no_longer_in_the_organization_is_not_emailed` |
 | MAIL-03 | `domain/src/emails_sqlite_tests.rs::single_cancel_with_the_coachee_holding_no_role_reaches_both`, `domain/src/emails_sqlite_tests.rs::single_cancel_with_the_coach_holding_no_role_reaches_both`, `domain/src/emails_sqlite_tests.rs::a_series_edit_cancels_an_orphan_for_a_coachee_holding_no_role` |
 | MAIL-04 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_session_resend_mails_both_members`, `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coach_who_left_cannot_resend_a_sessions_invite`; `domain/src/emails_sqlite_tests.rs::session_resend_with_the_coach_holding_no_role_reaches_only_the_coachee`; `web/src/controller/resend_invite_tests.rs::session_resend_bumps_a_one_off`, `web/src/controller/resend_invite_tests.rs::resend_with_a_removed_coach_mails_only_the_coachee`, `web/src/controller/resend_invite_tests.rs::resend_to_a_removed_coachee_is_refused` |
-| MAIL-05 | `domain/src/emails_tests.rs::relationship_emails_reach_only_current_members`; `domain/src/coaching_session_series.rs::tests::m5_08_series_create_invites_only_current_members` |
-| MAIL-06 | `domain/src/emails_tests.rs::relationship_emails_reach_only_current_members`; `domain/src/coaching_session_series.rs::tests::m5_09_series_reschedule_emails_only_current_members` |
-| MAIL-07 | `domain/src/emails_tests.rs::relationship_emails_reach_only_current_members`; `domain/src/coaching_session_series.rs::tests::m5_10_reschedule_following_emails_only_current_members` |
+| MAIL-05 | `domain/src/emails_sqlite_tests.rs::members_only_emails_reach_only_participants_holding_a_role`, `domain/src/emails_sqlite_tests.rs::series_create_with_the_coach_holding_no_role_reaches_only_the_coachee` |
+| MAIL-06 | `domain/src/emails_sqlite_tests.rs::members_only_emails_reach_only_participants_holding_a_role`; `domain/src/coaching_session_series.rs::tests::m5_09_series_reschedule_emails_only_current_members` |
+| MAIL-07 | `domain/src/emails_sqlite_tests.rs::members_only_emails_reach_only_participants_holding_a_role`, `domain/src/emails_sqlite_tests.rs::a_following_reschedule_reports_a_coachee_holding_no_role_as_not_a_member`; `domain/src/coaching_session_series.rs::tests::m5_10_reschedule_following_emails_only_current_members` |
 | MAIL-08 | `domain/src/emails_sqlite_tests.rs::series_cancel_with_the_coachee_holding_no_role_reaches_both` |
 | MAIL-09 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_series_resend_mails_both_members`, `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_coach_who_left_cannot_resend_a_series_invite`; `domain/src/emails_sqlite_tests.rs::series_resend_with_the_coach_holding_no_role_reaches_only_the_coachee`; `web/src/controller/resend_invite_tests.rs::series_resend_bumps_the_series_and_raises_its_members`, `web/src/controller/resend_invite_tests.rs::resend_with_a_removed_coach_mails_only_the_coachee`, `web/src/controller/resend_invite_tests.rs::resend_to_a_removed_coachee_is_refused` |
-| MAIL-10 | `domain/src/emails_tests.rs::test_send_session_reminder_email_goes_only_to_the_coachee` |
-| MAIL-11 | `domain/src/emails_tests.rs::action_assigned_reaches_only_current_members` |
+| MAIL-10 | `domain/src/emails_tests.rs::test_send_session_reminder_email_goes_only_to_the_coachee`; `domain/src/emails_sqlite_tests.rs::a_reminder_recipient_is_mailed_only_while_holding_a_role` |
+| MAIL-11 | `domain/src/emails_sqlite_tests.rs::action_assigned_reaches_only_an_assignee_holding_a_role` |
 | MAIL-12 | `domain/src/emails_tests.rs::test_send_welcome_email_success` |
 | MAIL-13 | `domain/src/emails_added_to_organization_tests.rs::send_added_to_organization_email_wire_contract` |
 | MAIL-14 | `domain/src/emails_tests.rs::test_send_password_reset_email_wire_contract` |

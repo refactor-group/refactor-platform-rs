@@ -685,39 +685,6 @@ async fn invalid_speaker_message_names_only_the_speaker_values() {
 }
 
 #[tokio::test]
-async fn transcription_under_another_session_is_404() {
-    let organization_id = Id::new_v4();
-    let coach = coach();
-    let role = role(coach.id, organization_id);
-    let coachee = coachee();
-    let relationship = relationship(organization_id, coach.id, coachee.id);
-    let session = session(relationship.id);
-    let elsewhere = transcription(Id::new_v4(), transcription::TranscriptionStatus::Completed);
-
-    let db = authorized(&coach, &role, &session, &relationship)
-        .append_query_results([vec![elsewhere.clone()]])
-        .into_connection();
-    let app = build_app(Arc::new(db));
-    let cookie = login_cookie(&app).await;
-
-    let response = get_transcript(
-        &app,
-        &cookie,
-        session.id,
-        elsewhere.id,
-        Some("text/plain"),
-        "",
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    assert_eq!(
-        body_json(response).await["error"],
-        "transcription_not_found"
-    );
-}
-
-#[tokio::test]
 async fn incomplete_transcription_is_409_for_text_but_200_for_json() {
     let organization_id = Id::new_v4();
     let coach = coach();
@@ -783,32 +750,6 @@ async fn unattributed_participant_is_422() {
     let message = body["message"].as_str().unwrap_or_default().to_string();
     assert!(message.contains("coachee"), "{message}");
     assert!(message.contains("Guest"), "{message}");
-}
-
-#[tokio::test]
-async fn non_participant_is_403() {
-    let organization_id = Id::new_v4();
-    let coach = coach();
-    let role = role(coach.id, organization_id);
-    let others = relationship(organization_id, Id::new_v4(), Id::new_v4());
-    let session = session(others.id);
-
-    let db = authorized(&coach, &role, &session, &others).into_connection();
-    let app = build_app(Arc::new(db));
-    let cookie = login_cookie(&app).await;
-
-    let response = get_transcript(
-        &app,
-        &cookie,
-        session.id,
-        Id::new_v4(),
-        Some("text/plain"),
-        "",
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert_eq!(body_string(response).await, "FORBIDDEN");
 }
 
 #[tokio::test]

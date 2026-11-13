@@ -621,7 +621,8 @@ pub(crate) async fn assert_transcription_reads_refused(suffix: impl Fn(&TestApp)
     );
 
     for caller in NON_PARTICIPANTS {
-        let (status, _) = app.expect(caller, Method::GET, &path, None).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{caller:?}");
+        let reply = app.send(caller, Method::GET, &path, None).await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{caller:?}");
+        assert_eq!(&reply.bytes[..], b"FORBIDDEN", "{caller:?}");
     }
 }

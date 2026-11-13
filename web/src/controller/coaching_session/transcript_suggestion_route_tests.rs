@@ -1,5 +1,5 @@
 //! The suggestion routes end to end through the router, sign-in and access checks, against a
-//! mock database: who may call them, what they reject, and that they succeed for a participant.
+//! mock database: what they reject for a participant and the statements they run.
 
 use std::sync::Arc;
 
@@ -287,36 +287,6 @@ fn only_update(db: &DatabaseConnection) -> String {
     updates[0].clone()
 }
 
-/// Every suggestion route, as (method, path suffix after the session's suggestions path).
-fn every_route(suggestion_id: Id) -> Vec<(&'static str, String)> {
-    vec![
-        ("GET", String::new()),
-        ("GET", "/scan".to_string()),
-        ("POST", "/scan".to_string()),
-        ("POST", format!("/{suggestion_id}/accept")),
-        ("POST", format!("/{suggestion_id}/dismiss")),
-        ("POST", format!("/{suggestion_id}/restore")),
-    ]
-}
-
-#[tokio::test]
-async fn an_unauthenticated_request_is_401_on_every_route() {
-    for (method, suffix) in every_route(Id::new_v4()) {
-        let world = world();
-        let app = build_app(Arc::new(
-            MockDatabase::new(DatabaseBackend::Postgres).into_connection(),
-        ));
-
-        let response = send(&app, method, None, world.session.id, &suffix, "").await;
-
-        assert_eq!(
-            response.status(),
-            StatusCode::UNAUTHORIZED,
-            "{method} {suffix}"
-        );
-    }
-}
-
 #[tokio::test]
 async fn listing_returns_the_sessions_suggestions_and_rejects_an_unknown_filter() {
     let world = world();
@@ -337,25 +307,6 @@ async fn listing_returns_the_sessions_suggestions_and_rejects_an_unknown_filter(
             "{query}"
         );
         assert!(!wrote(&db), "{query}");
-    }
-}
-
-#[tokio::test]
-async fn a_suggestion_from_another_session_is_404_on_accept_dismiss_and_restore() {
-    for verb in ["accept", "dismiss", "restore"] {
-        let world = world();
-        let mut elsewhere = pending_suggestion(&world);
-        elsewhere.coaching_session_id = Id::new_v4();
-        let (app, cookie, db) = as_coach(&world, |db| {
-            db.append_query_results([vec![elsewhere.clone()]])
-        })
-        .await;
-
-        let suffix = format!("/{}/{verb}", elsewhere.id);
-        let response = send(&app, "POST", Some(&cookie), world.session.id, &suffix, "").await;
-
-        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{verb}");
-        assert!(!wrote(&db), "{verb}");
     }
 }
 
@@ -384,7 +335,7 @@ async fn accepting_with_a_malformed_body_is_400_and_nothing_is_written() {
 }
 
 #[tokio::test]
-async fn the_coach_dismisses_a_pending_suggestion_with_204() {
+async fn a_dismissal_is_one_update_of_a_pending_suggestion() {
     let world = world();
     let pending = pending_suggestion(&world);
     let mut dismissed = pending.clone();
@@ -400,7 +351,11 @@ async fn the_coach_dismisses_a_pending_suggestion_with_204() {
     let suffix = format!("/{}/dismiss", pending.id);
     let response = send(&app, "POST", Some(&cookie), world.session.id, &suffix, "").await;
 
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        response.status(),
+        StatusCode::NO_CONTENT,
+        "the dismissal ran"
+    );
     let update = only_update(&db);
     let (set, condition) = update
         .split_once(" WHERE ")

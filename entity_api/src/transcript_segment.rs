@@ -126,20 +126,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find_by_transcription_and_session_returns_empty_when_session_does_not_match(
-    ) -> Result<(), Error> {
-        let transcription_id = Id::new_v4();
-
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
-            .into_connection();
-
-        let result = find_by_transcription_and_session(&db, transcription_id, Id::new_v4()).await?;
-        assert!(result.is_empty());
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn find_by_transcription_and_session_returns_multiple_segments_ordered_by_start_ms(
     ) -> Result<(), Error> {
         let transcription_id = Id::new_v4();

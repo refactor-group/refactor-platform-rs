@@ -13,7 +13,7 @@ use domain::test_utils::sqlite::read_back::connected_users;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use serde_json::{json, Value};
 
-use crate::test_utils::sqlite::{ids, TestApp};
+use crate::test_utils::sqlite::{assert_signed_out_refused, ids, TestApp};
 
 /// The connected account emails `caller` lists.
 async fn listed_emails(app: &mut TestApp, caller: Caller) -> BTreeSet<String> {
@@ -86,5 +86,19 @@ async fn every_caller_reaches_only_their_own_connections() {
         assert_eq!(reply.status, StatusCode::OK);
         assert_eq!(connected_users(app.db()).await, ids([other_coach]));
     })
+    .await;
+}
+
+/// MEET-06
+#[tokio::test]
+async fn signed_out_callers_cannot_reach_connections() {
+    within_time_limit(assert_signed_out_refused(|_| {
+        vec![
+            (Method::GET, "/oauth/google/authorize".to_string()),
+            (Method::GET, "/oauth/connections".to_string()),
+            (Method::GET, "/oauth/connections/google".to_string()),
+            (Method::DELETE, "/oauth/connections/google".to_string()),
+        ]
+    }))
     .await;
 }

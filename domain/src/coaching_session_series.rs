@@ -1112,58 +1112,6 @@ mod tests {
             .collect()
     }
 
-    /// M5-08: with the coach removed, a new series invites only the coachee.
-    #[tokio::test]
-    async fn m5_08_series_create_invites_only_current_members() -> Result<(), Error> {
-        let mailbox = Mailbox::new().await;
-        let p = LapsedCoach::new(Id::new_v4());
-        let now = chrono::Utc::now();
-        let series = Model {
-            id: Id::new_v4(),
-            coaching_relationship_id: p.relationship.id,
-            rule: serde_json::to_value(SeriesRule {
-                start_at: start(),
-                recurrence: weekly_rule_count(3),
-                duration_minutes: 60,
-                timezone: "UTC".into(),
-            })?,
-            ical_sequence: 0,
-            created_by_user_id: p.coach.id,
-            created_at: now.into(),
-            updated_at: now.into(),
-        };
-        let sessions = occurrences(&series, start(), 3);
-
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![p.relationship.clone()]])
-            .append_query_results(vec![p.members()])
-            .append_query_results(vec![vec![coach_row("UTC")]])
-            .append_query_results::<(entity::users::Model, Option<entity::user_roles::Model>), _, _>(
-                vec![vec![(p.coach.clone(), None)]],
-            )
-            .append_exec_results(vec![exec_ok()])
-            .append_query_results(vec![vec![series.clone()]])
-            .append_query_results(vec![sessions])
-            .append_exec_results(vec![exec_ok()]);
-        let db = invite_loads(db, p.relationship.organization_id, &p.coach, &p.coachee)
-            .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
-            .into_connection();
-
-        create_with_sessions(
-            &db,
-            &mailbox.config(),
-            p.relationship.id,
-            p.coach.id,
-            start(),
-            weekly_rule_count(3),
-            None,
-        )
-        .await?;
-
-        mailbox.assert_only_to("coachee@example.com");
-        Ok(())
-    }
-
     /// M5-09: with the coach removed, a series reschedule emails only the coachee.
     #[tokio::test]
     async fn m5_09_series_reschedule_emails_only_current_members() -> Result<(), Error> {

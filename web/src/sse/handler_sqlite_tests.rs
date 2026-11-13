@@ -15,7 +15,7 @@ use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 use serde_json::{json, Value};
 
-use crate::test_utils::sqlite::{Listener, Reply, TestApp};
+use crate::test_utils::sqlite::{assert_signed_out_refused, Listener, Reply, TestApp};
 
 /// A goal body in `relationship`.
 fn goal(relationship: Id) -> Value {
@@ -103,6 +103,25 @@ async fn both_participants_hear_of_an_action_assigned_to_the_coach() {
             let received = listener.received().await;
             assert_eq!(
                 carried(&received, "action_created", "action"),
+                BTreeSet::from([action]),
+                "{caller:?}"
+            );
+        }
+
+        let reply = app
+            .send(
+                Caller::Coachee,
+                Method::PUT,
+                &format!("/actions/{action}/status?value=on_hold"),
+                None,
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::OK);
+
+        for (caller, listener) in &mut listeners {
+            let received = listener.received().await;
+            assert_eq!(
+                carried(&received, "action_updated", "action"),
                 BTreeSet::from([action]),
                 "{caller:?}"
             );
@@ -275,5 +294,14 @@ async fn both_participants_hear_of_a_recording_update() {
             assert_eq!(sessions, vec![&json!(s1)], "{caller:?}");
         }
     })
+    .await;
+}
+
+/// SSE-07
+#[tokio::test]
+async fn signed_out_callers_cannot_open_an_event_stream() {
+    within_time_limit(assert_signed_out_refused(|_| {
+        vec![(Method::GET, "/sse".to_string())]
+    }))
     .await;
 }

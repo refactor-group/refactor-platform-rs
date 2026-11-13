@@ -12,7 +12,7 @@ use domain::topic_status::Status;
 use domain::Id;
 use serde_json::json;
 
-use crate::test_utils::sqlite::{ids, TestApp, NON_PARTICIPANTS};
+use crate::test_utils::sqlite::{assert_signed_out_refused, ids, TestApp, NON_PARTICIPANTS};
 
 /// The path of `topic` under `session`, plus `suffix`.
 fn topic_path(session: Id, topic: Id, suffix: &str) -> String {
@@ -40,6 +40,25 @@ async fn assert_non_participants_refused(method: Method, path: impl Fn(&TestApp)
     }
     assert_eq!(session_topics(app.db(), s1).await, topics);
     assert_eq!((topic(&app, t1).await, topic(&app, t2).await), before);
+}
+
+/// Asserts COACH, a participant of S3, gets 404 for `method` on T1 under S3, T1 unchanged.
+async fn assert_t1_not_found_under_s3(method: Method, suffix: &str) {
+    let mut app = TestApp::new().await;
+    let (s3, t1) = (app.fixture.s3, app.fixture.t1);
+    let before = topic(&app, t1).await;
+
+    let (status, _) = app
+        .expect(
+            Caller::Coach,
+            method,
+            &topic_path(s3, t1, suffix),
+            Some(json!({ "body": "Edited kumquat" })),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(topic(&app, t1).await, before);
 }
 
 /// TOP-06 and TOP-07: either participant edits the other's topic.
@@ -231,19 +250,7 @@ async fn non_participants_cannot_edit_a_topic() {
         .await;
 
         // The matrix's note: a topic outside the session in the path is not found.
-        let mut app = TestApp::new().await;
-        let (s3, t1) = (app.fixture.s3, app.fixture.t1);
-        let before = topic(&app, t1).await;
-        let (status, _) = app
-            .expect(
-                Caller::Coach,
-                Method::PUT,
-                &topic_path(s3, t1, ""),
-                Some(json!({ "body": "Edited kumquat" })),
-            )
-            .await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(topic(&app, t1).await, before);
+        assert_t1_not_found_under_s3(Method::PUT, "").await;
     })
     .await;
 }
@@ -286,9 +293,15 @@ async fn a_coachee_cannot_delete_the_coachs_topic() {
 /// TOP-12
 #[tokio::test]
 async fn non_participants_cannot_delete_a_topic() {
-    within_time_limit(assert_non_participants_refused(Method::DELETE, |b| {
-        topic_path(b.fixture.s1, b.fixture.t1, "")
-    }))
+    within_time_limit(async {
+        assert_non_participants_refused(Method::DELETE, |b| {
+            topic_path(b.fixture.s1, b.fixture.t1, "")
+        })
+        .await;
+
+        // The matrix's note: a topic outside the session in the path is not found.
+        assert_t1_not_found_under_s3(Method::DELETE, "").await;
+    })
     .await;
 }
 
@@ -422,8 +435,33 @@ async fn participants_undo_a_topics_defer() {
 /// TOP-21
 #[tokio::test]
 async fn non_participants_cannot_undo_a_topic_change() {
-    within_time_limit(assert_non_participants_refused(Method::POST, |b| {
-        topic_path(b.fixture.s1, b.fixture.t1, "/undo")
+    within_time_limit(async {
+        assert_non_participants_refused(Method::POST, |b| {
+            topic_path(b.fixture.s1, b.fixture.t1, "/undo")
+        })
+        .await;
+
+        // The matrix's note: a topic outside the session in the path is not found.
+        assert_t1_not_found_under_s3(Method::POST, "/undo").await;
+    })
+    .await;
+}
+
+/// TOP-22
+#[tokio::test]
+async fn signed_out_callers_cannot_reach_topics() {
+    within_time_limit(assert_signed_out_refused(|app| {
+        let (s1, t1) = (app.fixture.s1, app.fixture.t1);
+        let topics = format!("/coaching_sessions/{s1}/topics");
+        vec![
+            (Method::GET, topics.clone()),
+            (Method::POST, topics.clone()),
+            (Method::PATCH, format!("{topics}/reorder")),
+            (Method::PUT, topic_path(s1, t1, "")),
+            (Method::DELETE, topic_path(s1, t1, "")),
+            (Method::PATCH, topic_path(s1, t1, "/status")),
+            (Method::POST, topic_path(s1, t1, "/undo")),
+        ]
     }))
     .await;
 }

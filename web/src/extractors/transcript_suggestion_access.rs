@@ -54,8 +54,3 @@ where
         Ok(TranscriptSuggestionAccess { suggestion })
     }
 }
-
-#[cfg(test)]
-#[cfg(feature = "mock")]
-#[path = "transcript_suggestion_access_tests.rs"]
-mod tests;

@@ -9,7 +9,7 @@ use axum::http::{Method, StatusCode};
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 
-use crate::test_utils::sqlite::{TestApp, NON_PARTICIPANTS};
+use crate::test_utils::sqlite::{assert_signed_out_refused, TestApp, NON_PARTICIPANTS};
 
 /// The token path for `session`.
 fn token_path(session: Id) -> String {
@@ -67,5 +67,14 @@ async fn a_removed_coachee_gets_no_token() {
             .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
     })
+    .await;
+}
+
+/// JWT-04
+#[tokio::test]
+async fn signed_out_callers_get_no_token() {
+    within_time_limit(assert_signed_out_refused(|app| {
+        vec![(Method::GET, token_path(app.fixture.s1))]
+    }))
     .await;
 }

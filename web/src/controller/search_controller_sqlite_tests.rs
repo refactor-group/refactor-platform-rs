@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use axum::http::{Method, StatusCode};
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 
-use crate::test_utils::sqlite::{ids_in, TestApp};
+use crate::test_utils::sqlite::{assert_signed_out_refused, ids_in, TestApp};
 
 /// Asserts each caller's search on `path` answers 200 with no hits.
 async fn assert_no_hits(app: &mut TestApp, callers: &[Caller], path: &str) {
@@ -69,5 +69,14 @@ async fn a_relationship_filter_never_widens_a_members_search() {
         );
         assert_no_hits(&mut app, &[Caller::Member], &path).await;
     })
+    .await;
+}
+
+/// SRCH-11
+#[tokio::test]
+async fn signed_out_callers_cannot_search() {
+    within_time_limit(assert_signed_out_refused(|_| {
+        vec![(Method::GET, "/search?q=kumquat&types=actions".to_string())]
+    }))
     .await;
 }

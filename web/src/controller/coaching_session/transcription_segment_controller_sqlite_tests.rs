@@ -8,6 +8,7 @@
 use axum::http::{Method, StatusCode};
 use domain::test_utils::sqlite::read_back::transcription_segments;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
+use serde_json::json;
 
 use crate::test_utils::sqlite::{assert_transcription_reads_refused, TestApp};
 
@@ -35,8 +36,21 @@ async fn participants_read_the_transcriptions_segments() {
 /// TRN-06
 #[tokio::test]
 async fn non_participants_cannot_read_the_transcriptions_segments() {
-    within_time_limit(assert_transcription_reads_refused(|b| {
-        format!("/{}/transcription_segments", b.fixture.tr1)
-    }))
+    within_time_limit(async {
+        assert_transcription_reads_refused(|b| {
+            format!("/{}/transcription_segments", b.fixture.tr1)
+        })
+        .await;
+
+        // The matrix's note: TR1 under a session it is not in has no segments.
+        let mut app = TestApp::new().await;
+        let path = format!(
+            "/coaching_sessions/{}/transcriptions/{}/transcription_segments",
+            app.fixture.s3, app.fixture.tr1
+        );
+        let reply = app.send(Caller::Coach, Method::GET, &path, None).await;
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(reply.body["data"], json!([]));
+    })
     .await;
 }

@@ -146,7 +146,7 @@ async fn either_participant_deletes_and_restores_a_note_image() {
 
 /// TRN-27
 #[tokio::test]
-async fn non_participants_cannot_read_or_delete_a_note_image() {
+async fn non_participants_cannot_read_delete_or_restore_a_note_image() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
         let img1 = app.fixture.img1;
@@ -159,6 +159,17 @@ async fn non_participants_cannot_read_or_delete_a_note_image() {
             }
         }
         assert_eq!(image_deleted(app.db(), img1).await, Some(false));
+
+        // Deleted first, so a restore that got through would show.
+        let (status, _) = app.expect(Caller::Coach, Method::DELETE, &path, None).await;
+        assert_eq!(status, StatusCode::OK);
+        for caller in NON_PARTICIPANTS {
+            let (status, _) = app
+                .expect(caller, Method::POST, &format!("{path}/restore"), None)
+                .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{caller:?} restore");
+        }
+        assert_eq!(image_deleted(app.db(), img1).await, Some(true));
 
         // The matrix's note: an unknown image is not found.
         let (status, _) = app

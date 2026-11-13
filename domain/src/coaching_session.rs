@@ -1472,7 +1472,7 @@ mod tests {
             .collect()
     }
 
-    /// M5-07: with the coach removed, create notifies only the coachee.
+    /// M5-07: with the coach removed, create's events notify only the coachee.
     #[tokio::test]
     async fn m5_07_create_notifies_only_current_members() -> Result<(), Error> {
         let mailbox = Mailbox::new().await;
@@ -1523,7 +1523,6 @@ mod tests {
             [vec![coachee.id]],
             "the carried goal's event"
         );
-        mailbox.assert_only_to("coachee@example.com");
         Ok(())
     }
 

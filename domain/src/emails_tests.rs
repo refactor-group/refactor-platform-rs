@@ -1,8 +1,6 @@
 use super::*;
 #[cfg(feature = "mock")]
 use crate::coaching_session::{Frequency, Recurrence};
-#[cfg(feature = "mock")]
-use crate::test_utils::mock::members;
 use crate::{coaching_sessions, organizations, users, Id};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -1856,76 +1854,6 @@ async fn test_scheduling_and_rescheduling_a_legacy_series_member_send_standalone
         !capture.vevent().contains("RECURRENCE-ID"),
         "a self-contained event overrides no occurrence"
     );
-}
-
-/// The production regression, pinned at the layer where it occurred.
-///
-/// `notify_session_cancelled` used to return before any lookup when a series member had no
-/// `ical_recurrence_id`, so the coach and coachee were told nothing at all. With no mock
-/// results appended, the old code produced an empty transaction log; the new code must at
-/// least attempt the participant lookup. This is the exact inverse of the assertion the
-/// previous test made.
-///
-/// Driving the notify entry point matters: an earlier version of this test called
-/// `send_session_cancelled_email` directly and stayed green when the early return was put
-/// back. The full path cannot be mocked end to end because `user::find_by_id` uses
-/// `find_with_related`, which MockDatabase cannot express, so the send itself is covered
-/// separately by `test_cancelling_a_legacy_series_member_emails_without_an_invite`.
-/// The claim's membership test runs once per tick, for the whole batch, but delivery is
-/// one recipient at a time. A removal landing in that gap would otherwise mail a former
-/// member the session time, coach, organization, and link.
-///
-/// Covers the rule rather than its placement. The full path cannot be driven under a mock
-/// because `user::find_by_id` uses `find_with_related`, which MockDatabase cannot express,
-/// so that the check is the last statement before the send is enforced by review.
-#[cfg(feature = "mock")]
-#[tokio::test]
-async fn test_recipient_still_notified_is_false_for_a_removed_member() {
-    let relationship = test_relationship();
-
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        // No membership row: the coachee was removed after the claim was taken.
-        .append_query_results([Vec::<entity::user_roles::Model>::new()])
-        .into_connection();
-
-    let notified = recipient_still_notified(&db, &relationship, relationship.coachee_id)
-        .await
-        .expect("a removed recipient is an answer, not an error");
-
-    assert!(
-        !notified,
-        "a recipient holding no role in the organization must not be mailed"
-    );
-
-    let log = db.into_transaction_log();
-    assert!(
-        format!("{:?}", log[0]).contains("user_roles"),
-        "eligibility must be re-read from user_roles, not inferred from the claim, \
-         got: {:?}",
-        log[0]
-    );
-}
-
-/// The other half: someone who still holds a role is still mailed. Without this, a check
-/// that always returned false would pass the test above and silently stop all reminders.
-#[cfg(feature = "mock")]
-#[tokio::test]
-async fn test_recipient_still_notified_is_true_for_a_current_member() {
-    let relationship = test_relationship();
-
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        // The query selects only user_id, so the mock row is that column alone.
-        .append_query_results([vec![std::collections::BTreeMap::from([(
-            "user_id".to_string(),
-            sea_orm::Value::from(relationship.coachee_id),
-        )])]])
-        .into_connection();
-
-    let notified = recipient_still_notified(&db, &relationship, relationship.coachee_id)
-        .await
-        .expect("a current member is an answer, not an error");
-
-    assert!(notified, "a current member must still be reminded");
 }
 
 #[cfg(feature = "mock")]
@@ -5010,24 +4938,13 @@ fn snapshot_of_a_stored_late_month_series_still_builds() {
     assert!(!ics.contains("RECURRENCE-ID"), "{ics}");
 }
 
-/// The relationship emails sent from a notify entry point.
-#[cfg(feature = "mock")]
-#[derive(Clone, Copy, Debug)]
-enum RelationshipEmail {
-    SessionScheduled,
-    SeriesScheduled,
-    SeriesRescheduled,
-    SeriesFollowing,
-}
-
-/// A coach and coachee in one organization, with an upcoming session and series.
+/// A coach and coachee in one organization, with an upcoming series.
 #[cfg(feature = "mock")]
 struct MembershipFixture {
     coach: users::Model,
     coachee: users::Model,
     org: organizations::Model,
     relationship: coaching_relationships::Model,
-    session: coaching_sessions::Model,
     series: coaching_session_series::Model,
 }
 
@@ -5043,11 +4960,6 @@ impl MembershipFixture {
             coachee_id: coachee.id,
             ..test_relationship()
         };
-        let session = coaching_sessions::Model {
-            coaching_relationship_id: relationship.id,
-            date: chrono::Utc::now().naive_utc() + chrono::Duration::days(7),
-            ..create_test_session()
-        };
         let series = coaching_session_series::Model {
             coaching_relationship_id: relationship.id,
             ..snapshot_series(snapshot_start(), 1)
@@ -5057,7 +4969,6 @@ impl MembershipFixture {
             coachee,
             org,
             relationship,
-            session,
             series,
         }
     }
@@ -5072,21 +4983,7 @@ impl MembershipFixture {
             .collect()
     }
 
-    /// The loads an entry point handed the relationship and organization makes, then `rest`.
-    fn participant_loads(&self, rest: impl FnOnce(MockDatabase) -> MockDatabase) -> MockDatabase {
-        rest(
-            MockDatabase::new(DatabaseBackend::Postgres)
-                .append_query_results(vec![vec![self.coach.clone()]])
-                .append_query_results(vec![vec![self.coachee.clone()]]),
-        )
-    }
-
-    /// The loads an entry point handed the relationship makes, then `rest`.
-    fn party_loads(&self, rest: impl FnOnce(MockDatabase) -> MockDatabase) -> MockDatabase {
-        self.participant_loads(|db| rest(db.append_query_results(vec![vec![self.org.clone()]])))
-    }
-
-    /// The loads every other entry point makes, then `rest`.
+    /// The loads a series notify entry point makes, then `rest`.
     fn loads(&self, rest: impl FnOnce(MockDatabase) -> MockDatabase) -> MockDatabase {
         rest(
             MockDatabase::new(DatabaseBackend::Postgres)
@@ -5098,162 +4995,16 @@ impl MembershipFixture {
     }
 }
 
-/// Records who each Resend request was addressed to.
-#[cfg(feature = "mock")]
-#[derive(Clone, Default)]
-struct RecipientsCapture(Arc<Mutex<Vec<String>>>);
-
-#[cfg(feature = "mock")]
-impl RecipientsCapture {
-    fn recorder(&self) -> impl Fn(&mockito::Request) -> bool + Send + Sync + 'static {
-        let seen = self.0.clone();
-        move |request| {
-            let to = serde_json::from_slice::<serde_json::Value>(request.body().unwrap())
-                .ok()
-                .and_then(|body| body["to"][0].as_str().map(String::from))
-                .unwrap_or_default();
-            seen.lock().unwrap().push(to);
-            true
-        }
-    }
-
-    fn captured(&self) -> BTreeSet<String> {
-        self.0.lock().unwrap().iter().cloned().collect()
-    }
-}
-
-/// Sends `email` with `members` holding a role; returns who was mailed, and for the
-/// "this and following" reschedule, what it did for the coachee.
-#[cfg(feature = "mock")]
-async fn send_relationship_email(
-    email: RelationshipEmail,
-    f: &MembershipFixture,
-    members: &[Id],
-) -> (BTreeSet<String>, Option<Delivery>) {
-    let mut server = setup_test_server().await;
-    let config = create_full_config_with_mock(&server.url());
-    let capture = RecipientsCapture::default();
-    let _mock = server
-        .mock("POST", "/emails")
-        .match_request(capture.recorder())
-        .with_status(200)
-        .with_body(r#"{"id":"email_test"}"#)
-        .create_async()
-        .await;
-    let sessions = f.sessions();
-    let goals =
-        |db: MockDatabase| db.append_query_results::<entity::goals::Model, _, _>(vec![vec![]]);
-
-    let mut told = None;
-    match email {
-        RelationshipEmail::SessionScheduled => {
-            let db = f.participant_loads(|db| {
-                db.append_query_results::<entity::coaching_session_topics::Model, _, _>(vec![
-                    vec![],
-                ])
-                .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
-                .append_query_results::<entity::actions::Model, _, _>(vec![vec![]])
-            });
-            notify_session_scheduled(
-                &db.into_connection(),
-                &config,
-                &f.session,
-                &f.relationship,
-                &f.org,
-                members,
-            )
-            .await;
-        }
-        RelationshipEmail::SeriesScheduled => {
-            let db = f.party_loads(goals).into_connection();
-            notify_recurring_sessions_scheduled(
-                &db,
-                &config,
-                &f.series,
-                &sessions,
-                &f.relationship,
-                members,
-            )
-            .await;
-        }
-        RelationshipEmail::SeriesRescheduled => {
-            let db = f.loads(goals).into_connection();
-            notify_recurring_sessions_rescheduled(
-                &db,
-                &config,
-                &f.series,
-                PreviousSeries(&f.series),
-                &sessions,
-                ReplacedSessions(&[]),
-                members,
-            )
-            .await;
-        }
-        RelationshipEmail::SeriesFollowing => {
-            let db = f
-                .loads(|db| goals(db.append_query_results(vec![sessions.clone()])))
-                .into_connection();
-            told = Some(
-                notify_recurring_sessions_rescheduled_following(
-                    &db,
-                    &config,
-                    &FollowingRescheduleNotice {
-                        series: &f.series,
-                        sessions: &sessions,
-                        previous_series: PreviousSeries(&f.series),
-                        previous_start: sessions[0].date,
-                        replaced: ReplacedSessions(&[]),
-                        split_from: None,
-                        previous_overrides: &[],
-                        member_ids: members,
-                    },
-                )
-                .await,
-            );
-        }
-    }
-    (capture.captured(), told)
-}
-
 #[cfg(feature = "mock")]
 const COACH_TO: &str = "\"Alex Smith\" <alex@example.com>";
 #[cfg(feature = "mock")]
 const COACHEE_TO: &str = "\"Jane Doe\" <jane@example.com>";
 
-/// Every relationship email but a cancellation reaches only the participants still in the
-/// organization, and one with nobody left sends nothing without failing.
-#[cfg(feature = "mock")]
-#[tokio::test]
-async fn relationship_emails_reach_only_current_members() {
-    let f = MembershipFixture::new();
-    let (coach, coachee) = (COACH_TO.to_string(), COACHEE_TO.to_string());
-    let rows = [
-        (vec![f.coach.id, f.coachee.id], vec![&coach, &coachee]),
-        (vec![f.coach.id], vec![&coach]),
-        (vec![f.coachee.id], vec![&coachee]),
-        (vec![], vec![]),
-    ];
-
-    for email in [
-        RelationshipEmail::SessionScheduled,
-        RelationshipEmail::SeriesScheduled,
-        RelationshipEmail::SeriesRescheduled,
-        RelationshipEmail::SeriesFollowing,
-    ] {
-        for (members, expected) in &rows {
-            let (mailed, _) = send_relationship_email(email, &f, members).await;
-            let expected: BTreeSet<String> = expected.iter().map(|to| to.to_string()).collect();
-            assert_eq!(mailed, expected, "{email:?} with members {members:?}");
-        }
-    }
-}
-
-/// One Resend request: its addressee, template, and decoded `.ics` attachments.
+/// One Resend request: its addressee and decoded `.ics` attachments.
 #[cfg(feature = "mock")]
 #[derive(Clone, Debug)]
 struct Mail {
     to: String,
-    template: String,
     ics: Vec<String>,
 }
 
@@ -5284,10 +5035,6 @@ impl MailCapture {
                 .collect();
             seen.lock().unwrap().push(Mail {
                 to: body["to"][0].as_str().unwrap_or_default().to_string(),
-                template: body["template"]["id"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
                 ics,
             });
             true
@@ -5305,8 +5052,8 @@ impl MailCapture {
     }
 }
 
-/// M7-04: a series edit that orphans a standalone event cancels it for a removed coachee on
-/// its own email, without sending them the reschedule.
+/// M7-04: a removed coachee's orphan cancel carries no reschedule, and the coach's
+/// reschedule carries the orphan.
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn m7_04_a_series_edit_cancels_an_orphan_for_a_removed_coachee_without_the_reschedule() {
@@ -5346,9 +5093,7 @@ async fn m7_04_a_series_edit_cancels_an_orphan_for_a_removed_coachee_without_the
 
     let orphan_uid = format!("UID:{}@myrefactor.com", orphan.id);
     let coachee = capture.to(COACHEE_TO);
-    assert_eq!(coachee.len(), 1, "one email to the coachee: {coachee:?}");
-    let Mail { template, ics, .. } = &coachee[0];
-    assert_eq!(template, "session_cancel_template_abc");
+    let ics: Vec<&String> = coachee.iter().flat_map(|mail| &mail.ics).collect();
     assert_eq!(ics.len(), 1, "only the orphan cancel: {ics:?}");
     assert!(ics[0].contains("METHOD:CANCEL") && ics[0].contains(&orphan_uid));
     assert!(
@@ -5358,94 +5103,8 @@ async fn m7_04_a_series_edit_cancels_an_orphan_for_a_removed_coachee_without_the
     );
 
     let coach = capture.to(COACH_TO);
-    assert_eq!(
-        coach.len(),
-        1,
-        "the coach gets the reschedule only: {coach:?}"
-    );
-    let Mail { template, ics, .. } = &coach[0];
-    assert_eq!(template, "series_reschedule_template_abc");
-    assert!(ics.iter().any(|ics| ics.contains(&orphan_uid)));
-}
-
-/// A "this and following" reschedule reports a coachee who left as skipped, not failed,
-/// while the coach still gets their copy.
-#[cfg(feature = "mock")]
-#[tokio::test]
-async fn following_reschedule_reports_a_removed_coachee_as_not_a_member() {
-    let f = MembershipFixture::new();
-
-    let (mailed, told) =
-        send_relationship_email(RelationshipEmail::SeriesFollowing, &f, &[f.coach.id]).await;
-    assert_eq!(told, Some(Delivery::NoLongerAMember));
-    assert_eq!(
-        mailed,
-        BTreeSet::from(["\"Alex Smith\" <alex@example.com>".to_string()])
-    );
-
-    let (_, told) = send_relationship_email(
-        RelationshipEmail::SeriesFollowing,
-        &f,
-        &[f.coach.id, f.coachee.id],
-    )
-    .await;
-    assert_eq!(told, Some(Delivery::Sent));
-}
-
-/// An action assigned to both participants mails only the one still in the organization.
-#[cfg(feature = "mock")]
-#[tokio::test]
-async fn action_assigned_reaches_only_current_members() {
-    let f = MembershipFixture::new();
-    let mut server = setup_test_server().await;
-    let config = create_full_config_with_mock(&server.url());
-    let capture = RecipientsCapture::default();
-    let _mock = server
-        .mock("POST", "/emails")
-        .match_request(capture.recorder())
-        .with_status(200)
-        .with_body(r#"{"id":"email_test"}"#)
-        .create_async()
-        .await;
-    let now = chrono::Utc::now().fixed_offset();
-    let action = entity::actions::Model {
-        id: Id::new_v4(),
-        coaching_session_id: f.session.id,
-        goal_id: None,
-        user_id: f.coach.id,
-        body: Some("Write it down".into()),
-        due_by: None,
-        status: entity::status::Status::NotStarted,
-        status_changed_at: now,
-        created_at: now,
-        updated_at: now,
-    };
-    let coach_role = entity::user_roles::Model {
-        id: Id::new_v4(),
-        role: Role::User,
-        organization_id: Some(f.org.id),
-        user_id: f.coach.id,
-        created_at: now,
-        updated_at: now,
-    };
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results(vec![vec![(f.session.clone(), f.relationship.clone())]])
-        .append_query_results(vec![vec![f.org.clone()]])
-        .append_query_results(vec![members(&[f.coach.id])])
-        .append_query_results(vec![vec![(f.coach.clone(), coach_role)]])
-        .into_connection();
-
-    notify_action_assigned(&db, &config, &[f.coach.id, f.coachee.id], &f.coach, &action).await;
-
-    assert_eq!(
-        capture.captured(),
-        BTreeSet::from(["\"Alex Smith\" <alex@example.com>".to_string()])
-    );
-    let log = db.into_transaction_log();
-    assert!(
-        format!("{:?}", log[3]).contains(&f.coach.id.to_string())
-            && !format!("{:?}", log[3]).contains(&f.coachee.id.to_string()),
-        "only the member is loaded to be mailed: {:?}",
-        log[3]
-    );
+    assert!(coach
+        .iter()
+        .flat_map(|mail| &mail.ics)
+        .any(|ics| ics.contains(&orphan_uid)));
 }

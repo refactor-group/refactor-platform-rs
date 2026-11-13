@@ -22,6 +22,15 @@ use serde_json::json;
 
 use crate::test_utils::sqlite::{ids, TestApp, NON_PARTICIPANTS};
 
+/// COACH's `verb` on SG1 under S3, a session COACH is in and SG1 is not.
+async fn sg1_under_s3(app: &mut TestApp, verb: &str) -> StatusCode {
+    let path = format!(
+        "/coaching_sessions/{}/transcript_suggestions/{}/{verb}",
+        app.fixture.s3, app.fixture.sg1
+    );
+    app.expect(Caller::Coach, Method::POST, &path, None).await.0
+}
+
 /// S1's suggestions path, plus `suffix`.
 fn suggestions(app: &TestApp, suffix: &str) -> String {
     format!(
@@ -275,6 +284,15 @@ async fn non_participants_cannot_accept_a_suggestion() {
             assert_eq!(status, StatusCode::NOT_FOUND, "{caller:?}");
         }
         assert_eq!(suggestion_state(&app).await, before);
+
+        // The matrix's note: a suggestion outside the session in the path is not found.
+        let s3_before = session_content(app.db(), app.fixture.s3).await;
+        assert_eq!(
+            sg1_under_s3(&mut app, "accept").await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(suggestion_state(&app).await, before);
+        assert_eq!(session_content(app.db(), app.fixture.s3).await, s3_before);
     })
     .await;
 }
@@ -344,6 +362,35 @@ async fn non_participants_cannot_dismiss_or_restore_a_suggestion() {
             }
         }
         assert_eq!(suggestion_state(&app).await, before);
+
+        // The matrix's note: an unknown suggestion is not found.
+        let unknown = suggestions(&app, &format!("/{}/dismiss", Id::new_v4()));
+        let (status, _) = app
+            .expect(Caller::Coach, Method::POST, &unknown, None)
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // The matrix's note: a suggestion outside the session in the path is not found.
+        assert_eq!(
+            sg1_under_s3(&mut app, "dismiss").await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(suggestion_state(&app).await, before);
+
+        // Dismissed first, so a restore that got through would show.
+        let dismiss = suggestions(&app, &format!("/{sg1}/dismiss"));
+        let (status, _) = app
+            .expect(Caller::Coach, Method::POST, &dismiss, None)
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(
+            sg1_under_s3(&mut app, "restore").await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            suggestion_outcome(app.db(), sg1).await,
+            (Status::Dismissed, None)
+        );
     })
     .await;
 }

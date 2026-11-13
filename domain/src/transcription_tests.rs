@@ -205,20 +205,6 @@ async fn find_for_session_rejects_a_missing_transcription() {
 }
 
 #[tokio::test]
-async fn find_for_session_rejects_a_transcription_under_another_session() {
-    let row = transcription(Id::new_v4(), TranscriptionStatus::Completed);
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results([[row.clone()]])
-        .into_connection();
-
-    let error = find_for_session(&db, row.id, Id::new_v4())
-        .await
-        .expect_err("another session's transcription must not resolve");
-
-    assert_eq!(error.error_kind, not_found());
-}
-
-#[tokio::test]
 async fn export_plain_text_refuses_every_non_completed_status_before_reading_segments() {
     let session = session(Id::new_v4());
 
