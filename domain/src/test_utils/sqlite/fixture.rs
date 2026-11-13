@@ -240,6 +240,24 @@ pub async fn seed_content_free_session(db: &DatabaseConnection, relationship_id:
     .await
 }
 
+/// A relationship in `organization_id` with one session holding an action assigned to the
+/// coach, one to the coachee and one to nobody. Seed it per test so list rows never see it.
+pub async fn seed_relationship_with_actions(
+    db: &DatabaseConnection,
+    organization_id: Id,
+    coach: Id,
+    coachee: Id,
+) -> (Id, [Id; 3]) {
+    let relationship = seed_relationship(db, organization_id, coach, coachee).await;
+    let session = seed_content_free_session(db, relationship).await;
+    let actions = [
+        seed_action(db, session, coach, Some(coach)).await,
+        seed_action(db, session, coach, Some(coachee)).await,
+        seed_action(db, session, coach, None).await,
+    ];
+    (relationship, actions)
+}
+
 /// Drops every role `user_id` holds in `organization_id`, with no audit row.
 pub async fn remove_roles(db: &DatabaseConnection, user_id: Id, organization_id: Id) {
     user_roles::Entity::delete_many()

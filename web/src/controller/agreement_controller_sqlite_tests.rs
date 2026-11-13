@@ -12,7 +12,7 @@ use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 use serde_json::{json, Value};
 
-use crate::test_utils::sqlite::{ids, TestApp, NON_PARTICIPANTS};
+use crate::test_utils::sqlite::{assert_signed_out_refused, ids, TestApp, NON_PARTICIPANTS};
 
 /// An agreement body for `session`.
 fn agreement(session: Id) -> Value {
@@ -267,5 +267,21 @@ async fn a_removed_coachee_cannot_reach_their_sessions_agreements() {
         assert_eq!(agreement_body(app.db(), ag3).await, body);
         assert_eq!(session_content(app.db(), s3).await, content);
     })
+    .await;
+}
+
+/// AGR-12
+#[tokio::test]
+async fn signed_out_callers_cannot_reach_agreements() {
+    within_time_limit(assert_signed_out_refused(|app| {
+        let (s1, ag1) = (app.fixture.s1, app.fixture.ag1);
+        vec![
+            (Method::GET, format!("/agreements?coaching_session_id={s1}")),
+            (Method::POST, "/agreements".to_string()),
+            (Method::GET, format!("/agreements/{ag1}")),
+            (Method::PUT, format!("/agreements/{ag1}")),
+            (Method::DELETE, format!("/agreements/{ag1}")),
+        ]
+    }))
     .await;
 }

@@ -3,7 +3,6 @@
 //! Each test signs in as one kind of person, calls one of this module's routes against a
 //! real database, and checks that the right people get through and everyone else is refused
 //! with nothing changed.
-//! How the routes behave once allowed is tested in `goal_controller_tests.rs`.
 //! `web/src/test_utils/README.md` describes the people and the database.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -91,6 +90,7 @@ async fn participants_link_a_goal_to_another_session_of_the_relationship() {
 
             assert_eq!(reply.status, StatusCode::OK, "{caller:?}");
             assert_eq!(reply.body["status_code"], 201, "{caller:?}");
+            assert_eq!(reply.body["data"]["goal_id"], json!(g1), "{caller:?}");
             assert_eq!(
                 session_goals(app.db(), session).await,
                 ids([g1]),
@@ -256,17 +256,21 @@ async fn linking_a_goal_from_another_relationship_is_refused() {
         let (s1, g2) = (app.fixture.s1, app.fixture.g2);
         let links = session_goals(app.db(), s1).await;
 
-        let (status, _) = app
-            .expect(
-                Caller::Coach,
-                Method::POST,
-                &format!("/coaching_sessions/{s1}/goals"),
-                Some(json!({ "goal_id": g2 })),
-            )
-            .await;
-
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(session_goals(app.db(), s1).await, links);
+        for (goal, expected) in [
+            (g2, StatusCode::UNPROCESSABLE_ENTITY),
+            (Id::new_v4(), StatusCode::NOT_FOUND),
+        ] {
+            let (status, _) = app
+                .expect(
+                    Caller::Coach,
+                    Method::POST,
+                    &format!("/coaching_sessions/{s1}/goals"),
+                    Some(json!({ "goal_id": goal })),
+                )
+                .await;
+            assert_eq!(status, expected, "goal {goal}");
+            assert_eq!(session_goals(app.db(), s1).await, links, "goal {goal}");
+        }
     })
     .await;
 }

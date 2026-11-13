@@ -1,5 +1,5 @@
 //! The goal status route through the router, sign-in and its `protect` layer, against a mock
-//! database: it writes the requested status.
+//! database: an unknown status value is refused with nothing written.
 
 use std::sync::Arc;
 
@@ -8,12 +8,11 @@ use axum::{middleware::from_fn_with_state, routing::put, Router};
 use chrono::Utc;
 use domain::{goals, Id};
 use sea_orm::{DatabaseConnection, MockDatabase};
-use serde_json::json;
 
 use super::by_id;
 use crate::controller::goal_controller::update_status;
 use crate::extractors::relationship_access_test_support::{
-    self as support, assert_refusal, assert_status_written, json_body, Caller, Fixture,
+    self as support, assert_refusal, Caller, Fixture,
 };
 use crate::AppState;
 
@@ -47,36 +46,6 @@ fn reaching_goal(w: &Fixture, caller: Caller, goal: &goals::Model) -> MockDataba
     w.signed_in(caller)
         .append_query_results([vec![goal.clone()]])
         .append_query_results([vec![w.relationship.clone()]])
-}
-
-#[tokio::test]
-async fn goal_04_coach_updates_the_goal_status() {
-    let w = support::fixture();
-    let goal = goal(&w);
-    let on_hold = goals::Model {
-        status: domain::status::Status::OnHold,
-        ..goal.clone()
-    };
-    let db = Arc::new(
-        reaching_goal(&w, Caller::Coach, &goal)
-            // The read, then the UPDATE ... RETURNING.
-            .append_query_results([vec![goal.clone()]])
-            .append_query_results([vec![on_hold]])
-            .into_connection(),
-    );
-    let response = support::send(
-        status_routes(&db),
-        &db,
-        &w.coach.email,
-        "PUT",
-        &format!("/goals/{}/status?value=on_hold", goal.id),
-        None,
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK, "GOAL-04");
-    let body = json_body(response).await;
-    assert_eq!(body["data"]["id"], json!(goal.id), "GOAL-04");
-    assert_status_written("GOAL-04", &db, "on_hold");
 }
 
 #[tokio::test]

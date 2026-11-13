@@ -14,7 +14,7 @@ use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 use serde_json::{json, Value};
 
-use crate::test_utils::sqlite::{ids, TestApp, NON_PARTICIPANTS};
+use crate::test_utils::sqlite::{assert_signed_out_refused, ids, TestApp, NON_PARTICIPANTS};
 
 /// An action body in `session` with `assignee_ids`.
 fn action(session: Id, assignee_ids: &[Id]) -> Value {
@@ -117,12 +117,20 @@ async fn participants_read_the_action() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
         let a1 = app.fixture.a1;
+        let coach = app.fixture.user(Caller::Coach);
 
         for caller in [Caller::Coach, Caller::Coachee] {
+            let reply = app
+                .send(caller, Method::GET, &format!("/actions/{a1}"), None)
+                .await;
             assert_eq!(
-                app.expect(caller, Method::GET, &format!("/actions/{a1}"), None)
-                    .await,
+                (reply.status, reply.ids()),
                 (StatusCode::OK, ids([a1])),
+                "{caller:?}"
+            );
+            assert_eq!(
+                reply.body["data"]["assignee_ids"],
+                json!([coach]),
                 "{caller:?}"
             );
         }
@@ -151,6 +159,11 @@ async fn participants_create_an_action_assigned_to_the_coachee() {
 
             assert_eq!(reply.status, StatusCode::OK, "{caller:?}");
             assert_eq!(reply.body["status_code"], 201, "{caller:?}");
+            assert_eq!(
+                reply.body["data"]["assignee_ids"],
+                json!([coachee]),
+                "{caller:?}"
+            );
             let created: Vec<Id> = reply.ids().into_iter().collect();
             let [new_action] = created[..] else {
                 panic!("{caller:?}: one new action id, got {created:?}");
@@ -207,17 +220,20 @@ async fn participants_update_the_action_status() {
             let mut app = TestApp::new().await;
             let a1 = app.fixture.a1;
 
-            assert_eq!(
-                app.expect(
+            let reply = app
+                .send(
                     caller,
                     Method::PUT,
                     &format!("/actions/{a1}/status?value=completed"),
-                    None
+                    None,
                 )
-                .await,
+                .await;
+            assert_eq!(
+                (reply.status, reply.ids()),
                 (StatusCode::OK, ids([a1])),
                 "{caller:?}"
             );
+            assert_eq!(reply.body["data"]["status"], "Completed", "{caller:?}");
             let status = action_state(app.db(), a1).await.map(|(_, status)| status);
             assert_eq!(status, Some(Status::Completed), "{caller:?}");
         }
@@ -450,16 +466,16 @@ async fn a_coach_edits_an_action_still_assigned_to_a_coachee_who_left() {
             "assignee_ids": [removed],
         });
 
-        assert_eq!(
-            app.expect(
+        let reply = app
+            .send(
                 Caller::Coach,
                 Method::PUT,
                 &format!("/actions/{a6}"),
-                Some(body)
+                Some(body),
             )
-            .await,
-            (StatusCode::OK, ids([a6]))
-        );
+            .await;
+        assert_eq!((reply.status, reply.ids()), (StatusCode::OK, ids([a6])));
+        assert_eq!(reply.body["data"]["assignee_ids"], json!([removed]));
         assert_eq!(
             action_state(app.db(), a6).await,
             Some((Some("Edited kumquat".to_string()), Status::InProgress))
@@ -517,5 +533,33 @@ async fn a_goal_from_another_relationship_is_refused() {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(session_content(app.db(), s1).await, content);
     })
+    .await;
+}
+
+/// ACT-42
+#[tokio::test]
+async fn signed_out_callers_cannot_reach_actions() {
+    within_time_limit(assert_signed_out_refused(|app| {
+        let fixture = &app.fixture;
+        let (o1, r1, s1, a1) = (fixture.o1, fixture.r1, fixture.s1, fixture.a1);
+        let coachee = fixture.user(Caller::Coachee);
+        vec![
+            (Method::GET, format!("/actions?coaching_session_id={s1}")),
+            (Method::POST, "/actions".to_string()),
+            (Method::GET, format!("/actions/{a1}")),
+            (Method::PUT, format!("/actions/{a1}")),
+            (Method::PUT, format!("/actions/{a1}/status?value=completed")),
+            (Method::DELETE, format!("/actions/{a1}")),
+            (Method::GET, format!("/users/{coachee}/actions")),
+            (
+                Method::GET,
+                format!("/organizations/{o1}/coaching_relationships/actions"),
+            ),
+            (
+                Method::GET,
+                format!("/organizations/{o1}/coaching_relationships/{r1}/actions"),
+            ),
+        ]
+    }))
     .await;
 }

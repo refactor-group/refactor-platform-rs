@@ -285,6 +285,7 @@ How to read the tables:
 | NOTE-08 | POST /notes `{coaching_session_id: S1}` | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, nothing written | `web/src/controller/note_controller.rs:46` | [tightened] Unknown session: 404 |
 | NOTE-09 | PUT /notes/N1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, N1 unchanged | `web/src/extractors/note_access.rs:49` | [tightened] |
 | NOTE-10 | GET, PUT a note in S3; POST `{coaching_session_id: S3}` | REMOVED | 403 | `web/src/extractors/note_access.rs:49`; `web/src/controller/note_controller.rs:46` | [tightened] |
+| NOTE-11 | any /notes route | not signed in | 401 | `web/src/middleware/auth.rs:25` | |
 
 ### 4.5 Agreements (`AGR`)
 
@@ -301,6 +302,7 @@ How to read the tables:
 | AGR-09 | POST /agreements `{coaching_session_id: S1}` | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, nothing written | `web/src/controller/agreement_controller.rs:49` | [tightened] Unknown session: 404 |
 | AGR-10 | PUT, DELETE /agreements/AG1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, AG1 unchanged | `web/src/extractors/agreement_access.rs:48` | [tightened] |
 | AGR-11 | GET, PUT, DELETE an agreement in S3; POST `{coaching_session_id: S3}` | REMOVED | 403 | `web/src/extractors/agreement_access.rs:48`; `web/src/controller/agreement_controller.rs:49` | [tightened] |
+| AGR-12 | any /agreements route | not signed in | 401 | `web/src/middleware/auth.rs:25` | |
 
 ### 4.6 Actions (`ACT`)
 
@@ -347,6 +349,8 @@ How to read the tables:
 | ACT-38 | PUT /actions/A6 editing the body, REMOVED still assigned | COACH | 200, A6 updated, no email | `web/src/controller/action_controller.rs:75` | [membership] Only newly added assignees are checked |
 | ACT-39 | PUT /actions/A7 adding REMOVED_ID as an assignee | COACH | 409 `assignee_not_a_member`, A7 unchanged, no email | `web/src/controller/action_controller.rs:75`; `domain/src/coaching_relationship.rs:117` | [membership] `details: {reason, organization_id, user_id}` |
 | ACT-40 | POST /actions `{coaching_session_id: S1, goal_id: G2}` | COACH | 422, nothing written | `web/src/controller/action_controller.rs:81` | [tightened] G2 belongs to R2; an action's goal must be in its relationship |
+| ACT-41 | GET /organizations/O1/coaching_relationships/actions | COACHEE, once they also coach MEMBER in a new O1 relationship R4 whose session holds one action each for COACHEE, MEMBER and nobody | 200, R1 [A2 A3], R2 [A5], R4 [all three] | `entity_api/src/action.rs:615`, `:497` | [rows] Visibility is decided per relationship: everything where the caller coaches, own or unassigned where they are the coachee |
+| ACT-42 | any actions route (`/actions`, `/users/{id}/actions`, the organization action lists) | not signed in | 401 | `web/src/middleware/auth.rs:25` | |
 
 ### 4.7 Goals (`GOAL`)
 
@@ -378,8 +382,13 @@ How to read the tables:
 | GOAL-24 | GET /users/{COACHEE_ID}/goals | COACH, MEMBER, ADMIN, SUPER | 403 | `web/src/protect/users/goals.rs:20` | Self only |
 | GOAL-25 | POST /goals `{coaching_relationship_id: R1}` | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, nothing written | `web/src/controller/goal_controller.rs:81` | [tightened] Unknown relationship: 404. REMOVED on R3: 403 |
 | GOAL-26 | POST /coaching_sessions/S1/goals, DELETE /coaching_sessions/S1/goals/G1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, links unchanged | `web/src/controller/coaching_session/goal_controller.rs:47`, `:97` | [tightened] REMOVED on S3: 403 |
-| GOAL-27 | POST /coaching_sessions/S1/goals `{goal_id: G2}` | COACH | 422, nothing linked | `web/src/controller/coaching_session/goal_controller.rs:59` | [tightened] G2 belongs to R2; a goal links only to sessions in its own relationship |
+| GOAL-27 | POST /coaching_sessions/S1/goals `{goal_id: G2}` | COACH | 422, nothing linked | `web/src/controller/coaching_session/goal_controller.rs:59`, `:58` | [tightened] G2 belongs to R2; a goal links only to sessions in its own relationship. Unknown goal: 404 |
 | GOAL-28 | POST /goals `{coaching_relationship_id: R1, created_in_session_id: S2}` | COACH | 422, nothing written | `web/src/controller/goal_controller.rs:89` | [tightened] S2 is in R2; a new goal's created-in session must be in its relationship. Unknown session: 404 |
+| GOAL-29 | PUT /goals/G1/status?value=on_hold | COACH, COACHEE | 200, G1 with status `OnHold` | `web/src/protect/goals.rs:73` | |
+| GOAL-30 | GET /goals/G1/progress | COACH, COACHEE | 200, G1's progress: one linked session, no actions | `web/src/protect/goals.rs:73` | |
+| GOAL-31 | PUT /goals/G1/status, GET /goals/G1/progress | non-participants | 403, G1 unchanged | `web/src/protect/goals.rs:73` | Unknown goal: 404 |
+| GOAL-32 | POST /goals `{coaching_relationship_id: R1, created_in_session_id: S1}` | COACH | 200 (201), new goal linked to S1 | `web/src/controller/goal_controller.rs:89` | The allowed side of GOAL-28 |
+| GOAL-33 | any goal route (`/goals`, `/coaching_sessions/.../goals`, `/users/{id}/goals`, `goal_progress`) | not signed in | 401 | `web/src/middleware/auth.rs:25` | |
 
 ### 4.8 Topics (`TOP`)
 
@@ -670,6 +679,7 @@ a frozen `domain` test, or by hand with the reason.
 | NOTE-08 | `web/src/controller/note_controller_sqlite_tests.rs::non_participants_cannot_create_a_note_in_the_session` |
 | NOTE-09 | `web/src/controller/note_controller_sqlite_tests.rs::non_participants_cannot_update_the_note` |
 | NOTE-10 | `web/src/controller/note_controller_sqlite_tests.rs::a_removed_coachee_cannot_reach_their_sessions_notes` |
+| NOTE-11 | `web/src/controller/note_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_notes` |
 | AGR-01 | `web/src/controller/agreement_controller_sqlite_tests.rs::participants_list_the_sessions_agreements` |
 | AGR-02 | `web/src/controller/agreement_controller_sqlite_tests.rs::non_participants_cannot_list_the_sessions_agreements` |
 | AGR-03 | `web/src/controller/agreement_controller_sqlite_tests.rs::a_removed_coachee_cannot_list_their_sessions_agreements` |
@@ -681,6 +691,7 @@ a frozen `domain` test, or by hand with the reason.
 | AGR-09 | `web/src/controller/agreement_controller_sqlite_tests.rs::non_participants_cannot_create_an_agreement_in_the_session` |
 | AGR-10 | `web/src/controller/agreement_controller_sqlite_tests.rs::non_participants_cannot_change_the_agreement` |
 | AGR-11 | `web/src/controller/agreement_controller_sqlite_tests.rs::a_removed_coachee_cannot_reach_their_sessions_agreements` |
+| AGR-12 | `web/src/controller/agreement_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_agreements` |
 | ACT-01 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::a_coach_lists_actions_per_relationship` |
 | ACT-02 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::a_coachee_lists_only_own_and_unassigned_actions_per_relationship` |
 | ACT-03 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::another_coach_lists_only_their_relationships_actions` |
@@ -722,6 +733,8 @@ a frozen `domain` test, or by hand with the reason.
 | ACT-38 | `web/src/controller/action_controller_sqlite_tests.rs::a_coach_edits_an_action_still_assigned_to_a_coachee_who_left` |
 | ACT-39 | `web/src/controller/action_controller_sqlite_tests.rs::adding_a_coachee_who_left_as_an_assignee_is_refused` |
 | ACT-40 | `web/src/controller/action_controller_sqlite_tests.rs::a_goal_from_another_relationship_is_refused` |
+| ACT-41 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::a_coachee_who_also_coaches_lists_each_relationship_by_their_role_in_it` |
+| ACT-42 | `web/src/controller/action_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_actions` |
 | GOAL-01 | `web/src/controller/goal_controller_sqlite_tests.rs::participants_list_the_relationships_goals` |
 | GOAL-02 | `web/src/controller/goal_controller_sqlite_tests.rs::non_participants_cannot_list_the_relationships_goals` |
 | GOAL-03 | `web/src/controller/goal_controller_sqlite_tests.rs::a_removed_coachee_cannot_list_their_relationships_goals` |
@@ -750,6 +763,11 @@ a frozen `domain` test, or by hand with the reason.
 | GOAL-26 | `web/src/controller/coaching_session/goal_controller_sqlite_tests.rs::non_participants_cannot_change_the_sessions_goal_links` |
 | GOAL-27 | `web/src/controller/coaching_session/goal_controller_sqlite_tests.rs::linking_a_goal_from_another_relationship_is_refused` |
 | GOAL-28 | `web/src/controller/goal_controller_sqlite_tests.rs::a_created_in_session_from_another_relationship_is_refused` |
+| GOAL-29 | `web/src/controller/goal_controller_sqlite_tests.rs::participants_update_the_goal_status` |
+| GOAL-30 | `web/src/controller/goal_controller_sqlite_tests.rs::participants_read_the_goals_progress` |
+| GOAL-31 | `web/src/controller/goal_controller_sqlite_tests.rs::non_participants_cannot_set_the_goal_status_or_read_its_progress` |
+| GOAL-32 | `web/src/controller/goal_controller_sqlite_tests.rs::a_coach_creates_a_goal_from_a_session_of_the_relationship` |
+| GOAL-33 | `web/src/controller/goal_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_goals` |
 | TOP-01 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::participants_list_the_sessions_topics` |
 | TOP-02 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::non_participants_cannot_list_the_sessions_topics` |
 | TOP-03 | `web/src/controller/coaching_session/topic_controller_sqlite_tests.rs::participants_add_a_topic_authored_by_themselves` |

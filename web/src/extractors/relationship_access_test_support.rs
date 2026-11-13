@@ -1,7 +1,6 @@
 //! Shared scaffold for the relationship-scoped access tests: one relationship with one
 //! session, callers inside and outside it, and a signed-in request through the router.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
@@ -14,7 +13,7 @@ use chrono::Utc;
 use domain::user::Backend;
 use domain::{coaching_relationships, coaching_sessions, user_roles, users, Id};
 use password_auth::generate_hash;
-use sea_orm::{DatabaseBackend, DatabaseConnection, MockDatabase, Value};
+use sea_orm::{DatabaseBackend, DatabaseConnection, MockDatabase};
 use service::config::Config;
 use time::Duration;
 use tower::ServiceExt;
@@ -116,8 +115,6 @@ pub(crate) fn fixture() -> Fixture {
 pub(crate) enum Caller {
     Coach,
     Coachee,
-    /// The coach, with no role in the relationship's organization.
-    Removed,
     /// A SuperAdmin, not in the relationship.
     SuperAdmin,
 }
@@ -125,7 +122,7 @@ pub(crate) enum Caller {
 impl Fixture {
     fn caller(&self, caller: Caller) -> &users::Model {
         match caller {
-            Caller::Coach | Caller::Removed => &self.coach,
+            Caller::Coach => &self.coach,
             Caller::Coachee => &self.coachee,
             Caller::SuperAdmin => &self.super_admin,
         }
@@ -136,31 +133,12 @@ impl Fixture {
         let user = self.caller(caller).clone();
         let db = MockDatabase::new(DatabaseBackend::Postgres);
         let role = match caller {
-            Caller::Removed => {
-                return db
-                    .append_query_results([vec![(user.clone(), None::<user_roles::Model>)]])
-                    .append_query_results([vec![(user, None::<user_roles::Model>)]])
-            }
             Caller::SuperAdmin => role_as(users::Role::SuperAdmin, user.id, None),
             Caller::Coach | Caller::Coachee => role(user.id, self.organization_id),
         };
         db.append_query_results([vec![(user.clone(), role.clone())]])
             .append_query_results([vec![(user, role)]])
     }
-
-    /// `caller` signed in, with the session queued for the create's session check.
-    pub(crate) fn reaching_session(&self, caller: Caller) -> MockDatabase {
-        self.signed_in(caller)
-            .append_query_results([vec![(self.session.clone(), self.relationship.clone())]])
-    }
-}
-
-/// Rows for the organization-membership filter, keeping exactly `user_ids`.
-pub(crate) fn members(user_ids: &[Id]) -> Vec<BTreeMap<String, Value>> {
-    user_ids
-        .iter()
-        .map(|&user_id| BTreeMap::from([("user_id".to_string(), user_id.into())]))
-        .collect()
 }
 
 /// The app state over `db`, for routes layered with `from_fn_with_state`.
@@ -267,24 +245,6 @@ fn wrote(db: &DatabaseConnection) -> bool {
                 .any(|verb| sql.starts_with(verb))
         })
     })
-}
-
-/// Asserts the one UPDATE run set `status` to `value`, judged by its SET clause.
-pub(crate) fn assert_status_written(row: &str, db: &DatabaseConnection, value: &str) {
-    let set_clauses: Vec<String> = db
-        .clone()
-        .into_transaction_log()
-        .iter()
-        .flat_map(|t| t.statements().iter().map(|s| s.to_string()))
-        .filter(|sql| sql.trim_start().to_uppercase().starts_with("UPDATE"))
-        .filter_map(|sql| sql.split(" WHERE ").next().map(str::to_string))
-        .collect();
-    assert_eq!(set_clauses.len(), 1, "{row}: {set_clauses:?}");
-    assert!(
-        set_clauses[0].contains(&format!(r#""status" = CAST('{value}' AS "status")"#)),
-        "{row}: {}",
-        set_clauses[0]
-    );
 }
 
 /// Asserts `response` is the refusal `expected` and nothing was written.

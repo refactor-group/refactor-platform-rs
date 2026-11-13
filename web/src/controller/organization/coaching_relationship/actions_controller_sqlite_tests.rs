@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use axum::http::{Method, StatusCode};
+use domain::test_utils::sqlite::fixture::seed_relationship_with_actions;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 
@@ -251,6 +252,32 @@ async fn a_coach_lists_actions_of_a_relationship_whose_coachee_left() {
 
         assert_eq!(
             app.expect(Caller::Coach, Method::GET, &path, None).await,
+            (StatusCode::OK, expected)
+        );
+    })
+    .await;
+}
+
+/// ACT-41
+#[tokio::test]
+async fn a_coachee_who_also_coaches_lists_each_relationship_by_their_role_in_it() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (coachee, member) = (
+            app.fixture.user(Caller::Coachee),
+            app.fixture.user(Caller::Member),
+        );
+        let (r4, r4_actions) =
+            seed_relationship_with_actions(app.db(), app.fixture.o1, coachee, member).await;
+        let fixture = &app.fixture;
+        let expected = BTreeMap::from([
+            (fixture.r1, ids([fixture.a2, fixture.a3])),
+            (fixture.r2, ids([fixture.a5])),
+            (r4, ids(r4_actions)),
+        ]);
+
+        assert_eq!(
+            batch_actions(&mut app, Caller::Coachee, "").await,
             (StatusCode::OK, expected)
         );
     })

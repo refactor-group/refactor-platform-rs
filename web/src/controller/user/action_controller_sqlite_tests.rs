@@ -2,7 +2,6 @@
 //!
 //! Each test signs in as one kind of person, asks for a list against a real database, and
 //! checks that it holds exactly the right records, or that the request is refused.
-//! How the routes behave once allowed is tested in `action_controller_tests.rs`.
 //! `web/src/test_utils/README.md` describes the people and the database.
 
 use std::collections::BTreeSet;

@@ -207,10 +207,5 @@ pub async fn batch_index(
 }
 
 #[cfg(test)]
-#[cfg(feature = "mock")]
-#[path = "goal_controller_tests.rs"]
-mod tests;
-
-#[cfg(test)]
 #[path = "goal_controller_sqlite_tests.rs"]
 mod sqlite_tests;
