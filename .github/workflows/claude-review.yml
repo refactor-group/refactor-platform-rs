@@ -25,6 +25,9 @@ env:
   # Strip Anthropic and Actions credentials from every command Claude runs.
   # GH_TOKEN survives, so `gh` keeps working.
   CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
+  # Subagents run in the foreground, so the reviewer cannot end its turn
+  # while a finder is still running and exit without posting a summary.
+  CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1"
   # Shared by both jobs; neither may edit files or run project code. Naming
   # Grep and Glob here is what makes them available on Linux.
   REVIEW_TOOLS: "Read,Grep,Glob,mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments:*),Bash(git -C pr-head log:*),Bash(git -C pr-head diff:*),Bash(git -C pr-head show:*)"
@@ -124,7 +127,9 @@ jobs:
             `pr-head/`; to read a file use the Read tool. Run one command
             per Bash call: pipes, `cd`, command substitution, chained
             commands, and redirects other than the heredoc described below
-            are denied.
+            are denied. Run git only as `git -C pr-head log|diff|show ...`,
+            with that relative path; an absolute path to pr-head is denied.
+            Give every subagent you launch these same command rules.
 
             Post each summary with a single `gh pr comment` command that
             carries the text in `--body`, or in a heredoc on `--body-file -`.
@@ -291,7 +296,9 @@ jobs:
             `pr-head/`; to read a file use the Read tool. Run one command
             per Bash call: pipes, `cd`, command substitution, chained
             commands, and redirects other than the heredoc described below
-            are denied.
+            are denied. Run git only as `git -C pr-head log|diff|show ...`,
+            with that relative path; an absolute path to pr-head is denied.
+            Give every subagent you launch these same command rules.
 
             Post each summary with a single `gh pr comment` command that
             carries the text in `--body`, or in a heredoc on `--body-file -`.
