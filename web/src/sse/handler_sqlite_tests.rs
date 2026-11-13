@@ -126,6 +126,27 @@ async fn both_participants_hear_of_an_action_assigned_to_the_coach() {
                 "{caller:?}"
             );
         }
+
+        let reply = app
+            .send(
+                Caller::Coach,
+                Method::DELETE,
+                &format!("/actions/{action}"),
+                None,
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::OK);
+
+        for (caller, listener) in &mut listeners {
+            let deleted: Vec<Value> = listener
+                .received()
+                .await
+                .into_iter()
+                .filter(|(name, _)| name == "action_deleted")
+                .map(|(_, data)| data["data"]["action_id"].clone())
+                .collect();
+            assert_eq!(deleted, vec![json!(action)], "{caller:?}");
+        }
     })
     .await;
 }
