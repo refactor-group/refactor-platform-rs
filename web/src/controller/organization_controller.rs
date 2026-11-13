@@ -1,7 +1,7 @@
 use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
-    super_admin_access::SuperAdminAccess,
+    organization_member_access::OrganizationMemberAccess, super_admin_access::SuperAdminAccess,
 };
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
@@ -57,14 +57,15 @@ pub async fn index(
 /// GET a particular Organization specified by its id.
 #[utoipa::path(
     get,
-    path = "/organizations/{id}",
+    path = "/organizations/{organization_id}",
     params(
         ApiVersion,
-        ("id" = Uuid, Path, description = "Organization id to retrieve")
+        ("organization_id" = Uuid, Path, description = "Organization id to retrieve")
     ),
     responses(
         (status = 200, description = "Successfully retrieved a certain Organization by its id", body = domain::organizations::Model),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Caller is not a member of the organization"),
         (status = 404, description = "Organization not found"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -76,7 +77,7 @@ pub async fn index(
 pub async fn read(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    Path(id): Path<Id>,
+    OrganizationMemberAccess(id): OrganizationMemberAccess,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET Organization by id: {id}");
 
@@ -125,10 +126,10 @@ pub async fn create(
 /// UPDATE a particular Organization specified by its primary key.
 #[utoipa::path(
     put,
-    path = "/organizations/{id}",
+    path = "/organizations/{organization_id}",
     params(
         ApiVersion,
-        ("id" = Uuid, Path, description = "Organization id to update")
+        ("organization_id" = Uuid, Path, description = "Organization id to update")
     ),
     request_body = domain::organizations::Model,
     responses(
@@ -166,10 +167,10 @@ pub async fn update(
 /// DELETE an Organization specified by its primary key.
 #[utoipa::path(
     delete,
-    path = "/organizations/{id}",
+    path = "/organizations/{organization_id}",
     params(
         ApiVersion,
-        ("id" = Uuid, Path, description = "Organization id to delete")
+        ("organization_id" = Uuid, Path, description = "Organization id to delete")
     ),
     responses(
         (status = 200, description = "Successfully deleted a certain Organization by its id", body = serde_json::Value),
@@ -199,8 +200,8 @@ pub async fn delete(
 /// Marks the organization archived; it drops out of default reads. SuperAdmin only.
 #[utoipa::path(
     post,
-    path = "/organizations/{id}/archive",
-    params(ApiVersion, ("id" = Uuid, Path, description = "Organization id to archive")),
+    path = "/organizations/{organization_id}/archive",
+    params(ApiVersion, ("organization_id" = Uuid, Path, description = "Organization id to archive")),
     responses(
         (status = 200, description = "Organization archived", body = domain::organizations::Model),
         (status = 401, description = "Unauthorized"),
@@ -229,8 +230,8 @@ pub async fn archive(
 /// Clears the archived marker; the organization reappears in default reads. SuperAdmin only.
 #[utoipa::path(
     post,
-    path = "/organizations/{id}/unarchive",
-    params(ApiVersion, ("id" = Uuid, Path, description = "Organization id to unarchive")),
+    path = "/organizations/{organization_id}/unarchive",
+    params(ApiVersion, ("organization_id" = Uuid, Path, description = "Organization id to unarchive")),
     responses(
         (status = 200, description = "Organization unarchived", body = domain::organizations::Model),
         (status = 401, description = "Unauthorized"),

@@ -174,13 +174,13 @@ How to read the tables:
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
-| REL-01 | GET /organizations/O1/coaching_relationships | COACH | 200, R1 R3 | `web/src/extractors/organization_member_access.rs:85`; `domain/src/coaching_relationship.rs:66` | [rows] participant filter |
+| REL-01 | GET /organizations/O1/coaching_relationships | COACH | 200, R1 R3 | `web/src/extractors/organization_member_access.rs:86`; `domain/src/coaching_relationship.rs:66` | [rows] participant filter |
 | REL-02 | GET /organizations/O1/coaching_relationships | COACHEE | 200, R1 R2 | same as REL-01 | [rows] |
 | REL-03 | GET /organizations/O1/coaching_relationships | OTHER_COACH | 200, R2 | same as REL-01 | [rows] |
 | REL-04 | GET /organizations/O1/coaching_relationships | MEMBER | 200, empty list | same as REL-01 | [rows] |
 | REL-05 | GET /organizations/O1/coaching_relationships | ADMIN | 200, R1 R2 R3 | `domain/src/coaching_relationship.rs:52`, `:61`; `entity_api/src/user.rs:236` | [rows] admin sees every relationship in the org |
 | REL-06 | GET /organizations/O1/coaching_relationships | SUPER | 200, R1 R2 R3 | `web/src/extractors/organization_member_access.rs:81`; `domain/src/coaching_relationship.rs:61` | [rows] |
-| REL-07 | GET /organizations/O1/coaching_relationships | OUTSIDER, REMOVED | 403 | `web/src/extractors/organization_member_access.rs:103` | Not a member of O1 |
+| REL-07 | GET /organizations/O1/coaching_relationships | OUTSIDER, REMOVED | 403 | `web/src/extractors/organization_member_access.rs:91` | Not a member of O1 |
 | REL-08 | GET /organizations/O1/coaching_relationships/R1 | COACH, COACHEE | 200, R1 with names | `web/src/extractors/coaching_relationship_access.rs:84` | |
 | REL-09 | GET /organizations/O1/coaching_relationships/R1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403 | `web/src/extractors/coaching_relationship_access.rs:84` | ADMIN and SUPER list R1 (REL-05, REL-06) but cannot read it |
 | REL-10 | GET /organizations/O2/coaching_relationships/R1 | COACH | 404 | `web/src/extractors/coaching_relationship_access.rs:78` | Path org must match the relationship's |
@@ -312,18 +312,18 @@ How to read the tables:
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
-| ACT-01 | GET /organizations/O1/coaching_relationships/actions | COACH | 200, `coachee_actions`: R1 [A1 A2 A3], R3 [A6 A7] | `web/src/extractors/organization_member_access.rs:85`; `entity_api/src/action.rs:615` | [rows] keyed by relationship id |
+| ACT-01 | GET /organizations/O1/coaching_relationships/actions | COACH | 200, `coachee_actions`: R1 [A1 A2 A3], R3 [A6 A7] | `web/src/extractors/organization_member_access.rs:86`; `entity_api/src/action.rs:615` | [rows] keyed by relationship id |
 | ACT-02 | GET /organizations/O1/coaching_relationships/actions | COACHEE | 200, R1 [A2 A3], R2 [A5]; not A1, A4 | `entity_api/src/action.rs:482`, `:475` | [rows] coachee side sees own or unassigned |
 | ACT-03 | GET /organizations/O1/coaching_relationships/actions | OTHER_COACH | 200, R2 [A4 A5] | `entity_api/src/action.rs:615` | [rows] |
 | ACT-04 | GET /organizations/O1/coaching_relationships/actions | MEMBER, ADMIN, SUPER | 200, empty object | `web/src/controller/organization/coaching_relationship/actions_controller.rs:158` | [rows] only the caller's own relationships |
-| ACT-05 | GET /organizations/O1/coaching_relationships/actions | OUTSIDER, REMOVED | 403 | `web/src/extractors/organization_member_access.rs:103` | |
+| ACT-05 | GET /organizations/O1/coaching_relationships/actions | OUTSIDER, REMOVED | 403 | `web/src/extractors/organization_member_access.rs:91` | |
 | ACT-06 | GET /organizations/O1/coaching_relationships/actions?assignee=coach | COACHEE | 403 | `web/src/controller/organization/coaching_relationship/actions_controller.rs:169`, `:45` | Only when the caller coaches no relationship |
 | ACT-07 | GET /organizations/O1/coaching_relationships/R1/actions | COACH | 200, A1 A2 A3 | `web/src/extractors/coaching_relationship_access.rs:84`; `web/src/controller/organization/coaching_relationship/actions_controller.rs:98` | [rows] |
 | ACT-08 | GET /organizations/O1/coaching_relationships/R1/actions | COACHEE | 200, A2 A3; not A1 | `web/src/controller/organization/coaching_relationship/actions_controller.rs:98`; `entity_api/src/action.rs:578` | [rows] |
 | ACT-09 | GET /organizations/O1/coaching_relationships/R1/actions?assignee=coach | COACHEE | 403 | `web/src/controller/organization/coaching_relationship/actions_controller.rs:100` | `assignee=coachee` or own id: 200, A2 |
 | ACT-10 | GET /organizations/O1/coaching_relationships/R1/actions | MEMBER, OTHER_COACH, ADMIN, SUPER | 403 | `web/src/extractors/coaching_relationship_access.rs:84` | |
-| ACT-11 | GET /organizations/O1/coaching_relationships/R1/actions | OUTSIDER | 403 | `web/src/extractors/organization_member_access.rs:103` | Member check runs first |
-| ACT-12 | GET /organizations/O1/coaching_relationships/R3/actions | REMOVED | 403 | `web/src/extractors/organization_member_access.rs:103` | |
+| ACT-11 | GET /organizations/O1/coaching_relationships/R1/actions | OUTSIDER | 403 | `web/src/extractors/organization_member_access.rs:91` | Member check runs first |
+| ACT-12 | GET /organizations/O1/coaching_relationships/R3/actions | REMOVED | 403 | `web/src/extractors/organization_member_access.rs:91` | |
 | ACT-13 | GET /organizations/O1/coaching_relationships/R3/actions | COACH | 200, A6 A7 | `web/src/extractors/coaching_relationship_access.rs:84` | [rows] |
 | ACT-14 | GET /actions?coaching_session_id=S1 | COACH | 200, A1 A2 A3 | `web/src/protect/actions.rs:34` | [rows] |
 | ACT-15 | GET /actions?coaching_session_id=S1 | COACHEE | 200, A1 A2 A3 | `web/src/protect/actions.rs:34`; `web/src/controller/action_controller.rs:356` | [rows] no assignee narrowing here |
@@ -556,6 +556,9 @@ Organization membership changes decide `grants_access_to`; these rows create or 
 | ORG-34 | POST /organizations/O1/archive | ADMIN, COACH, MEMBER, OUTSIDER; OUTSIDER holding `SuperAdmin` scoped to O2 | 403, O1 not archived | `web/src/controller/organization_controller.rs:215`; `web/src/extractors/super_admin_access.rs:29`; `entity/src/users.rs:95` | |
 | ORG-35 | POST /organizations/O1/unarchive (O1 archived) | SUPER | 200, O1 no longer archived | `web/src/controller/organization_controller.rs:245`; `web/src/extractors/super_admin_access.rs:27` | Idempotent |
 | ORG-36 | POST /organizations/O1/unarchive (O1 archived) | ADMIN, COACH, MEMBER, OUTSIDER; OUTSIDER holding `SuperAdmin` scoped to O2 | 403, O1 stays archived | `web/src/controller/organization_controller.rs:245`; `web/src/extractors/super_admin_access.rs:29`; `entity/src/users.rs:95` | Unarchive as SUPER afterwards |
+| ORG-37 | GET /organizations/O1 | COACH, COACHEE, OTHER_COACH, MEMBER, ADMIN, SUPER | 200, O1 | `web/src/extractors/organization_member_access.rs:81`, `:86` | |
+| ORG-38 | GET /organizations/O1 | OUTSIDER, REMOVED; OUTSIDER holding `SuperAdmin` scoped to O2 | 403 | `web/src/extractors/organization_member_access.rs:91`; `entity/src/users.rs:95` | Not a member of O1 |
+| ORG-39 | GET /organizations/{unknown} | SUPER, OUTSIDER | 404 | `web/src/extractors/organization_member_access.rs:59` | The existence check runs before the membership check, as on every route with this extractor (REL-19) |
 
 ### 4.15 Real-time events (`SSE`)
 
@@ -911,6 +914,9 @@ a frozen `domain` test, or by hand with the reason.
 | ORG-34 | `web/src/controller/organization_controller_sqlite_tests.rs::only_a_super_admin_archives_an_organization` |
 | ORG-35 | `web/src/controller/organization_controller_sqlite_tests.rs::a_super_admin_unarchives_an_organization` |
 | ORG-36 | `web/src/controller/organization_controller_sqlite_tests.rs::only_a_super_admin_unarchives_an_organization` |
+| ORG-37 | `web/src/controller/organization_controller_sqlite_tests.rs::members_and_super_admins_read_an_organization` |
+| ORG-38 | `web/src/controller/organization_controller_sqlite_tests.rs::non_members_cannot_read_an_organization` |
+| ORG-39 | `web/src/controller/organization_controller_sqlite_tests.rs::an_unknown_organization_is_not_found` |
 | SSE-01 | `web/src/sse/handler_sqlite_tests.rs::every_caller_opens_an_event_stream` |
 | SSE-02 | `web/src/sse/handler_sqlite_tests.rs::both_participants_hear_of_an_action_assigned_to_the_coach` |
 | SSE-03 | `web/src/sse/handler_sqlite_tests.rs::a_removed_coachee_hears_nothing_of_their_relationship` |
