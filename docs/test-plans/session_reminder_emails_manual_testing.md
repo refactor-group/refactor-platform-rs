@@ -203,7 +203,7 @@ toward silence, which is the right direction to be wrong in.
 ### H5c. Only the coachee's own notice counts
 
 The sweep reminds the coachee, so it measures the coachee's notice, not whoever was told
-last. Take a session 26 hours out with a 24 hour lead and both notice rows and the column
+last. Take a session 12 hours out with a 24 hour lead and both notice rows and the column
 stamped well in the past (set them with psql), so it would be reminded.
 
 - Set **the coach's** notice row to now -> **still reminded**. The coach being told says

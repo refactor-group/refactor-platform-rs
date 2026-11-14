@@ -1,10 +1,11 @@
 //! `SeaORM` Entity for the coaching_session_notices table.
 //! Per-(user, coaching_session) record of notice given; at most one row per pair.
 
-use crate::Id;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+
+use crate::Id;
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize, ToSchema)]

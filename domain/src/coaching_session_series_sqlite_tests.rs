@@ -8,6 +8,8 @@ use chrono::{NaiveDate, TimeDelta, Utc};
 use entity::{
     coaching_relationships, coaching_session_series as series_entity, coaching_sessions, notes,
 };
+use entity_api::coaching_session::Landing;
+use entity_api::coaching_session_pending_reschedule::{self, Schedule};
 use sea_orm::prelude::DateTimeWithTimeZone;
 use sea_orm::{ActiveModelTrait, ActiveValue::Unchanged, DatabaseConnection, EntityTrait, Set};
 
@@ -17,8 +19,6 @@ use crate::test_utils::sqlite::{
     database, mirror_migration_defaults, seed_action, seed_agreement, seed_coaching_session,
     seed_membership, seed_note, seed_organization, seed_topic, seed_user, within_time_limit,
 };
-use entity_api::coaching_session::Landing;
-use entity_api::coaching_session_pending_reschedule::{self, Schedule};
 
 fn monday() -> NaiveDateTime {
     NaiveDate::from_ymd_opt(2026, 11, 9)
