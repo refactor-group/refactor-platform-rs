@@ -32,7 +32,8 @@ access, different fields).
 ## Phases
 
 Each phase is its own PR; phase 1 is two (migration and backfill, then code). Order: S, 0, M,
-0b, 0c, 1, 2, 3, 3b, 4, 4b, E, 5, 6. Phases S and 0 can run in parallel. Done: S (#476), 0 (#480), M (#481).
+0b, 0c, 0d, 1, 2, 3, 4, 4b, E, 5, 6. Phases S and 0 can run in parallel. Done: S (#476), 0 (#480),
+M (#481), 0b (#492), 0c (#495).
 
 **S. Relationship authorization fixes.** Its own security PR, ahead of the colleague work, so
 the phase 0b baseline records the corrected behavior. Notes, agreements, actions, goals and
@@ -108,6 +109,11 @@ extractors answer 404 only for a missing record, so a database error is a 5xx, n
 three handoffs (list reads, sessions, goals), one PR. Afterwards every relationship check
 lives in `web/src/extractors/`, so phase 3 only switches them.
 
+**0d. Retire `protect/`** (no behavior change; closes #218). The last middleware checks move
+onto extractors: "is this my own user" on the `/users/{user_id}` routes becomes
+`UserSelfAccess`, and the SuperAdmin-only Tiptap metrics take `SuperAdminAccess`. Then
+`web/src/protect/` is deleted, so every route check is an extractor.
+
 **1. Record who scheduled each session** (no visible change).
 
 - `scheduled_by_user_id` on `coaching_sessions`, set on create and reschedule; base for
@@ -139,9 +145,6 @@ extractors; `CallerVisibility`; search visibility (`entity_api/src/search/visibi
 email recipients in `domain/src/jobs/`; and the transcription and recording controllers. Final
 list from the phase 0 audit. Sites outside `web/src/extractors/` move unchanged first, then
 switch to the Model method.
-
-**3b. Finish #218.** `UserIsAdmin` (only use passes no org) is covered by `SuperAdminAccess`;
-"is this my own user" becomes `UserDataAccess`. Then delete `web/src/protect/` and close #218.
 
 **4. Colleague behavior.**
 
