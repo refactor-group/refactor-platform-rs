@@ -990,6 +990,22 @@ a frozen `domain` test, or by hand with the reason.
 | SSE-05 | `web/src/sse/handler_sqlite_tests.rs::both_participants_hear_that_suggestions_changed` (through a scan start, which shares the sweep's `extract::notify`); `domain/src/transcript_suggestion/extract_sqlite_tests.rs::every_completed_run_announces_once_with_or_without_suggestions` |
 | SSE-06 | `web/src/sse/handler_sqlite_tests.rs::both_participants_hear_of_a_recording_update` |
 | SSE-07 | `web/src/sse/handler_sqlite_tests.rs::signed_out_callers_cannot_open_an_event_stream` |
+| SCHED-01 | `domain/src/coaching_session_sqlite_tests.rs::create_records_the_acting_user_as_scheduler`, `domain/src/coaching_session_sqlite_tests.rs::create_stamps_both_participants_notice_at_the_sessions_own` |
+| SCHED-02 | `domain/src/coaching_session_sqlite_tests.rs::create_records_the_acting_user_as_scheduler` (a caller's value is overwritten); by hand for the request body and response, which `#[serde(skip)]` decides |
+| SCHED-03 | `domain/src/coaching_session_sqlite_tests.rs::create_reusing_a_meeting_link_records_the_coach_as_its_creator`, `domain/src/coaching_session_sqlite_tests.rs::create_without_a_provider_records_no_link_creator`; by hand for a new link: it calls the provider |
+| SCHED-04 | `domain/src/coaching_session_update_sqlite_tests.rs::moving_a_session_records_the_acting_user_as_scheduler` |
+| SCHED-05 | `domain/src/coaching_session_update_sqlite_tests.rs::a_title_edit_leaves_the_scheduler_as_it_was` |
+| SCHED-06 | `domain/src/coaching_session_series_sqlite_tests.rs::a_created_series_records_the_acting_user_on_every_session`, `domain/src/coaching_session_series_sqlite_tests.rs::a_created_series_stamps_both_participants_notice_on_every_session` |
+| SCHED-07 | `domain/src/coaching_session_series_sqlite_tests.rs::a_rescheduled_series_records_the_acting_user_on_the_sessions_it_creates`; by hand end to end: the series update takes Postgres advisory locks |
+| SCHED-08 | `domain/src/coaching_session_series_sqlite_tests.rs::move_to_slot_records_who_moved_the_session`, `domain/src/coaching_session_series_sqlite_tests.rs::a_following_reschedule_restamps_only_the_participants_it_reached`; by hand end to end: reschedule takes Postgres advisory locks |
+| SCHED-09 | `domain/src/coaching_session_sqlite_tests.rs::mark_hydrated_stores_the_link_creator_and_keeps_the_scheduler` |
+| SCHED-10 | `domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_change_told_to_both_restamps_each_participants_notice` |
+| SCHED-11 | `domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_coach_no_longer_in_the_organization_keeps_their_notice` |
+| SCHED-12 | `domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_change_told_to_nobody_restamps_no_notice` |
+| SCHED-13 | by hand: the OpenAPI document is read from a running server |
+| SCHED-14 | by hand: the migrations run on Postgres |
+| SCHED-15 | `domain/src/coaching_session_update_sqlite_tests.rs::setting_a_meeting_link_records_the_acting_user_as_its_creator`, `domain/src/coaching_session_update_sqlite_tests.rs::a_title_edit_leaves_the_link_creator_as_it_was` |
+| SCHED-16 | `domain/src/coaching_session_sqlite_tests.rs::create_with_a_pasted_meeting_link_records_the_acting_user_as_its_creator` |
 | JOB-01 | by hand: raw Postgres SQL; SQL shape in `entity_api/src/coaching_session.rs::tests::claim_due_reminders_skips_former_organization_members`, `entity_api/src/coaching_session.rs::tests::claim_due_reminders_membership_mirrors_is_member`, `entity_api/src/coaching_session.rs::tests::claim_due_reminders_skips_sessions_booked_on_short_notice` |
 | JOB-02 | `domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_due_change_is_emailed_and_settled`, `domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_coachee_no_longer_in_the_organization_is_not_emailed` |
 | JOB-03 | `domain/src/transcript_suggestion/prompt_tests.rs::render_writes_the_session_existing_actions_and_transcript`; events as SSE-05 |
