@@ -2,11 +2,11 @@ use crate::middleware::throttle::{PerIpThrottle, Throttle, ThrottlePolicy};
 use crate::{
     controller::{health_check_controller, oauth_callback_controller},
     middleware::auth::require_auth,
-    params, protect, AppState,
+    params, AppState,
 };
 use axum::{
     extract::DefaultBodyLimit,
-    middleware::{from_fn, from_fn_with_state},
+    middleware::from_fn,
     routing::{delete, get, patch, post, put},
     Router,
 };
@@ -419,9 +419,8 @@ pub fn coaching_session_series_routes(app_state: AppState) -> Router {
 
 /// /admin/tiptap/metrics/* - SuperAdmin-only TipTap observability
 ///
-/// Layer order (outer -> inner): require_auth (cookie session) ->
-/// admin_only (SuperAdmin role) -> handler. Axum applies layers in reverse
-/// of registration; outermost-registered runs first.
+/// `require_auth` (cookie session) runs first; each handler then takes
+/// `SuperAdminAccess`.
 pub fn tiptap_metrics_routes(app_state: AppState) -> Router {
     Router::new()
         .route(
@@ -436,13 +435,6 @@ pub fn tiptap_metrics_routes(app_state: AppState) -> Router {
             "/admin/tiptap/metrics/abandoned",
             get(tiptap_metrics_controller::abandoned_documents),
         )
-        // Per-route authorization: SuperAdmin only.
-        .route_layer(from_fn_with_state(
-            app_state.clone(),
-            protect::tiptap_metrics::admin_only,
-        ))
-        // Outermost: session cookie required. Runs FIRST despite being
-        // registered last (axum layer ordering).
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }

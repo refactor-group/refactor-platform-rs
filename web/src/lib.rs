@@ -35,7 +35,6 @@ mod error;
 pub(crate) mod extractors;
 pub(crate) mod middleware;
 pub(crate) mod params;
-pub(crate) mod protect;
 mod router;
 pub mod sse;
 #[cfg(test)]
