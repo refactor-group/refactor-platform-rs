@@ -2,7 +2,9 @@
 
 A local `/code-review` or `/security-review` run at level `high` or above (`high`, `xhigh`,
 `max`) ends with an HTML page of the review, beside its usual report. Skip it at `low` and
-`medium`, which are meant to stay fast, and never build it in CI.
+`medium`, which are meant to stay fast, and never build it in CI. `/code-review` runs as a
+background agent, so the session that receives its findings builds the page from them and
+from the diff it reviewed.
 
 ## Sections
 Every page has these sections, in this order. Sections 2 and 4 to 8 carry a heading with

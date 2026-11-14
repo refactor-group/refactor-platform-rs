@@ -4,7 +4,11 @@
 
 **Code Implementation/Editing** → Read `.claude/coding-standards.md` FIRST
 **Pull Request Operations** → Read `.claude/pr-instructions.md` FIRST
-**Code Review** (any review of a diff, including `/code-review`) → Read `REVIEW.md` FIRST; for a security review also read `.github/security-review-instructions.txt`. A local `/code-review` or `/security-review` at level `high` or above also builds the page in `.claude/review-page.md`
+**Code Review** (any review of a diff, including `/code-review`) → Follow `REVIEW.md`, imported at the end of this file; for a security review also read `.github/security-review-instructions.txt`.
+- Review against `origin/main` after `git fetch origin`, never the local `main` branch, which is shared and often behind: a pull request is `gh pr diff <number>`, a branch is `git diff origin/main...<branch>`. Read the review rules from the base with `git show origin/main:<path>`, not from the working tree.
+- When you start `/code-review`, always pass a target: the pull request number, or `origin/main...<branch>`. Without one it reviews against the branch's upstream or the local `main`. On `main` with no pull request or branch named, there is nothing to review: ask which.
+- At level `high` or above, a local `/code-review` or `/security-review` ends with the page in `.claude/review-page.md`. `/code-review` runs as a background agent that doesn't build it, so the session that receives its findings builds the page from them.
+
 **Database Migrations** → Read the Database Migrations section below FIRST
 **Manual Testing** → Read `docs/test-plans/README.md` FIRST (which plan to run, what it needs)
 
@@ -131,3 +135,9 @@ The reusable workflow resolves secrets in this order:
 3. Hardcoded **fallback defaults** in the workflow (e.g., `|| '1.0.0'`)
 
 **Warning**: A stale secret at level 1 overrides levels 2-3. Always check caller repo secrets when debugging.
+
+## Review rules
+
+`REVIEW.md`, imported so a review agent that doesn't open files first still has it:
+
+@../REVIEW.md
