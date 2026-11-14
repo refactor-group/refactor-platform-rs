@@ -25,7 +25,6 @@
 /web/src/controller/user/password_controller.rs   @jhodapp
 /domain/src/magic_link_token.rs     @jhodapp
 /web/src/extractors/                @jhodapp
-/web/src/protect/                   @jhodapp
 /web/src/middleware/                @jhodapp
 /domain/src/jwt/                    @jhodapp
 /domain/src/gateway/auth.rs         @jhodapp

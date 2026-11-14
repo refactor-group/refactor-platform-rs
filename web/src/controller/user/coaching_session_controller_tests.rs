@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use axum::middleware::{from_fn, from_fn_with_state};
+use axum::middleware::from_fn;
 use axum::{body::Body, extract::Request, routing::get, Router};
 use axum_login::{
     tower_sessions::{MemoryStore, SessionManagerLayer},
@@ -20,7 +20,7 @@ use tower_sessions::Expiry;
 
 use crate::controller::user::coaching_session_controller::nearest;
 use crate::middleware::auth::require_auth;
-use crate::{protect, AppState};
+use crate::AppState;
 
 fn test_user() -> users::Model {
     let now = Utc::now();
@@ -111,10 +111,6 @@ fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
         .merge(
             Router::new()
                 .route("/users/:user_id/coaching_sessions/nearest", get(nearest))
-                .route_layer(from_fn_with_state(
-                    state.clone(),
-                    protect::users::coaching_sessions::index,
-                ))
                 .route_layer(from_fn(require_auth)),
         )
         .layer(auth_layer)

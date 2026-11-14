@@ -69,6 +69,15 @@ pub async fn working_hours(db: &DatabaseConnection, user_id: Id) -> Option<(Naiv
         .map(|user| (user.working_hours_start, user.working_hours_end))
 }
 
+/// The user's stored password hash.
+pub async fn password_hash(db: &DatabaseConnection, user_id: Id) -> Option<String> {
+    users::Entity::find_by_id(user_id)
+        .one(db)
+        .await
+        .expect("the user reads")
+        .and_then(|user| user.password)
+}
+
 /// The session's stored start and duration, or `None` once it is deleted.
 pub async fn session_schedule(
     db: &DatabaseConnection,

@@ -88,7 +88,7 @@ scenarios that are untested and would make you nervous about refactoring later.
 
 Pay special attention to:
 - Error/failure paths (DB errors, not-found, unauthorized)
-- Authorization boundary conditions (protect middleware behavior)
+- Authorization boundary conditions (access extractor behavior)
 - Edge cases in database operations (empty results, constraint violations)
 - Any new `domain/` business logic that lacks unit tests
 

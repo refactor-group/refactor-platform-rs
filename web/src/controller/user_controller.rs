@@ -1,17 +1,18 @@
 use crate::error::WebErrorKind;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    user_self_access::UserSelfAccess,
 };
 use crate::{controller::ApiResponse, params::user::*};
 use crate::{AppState, Error};
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
 use domain::users::Role;
-use domain::{user as UserApi, user_lookup, user_role as UserRoleApi, Id};
+use domain::{user as UserApi, user_lookup, user_role as UserRoleApi};
 use service::config::ApiVersion;
 
 /// INDEX the Users matching an exact email address.
@@ -83,7 +84,9 @@ pub async fn index(
     ),
     responses(
         (status = 200, description = "Successfully retrieved a User", body = domain::users::Model),
+        (status = 400, description = "Invalid user_id"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 503, description = "Service temporarily unavailable"),
     ),
     security(
@@ -91,11 +94,11 @@ pub async fn index(
     )
 )]
 pub async fn read(
+    UserSelfAccess(user): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(user_id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
+    let user_id = user.id;
     let user = UserApi::find_by_id(app_state.db_conn_ref(), user_id).await?;
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), user)))
 }
@@ -104,14 +107,17 @@ pub async fn read(
 /// NOTE: that this is for updating the current user
 #[utoipa::path(
     put,
-    path = "/users",
+    path = "/users/{user_id}",
     params(
-        ApiVersion
+        ApiVersion,
+        ("user_id" = Uuid, Path, description = "User ID", example = "1234567890"),
     ),
     request_body = UpdateParams,
     responses(
         (status = 204, description = "Successfully updated a User", body = ()),
+        (status = 400, description = "Invalid user_id"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 422, description = "Invalid working hours. JSON `{status_code, error: \"validation_error\", message}`"),
         (status = 503, description = "Service temporarily unavailable"),
     ),
@@ -120,12 +126,12 @@ pub async fn read(
     )
 )]
 pub async fn update(
+    UserSelfAccess(user): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(user_id): Path<Id>,
     Json(params): Json<UpdateParams>,
 ) -> Result<impl IntoResponse, Error> {
+    let user_id = user.id;
     UserApi::update(
         app_state.db_conn_ref(),
         user_id,
