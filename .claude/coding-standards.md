@@ -350,7 +350,7 @@ txn.commit().await?;  // Rolls back automatically if we never reach here
 When adding a resource, copy the shape of the closest exemplar for each layer, then look for what already exists before writing anything new. No single slice is clean in every layer, so the exemplars are named per layer.
 
 - **`entity_api`**: `entity_api/src/coaching_session_image.rs`. Takes `&impl ConnectionTrait`, `find_by_id` returns `Result<Model>` with `RecordNotFound` for a missing row, `create` takes one params struct, and updates are single combinator chains.
-- **`domain`, passthrough** (no business rules): `domain/src/note.rs`, a one-line `pub use` of the `entity_api` functions.
+- **`domain`, passthrough** (no business rules): `domain/src/coaching_session_view.rs`, a one-line `pub use` of the `entity_api` functions.
 - **`domain`, orchestration** (transaction, side effects, events): `create` in `domain/src/goal.rs`. Begins a transaction, writes, commits, then publishes a `DomainEvent`.
 - **Extractor**: `web/src/extractors/goal_access.rs`. Parses the path id, loads the resource, authorizes against its relationship, and returns it.
 - **Controller**: `update` in `web/src/controller/goal_controller.rs`. Takes the extractor, calls one domain function, maps the result.
