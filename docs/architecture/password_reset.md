@@ -400,9 +400,9 @@ Both are 429; the body differs. The FE should handle 429 generically (show "you'
 | `POST /password-reset/request` | None — by design. Submitting any email is harmless because the token never goes to the requester. |
 | `POST /password-reset/validate` | Possession of a valid `PasswordReset` token (transmitted in JSON body). |
 | `POST /password-reset/complete` | Possession of a valid `PasswordReset` token. |
-| `PUT /users/:id/password` (pre-existing, distinct endpoint) | `authenticated_user.id == user_id` ([`UserSelfAccess`](../../web/src/extractors/user_self_access.rs#L28)) |
+| `PUT /users/:user_id/password` (pre-existing, distinct endpoint) | `authenticated_user.id == user_id` ([`UserSelfAccess`](../../web/src/extractors/user_self_access.rs#L28)) |
 
-The unauthenticated reset endpoints do **not** weaken the authenticated `PUT /users/:id/password` model — they are an additive credential-recovery channel, not a replacement.
+The unauthenticated reset endpoints do **not** weaken the authenticated `PUT /users/:user_id/password` model — they are an additive credential-recovery channel, not a replacement.
 
 ## Threat Model
 
