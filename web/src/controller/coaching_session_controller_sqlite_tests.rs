@@ -783,8 +783,7 @@ async fn deleting_a_session_with_content_is_refused() {
         let mut app = TestApp::new().await;
         let fixture = &app.fixture;
         let s1 = fixture.s1;
-        let content: BTreeSet<Id> =
-            ids([fixture.n1, fixture.ag1, fixture.a1, fixture.a2, fixture.a3]);
+        let content: BTreeSet<Id> = ids([fixture.ag1, fixture.a1, fixture.a2, fixture.a3]);
         let schedule = session_schedule(app.db(), s1).await;
         let documents_deleted = app.expect_tiptap("DELETE", 0).await;
         let emails = app.expect_emails(0).await;

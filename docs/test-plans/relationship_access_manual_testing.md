@@ -87,7 +87,7 @@ Rows the scenarios need. Put the word `kumquat` in every body and session title 
 | `R2` | Relationship OTHER_COACH to COACHEE, O1 |
 | `R3` | Relationship COACH to REMOVED, O1 |
 | `S1`, `S2`, `S3` | One future session in R1, R2, R3 respectively |
-| `S4`, `S5` | A future session with no notes, actions or agreements, in R1 and R3. Created only for the delete rows (SES-21 to SES-23, SES-36), so no list row includes them |
+| `S4`, `S5` | A future session with no actions or agreements, in R1 and R3. Created only for the delete rows (SES-21 to SES-23, SES-36), so no list row includes them |
 | `SR1` | Series in R1 created by COACH (its sessions are `SR1-*`) |
 | `SR3` | Series in R3 created by COACH before REMOVED is removed (its sessions are `SR3-*`); after phase M a series can't be created for a removed coachee |
 | `A1` | Action in S1 assigned to COACH |

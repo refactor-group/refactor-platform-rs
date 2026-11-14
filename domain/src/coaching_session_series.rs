@@ -2264,7 +2264,7 @@ mod tests {
         let leftover_lock = position(
             r#"SELECT "coaching_sessions"."id" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" IN"#,
         );
-        let content_check = position(r#"FROM "refactor_platform"."notes""#);
+        let content_check = position(r#"FROM "refactor_platform"."actions""#);
         assert!(last_advisory_lock < series_lock, "{sql:?}");
         assert!(series_lock < leftover_lock, "{sql:?}");
         assert!(

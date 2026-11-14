@@ -29,9 +29,7 @@ use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, Qu
 use crate::action::ActionWithAssignees;
 use crate::transcript_suggestion::ActionProposal;
 
-use super::{
-    seed_action, seed_agreement, seed_note, seed_organization, seed_role, seed_topic, seed_user_as,
-};
+use super::{seed_action, seed_agreement, seed_organization, seed_role, seed_topic, seed_user_as};
 
 /// The password every fixture person logs in with.
 pub const PASSWORD: &str = "kumquat-password";
@@ -115,7 +113,6 @@ pub struct Fixture {
     pub a7: Id,
     pub g1: Id,
     pub g2: Id,
-    pub n1: Id,
     pub ag1: Id,
     pub t1: Id,
     pub t2: Id,
@@ -184,7 +181,6 @@ pub async fn seed_fixture(db: &DatabaseConnection) -> Fixture {
     let a6 = seed_assigned_action(db, s3, coach, Some(id(Caller::Removed))).await;
     let a7 = seed_assigned_action(db, s3, coach, None).await;
 
-    let n1 = seed_note(db, s1, coach, &searchable("Note")).await;
     let ag1 = seed_agreement(db, s1, coach, &searchable("Agreement")).await;
     let t1 = seed_topic(db, s1, coach, &searchable("Topic"), 0, false).await;
     let t2 = seed_topic(db, s1, id(Caller::Coachee), &searchable("Topic"), 1, false).await;
@@ -219,7 +215,6 @@ pub async fn seed_fixture(db: &DatabaseConnection) -> Fixture {
         a7,
         g1,
         g2,
-        n1,
         ag1,
         t1,
         t2,
@@ -233,7 +228,7 @@ pub async fn seed_fixture(db: &DatabaseConnection) -> Fixture {
     }
 }
 
-/// A future session with no notes, actions or agreements, like the matrix's S4 (in R1) and
+/// A future session with no actions or agreements, like the matrix's S4 (in R1) and
 /// S5 (in R3). Seed it per test so list rows never see it.
 pub async fn seed_content_free_session(db: &DatabaseConnection, relationship_id: Id) -> Id {
     seed_session(

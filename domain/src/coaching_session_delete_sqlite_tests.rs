@@ -8,8 +8,7 @@ use service::config::Config;
 
 use super::*;
 use crate::test_utils::sqlite::{
-    database, seed_action, seed_agreement, seed_coaching_session, seed_note, seed_topic,
-    within_time_limit,
+    database, seed_action, seed_agreement, seed_coaching_session, seed_topic, within_time_limit,
 };
 
 async fn read(db: &DatabaseConnection, id: Id) -> Option<coaching_sessions::Model> {
@@ -72,15 +71,12 @@ async fn sd_01_a_session_with_an_action_is_refused_and_unchanged() {
 }
 
 #[tokio::test]
-async fn sd_02_a_session_with_a_note_or_an_agreement_is_refused() {
+async fn sd_02_a_session_with_an_agreement_is_refused() {
     within_time_limit(async {
         let db = database().await;
-        let (with_note, user_id) = seed_coaching_session(&db).await;
-        seed_note(&db, with_note, user_id, "Prep").await;
         let (with_agreement, user_id) = seed_coaching_session(&db).await;
         seed_agreement(&db, with_agreement, user_id, "Agreed").await;
 
-        assert_refused(&db, with_note).await;
         assert_refused(&db, with_agreement).await;
     })
     .await;

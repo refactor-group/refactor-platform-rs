@@ -10,7 +10,7 @@ use entity::{
     coaching_sessions::{self, ActiveModel, Column, Entity, Model, Relation},
     goals,
     meeting_provider::Provider,
-    notes, organizations, users, Id,
+    organizations, users, Id,
 };
 use log::debug;
 use sea_orm::{
@@ -324,8 +324,8 @@ pub async fn move_to_slot(
         })
 }
 
-/// Locks the session rows `ids` until the transaction ends. A note, action, agreement or
-/// topic added meanwhile takes a key lock on its session, so it waits for the transaction
+/// Locks the session rows `ids` until the transaction ends. An action, agreement or topic
+/// added meanwhile takes a key lock on its session, so it waits for the transaction
 /// instead of landing between a check of the rows' content and their deletion.
 pub async fn lock_for_update(db: &impl ConnectionTrait, ids: &[Id]) -> Result<(), Error> {
     if ids.is_empty() {
@@ -342,9 +342,9 @@ pub async fn lock_for_update(db: &impl ConnectionTrait, ids: &[Id]) -> Result<()
     Ok(())
 }
 
-/// The sessions among `ids` holding something a delete would lose: a note, action,
-/// agreement, live topic, or a shared notes document. Notes, actions and agreements also
-/// block the delete by FK.
+/// The sessions among `ids` holding something a delete would lose: an action, agreement,
+/// live topic, or a shared notes document. Actions and agreements also block the delete
+/// by FK.
 ///
 /// The document is created when a session is first opened, and its content can't be read
 /// from here, so any session with one counts as holding notes. One `UNION` query, so a
@@ -357,12 +357,8 @@ pub async fn find_ids_with_content(
         return Ok(HashSet::new());
     }
 
-    let statement = session_ids_in::<notes::Entity>(notes::Column::CoachingSessionId, ids)
+    let statement = session_ids_in::<actions::Entity>(actions::Column::CoachingSessionId, ids)
         .into_query()
-        .union(
-            UnionType::Distinct,
-            session_ids_in::<actions::Entity>(actions::Column::CoachingSessionId, ids).into_query(),
-        )
         .union(
             UnionType::Distinct,
             session_ids_in::<agreements::Entity>(agreements::Column::CoachingSessionId, ids)
