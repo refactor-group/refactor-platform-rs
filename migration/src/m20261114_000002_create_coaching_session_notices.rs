@@ -7,9 +7,10 @@ pub struct Migration;
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         // When this participant was last told this session's start: at booking, and again
-        // on every reschedule email they receive. The reminder sweep measures each
-        // recipient's notice from here, so one participant's email does not count as
-        // notice to the other. UNIQUE serves the upsert's conflict target and the lookup.
+        // on every reschedule email they receive. Replaces coaching_sessions.notice_given_at
+        // as the reminder sweep's measure of notice once the sweep reads it, so one
+        // participant's email won't count as notice to the other. UNIQUE serves the
+        // upsert's conflict target and the lookup.
         manager
             .get_connection()
             .execute_unprepared(
