@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::coaching_session_notices::{ActiveModel, Column, Entity};
 use chrono::Utc;
-use entity::coaching_session_notices::{ActiveModel, Column, Entity};
 use entity::Id;
 use sea_orm::prelude::DateTimeWithTimeZone;
 use sea_orm::sea_query::OnConflict;
@@ -11,7 +11,7 @@ use sea_orm::{ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, Query
 
 use crate::error::Error;
 
-pub use entity::coaching_session_notices::Model;
+pub use crate::coaching_session_notices::Model;
 
 /// Records that each of `user_ids` was told the session's start at `at`, replacing any earlier stamp.
 pub async fn stamp(
