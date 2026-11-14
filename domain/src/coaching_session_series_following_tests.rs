@@ -58,6 +58,8 @@ fn session(slot: NaiveDateTime) -> coaching_sessions::Model {
         updated_at: now.into(),
         hydrated_at: None,
         notice_given_at: now.into(),
+        scheduled_by_user_id: None,
+        meeting_url_created_by_user_id: None,
     }
 }
 
@@ -377,6 +379,21 @@ fn a_new_duration_or_slot_is_a_change() {
 
     assert!(!resized.changes_nothing());
     assert!(!moved.changes_nothing());
+}
+
+#[test]
+fn only_a_new_date_or_duration_reschedules_a_session() {
+    let held = session(week(1));
+    let landing = |date: NaiveDateTime, minutes: i16| Move {
+        session: held.clone(),
+        slot: week(2),
+        date,
+        duration: Duration::from_minutes_unchecked(minutes),
+    };
+
+    assert!(!landing(held.date, held.duration_minutes).reschedules());
+    assert!(landing(held.date + TimeDelta::hours(1), held.duration_minutes).reschedules());
+    assert!(landing(held.date, held.duration_minutes + 15).reschedules());
 }
 
 /// An earlier session moved on its own past the anchor's slot stays on the old series, so

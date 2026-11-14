@@ -213,6 +213,8 @@ fn create_test_session() -> coaching_sessions::Model {
         updated_at: chrono::Utc::now().fixed_offset(),
         hydrated_at: Some(chrono::Utc::now().fixed_offset()),
         notice_given_at: chrono::Utc::now().into(),
+        scheduled_by_user_id: None,
+        meeting_url_created_by_user_id: None,
     }
 }
 
@@ -2439,6 +2441,8 @@ fn create_test_session_on(date: NaiveDate) -> coaching_sessions::Model {
         updated_at: chrono::Utc::now().fixed_offset(),
         hydrated_at: None,
         notice_given_at: chrono::Utc::now().into(),
+        scheduled_by_user_id: None,
+        meeting_url_created_by_user_id: None,
     }
 }
 

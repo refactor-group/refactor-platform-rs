@@ -152,6 +152,8 @@ impl Fixture {
             updated_at: now(),
             hydrated_at: None,
             notice_given_at: now(),
+            scheduled_by_user_id: None,
+            meeting_url_created_by_user_id: None,
         }
     }
 

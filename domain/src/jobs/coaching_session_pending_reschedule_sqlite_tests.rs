@@ -1,5 +1,6 @@
 //! What the pending reschedule sweep sends and leaves behind, against a real SQL engine.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeDelta, Timelike, Utc};
@@ -9,9 +10,10 @@ use serde_json::json;
 
 use super::*;
 use crate::test_utils::sqlite::{
-    database, organization_of, seed_coaching_session, seed_membership, within_time_limit,
+    database, mirror_migration_defaults, organization_of, seed_coaching_session, seed_membership,
+    seed_organization, seed_user, within_time_limit,
 };
-use crate::{coaching_session_pending_reschedules, coaching_sessions, Id};
+use crate::{coaching_relationships, coaching_session_pending_reschedules, coaching_sessions, Id};
 
 const TEMPLATE: &str = "session_rescheduled_tpl";
 
@@ -302,6 +304,188 @@ async fn a_change_that_is_not_due_is_left_alone() {
         let after = pending(&ctx.db, id).await.expect("the change is pending");
         assert_eq!(after.claim_id, None);
         assert_eq!(after, before);
+    })
+    .await;
+}
+
+/// Which participants of [`moved_session_between_two`] hold a role in its organization.
+#[derive(Clone, Copy)]
+enum Members {
+    Both,
+    CoacheeOnly,
+    CoachOnly,
+}
+
+impl Members {
+    fn coach(self) -> bool {
+        matches!(self, Members::Both | Members::CoachOnly)
+    }
+
+    fn coachee(self) -> bool {
+        matches!(self, Members::Both | Members::CoacheeOnly)
+    }
+}
+
+/// A session a week out between a separate coach and coachee, each with a notice row an
+/// hour old, moved and recorded as settled; `members` say who holds a role.
+/// Returns its id, coach and coachee.
+async fn moved_session_between_two(db: &DatabaseConnection, members: Members) -> (Id, Id, Id) {
+    mirror_migration_defaults(db).await;
+    let (coach_id, coachee_id) = (seed_user(db).await, seed_user(db).await);
+    let organization_id = seed_organization(db).await;
+    if members.coachee() {
+        seed_membership(db, coachee_id, organization_id).await;
+    }
+    if members.coach() {
+        seed_membership(db, coach_id, organization_id).await;
+    }
+    let now = Utc::now();
+    let relationship_id = Id::new_v4();
+    coaching_relationships::ActiveModel {
+        id: Set(relationship_id),
+        organization_id: Set(organization_id),
+        coach_id: Set(coach_id),
+        coachee_id: Set(coachee_id),
+        slug: Set(format!("relationship-{relationship_id}")),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the relationship is seeded");
+    let start = (now + TimeDelta::days(7))
+        .naive_utc()
+        .with_nanosecond(0)
+        .expect("whole seconds");
+    let id = coaching_sessions::ActiveModel {
+        id: Set(Id::new_v4()),
+        coaching_relationship_id: Set(relationship_id),
+        date: Set(start),
+        duration_minutes: Set(60),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        notice_given_at: Set(now.into()),
+        ..Default::default()
+    }
+    .insert(db)
+    .await
+    .expect("the session is seeded")
+    .id;
+    entity_api::coaching_session_notice::stamp(
+        db,
+        id,
+        &[coach_id, coachee_id],
+        (now - TimeDelta::hours(1)).into(),
+    )
+    .await
+    .expect("the notices stamp");
+    move_and_record(db, id, start, settled()).await;
+    (id, coach_id, coachee_id)
+}
+
+async fn notices(db: &DatabaseConnection, id: Id) -> BTreeMap<Id, DateTime<FixedOffset>> {
+    entity_api::coaching_session_notice::find_by_coaching_session(db, id)
+        .await
+        .expect("the notices read")
+        .into_iter()
+        .map(|row| (row.user_id, row.notice_given_at))
+        .collect()
+}
+
+async fn resend_answering(server: &mut ServerGuard, status: usize) -> mockito::Mock {
+    server
+        .mock("POST", "/emails")
+        .with_status(status)
+        .with_body(r#"{"id":"email_1"}"#)
+        .create_async()
+        .await
+}
+
+#[tokio::test]
+async fn a_change_told_to_both_restamps_each_participants_notice() {
+    within_time_limit(async {
+        let mut server = Server::new_async().await;
+        let _resend = resend_answering(&mut server, 200).await;
+        let db = database().await;
+        let (id, coach_id, coachee_id) = moved_session_between_two(&db, Members::Both).await;
+        let (before, column) = (notices(&db, id).await, notice_given_at(&db, id).await);
+        let ctx = context(db, sending(&server));
+
+        Sweep::from_config(&ctx.config)
+            .run(&ctx)
+            .await
+            .expect("the tick runs");
+
+        let after = notices(&ctx.db, id).await;
+        assert!(after[&coach_id] > before[&coach_id]);
+        assert!(after[&coachee_id] > before[&coachee_id]);
+        assert!(notice_given_at(&ctx.db, id).await > column);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_coach_no_longer_in_the_organization_keeps_their_notice() {
+    within_time_limit(async {
+        let mut server = Server::new_async().await;
+        let _resend = resend_answering(&mut server, 200).await;
+        let db = database().await;
+        let (id, coach_id, coachee_id) = moved_session_between_two(&db, Members::CoacheeOnly).await;
+        let before = notices(&db, id).await;
+        let ctx = context(db, sending(&server));
+
+        Sweep::from_config(&ctx.config)
+            .run(&ctx)
+            .await
+            .expect("the tick runs");
+
+        let after = notices(&ctx.db, id).await;
+        assert!(after[&coachee_id] > before[&coachee_id]);
+        assert_eq!(after[&coach_id], before[&coach_id]);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_coachee_no_longer_in_the_organization_leaves_only_the_coach_told() {
+    within_time_limit(async {
+        let mut server = Server::new_async().await;
+        let _resend = resend_answering(&mut server, 200).await;
+        let db = database().await;
+        let (id, coach_id, coachee_id) = moved_session_between_two(&db, Members::CoachOnly).await;
+        let (before, column) = (notices(&db, id).await, notice_given_at(&db, id).await);
+        let ctx = context(db, sending(&server));
+
+        Sweep::from_config(&ctx.config)
+            .run(&ctx)
+            .await
+            .expect("the tick runs");
+
+        let after = notices(&ctx.db, id).await;
+        assert!(after[&coach_id] > before[&coach_id]);
+        assert_eq!(after[&coachee_id], before[&coachee_id]);
+        assert_eq!(notice_given_at(&ctx.db, id).await, column);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_change_told_to_nobody_restamps_no_notice() {
+    within_time_limit(async {
+        let mut server = Server::new_async().await;
+        let _resend = resend_answering(&mut server, 500).await;
+        let db = database().await;
+        let (id, _, _) = moved_session_between_two(&db, Members::Both).await;
+        let (before, column) = (notices(&db, id).await, notice_given_at(&db, id).await);
+        let ctx = context(db, sending(&server));
+
+        Sweep::from_config(&ctx.config)
+            .run(&ctx)
+            .await
+            .expect("the tick runs");
+
+        assert_eq!(notices(&ctx.db, id).await, before);
+        assert_eq!(notice_given_at(&ctx.db, id).await, column);
     })
     .await;
 }

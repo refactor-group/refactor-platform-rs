@@ -199,6 +199,7 @@ pub async fn create(
         &app_state.config,
         app_state.event_publisher.as_ref(),
         coaching_session_model,
+        user.id,
         requested_duration,
     )
     .await?;
@@ -235,11 +236,17 @@ pub async fn create(
 pub async fn update(
     CoachingSessionCoachAccess(coaching_session, _relationship): CoachingSessionCoachAccess,
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Json(params): Json<UpdateParams>,
 ) -> Result<impl IntoResponse, Error> {
-    CoachingSessionApi::update(app_state.db_conn_ref(), coaching_session.id, params).await?;
+    CoachingSessionApi::update(
+        app_state.db_conn_ref(),
+        coaching_session.id,
+        user.id,
+        params,
+    )
+    .await?;
     Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
 }
 
@@ -386,6 +393,8 @@ mod tests {
             updated_at: now.into(),
             hydrated_at: None,
             notice_given_at: chrono::Utc::now().into(),
+            scheduled_by_user_id: None,
+            meeting_url_created_by_user_id: None,
         }
     }
 

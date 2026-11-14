@@ -14,12 +14,12 @@ use entity::status::Status;
 use entity::transcription::TranscriptionStatus;
 use entity::{
     actions, actions_users, agreements, coaching_relationships, coaching_session_images,
-    coaching_session_pending_reschedules, coaching_session_reminders, coaching_session_series,
-    coaching_session_topics, coaching_session_views, coaching_sessions, coaching_sessions_goals,
-    cost_pricing_config, goals, magic_link_tokens, meeting_recording, notes, oauth_connections,
-    organizations, password_reset_attempts, platform_cost_metrics, transcript_analysis,
-    transcript_participant, transcript_segment, transcript_suggestion, transcription,
-    user_lookup_attempts, user_role_changes, user_roles, users, Id,
+    coaching_session_notices, coaching_session_pending_reschedules, coaching_session_reminders,
+    coaching_session_series, coaching_session_topics, coaching_session_views, coaching_sessions,
+    coaching_sessions_goals, cost_pricing_config, goals, magic_link_tokens, meeting_recording,
+    notes, oauth_connections, organizations, password_reset_attempts, platform_cost_metrics,
+    transcript_analysis, transcript_participant, transcript_segment, transcript_suggestion,
+    transcription, user_lookup_attempts, user_role_changes, user_roles, users, Id,
 };
 #[cfg(all(test, feature = "mock"))]
 use sea_orm::DbErr;
@@ -80,6 +80,7 @@ pub async fn database() -> DatabaseConnection {
         .register(agreements::Entity)
         .register(coaching_relationships::Entity)
         .register(coaching_session_images::Entity)
+        .register(coaching_session_notices::Entity)
         .register(coaching_session_pending_reschedules::Entity)
         .register(coaching_session_reminders::Entity)
         .register(coaching_session_series::Entity)
@@ -146,6 +147,8 @@ const MIGRATION_INDEXES: &[&str] = &[
      ON actions_users (action_id, user_id)",
     "CREATE UNIQUE INDEX refactor_platform.coaching_sessions_goals_session_goal_unique \
      ON coaching_sessions_goals (coaching_session_id, goal_id)",
+    "CREATE UNIQUE INDEX refactor_platform.uq_coaching_session_notices_session_user \
+     ON coaching_session_notices (coaching_session_id, user_id)",
 ];
 
 /// Rebuilds every table with the column defaults the migrations declare
@@ -363,6 +366,8 @@ pub async fn seed_coaching_session(db: &DatabaseConnection) -> (Id, Id) {
         updated_at: Set(now.into()),
         hydrated_at: Set(None),
         notice_given_at: Set(now.into()),
+        scheduled_by_user_id: Set(None),
+        meeting_url_created_by_user_id: Set(None),
     }
     .insert(db)
     .await
@@ -655,6 +660,8 @@ pub async fn seed_lapsed_membership(
             updated_at: Set(now.into()),
             hydrated_at: Set(None),
             notice_given_at: Set(now.into()),
+            scheduled_by_user_id: Set(None),
+            meeting_url_created_by_user_id: Set(None),
         }
         .insert(db)
         .await

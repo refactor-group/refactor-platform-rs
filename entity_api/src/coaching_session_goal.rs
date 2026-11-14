@@ -961,6 +961,8 @@ mod tests {
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
             notice_given_at: chrono::Utc::now().into(),
+            scheduled_by_user_id: None,
+            meeting_url_created_by_user_id: None,
         };
         let session2 = entity::coaching_sessions::Model {
             id: session2_id,
@@ -978,6 +980,8 @@ mod tests {
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
             notice_given_at: chrono::Utc::now().into(),
+            scheduled_by_user_id: None,
+            meeting_url_created_by_user_id: None,
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)

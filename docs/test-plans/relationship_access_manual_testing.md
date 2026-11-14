@@ -9,7 +9,8 @@ Rows record what the code does today, plus the rules tightened by the relationsh
 authorization security PR (`fix/relationship-scoped-authorization`), which lands before the
 rs#399 baseline is frozen. Rows it changes or adds are marked `[tightened]`; their
 `Enforced at` cells point at the new checks. Row ids are stable; never renumber them.
-Phase 4 adds colleague rows; there are none yet.
+Phase 4 adds colleague rows; there are none yet. Phase 1 adds the `SCHED` rows (4.16): what
+each schedule change records, with no change to who may make it.
 
 Rows marked `[membership]` change in phase M (org membership consistency), which also lands
 before the baseline. Their expected results already show the phase M rule:
@@ -459,7 +460,7 @@ How to read the tables:
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
-| MEET-01 | GET /coaching_sessions/SR1-x (not yet hydrated) | COACHEE | 200, session with provider and `meeting_url` from COACH's connection | `web/src/extractors/coaching_session_access.rs:184`; `domain/src/coaching_session.rs:268` | Hydration always uses the coach's account, whoever reads first |
+| MEET-01 | GET /coaching_sessions/SR1-x (not yet hydrated) | COACHEE | 200, session with provider and `meeting_url` from COACH's connection | `web/src/extractors/coaching_session_access.rs:184`; `domain/src/coaching_session.rs:268` | Hydration always uses the coach's account, whoever reads first; the link creator recorded is COACH (SCHED-09) |
 | MEET-02 | POST /coaching_sessions with `provider` | caller per SES-09 to SES-14 | as SES-09 to SES-14; a link is attached only on SES-09 | `domain/src/coaching_session.rs:116` | [tightened] Link comes from the coach's account or a reused relationship link (`:648`) |
 | MEET-03 | PUT /coaching_sessions/S1 `{meeting_url, provider}` | COACH | 200 (204) | `web/src/extractors/coaching_session_access.rs:91` | Coach only; COACHEE 403 (SES-16) |
 | MEET-04 | POST /coaching_sessions/S1/meeting_recording `{meeting_url}` | COACHEE | 200 (201) | `web/src/extractors/coaching_session_access.rs:184` | URL is caller supplied; not tied to an account |
@@ -575,12 +576,77 @@ Check with two browsers or `curl -N -b /tmp/<jar>.jar -H "$VER" $BASE/sse`.
 | SSE-06 | POST /webhooks/recall_ai (recording or transcript update for S1) | streams of COACH, COACHEE | both get the recording/transcription event | `entity_api/src/coaching_session.rs:655` | [rows] webhook is signature-authenticated, no user |
 | SSE-07 | GET /sse | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 
+### 4.16 Who scheduled and per-person notice (`SCHED`)
+
+Phase 1 records, on every schedule change, who made it, whose account made the meeting link,
+and when each participant (not the session as a whole) was last told its start. Nothing a
+caller sees changes: these rows check what is stored, with psql, not who may do it (the
+`SES`, `SER` and `MEET` rows above still decide that). Colleagues will make the recorded
+scheduler differ from the coach; until phase 4 every value written here is the caller who
+passed those rows, which is always COACH.
+
+Read a session's record, and its notice rows:
+
+```sql
+SELECT scheduled_by_user_id, meeting_url_created_by_user_id, meeting_url IS NOT NULL AS has_link,
+       notice_given_at
+FROM refactor_platform.coaching_sessions WHERE id = '<session id>';
+
+SELECT user_id, notice_given_at FROM refactor_platform.coaching_session_notices
+WHERE coaching_session_id = '<session id>' ORDER BY user_id;
+```
+
+To see a row change rather than keep the coach it already held, clear it first:
+`UPDATE refactor_platform.coaching_sessions SET scheduled_by_user_id = NULL WHERE id = '<id>';`
+
+`JOB-02` rows need the reschedule email to settle quickly: run the backend with
+`SESSION_RESCHEDULE_SETTLE_SECONDS=30`, and use a mock Resend (`RESEND_BASE_URL`) unless every
+inbox is yours.
+
+| ID | Action | Caller | Expected (psql) | Recorded by | Notes |
+|---|---|---|---|---|---|
+| SCHED-01 | POST /coaching_sessions `{coaching_relationship_id: R1}` (SES-09) | COACH | `scheduled_by_user_id` = COACH_ID; two notice rows, COACH and COACHEE, each equal to the session's `notice_given_at` | `domain::coaching_session::create` | |
+| SCHED-02 | POST /coaching_sessions `{coaching_relationship_id: R1, scheduled_by_user_id: MEMBER_ID, meeting_url_created_by_user_id: MEMBER_ID}`, no `provider` | COACH | 200 (201); `scheduled_by_user_id` = COACH_ID, `meeting_url_created_by_user_id` null; response has neither field | `entity::coaching_sessions::Model` (`#[serde(skip)]`) | A caller can't name someone else as the scheduler |
+| SCHED-03 | POST /coaching_sessions `{coaching_relationship_id: R1, provider}` (MEET-02) | COACH | `meeting_url_created_by_user_id` = COACH_ID when a link was attached; null when none was | `domain::coaching_session::maybe_attach_meeting_url` | Both the reused-link and new-link paths record the coach |
+| SCHED-04 | PUT /coaching_sessions/S1 moving `date`, on a row cleared to null | COACH | `scheduled_by_user_id` = COACH_ID | `domain::coaching_session::update` | Written in the edit's own transaction |
+| SCHED-05 | PUT /coaching_sessions/S1 changing only `title`, on a row cleared to null | COACH | `scheduled_by_user_id` still null; notice rows unchanged | `domain::coaching_session::update` | Only a create or a schedule change records a scheduler |
+| SCHED-06 | POST /coaching_session_series `{coaching_relationship_id: R1}` (SER-01) | COACH | every new session: `scheduled_by_user_id` = COACH_ID, two notice rows | `domain::coaching_session_series::create_with_sessions` | |
+| SCHED-07 | PUT /coaching_session_series/SR1 (SER-08) | COACH | every session it created or moved: `scheduled_by_user_id` = COACH_ID; past sessions untouched | `domain::coaching_session_series::reschedule` | Clear the future SR1 sessions first |
+| SCHED-08 | POST /coaching_session_series/SR1/reschedule from an occurrence (SER-10) | COACH | moved and newly created sessions: COACH_ID; sessions before that occurrence keep their value (clear one first to see it stay null) | `domain::coaching_session_series::reschedule_following` | |
+| SCHED-09 | GET /coaching_sessions/SR1-x not yet hydrated (MEET-01) | COACHEE | link attached; `meeting_url_created_by_user_id` = COACH_ID, not the reader; `scheduled_by_user_id` unchanged | `domain::coaching_session::ensure_hydrated`; `entity_api::coaching_session::mark_hydrated` | |
+| SCHED-10 | Reschedule email delivered to both (JOB-02 after SCHED-04) | COACH, COACHEE | both notice rows restamped to the send time; the session's `notice_given_at` too | the reschedule settle job | Compare against the values before the PUT |
+| SCHED-11 | PUT /coaching_sessions/S1 moving `date`, then remove COACH from O1 (ORG-04) before the email settles | COACH | only COACHEE is emailed; COACHEE's notice row restamped, COACH's unchanged | the reschedule settle job | Per-person: a participant who got no email keeps their old stamp. Run on a disposable relationship, or re-add COACH after |
+| SCHED-12 | PUT /coaching_sessions/S1 moving `date` with every send failing (`touch /tmp/resend_fail` on the mock) | COACH | no notice row restamped and `notice_given_at` unchanged; the move itself saved | the reschedule settle job | Remove the file afterwards |
+| SCHED-13 | GET /coaching_sessions/S1, and the OpenAPI document (`/api-docs/openapi2.json`, or `/rapidoc`) | COACH | no `scheduled_by_user_id` or `meeting_url_created_by_user_id` anywhere | `entity::coaching_sessions::Model` | Phase 1 changes no response or schema |
+| SCHED-14 | Phase 1a migrations on a database that predates them | operator | every session's scheduler is its coach; link creator is the coach exactly where `meeting_url` is set; two notice rows per session matching its `notice_given_at`, created and updated at that time | `migration/src/m20261114_00000*` | Already applied in production; for a fresh local database |
+| SCHED-15 | PUT /coaching_sessions/S1 `{meeting_url: "https://meet.example/kumquat"}` (MEET-03), then again with the same URL | COACH | after the first PUT: `meeting_url_created_by_user_id` = COACH_ID; the repeat PUT leaves it as it was. The PUT cannot clear a link: an omitted or null `meeting_url` leaves it unchanged | `domain::coaching_session::update` | A link set by hand records whoever set it. Clear the creator to null first to see the first PUT write it |
+| SCHED-16 | POST /coaching_sessions `{coaching_relationship_id: R1, meeting_url: "https://meet.example/kumquat"}`, no `provider` | COACH | `meeting_url_created_by_user_id` = COACH_ID | `domain::coaching_session::create` | A pasted link, not one made by a connected account |
+
+SCHED-14's checks, each expected to return 0:
+
+```sql
+SELECT count(*) FROM refactor_platform.coaching_sessions cs
+JOIN refactor_platform.coaching_relationships cr ON cr.id = cs.coaching_relationship_id
+WHERE cs.scheduled_by_user_id IS DISTINCT FROM cr.coach_id
+   OR cs.meeting_url_created_by_user_id IS DISTINCT FROM
+      CASE WHEN cs.meeting_url IS NOT NULL THEN cr.coach_id END;
+
+SELECT (SELECT 2 * count(*) FROM refactor_platform.coaching_sessions)
+     - (SELECT count(*) FROM refactor_platform.coaching_session_notices n
+        JOIN refactor_platform.coaching_sessions cs ON cs.id = n.coaching_session_id
+        WHERE n.notice_given_at = cs.notice_given_at AND n.created_at = cs.notice_given_at);
+```
+
+On a database that ran 1a before 1b's code, neither is 0 for sessions created or moved in
+between: they have a null scheduler and no notice rows until the 1c cleanup fills them in.
+Run these right after the migrations, before any new writes.
+
 ## 5. Background jobs and emails
 
 | ID | Trigger | Recipients today | Decided at (file:line) | Notes |
 |---|---|---|---|---|
-| JOB-01 | Session reminder sweep (`domain/src/jobs/session_reminder.rs:113`) | COACHEE only (the relationship's `coachee_id`), when still an org member and the session is in the window; coach never | `entity_api/src/coaching_session.rs:466`, `:473`, `:487`; `domain/src/emails.rs:1363` | Automated: SQL-shape mock only; check recipients by hand. |
-| JOB-02 | Pending reschedule settle (`domain/src/jobs/coaching_session_pending_reschedule.rs:122`), queued by a PUT that moves the schedule (`domain/src/coaching_session.rs:405`) | Participants still org members (MAIL-02); notice is stamped only when the coachee got it | `domain/src/emails.rs:1286`; `domain/src/jobs/coaching_session_pending_reschedule.rs:125` | |
+| JOB-01 | Session reminder sweep (`domain/src/jobs/session_reminder.rs:113`) | COACHEE only (the relationship's `coachee_id`), when still an org member and the session is in the window; coach never. Notice is measured from the later of COACHEE's own notice row and the session's `notice_given_at` | `entity_api/src/coaching_session.rs:466`, `:473`, `:487`; `domain/src/emails.rs:1363` | Automated: SQL-shape mock only; check recipients by hand. |
+| JOB-02 | Pending reschedule settle (`domain/src/jobs/coaching_session_pending_reschedule.rs:122`), queued by a PUT that moves the schedule (`domain/src/coaching_session.rs:405`) | Participants still org members (MAIL-02); each participant's notice row is stamped only when their own email went out (SCHED-10 to SCHED-12), and the session's `notice_given_at` only when the coachee's did | `domain/src/emails.rs:1286`; `domain/src/jobs/coaching_session_pending_reschedule.rs:125` | |
 | JOB-03 | Transcript suggestions sweep (`domain/src/jobs/transcript_suggestions.rs:74`) | No email. SSE to participants still members (SSE-05). Prompt names coach and coachee | `domain/src/transcript_suggestion/extract.rs:240`, `:115` | |
 | JOB-04 | Note image purge (`domain/src/jobs/coaching_session_image_purge.rs`) | None | not relationship-scoped | |
 | JOB-05 | Password reset token cleanup (`domain/src/jobs/password_reset.rs`) | None | not relationship-scoped | |
@@ -924,6 +990,22 @@ a frozen `domain` test, or by hand with the reason.
 | SSE-05 | `web/src/sse/handler_sqlite_tests.rs::both_participants_hear_that_suggestions_changed` (through a scan start, which shares the sweep's `extract::notify`); `domain/src/transcript_suggestion/extract_sqlite_tests.rs::every_completed_run_announces_once_with_or_without_suggestions` |
 | SSE-06 | `web/src/sse/handler_sqlite_tests.rs::both_participants_hear_of_a_recording_update` |
 | SSE-07 | `web/src/sse/handler_sqlite_tests.rs::signed_out_callers_cannot_open_an_event_stream` |
+| SCHED-01 | `domain/src/coaching_session_sqlite_tests.rs::create_records_the_acting_user_as_scheduler`, `domain/src/coaching_session_sqlite_tests.rs::create_stamps_both_participants_notice_at_the_sessions_own` |
+| SCHED-02 | `domain/src/coaching_session_sqlite_tests.rs::create_records_the_acting_user_as_scheduler` (a caller's value is overwritten); by hand for the request body and response, which `#[serde(skip)]` decides |
+| SCHED-03 | `domain/src/coaching_session_sqlite_tests.rs::create_reusing_a_meeting_link_records_the_coach_as_its_creator`, `domain/src/coaching_session_sqlite_tests.rs::create_without_a_provider_records_no_link_creator`; by hand for a new link: it calls the provider |
+| SCHED-04 | `domain/src/coaching_session_update_sqlite_tests.rs::moving_a_session_records_the_acting_user_as_scheduler` |
+| SCHED-05 | `domain/src/coaching_session_update_sqlite_tests.rs::a_title_edit_leaves_the_scheduler_as_it_was` |
+| SCHED-06 | `domain/src/coaching_session_series_sqlite_tests.rs::a_created_series_records_the_acting_user_on_every_session`, `domain/src/coaching_session_series_sqlite_tests.rs::a_created_series_stamps_both_participants_notice_on_every_session` |
+| SCHED-07 | `domain/src/coaching_session_series_sqlite_tests.rs::a_rescheduled_series_records_the_acting_user_on_the_sessions_it_creates`; by hand end to end: the series update takes Postgres advisory locks |
+| SCHED-08 | `domain/src/coaching_session_series_sqlite_tests.rs::move_to_slot_records_who_moved_the_session`, `domain/src/coaching_session_series_sqlite_tests.rs::a_following_reschedule_restamps_only_the_participants_it_reached`; by hand end to end: reschedule takes Postgres advisory locks |
+| SCHED-09 | `domain/src/coaching_session_sqlite_tests.rs::mark_hydrated_stores_the_link_creator_and_keeps_the_scheduler` |
+| SCHED-10 | `domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_change_told_to_both_restamps_each_participants_notice` |
+| SCHED-11 | `domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_coach_no_longer_in_the_organization_keeps_their_notice` |
+| SCHED-12 | `domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_change_told_to_nobody_restamps_no_notice` |
+| SCHED-13 | by hand: the OpenAPI document is read from a running server |
+| SCHED-14 | by hand: the migrations run on Postgres |
+| SCHED-15 | `domain/src/coaching_session_update_sqlite_tests.rs::setting_a_meeting_link_records_the_acting_user_as_its_creator`, `domain/src/coaching_session_update_sqlite_tests.rs::a_title_edit_leaves_the_link_creator_as_it_was` |
+| SCHED-16 | `domain/src/coaching_session_sqlite_tests.rs::create_with_a_pasted_meeting_link_records_the_acting_user_as_its_creator` |
 | JOB-01 | by hand: raw Postgres SQL; SQL shape in `entity_api/src/coaching_session.rs::tests::claim_due_reminders_skips_former_organization_members`, `entity_api/src/coaching_session.rs::tests::claim_due_reminders_membership_mirrors_is_member`, `entity_api/src/coaching_session.rs::tests::claim_due_reminders_skips_sessions_booked_on_short_notice` |
 | JOB-02 | `domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_due_change_is_emailed_and_settled`, `domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_coachee_no_longer_in_the_organization_is_not_emailed` |
 | JOB-03 | `domain/src/transcript_suggestion/prompt_tests.rs::render_writes_the_session_existing_actions_and_transcript`; events as SSE-05 |

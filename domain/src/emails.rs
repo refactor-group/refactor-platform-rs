@@ -874,6 +874,18 @@ pub struct Delivered {
 }
 
 impl Delivered {
+    /// The participants of `relationship` this send reached.
+    pub fn reached(&self, relationship: &coaching_relationships::Model) -> Vec<Id> {
+        [
+            (self.coachee, relationship.coachee_id),
+            (self.coach, relationship.coach_id),
+        ]
+        .into_iter()
+        .filter(|(delivery, _)| *delivery == Delivery::Sent)
+        .map(|(_, id)| id)
+        .collect()
+    }
+
     /// The participants this send skipped for no longer being members.
     fn skipped(&self, participants: &Participants<'_>) -> Vec<Id> {
         [
@@ -1261,8 +1273,8 @@ pub enum RescheduleOutcome {
     /// Sent to each participant still in the organization.
     Sent(Delivered),
     /// The coachee left the organization, so no one is owed the change; a coach still in
-    /// it was sent their copy.
-    CoacheeNoLongerAMember,
+    /// it was sent their copy, with `coach` saying how that went.
+    CoacheeNoLongerAMember { coach: Delivery },
 }
 
 /// Sends the session-rescheduled emails to the participants still in the organization.
@@ -1285,7 +1297,9 @@ pub async fn send_session_rescheduled(
     let org = organization::find_by_id(db, relationship.organization_id).await?;
     let member_ids = notify_member_ids(db, &relationship).await?;
     if member_ids.is_empty() {
-        return Ok(RescheduleOutcome::CoacheeNoLongerAMember);
+        return Ok(RescheduleOutcome::CoacheeNoLongerAMember {
+            coach: Delivery::NoLongerAMember,
+        });
     }
 
     let delivered = send_session_rescheduled_email(
@@ -1305,7 +1319,9 @@ pub async fn send_session_rescheduled(
     .await?;
     Ok(match member_ids.contains(&coachee.id) {
         true => RescheduleOutcome::Sent(delivered),
-        false => RescheduleOutcome::CoacheeNoLongerAMember,
+        false => RescheduleOutcome::CoacheeNoLongerAMember {
+            coach: delivered.coach,
+        },
     })
 }
 
@@ -2358,8 +2374,8 @@ pub struct FollowingRescheduleNotice<'a> {
 ///
 /// The invite is a snapshot of the series as it now stands, since moved sessions keep their
 /// own meeting links. On a split it also carries the shortened series' snapshot, so
-/// calendars drop the occurrences the new series took over. Returns what it did for the
-/// coachee, which decides whether the moved sessions count as noticed.
+/// calendars drop the occurrences the new series took over. Returns what it did for each
+/// participant; the coachee's decides whether the moved sessions count as noticed.
 ///
 /// A delivered send must clear each session's pending reschedule (via
 /// `coaching_session::record_notice` or `coaching_session::record_announced`).
@@ -2367,7 +2383,7 @@ pub async fn notify_recurring_sessions_rescheduled_following(
     db: &DatabaseConnection,
     config: &Config,
     change: &FollowingRescheduleNotice<'_>,
-) -> Delivery {
+) -> Delivered {
     let result: Result<Delivered, Error> = async {
         let relationship =
             coaching_relationship::find_by_id(db, change.series.coaching_relationship_id).await?;
@@ -2419,16 +2435,13 @@ pub async fn notify_recurring_sessions_rescheduled_following(
     }
     .await;
 
-    match result {
-        Ok(delivered) => delivered.coachee,
-        Err(e) => {
-            warn!(
-                "Failed to send series rescheduled emails for series {}: {e:?}",
-                change.series.id
-            );
-            Delivery::Failed
-        }
-    }
+    result.unwrap_or_else(|e| {
+        warn!(
+            "Failed to send series rescheduled emails for series {}: {e:?}",
+            change.series.id
+        );
+        Delivered::default()
+    })
 }
 
 /// Build the series cancellation `.ics` body (VEVENT + RRULE). Pure: `dtstamp` injected.

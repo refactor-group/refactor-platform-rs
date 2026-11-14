@@ -132,6 +132,8 @@ fn session_row(
         updated_at: Set(now.into()),
         hydrated_at: Set(None),
         notice_given_at: Set(now.into()),
+        scheduled_by_user_id: Set(None),
+        meeting_url_created_by_user_id: Set(None),
     }
 }
 
@@ -483,7 +485,8 @@ async fn send_members_only(
                         member_ids: &member_ids,
                     },
                 )
-                .await,
+                .await
+                .coachee,
             );
         }
     }
@@ -596,6 +599,7 @@ async fn session_create_with_the_coach_holding_no_role_reaches_only_the_coachee(
             &sending(&server),
             &EventPublisher::new(),
             session,
+            seeded.coach.id,
             None,
         )
         .await

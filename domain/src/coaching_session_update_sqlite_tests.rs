@@ -7,7 +7,7 @@ use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, IntoActiveModel
 
 use crate::error::{DomainErrorKind, EntityErrorKind, InternalErrorKind};
 use crate::test_utils::sqlite::{
-    database, organization_of, seed_coaching_session, seed_membership, within_time_limit,
+    database, organization_of, seed_coaching_session, seed_membership, seed_user, within_time_limit,
 };
 use crate::{coaching_session_pending_reschedules, coaching_sessions, Id};
 
@@ -68,7 +68,7 @@ async fn read(db: &DatabaseConnection, session_id: Id) -> coaching_sessions::Mod
 }
 
 async fn edit(db: &DatabaseConnection, session_id: Id, params: Params) -> coaching_sessions::Model {
-    crate::coaching_session::update(db, session_id, params)
+    crate::coaching_session::update(db, session_id, Id::new_v4(), params)
         .await
         .expect("the edit succeeds")
 }
@@ -145,6 +145,120 @@ async fn moving_back_to_the_announced_schedule_leaves_nothing_pending() {
         edit(&db, session_id, date(start)).await;
 
         assert_eq!(pending(&db, session_id).await, None);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn moving_a_session_records_the_acting_user_as_scheduler() {
+    within_time_limit(async {
+        let db = database().await;
+        let (session_id, start) = upcoming_session(&db).await;
+        let acting_user = seed_user(&db).await;
+
+        crate::coaching_session::update(
+            &db,
+            session_id,
+            acting_user,
+            date(start + TimeDelta::hours(1)),
+        )
+        .await
+        .expect("the edit succeeds");
+
+        assert_eq!(
+            read(&db, session_id).await.scheduled_by_user_id,
+            Some(acting_user)
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_title_edit_leaves_the_scheduler_as_it_was() {
+    within_time_limit(async {
+        let db = database().await;
+        let (session_id, _) = upcoming_session(&db).await;
+
+        crate::coaching_session::update(&db, session_id, seed_user(&db).await, title("Renamed"))
+            .await
+            .expect("the edit succeeds");
+
+        assert_eq!(read(&db, session_id).await.scheduled_by_user_id, None);
+    })
+    .await;
+}
+
+fn meeting_url(value: Option<&str>) -> Params {
+    set("meeting_url", Value::String(value.map(str::to_string)))
+}
+
+/// An upcoming session with a link its coach made; returns its id and the coach.
+async fn linked_session(db: &DatabaseConnection) -> (Id, Id) {
+    let (session_id, _, coach_id) = upcoming_session_without_members(db).await;
+    seed_membership(db, coach_id, organization_of(db, session_id).await).await;
+    let mut session = read(db, session_id).await.into_active_model();
+    session.meeting_url = Set(Some("https://meet.example/coach".to_string()));
+    session.meeting_url_created_by_user_id = Set(Some(coach_id));
+    session.update(db).await.expect("the link is set");
+    (session_id, coach_id)
+}
+
+async fn edit_as(db: &DatabaseConnection, session_id: Id, acting_user: Id, params: Params) {
+    crate::coaching_session::update(db, session_id, acting_user, params)
+        .await
+        .expect("the edit succeeds");
+}
+
+#[tokio::test]
+async fn setting_a_meeting_link_records_the_acting_user_as_its_creator() {
+    within_time_limit(async {
+        let db = database().await;
+        let (session_id, _) = linked_session(&db).await;
+        let acting_user = seed_user(&db).await;
+
+        edit_as(
+            &db,
+            session_id,
+            acting_user,
+            meeting_url(Some("https://meet.example/pasted")),
+        )
+        .await;
+
+        assert_eq!(
+            read(&db, session_id).await.meeting_url_created_by_user_id,
+            Some(acting_user)
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn clearing_the_meeting_link_clears_its_creator() {
+    within_time_limit(async {
+        let db = database().await;
+        let (session_id, _) = linked_session(&db).await;
+
+        edit_as(&db, session_id, seed_user(&db).await, meeting_url(None)).await;
+
+        let session = read(&db, session_id).await;
+        assert_eq!(session.meeting_url, None);
+        assert_eq!(session.meeting_url_created_by_user_id, None);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_title_edit_leaves_the_link_creator_as_it_was() {
+    within_time_limit(async {
+        let db = database().await;
+        let (session_id, coach_id) = linked_session(&db).await;
+
+        edit_as(&db, session_id, seed_user(&db).await, title("Renamed")).await;
+
+        assert_eq!(
+            read(&db, session_id).await.meeting_url_created_by_user_id,
+            Some(coach_id)
+        );
     })
     .await;
 }
@@ -235,7 +349,7 @@ async fn moving_a_session_whose_coachee_left_the_organization_is_refused() {
         let before = read(&db, session_id).await;
 
         for params in [date(start + TimeDelta::hours(1)), duration(45)] {
-            let refused = crate::coaching_session::update(&db, session_id, params)
+            let refused = crate::coaching_session::update(&db, session_id, Id::new_v4(), params)
                 .await
                 .expect_err("a move is refused");
 

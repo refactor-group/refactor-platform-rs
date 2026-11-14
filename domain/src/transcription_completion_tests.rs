@@ -189,6 +189,8 @@ fn session(people: &People, provider: Option<MeetingProvider>) -> coaching_sessi
         updated_at: now.into(),
         hydrated_at: None,
         notice_given_at: now.into(),
+        scheduled_by_user_id: None,
+        meeting_url_created_by_user_id: None,
     }
 }
 
