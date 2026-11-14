@@ -9,7 +9,7 @@ Rows record what the code does today, plus the rules tightened by the relationsh
 authorization security PR (`fix/relationship-scoped-authorization`), which lands before the
 rs#399 baseline is frozen. Rows it changes or adds are marked `[tightened]`; their
 `Enforced at` cells point at the new checks. Row ids are stable; never renumber them.
-Phase 4 adds colleague rows; there are none yet. Phase 1 adds the `SCHED` rows (4.16): what
+Phase 4 adds colleague rows; there are none yet. Phase 1 adds the `SCHED` rows (4.15): what
 each schedule change records, with no change to who may make it.
 
 Rows marked `[membership]` change in phase M (org membership consistency), which also lands
@@ -559,7 +559,7 @@ Check with two browsers or `curl -N -b /tmp/<jar>.jar -H "$VER" $BASE/sse`.
 | SSE-06 | POST /webhooks/recall_ai (recording or transcript update for S1) | streams of COACH, COACHEE | both get the recording/transcription event | `entity_api/src/coaching_session.rs:655` | [rows] webhook is signature-authenticated, no user |
 | SSE-07 | GET /sse | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 
-### 4.16 Who scheduled and per-person notice (`SCHED`)
+### 4.15 Who scheduled and per-person notice (`SCHED`)
 
 Phase 1 records, on every schedule change, who made it, whose account made the meeting link,
 and when each participant (not the session as a whole) was last told its start. Nothing a
