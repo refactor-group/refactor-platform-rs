@@ -43,5 +43,5 @@ do not approve the pull request.
    and the fix. The summary is a count of findings, or "No security findings.", then a short
    "Scope:" paragraph naming the diff reviewed (whole, or since which sha) and what was checked.
    Don't add a note on what the review didn't run, such as tests or builds: CI runs them on
-   every pull request in an earlier stage.
+   every pull request in its own workflow (`build-test-push.yml`).
    The caller says where these go.
