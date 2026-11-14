@@ -44,8 +44,11 @@ do not approve the pull request.
 
 5. Report. Each confirmed finding starts with **Security (high)** or **Security (medium)**,
    names its file and line, and says who the attacker is, what they send, what they gain,
-   and the fix. The summary is a count of findings, or "No security findings.", then a short
-   "Scope:" paragraph naming the diff reviewed (whole, or since which sha) and what was checked.
+   and the fix. The summary has three parts, each separated by a blank line:
+   - the verdict: a count of findings, or "No security findings.";
+   - `**Scope:**` and one or two sentences: the diff reviewed (whole, or since which sha), how
+     many files, and which finder areas ran;
+   - `**Checked:**` and a bulleted list, one bullet per thing checked and found sound.
    Don't add a note on what the review didn't run, such as tests or builds: CI runs them on
    every pull request in its own workflow (`build-test-push.yml`).
    The caller says where these go.
