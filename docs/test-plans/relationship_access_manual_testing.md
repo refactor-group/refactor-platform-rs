@@ -186,16 +186,16 @@ How to read the tables:
 | REL-10 | GET /organizations/O2/coaching_relationships/R1 | COACH | 404 | `web/src/extractors/coaching_relationship_access.rs:76` | Path org must match the relationship's |
 | REL-11 | GET /organizations/O1/coaching_relationships/R3 | REMOVED | 403 | `web/src/extractors/coaching_relationship_access.rs:82` | Participant, no longer a member |
 | REL-12 | GET /organizations/O1/coaching_relationships/R3 | COACH | 200, R3 | `web/src/extractors/coaching_relationship_access.rs:82` | Coach keeps access after the coachee is removed. [membership] `coach_is_member` true, `coachee_is_member` false |
-| REL-13 | GET /users/{COACHEE_ID}/coaching-relationships | COACHEE | 200, R1 R2 | `web/src/protect/users/mod.rs:25`; `entity_api/src/coaching_relationship.rs:671` | [rows] self only. `role=coach`: empty; `role=coachee`: R1 R2 |
-| REL-14 | GET /users/{COACHEE_ID}/coaching-relationships | COACH, MEMBER, ADMIN, SUPER | 403 | `web/src/protect/users/mod.rs:25` | Self only, no admin bypass |
+| REL-13 | GET /users/{COACHEE_ID}/coaching-relationships | COACHEE | 200, R1 R2 | `web/src/extractors/user_self_access.rs:28`; `entity_api/src/coaching_relationship.rs:671` | [rows] self only. `role=coach`: empty; `role=coachee`: R1 R2 |
+| REL-14 | GET /users/{COACHEE_ID}/coaching-relationships | COACH, MEMBER, ADMIN, SUPER | 403 | `web/src/extractors/user_self_access.rs:28` | Self only, no admin bypass |
 | REL-15 | POST /organizations/O1/coaching_relationships `{coach_id: COACH, coachee_id: MEMBER}` | ADMIN, SUPER | 200 (201), new relationship | `web/src/extractors/organization_admin_access.rs:42`; `entity_api/src/coaching_relationship.rs:74` | Same pair again returns the existing row. Both people must be O1 members |
 | REL-16 | POST /organizations/O1/coaching_relationships | COACH, COACHEE, MEMBER, OUTSIDER | 403 | `web/src/extractors/organization_admin_access.rs:48` | |
-| REL-17 | GET /users/{REMOVED_ID}/coaching-relationships | REMOVED | 200, empty list | `web/src/protect/users/mod.rs:25`; `entity_api/src/coaching_relationship.rs:671`, `:426` | [membership] self list leaves out R3; was 200, R3 |
+| REL-17 | GET /users/{REMOVED_ID}/coaching-relationships | REMOVED | 200, empty list | `web/src/extractors/user_self_access.rs:28`; `entity_api/src/coaching_relationship.rs:671`, `:426` | [membership] self list leaves out R3; was 200, R3 |
 | REL-18 | GET /organizations/O1/coaching_relationships | ADMIN | 200; R3 has `coach_is_member` true and `coachee_is_member` false, R1 and R2 have both true | `entity_api/src/coaching_relationship.rs:236` | [membership] Both fields are on every relationship object: org list, single read, `GET /users/{id}/coaching-relationships`, the create response (both true), and `include=relationship` on session reads |
 | REL-19 | GET /organizations/{unknown}/coaching_relationships | COACH, ADMIN, SUPER | 404 | `web/src/extractors/organization_member_access.rs:59` | Checked before membership |
 | REL-20 | POST /organizations/O1/coaching_relationships | OUTSIDER made an `Admin` of O2 | 403, nothing written | `web/src/extractors/organization_admin_access.rs:48` | An admin of another organization is not an admin of O1 |
 | REL-21 | any relationship route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
-| REL-22 | GET /users/{SUPER_ID}/coaching-relationships | SUPER, once they also coach OUTSIDER in a new O2 relationship R5 | 200, R5 | `web/src/protect/users/mod.rs:25`; `web/src/controller/user/coaching_relationships_controller.rs:53`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in. SUPER holds no O2 role |
+| REL-22 | GET /users/{SUPER_ID}/coaching-relationships | SUPER, once they also coach OUTSIDER in a new O2 relationship R5 | 200, R5 | `web/src/extractors/user_self_access.rs:28`; `web/src/controller/user/coaching_relationships_controller.rs:53`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in. SUPER holds no O2 role |
 
 ### 4.2 Sessions (`SES`)
 
@@ -227,12 +227,12 @@ How to read the tables:
 | SES-24 | POST /coaching_sessions/S1/resend_invite | COACH | 204 | `web/src/extractors/coaching_session_access.rs:91` | 409 when past or a series member. Sends MAIL-04 |
 | SES-25 | POST /coaching_sessions/S1/resend_invite | COACHEE | 403 | `web/src/extractors/coaching_session_access.rs:91` | |
 | SES-26 | POST /coaching_sessions/S1/resend_invite | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:184` | |
-| SES-27 | GET /users/{COACH_ID}/coaching_sessions | COACH | 200, S1 S3 SR1-* SR3-* | `web/src/protect/users/coaching_sessions.rs:20`; `entity_api/src/coaching_session.rs:1178` | [rows] self only. `include=relationship` adds `coach`/`coachee` |
+| SES-27 | GET /users/{COACH_ID}/coaching_sessions | COACH | 200, S1 S3 SR1-* SR3-* | `web/src/extractors/user_self_access.rs:28`; `entity_api/src/coaching_session.rs:1178` | [rows] self only. `include=relationship` adds `coach`/`coachee` |
 | SES-28 | GET /users/{COACHEE_ID}/coaching_sessions | COACHEE | 200, S1 S2 SR1-* | same as SES-27 | [rows] |
-| SES-29 | GET /users/{COACHEE_ID}/coaching_sessions | COACH, MEMBER, ADMIN, SUPER | 403 | `web/src/protect/users/coaching_sessions.rs:20` | Same gate for `/counts` and `/nearest` |
-| SES-30 | GET /users/{REMOVED_ID}/coaching_sessions | REMOVED | 200, empty list | `web/src/protect/users/coaching_sessions.rs:20` | [membership] self list leaves out S3; was 200, S3 |
-| SES-31 | GET /users/{COACHEE_ID}/coaching_sessions/counts | COACHEE | 200, counts over S1 S2 SR1-* | `web/src/protect/users/coaching_sessions.rs:20`; `entity_api/src/coaching_session.rs:938` | [rows] |
-| SES-32 | GET /users/{COACHEE_ID}/coaching_sessions/nearest?coaching_relationship_ids=R1,R2 | COACHEE | 200, nearest of R1 and of R2 | `web/src/protect/users/coaching_sessions.rs:20`; `entity_api/src/coaching_session.rs:1245` | [rows] a relationship the user is not in contributes nothing |
+| SES-29 | GET /users/{COACHEE_ID}/coaching_sessions | COACH, MEMBER, ADMIN, SUPER | 403 | `web/src/extractors/user_self_access.rs:28` | Same gate for `/counts` and `/nearest` |
+| SES-30 | GET /users/{REMOVED_ID}/coaching_sessions | REMOVED | 200, empty list | `web/src/extractors/user_self_access.rs:28` | [membership] self list leaves out S3; was 200, S3 |
+| SES-31 | GET /users/{COACHEE_ID}/coaching_sessions/counts | COACHEE | 200, counts over S1 S2 SR1-* | `web/src/extractors/user_self_access.rs:28`; `entity_api/src/coaching_session.rs:938` | [rows] |
+| SES-32 | GET /users/{COACHEE_ID}/coaching_sessions/nearest?coaching_relationship_ids=R1,R2 | COACHEE | 200, nearest of R1 and of R2 | `web/src/extractors/user_self_access.rs:28`; `entity_api/src/coaching_session.rs:1245` | [rows] a relationship the user is not in contributes nothing |
 | SES-33 | POST /coaching_sessions `{coaching_relationship_id: R3}` | COACH | 409 `coachee_not_a_member`, nothing written, no email | `domain/src/coaching_session.rs:102` | [membership] `details: {reason, organization_id, user_id}` |
 | SES-34 | PUT /coaching_sessions/S3 changing `date` or `duration_minutes` | COACH | 409 `coachee_not_a_member`, S3 unchanged | `domain/src/coaching_session.rs:390` | [membership] Other edits succeed (SES-18) |
 | SES-35 | POST /coaching_sessions/S3/resend_invite | COACH | 409 `coachee_not_a_member`, no email | `domain/src/coaching_session.rs:592` | [membership] |
@@ -243,9 +243,9 @@ How to read the tables:
 | SES-40 | GET /coaching_sessions/{unknown}, POST /coaching_sessions/{unknown}/resend_invite | COACH | 404, no email | `web/src/extractors/coaching_session_access.rs:182` | |
 | SES-41 | PUT /coaching_sessions/S1 | COACH after removal from O1 | 403, S1 unchanged | `web/src/extractors/coaching_session_access.rs:184` | [tightened] Restore the role afterwards |
 | SES-42 | any /coaching_sessions route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
-| SES-43 | GET /users/{REMOVED_ID}/coaching_sessions/nearest?coaching_relationship_ids=R3 | REMOVED | 200, empty list | `web/src/protect/users/coaching_sessions.rs:20`; `entity_api/src/coaching_session.rs:1245`; `entity_api/src/coaching_relationship.rs:426` | [membership] R3's sessions are left out, as in SES-30 |
-| SES-44 | GET /users/{SUPER_ID}/coaching_sessions | SUPER, once they also coach OUTSIDER in a new O2 relationship R5 with one session | 200, R5's session | `web/src/protect/users/coaching_sessions.rs:20`; `web/src/controller/user/coaching_session_controller.rs:93`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in |
-| SES-45 | GET /users/{SUPER_ID}/coaching_sessions/nearest?coaching_relationship_ids=R5 | SUPER, once they also coach OUTSIDER in a new O2 relationship R5 with one session | 200, R5's session | `web/src/protect/users/coaching_sessions.rs:20`; `web/src/controller/user/coaching_session_controller.rs:162`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in |
+| SES-43 | GET /users/{REMOVED_ID}/coaching_sessions/nearest?coaching_relationship_ids=R3 | REMOVED | 200, empty list | `web/src/extractors/user_self_access.rs:28`; `entity_api/src/coaching_session.rs:1245`; `entity_api/src/coaching_relationship.rs:426` | [membership] R3's sessions are left out, as in SES-30 |
+| SES-44 | GET /users/{SUPER_ID}/coaching_sessions | SUPER, once they also coach OUTSIDER in a new O2 relationship R5 with one session | 200, R5's session | `web/src/extractors/user_self_access.rs:28`; `web/src/controller/user/coaching_session_controller.rs:93`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in |
+| SES-45 | GET /users/{SUPER_ID}/coaching_sessions/nearest?coaching_relationship_ids=R5 | SUPER, once they also coach OUTSIDER in a new O2 relationship R5 with one session | 200, R5's session | `web/src/extractors/user_self_access.rs:28`; `web/src/controller/user/coaching_session_controller.rs:162`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in |
 
 ### 4.3 Series (`SER`)
 
@@ -382,9 +382,9 @@ How to read the tables:
 | GOAL-19 | GET /organizations/O1/coaching_relationships/R1/goal_progress | COACH, COACHEE | 200, progress for G1 | `web/src/extractors/coaching_relationship_access.rs:82` | [rows] `assignee=coach`/`coachee`/participant id allowed |
 | GOAL-20 | GET /organizations/O1/coaching_relationships/R1/goal_progress?assignee={MEMBER_ID} | COACH | 400 | `web/src/controller/organization/coaching_relationship_controller.rs:214` | Non-participant id rejected |
 | GOAL-21 | GET /organizations/O1/coaching_relationships/R1/goal_progress | non-participants | 403 | `web/src/extractors/coaching_relationship_access.rs:82` | No separate member extractor on this route |
-| GOAL-22 | GET /users/{COACH_ID}/goals | COACH | 200, G1 | `web/src/protect/users/goals.rs:20` | [rows] goals the user created |
-| GOAL-23 | GET /users/{COACHEE_ID}/goals | COACHEE | 200, empty list | `web/src/protect/users/goals.rs:20` | [rows] COACHEE created no goal |
-| GOAL-24 | GET /users/{COACHEE_ID}/goals | COACH, MEMBER, ADMIN, SUPER | 403 | `web/src/protect/users/goals.rs:20` | Self only |
+| GOAL-22 | GET /users/{COACH_ID}/goals | COACH | 200, G1 | `web/src/extractors/user_self_access.rs:28` | [rows] goals the user created |
+| GOAL-23 | GET /users/{COACHEE_ID}/goals | COACHEE | 200, empty list | `web/src/extractors/user_self_access.rs:28` | [rows] COACHEE created no goal |
+| GOAL-24 | GET /users/{COACHEE_ID}/goals | COACH, MEMBER, ADMIN, SUPER | 403 | `web/src/extractors/user_self_access.rs:28` | Self only |
 | GOAL-25 | POST /goals `{coaching_relationship_id: R1}` | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, nothing written | `web/src/controller/goal_controller.rs:85` | [tightened] Unknown relationship: 404. REMOVED on R3: 403 |
 | GOAL-26 | POST /coaching_sessions/S1/goals, DELETE /coaching_sessions/S1/goals/G1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, links unchanged | `web/src/controller/coaching_session/goal_controller.rs:48`, `:98` | [tightened] REMOVED on S3: 403 |
 | GOAL-27 | POST /coaching_sessions/S1/goals `{goal_id: G2}` | COACH | 422, nothing linked | `web/src/controller/coaching_session/goal_controller.rs:60`, `:59` | [tightened] G2 belongs to R2; a goal links only to sessions in its own relationship. Unknown goal: 404 |
@@ -394,8 +394,8 @@ How to read the tables:
 | GOAL-31 | PUT /goals/G1/status, GET /goals/G1/progress | non-participants | 403, G1 unchanged | `web/src/extractors/goal_access.rs:45` | Unknown goal: 404 |
 | GOAL-32 | POST /goals `{coaching_relationship_id: R1, created_in_session_id: S1}` | COACH | 200 (201), new goal linked to S1 | `web/src/controller/goal_controller.rs:93` | The allowed side of GOAL-28 |
 | GOAL-33 | any goal route (`/goals`, `/coaching_sessions/.../goals`, `/users/{id}/goals`, `goal_progress`) | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
-| GOAL-34 | GET /users/{REMOVED_ID}/goals, REMOVED having created a goal in R3 | REMOVED | 200, empty list | `web/src/protect/users/goals.rs:20`; `entity_api/src/goal.rs:38`; `entity_api/src/coaching_relationship.rs:426` | [membership] self list leaves out goals in R3 |
-| GOAL-35 | GET /users/{SUPER_ID}/goals | SUPER, once they also coach OUTSIDER in a new O2 relationship R5, SUPER having created a goal in R5 | 200, that goal | `web/src/protect/users/goals.rs:20`; `web/src/controller/user/goal_controller.rs:56`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in |
+| GOAL-34 | GET /users/{REMOVED_ID}/goals, REMOVED having created a goal in R3 | REMOVED | 200, empty list | `web/src/extractors/user_self_access.rs:28`; `entity_api/src/goal.rs:38`; `entity_api/src/coaching_relationship.rs:426` | [membership] self list leaves out goals in R3 |
+| GOAL-35 | GET /users/{SUPER_ID}/goals | SUPER, once they also coach OUTSIDER in a new O2 relationship R5, SUPER having created a goal in R5 | 200, that goal | `web/src/extractors/user_self_access.rs:28`; `web/src/controller/user/goal_controller.rs:56`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in |
 
 ### 4.8 Topics (`TOP`)
 
@@ -503,11 +503,11 @@ Rows here cover user routes that return relationship data and are not covered ab
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
-| USR-01 | GET /users/{COACHEE_ID}/coaching_sessions?include=relationship | COACHEE | 200, S1 S2 SR1-* each with `relationship`, `coach`, `coachee` | `web/src/protect/users/coaching_sessions.rs:20`; `entity_api/src/coaching_session.rs:1178`, `:1366` | [rows] |
+| USR-01 | GET /users/{COACHEE_ID}/coaching_sessions?include=relationship | COACHEE | 200, S1 S2 SR1-* each with `relationship`, `coach`, `coachee` | `web/src/extractors/user_self_access.rs:28`; `entity_api/src/coaching_session.rs:1178`, `:1366` | [rows] |
 | USR-02 | GET /users/{COACHEE_ID}/coaching-relationships?role=coach | COACHEE | 200, empty list | `entity_api/src/coaching_relationship.rs:662` | [rows] |
 | USR-03 | GET /users/{COACH_ID}/coaching-relationships?role=coach | COACH | 200, R1 R3 | `entity_api/src/coaching_relationship.rs:662` | [rows] |
 | USR-04 | any /users route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
-| USR-05 | PUT /users/{COACHEE_ID} `{working_hours_start}` | COACH, MEMBER, ADMIN, SUPER | 403, COACHEE unchanged | `web/src/protect/users/mod.rs:46` | Self only |
+| USR-05 | PUT /users/{COACHEE_ID} `{working_hours_start}` | COACH, MEMBER, ADMIN, SUPER | 403, COACHEE unchanged | `web/src/extractors/user_self_access.rs:28` | Self only |
 | USR-06 | GET /users?email={MEMBER email} | COACH, COACHEE, MEMBER, OUTSIDER | 403 | `web/src/controller/user_controller.rs:57` | Only an org `Admin` or SUPER may look users up |
 | USR-07 | GET /users?email={MEMBER email} | ADMIN | 200, MEMBER | `domain/src/user_role.rs:279`; `entity_api/src/user_role.rs:331` | [rows] the lookup's rate limit takes a Postgres advisory lock, so the route is checked by hand and the scope in `domain` |
 | USR-08 | GET /users?email={OUTSIDER email} | ADMIN | 200, empty list, also once OUTSIDER has role history in O2 | `domain/src/user_role.rs:279`; `entity_api/src/user_role.rs:331`; `entity_api/src/user_role_change.rs:58` | [rows] Not found and not visible look the same |
