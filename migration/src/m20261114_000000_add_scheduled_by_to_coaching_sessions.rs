@@ -6,8 +6,8 @@ pub struct Migration;
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        // Who last created or rescheduled the session. Nullable until code that writes it is
-        // deployed, so inserts from the running version still succeed.
+        // Who last created or rescheduled the session. Nullable while code that doesn't
+        // write it may still be running, so its inserts still succeed.
         manager
             .get_connection()
             .execute_unprepared(

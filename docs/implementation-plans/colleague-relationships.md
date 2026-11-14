@@ -129,7 +129,8 @@ onto extractors: "is this my own user" on the `/users/{user_id}` routes becomes
 - Three PRs, deployed in order. 1a: migrations and backfill only, while the running code
   still writes and reads the old column. 1b: the code that writes and reads the new data,
   deployed right after 1a (traffic is low enough that rows written between the two deploys
-  are not worth a catch-up). 1c: a cleanup migration that fills any `scheduled_by_user_id`
+  are not worth a catch-up). 1b keeps writing `coaching_sessions.notice_given_at` too, so
+  rolling back to the previous image stays safe until 1c. 1c: a cleanup migration that fills any `scheduled_by_user_id`
   still null with the coach, makes it NOT NULL, and drops `coaching_sessions.notice_given_at`. Every migration has a working down migration.
 
 **2. Add `kind`** (no visible change). Postgres enum, default `coaching`, owned by `refactor`.
