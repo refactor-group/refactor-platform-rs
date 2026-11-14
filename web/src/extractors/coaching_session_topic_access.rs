@@ -17,8 +17,9 @@ use crate::{
 /// `:topic_id` topic belongs to that session.
 ///
 /// Composes `CoachingSessionAccess` (participant + session check), then loads the topic
-/// and confirms it belongs to the path session. A non-participant gets 403; a topic missing from
-/// the path session is 404, so a topic in another session is never revealed. On success, yields the topic model.
+/// and confirms it belongs to the path session. A non-participant gets 403; a topic missing
+/// from the path session is 404, so a topic in another session is never revealed. On
+/// success, yields the topic model.
 pub(crate) struct CoachingSessionTopicAccess(pub coaching_session_topics::Model);
 
 #[async_trait]
