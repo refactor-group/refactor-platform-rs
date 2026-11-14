@@ -17,7 +17,7 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        // Only the coach could create or reschedule a session until now.
+        // The app has only ever let the coach create or reschedule a session.
         manager
             .get_connection()
             .execute_unprepared(

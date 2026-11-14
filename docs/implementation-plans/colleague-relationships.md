@@ -129,9 +129,14 @@ onto extractors: "is this my own user" on the `/users/{user_id}` routes becomes
 - Three PRs, deployed in order. 1a: migrations and backfill only, while the running code
   still writes and reads the old column. 1b: the code that writes and reads the new data,
   deployed right after 1a (traffic is low enough that rows written between the two deploys
-  are not worth a catch-up). 1b keeps writing `coaching_sessions.notice_given_at` too, so
-  rolling back to the previous image stays safe until 1c. 1c: a cleanup migration that fills any `scheduled_by_user_id`
-  still null with the coach, makes it NOT NULL, and drops `coaching_sessions.notice_given_at`. Every migration has a working down migration.
+  are not worth a catch-up in 1b). 1b keeps writing `coaching_sessions.notice_given_at` too,
+  so rolling back to the previous image stays safe until 1c, and its reminder sweep takes the
+  later of a person's row and that column. 1c, the cleanup migration, settles the gap before
+  it drops anything: it fills a null `scheduled_by_user_id` with the coach, a null
+  `meeting_url_created_by_user_id` with the coach where there is a link, and adds or raises
+  notice rows to the column's value; then it makes `scheduled_by_user_id` NOT NULL and drops
+  `coaching_sessions.notice_given_at`. Every migration has a working down migration; 1c's
+  refills the column from each session's latest notice row.
 
 **2. Add `kind`** (no visible change). Postgres enum, default `coaching`, owned by `refactor`.
 `has_authority(user_id)` on the Model. `kind` in the OpenAPI schema. Down migration.
