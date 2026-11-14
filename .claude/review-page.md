@@ -5,10 +5,11 @@ A local `/code-review` or `/security-review` run at level `high` or above (`high
 `medium`, which are meant to stay fast, and never build it in CI.
 
 ## Sections
-Every page has these sections, in this order, with these headings. Leave out an optional
-section when it would be empty; never add others.
+Every page has these sections, in this order. Sections 2 and 4 to 8 carry a heading with
+exactly the name given here; the header and Scope have none. Leave out an optional section
+when it would be empty; never add others.
 
-1. **Header.** One small line: `<repo> #<number> · <short sha> · <code|security> review,
+1. **Header.** One small line: `<owner>/<repo> #<number> · <short sha> · <code|security> review,
    level <level>` (a branch name in place of the number for a branch). Then the pull
    request's title as the page title.
 2. **Verdict.** The review's verdict line: "2 important, 1 nit.", "Nothing to fix.", a count
@@ -32,7 +33,8 @@ section when it would be empty; never add others.
 - Content sits in one column no wider than about 960px, and nothing makes the page itself
   scroll sideways, on a desktop or a phone.
 - Prose, table cells and code inside sentences wrap: set `overflow-wrap: anywhere` on them,
-  and give tables `table-layout: fixed; width: 100%`. Lay "Checked and sound" out as a list
+  and give every table except a diff `table-layout: fixed; width: 100%`. A diff table is at
+  least its box's width and grows with its longest line. Lay "Checked and sound" out as a list
   of name and text pairs, with the name above the text on narrow screens.
 - Only a diff block scrolls sideways, inside its own box (`overflow-x: auto`), keeping each
   diff line on one line.
