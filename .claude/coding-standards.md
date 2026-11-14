@@ -345,6 +345,24 @@ txn.commit().await?;  // Rolls back automatically if we never reach here
 - **service/**: Orchestration layer, complex operations spanning multiple entities
 - **web/**: HTTP handlers, request/response types, routing
 
+### Exemplar Slices and Reuse
+
+When adding a resource, copy the shape of the closest exemplar for each layer, then look for what already exists before writing anything new. No single slice is clean in every layer, so the exemplars are named per layer.
+
+- **`entity_api`**: `entity_api/src/coaching_session_image.rs`. Takes `&impl ConnectionTrait`, `find_by_id` returns `Result<Model>` with `RecordNotFound` for a missing row, `create` takes one params struct, and updates are single combinator chains.
+- **`domain`, passthrough** (no business rules): `domain/src/coaching_session_view.rs`, a one-line `pub use` of the `entity_api` functions.
+- **`domain`, orchestration** (transaction, side effects, events): `create` in `domain/src/goal.rs`. Begins a transaction, writes, commits, then publishes a `DomainEvent`.
+- **Extractor**: `web/src/extractors/goal_access.rs`. Parses the path id, loads the resource, authorizes against its relationship, and returns it.
+- **Controller**: `update` in `web/src/controller/goal_controller.rs`. Takes the extractor, calls one domain function, maps the result.
+
+Older slices predate these patterns; don't copy their shape. Examples: `note::find_by_id` returns `Result<Option<Model>>` yet errors on a missing row, and `note::find_by` builds a query from a string-keyed `HashMap`.
+
+Reuse rules:
+
+- Before adding a helper, type, extractor, or error variant, search the workspace for one that does the job.
+- Logic that differs from existing logic only by a type, a field, or a function name becomes one function; reach for a generic or trait next, and a macro last.
+- Prefer the smaller form when it is no harder to read: no wrappers that only forward a call, no one-use bindings, no clones a borrow would avoid.
+
 ### Type Re-Export Boundary
 
 Entity types — whether table Models (e.g., `coaching_sessions::Model`) or non-table value types that constrain column values (e.g., `Provider`, `Id`, `Duration`) — are declared once in the `entity` crate and re-exported up through each layer at the `lib.rs` level. The web layer accesses them via `domain::<module>::<Type>` and **must never reach across into `entity_api` or `entity` directly**.
@@ -416,6 +434,8 @@ pub async fn create(...) -> Result<impl IntoResponse, Error> {
 
 **Why**: Busy controller code obscures responsibility boundary leaks. When side-effect handling accumulates in controllers, it becomes harder to spot when they are doing work that belongs in a lower layer. Domain functions that perform best-effort operations (like sending emails) should return `()` and handle errors internally.
 
+**Body-carried ids.** An extractor sees only the path and query, so when the resource that grants access is named in the JSON body (a `create` naming its `coaching_session_id` or `coaching_relationship_id`), the handler authorizes inline as its first statement, with a shared `authorize_*` helper from `web/src/extractors/` (such as `authorize_session` or `authorize_relationship_coach`). Every other check, such as whether two ids in the body belong together, is a business rule and goes in the domain function.
+
 ### Visibility Rules
 
 - Keep module internals private by default
@@ -469,6 +489,8 @@ When reviewing or writing code, ensure:
 - [ ] Imports are organized (std, external, internal)
 - [ ] Naming follows Rust conventions
 - [ ] Functional/combinator style preferred over procedural loops where it reads clearly
+- [ ] New code follows the closest per-layer exemplar (see Exemplar Slices and Reuse) and reuses existing helpers, types, extractors, and error variants
+- [ ] No logic repeated across the diff or against existing code where one shared function would serve
 - [ ] Comments are compact but useful (explain *why*, one short line, not absent)
 - [ ] Error handling uses `Result` and `?` operator appropriately
 - [ ] No `.unwrap()` or `.expect()` in production code paths

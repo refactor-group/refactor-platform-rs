@@ -19,14 +19,27 @@ This backend holds private coaching notes, transcripts, and goals. In order of c
 
 ## Evidence
 
-- Every finding cites `file:line` and a concrete scenario: this input or state produces this wrong result. No scenario, no finding.
+- Every finding cites `file:line` and a concrete scenario: this input or state produces this wrong result. No scenario, no finding. The one exception is a `Design` finding (below), which cites the existing code the change should have followed or reused.
 - On a bug fix, confirm the change addresses the root cause and that a test fails without it.
 - Compare the diff against the PR's stated intent. Code that is correct but does something the description does not mention is a finding.
+
+## Design: fit, reuse, and shape
+
+Past failure, judge whether the new code belongs. A `Design` finding needs no failing scenario; it needs a pointer to existing code at `file:line` that the change should have followed or reused. No pointer, no finding.
+
+1. **Fit.** Find the closest exemplar for each layer the change touches (listed in `.claude/coding-standards.md`) and compare layout, naming, error routing, and test style. A new pattern where an existing one serves is a finding; name the existing one.
+2. **Reuse.** Before accepting a new helper, type, extractor, or error variant, search the workspace for one that already does the job. Name it.
+3. **Repetition.** Logic that appears twice in the diff, or once in the diff and once elsewhere, differing only by a type, a field, or a function name. Suggest the smallest shared form: a function first, then a generic or trait, a macro last. Flag a class once and list every instance.
+4. **Shape.** Prefer expressions to statements. A `for` loop feeding a `mut` accumulator, a `let mut` that a combinator, `let-else`, or `matches!` would remove, or an `if let` ladder that `?` would flatten. The chain must still read like a sentence; when it does not, the loop stands and is not a finding.
+5. **Weight.** Wrappers that only forward a call, one-use bindings, needless clones and annotations, dead code, comments that restate the code. Smaller counts only when it is no harder to read.
+
+Rank Design findings by how much code they remove. Never raise one that `cargo fmt` or `cargo clippy` already enforces, and never trade a correctness or authorization check for brevity.
 
 ## Severity
 
 - **Important**: one of the failures above, or a correctness bug. Blocks merge until fixed or answered with a reason.
 - **Nit**: at most three per review. Skip anything `cargo fmt` or `cargo clippy` already enforces.
+- **Design**: a fit, reuse, repetition, shape, or weight finding. Never blocks. At most three per review, counted apart from nits.
 - **Pre-existing**: not introduced by this change. Report once, never blocking.
 
 ## Skip
@@ -37,7 +50,7 @@ This backend holds private coaching notes, transcripts, and goals. In order of c
 
 ## Summary
 
-Open with a count: "2 important, 1 nit." When there is nothing to fix, say "Nothing to fix." and stop. Don't add a note on what the review didn't run or check, such as tests, builds, or behavior against a live Postgres or the frontend, and don't call the description's test results the author's: CI builds and tests every PR in its own workflow (`build-test-push.yml`).
+Open with a count: "2 important, 1 design, 1 nit." When there is nothing to fix, say "Nothing to fix." and stop. Don't add a note on what the review didn't run or check, such as tests, builds, or behavior against a live Postgres or the frontend, and don't call the description's test results the author's: CI builds and tests every PR in its own workflow (`build-test-push.yml`).
 
 ## Rounds
 
