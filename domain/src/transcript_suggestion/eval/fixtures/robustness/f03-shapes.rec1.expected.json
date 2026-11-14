@@ -1,0 +1,13 @@
+[
+  {"segments": ["s1", "s2"], "assignees": [["coach", "coachee"], ["coachee"]], "due_dates": ["2026-10-14"], "duplicate_of": null, "note": "transcript lost 'let's both', so the coachee alone is a fair reading"},
+  {"segments": ["s3"], "assignees": ["coach", "coachee"], "due_dates": [null, "2026-10-14"], "duplicate_of": null, "note": "we'll each bring an example; no deadline said"},
+  {"segments": ["s4"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "draft the agenda"},
+  {"segments": ["s4"], "assignees": ["coach"], "due_dates": [null], "duplicate_of": null, "note": "bring the facilitation guide"},
+  {"segments": ["s5"], "assignees": ["coachee"], "due_dates": [null, "2026-10-16"], "duplicate_of": null, "note": "conditional HR talk"},
+  {"segments": ["s6"], "assignees": ["coachee"], "due_dates": [null, "2026-10-27"], "duplicate_of": null, "note": "every morning"},
+  {"segments": ["s7"], "assignees": ["coachee"], "due_dates": ["2026-10-30"], "duplicate_of": null, "note": "board deck steps"},
+  {"segments": ["s8"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "ask Priya"},
+  {"segments": ["s9", "s10"], "assignees": ["coachee"], "due_dates": ["2026-10-16"], "duplicate_of": null, "note": "retro notes by Friday"},
+  {"segments": ["s11"], "assignees": ["coachee"], "due_dates": [null, "2026-10-16"], "duplicate_of": null, "note": "try to say no this week"},
+  {"segments": ["s12"], "assignees": ["coachee"], "due_dates": ["2026-10-13"], "duplicate_of": null, "note": "email recruiter tonight"}
+]

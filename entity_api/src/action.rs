@@ -3,16 +3,18 @@ use std::collections::{HashMap, HashSet};
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
-    DatabaseConnection, JoinType, Order, QueryOrder, QuerySelect, TryIntoModel,
+    ConnectionTrait, DatabaseConnection, ExprTrait, JoinType, Order, QueryOrder, QuerySelect,
+    TransactionError, TransactionTrait, TryIntoModel,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use log::*;
 
-use super::actions_user;
 use super::error::{EntityApiErrorKind, Error};
+use super::{actions_user, coaching_relationship};
 use entity::actions::{ActiveModel, Entity, Model};
+use entity::coaching_relationships::Visibility;
 use entity::{actions, coaching_relationships, coaching_sessions, status::Status, Id};
 
 /// An action with its associated assignee user IDs.
@@ -44,8 +46,9 @@ impl ActionWithAssignees {
     }
 }
 
-pub async fn create(
-    db: &DatabaseConnection,
+/// Inserts an action owned by `user_id` from `action_model`'s fields, with fresh timestamps.
+pub async fn create<C: ConnectionTrait>(
+    db: &C,
     action_model: Model,
     user_id: Id,
 ) -> Result<Model, Error> {
@@ -54,6 +57,7 @@ pub async fn create(
     let now = chrono::Utc::now();
 
     let action_active_model: ActiveModel = ActiveModel {
+        id: Set(Id::new_v4()),
         coaching_session_id: Set(action_model.coaching_session_id),
         goal_id: Set(action_model.goal_id),
         user_id: Set(user_id),
@@ -63,43 +67,38 @@ pub async fn create(
         status_changed_at: Set(now.into()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
-        ..Default::default()
     };
 
-    Ok(action_active_model.save(db).await?.try_into_model()?)
+    Ok(action_active_model.insert(db).await?)
+}
+
+/// `status_changed_at` records when the status last changed, so an update that
+/// keeps the status (editing the body, due date, goal or assignees) leaves it alone.
+fn status_changed_at(
+    action: &Model,
+    next_status: &Status,
+) -> sea_orm::ActiveValue<sea_orm::prelude::DateTimeWithTimeZone> {
+    if &action.status == next_status {
+        Unchanged(action.status_changed_at)
+    } else {
+        Set(chrono::Utc::now().into())
+    }
 }
 
 pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Model, Error> {
-    let result = Entity::find_by_id(id).one(db).await?;
-
-    match result {
-        Some(action) => {
-            debug!("Existing Action model to be Updated: {action:?}");
-
-            let active_model: ActiveModel = ActiveModel {
-                id: Unchanged(action.id),
-                coaching_session_id: Unchanged(action.coaching_session_id),
-                goal_id: Set(model.goal_id),
-                user_id: Unchanged(model.user_id),
-                body: Set(model.body),
-                due_by: Set(model.due_by),
-                status: Set(model.status),
-                status_changed_at: Set(chrono::Utc::now().into()),
-                updated_at: Set(chrono::Utc::now().into()),
-                created_at: Unchanged(action.created_at),
-            };
-
-            Ok(active_model.update(db).await?.try_into_model()?)
-        }
-        None => {
-            error!("Action with id {id} not found");
-
-            Err(Error {
-                source: None,
-                error_kind: EntityApiErrorKind::RecordNotFound,
-            })
-        }
-    }
+    update_locked(db, id, move |action| ActiveModel {
+        id: Unchanged(action.id),
+        coaching_session_id: Unchanged(action.coaching_session_id),
+        goal_id: Set(model.goal_id),
+        user_id: Unchanged(model.user_id),
+        body: Set(model.body),
+        due_by: Set(model.due_by),
+        status_changed_at: status_changed_at(&action, &model.status),
+        status: Set(model.status),
+        updated_at: Set(chrono::Utc::now().into()),
+        created_at: Unchanged(action.created_at),
+    })
+    .await
 }
 
 pub async fn update_status(
@@ -107,36 +106,47 @@ pub async fn update_status(
     id: Id,
     status: Status,
 ) -> Result<Model, Error> {
-    let result = Entity::find_by_id(id).one(db).await?;
+    update_locked(db, id, move |action| ActiveModel {
+        status_changed_at: status_changed_at(&action, &status),
+        id: Unchanged(action.id),
+        coaching_session_id: Unchanged(action.coaching_session_id),
+        goal_id: Unchanged(action.goal_id),
+        user_id: Unchanged(action.user_id),
+        body: Unchanged(action.body),
+        due_by: Unchanged(action.due_by),
+        status: Set(status),
+        updated_at: Set(chrono::Utc::now().into()),
+        created_at: Unchanged(action.created_at),
+    })
+    .await
+}
 
-    match result {
-        Some(action) => {
+/// Writes `changes` to an action read under a row lock, so a concurrent status change
+/// can't land between `status_changed_at`'s comparison and this write.
+async fn update_locked(
+    db: &DatabaseConnection,
+    id: Id,
+    changes: impl FnOnce(Model) -> ActiveModel + Send + 'static,
+) -> Result<Model, Error> {
+    db.transaction::<_, Model, Error>(|txn| {
+        Box::pin(async move {
+            let Some(action) = Entity::find_by_id(id).lock_exclusive().one(txn).await? else {
+                error!("Action with id {id} not found");
+                return Err(Error {
+                    source: None,
+                    error_kind: EntityApiErrorKind::RecordNotFound,
+                });
+            };
             debug!("Existing Action model to be Updated: {action:?}");
 
-            let active_model: ActiveModel = ActiveModel {
-                id: Unchanged(action.id),
-                coaching_session_id: Unchanged(action.coaching_session_id),
-                goal_id: Unchanged(action.goal_id),
-                user_id: Unchanged(action.user_id),
-                body: Unchanged(action.body),
-                due_by: Unchanged(action.due_by),
-                status: Set(status),
-                status_changed_at: Set(chrono::Utc::now().into()),
-                updated_at: Set(chrono::Utc::now().into()),
-                created_at: Unchanged(action.created_at),
-            };
-
-            Ok(active_model.update(db).await?.try_into_model()?)
-        }
-        None => {
-            error!("Action with id {id} not found");
-
-            Err(Error {
-                source: None,
-                error_kind: EntityApiErrorKind::RecordNotFound,
-            })
-        }
-    }
+            Ok(changes(action).update(txn).await?.try_into_model()?)
+        })
+    })
+    .await
+    .map_err(|e| match e {
+        TransactionError::Connection(db_err) => db_err.into(),
+        TransactionError::Transaction(err) => err,
+    })
 }
 
 pub async fn delete_by_id(db: &DatabaseConnection, id: Id) -> Result<(), Error> {
@@ -154,6 +164,32 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
     })
 }
 
+/// Every action in a coaching session, oldest first.
+pub async fn find_by_coaching_session<C: ConnectionTrait>(
+    db: &C,
+    coaching_session_id: Id,
+) -> Result<Vec<Model>, Error> {
+    Ok(Entity::find()
+        .filter(actions::Column::CoachingSessionId.eq(coaching_session_id))
+        .order_by(actions::Column::CreatedAt, Order::Asc)
+        .order_by(actions::Column::Id, Order::Asc)
+        .all(db)
+        .await?)
+}
+
+/// Open (not-completed) actions for a coaching session.
+/// "Open" reuses the shared `Status::COMPLETED` definition, filtered in SQL.
+pub async fn find_open_by_coaching_session_id(
+    db: &DatabaseConnection,
+    session_id: Id,
+) -> Result<Vec<Model>, Error> {
+    Ok(actions::Entity::find()
+        .filter(actions::Column::CoachingSessionId.eq(session_id))
+        .filter(actions::Column::Status.is_not_in(Status::COMPLETED))
+        .all(db)
+        .await?)
+}
+
 /// Creates a new action with optional assignees.
 ///
 /// # Arguments
@@ -166,8 +202,8 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
 /// # Errors
 ///
 /// Returns `Error` if the database operation fails.
-pub async fn create_with_assignees(
-    db: &DatabaseConnection,
+pub async fn create_with_assignees<C: ConnectionTrait + TransactionTrait>(
+    db: &C,
     action_model: Model,
     user_id: Id,
     assignee_ids: Option<Vec<Id>>,
@@ -292,10 +328,14 @@ pub struct FindByUserParams {
 /// Optional filters narrow results further: `coaching_session_id`, `coaching_relationship_id`,
 /// `status`, and `assignee_filter`. The `coaching_relationship_id` filter uses the
 /// `coaching_sessions.coaching_relationship_id` FK column, so it requires a join to
-/// `coaching_sessions` (not `coaching_relationships`). For `Scope::Sessions` this join
-/// already exists in the base query; for `Scope::Assigned` it is added dynamically.
+/// `coaching_sessions` (not `coaching_relationships`); both scopes join it.
+///
+/// Either scope keeps only relationships `viewer` may read: their own accessible ones
+/// (see [`coaching_relationship::accessible_to`]) when `viewer` is `user_id`, otherwise
+/// the ones `viewer` coaches `user_id` in (see [`coaching_relationship::coached_by`]).
 pub async fn find_by_user(
     db: &DatabaseConnection,
+    viewer: &Visibility,
     user_id: Id,
     params: FindByUserParams,
 ) -> Result<Vec<ActionWithAssignees>, Error> {
@@ -303,9 +343,6 @@ pub async fn find_by_user(
         "Finding actions for user_id={user_id} with scope={:?}, session={:?}, relationship={:?}, status={:?}, assignee={:?}",
         params.scope, params.coaching_session_id, params.coaching_relationship_id, params.status, params.assignee_filter
     );
-
-    // Track whether the base query already joins coaching_sessions (Sessions does, Assigned does not)
-    let needs_sessions_join = matches!(params.scope, Scope::Assigned);
 
     // Build base query based on scope
     let base_select = match params.scope {
@@ -337,17 +374,30 @@ pub async fn find_by_user(
     // Apply filters
     let mut select = base_select;
 
+    // Sessions already joins both tables; Assigned needs them for the relationship filter
+    if matches!(params.scope, Scope::Assigned) {
+        select = select
+            .join(
+                JoinType::InnerJoin,
+                actions::Relation::CoachingSessions.def(),
+            )
+            .join(
+                JoinType::InnerJoin,
+                coaching_sessions::Relation::CoachingRelationships.def(),
+            );
+    }
+
+    select = select.filter(if viewer.user_id == user_id {
+        coaching_relationship::accessible_to(viewer)
+    } else {
+        coaching_relationship::coached_by(viewer, user_id)
+    });
+
     if let Some(session_id) = params.coaching_session_id {
         select = select.filter(actions::Column::CoachingSessionId.eq(session_id));
     }
 
     if let Some(relationship_id) = params.coaching_relationship_id {
-        if needs_sessions_join {
-            select = select.join(
-                JoinType::InnerJoin,
-                actions::Relation::CoachingSessions.def(),
-            );
-        }
         select =
             select.filter(coaching_sessions::Column::CoachingRelationshipId.eq(relationship_id));
     }
@@ -542,10 +592,11 @@ pub async fn find_by_coaching_relationship(
     Ok(filtered_actions)
 }
 
-/// Actions across the supplied relationships, grouped by coachee user id.
+/// Actions across the supplied relationships, grouped by relationship id.
 /// `caller_user_id` determines per-relationship [`CallerVisibility`], so
 /// mixed-role callers (coach in one rel, coachee in another) get correct
-/// narrowing per relationship.
+/// narrowing per relationship. Keyed by relationship because a coachee can
+/// have several coaches in one organization.
 pub async fn find_by_user_relationships(
     db: &DatabaseConnection,
     relationships: &[entity::coaching_relationships::Model],
@@ -582,21 +633,28 @@ pub async fn find_by_user_relationships(
 
         let actions =
             find_by_coaching_relationship(db, relationship.id, relationship_params).await?;
-        result.insert(relationship.coachee_id, actions);
+        result.insert(relationship.id, actions);
     }
 
     Ok(result)
 }
 
 #[cfg(test)]
-// We need to gate seaORM's mock feature behind conditional compilation because
-// the feature removes the Clone trait implementation from seaORM's DatabaseConnection.
-// see https://github.com/SeaQL/sea-orm/issues/830
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
     use entity::{actions::Model, Id};
     use sea_orm::{DatabaseBackend, MockDatabase};
+
+    /// `user_id` reading their own actions, holding a role in one organization.
+    fn member(user_id: Id) -> Visibility {
+        Visibility {
+            user_id,
+            is_super_admin: false,
+            admin_org_ids: vec![],
+            member_org_ids: vec![Id::new_v4()],
+        }
+    }
 
     #[tokio::test]
     async fn create_returns_a_new_action_model() -> Result<(), Error> {
@@ -698,6 +756,164 @@ mod tests {
         Ok(())
     }
 
+    /// The SET clause of the single UPDATE an update call issues (RETURNING names every column).
+    fn update_set_clause(db: sea_orm::DatabaseConnection) -> String {
+        let update = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|transaction| transaction.statements().iter().map(|s| s.sql.clone()))
+            .find(|sql| sql.starts_with("UPDATE"))
+            .expect("an UPDATE statement");
+        let set = update.split(" SET ").nth(1).expect("a SET clause");
+        set.split(" WHERE ").next().unwrap_or_default().to_owned()
+    }
+
+    fn action_with_status(status: Status) -> Model {
+        let now = chrono::Utc::now();
+        Model {
+            id: Id::new_v4(),
+            coaching_session_id: Id::new_v4(),
+            goal_id: None,
+            due_by: Some(now.into()),
+            body: Some("Send the notes".to_owned()),
+            user_id: Id::new_v4(),
+            status_changed_at: now.into(),
+            status,
+            created_at: now.into(),
+            updated_at: now.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_keeps_status_changed_at_when_the_status_is_unchanged() -> Result<(), Error> {
+        let existing = action_with_status(Status::Completed);
+        let edited = Model {
+            body: Some("Send the notes and the deck".to_owned()),
+            ..existing.clone()
+        };
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()], vec![edited.clone()]])
+            .into_connection();
+
+        update(&db, existing.id, edited).await?;
+
+        let set = update_set_clause(db);
+        assert!(!set.contains("status_changed_at"), "{set}");
+        assert!(set.contains("\"body\""), "{set}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_sets_status_changed_at_when_the_status_changes() -> Result<(), Error> {
+        let existing = action_with_status(Status::InProgress);
+        let completed = Model {
+            status: Status::Completed,
+            ..existing.clone()
+        };
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()], vec![completed.clone()]])
+            .into_connection();
+
+        update(&db, existing.id, completed).await?;
+
+        assert!(update_set_clause(db).contains("status_changed_at"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_status_keeps_status_changed_at_when_the_status_is_unchanged(
+    ) -> Result<(), Error> {
+        let existing = action_with_status(Status::Completed);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()], vec![existing.clone()]])
+            .into_connection();
+
+        update_status(&db, existing.id, Status::Completed).await?;
+
+        assert!(!update_set_clause(db).contains("status_changed_at"));
+        Ok(())
+    }
+
+    /// The read locks the row inside the write's transaction, so a concurrent status
+    /// change can't land between the status comparison and the UPDATE.
+    fn assert_locked_read_then_update(db: sea_orm::DatabaseConnection) {
+        let log = db.into_transaction_log();
+        let [transaction] = log.as_slice() else {
+            panic!("expected one transaction, got {log:?}");
+        };
+        let statements: Vec<&str> = transaction
+            .statements()
+            .iter()
+            .map(|s| s.sql.as_str())
+            .filter(|sql| sql.starts_with("SELECT") || sql.starts_with("UPDATE"))
+            .collect();
+        let [read, write] = statements.as_slice() else {
+            panic!("expected a read then a write, got {statements:?}");
+        };
+        assert!(
+            read.starts_with("SELECT") && read.ends_with("FOR UPDATE"),
+            "{read}"
+        );
+        assert!(write.starts_with("UPDATE"), "{write}");
+    }
+
+    #[tokio::test]
+    async fn update_reads_the_action_under_a_row_lock() -> Result<(), Error> {
+        let existing = action_with_status(Status::Completed);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()], vec![existing.clone()]])
+            .into_connection();
+
+        update(&db, existing.id, existing.clone()).await?;
+
+        assert_locked_read_then_update(db);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_status_reads_the_action_under_a_row_lock() -> Result<(), Error> {
+        let existing = action_with_status(Status::InProgress);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()], vec![existing.clone()]])
+            .into_connection();
+
+        update_status(&db, existing.id, Status::Completed).await?;
+
+        assert_locked_read_then_update(db);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_status_writes_the_sent_status_with_the_enum_cast() -> Result<(), Error> {
+        let existing = action_with_status(Status::InProgress);
+        let on_hold = Model {
+            status: Status::OnHold,
+            ..existing.clone()
+        };
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()], vec![on_hold]])
+            .into_connection();
+
+        update_status(&db, existing.id, Status::OnHold).await?;
+
+        // SQLite stores enums as text, so only the recorded statement shows the cast.
+        let updates: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|transaction| transaction.statements().iter().map(|s| s.to_string()))
+            .filter(|sql| sql.starts_with("UPDATE"))
+            .collect();
+        let [update] = updates.as_slice() else {
+            panic!("expected one UPDATE, got {updates:?}");
+        };
+        let set = update.split(" WHERE ").next().unwrap_or_default();
+        assert!(
+            set.contains(r#""status" = CAST('on_hold' AS "status")"#),
+            "{set}"
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn update_status_returns_error_when_action_not_found() -> Result<(), Error> {
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
@@ -750,6 +966,7 @@ mod tests {
 
         let actions = find_by_user(
             &db,
+            &member(user_id),
             user_id,
             FindByUserParams {
                 scope: Scope::Assigned,
@@ -779,6 +996,7 @@ mod tests {
 
         let actions = find_by_user(
             &db,
+            &member(user_id),
             user_id,
             FindByUserParams {
                 scope: Scope::Assigned,
@@ -826,6 +1044,7 @@ mod tests {
 
         let actions = find_by_user(
             &db,
+            &member(user_id),
             user_id,
             FindByUserParams {
                 scope: Scope::Sessions,
@@ -875,6 +1094,7 @@ mod tests {
 
         let actions = find_by_user(
             &db,
+            &member(user_id),
             user_id,
             FindByUserParams {
                 scope: Scope::Sessions,
@@ -918,6 +1138,7 @@ mod tests {
 
         let actions = find_by_user(
             &db,
+            &member(user_id),
             user_id,
             FindByUserParams {
                 scope: Scope::Sessions,
@@ -948,6 +1169,7 @@ mod tests {
 
         let _ = find_by_user(
             &db,
+            &member(user_id),
             user_id,
             FindByUserParams {
                 scope: Scope::Sessions,
@@ -975,8 +1197,8 @@ mod tests {
     }
 
     /// Tests that find_by_user with Scope::Assigned and coaching_relationship_id generates
-    /// SQL with a dynamic JOIN to coaching_sessions and a coaching_relationship_id WHERE clause.
-    /// This proves that the Assigned scope correctly adds the join it doesn't have by default.
+    /// SQL with a JOIN to coaching_sessions and a coaching_relationship_id WHERE clause.
+    /// This proves that the Assigned scope adds the join its base query lacks.
     #[tokio::test]
     async fn find_by_user_with_assigned_scope_and_relationship_filter() -> Result<(), Error> {
         let now = chrono::Utc::now();
@@ -1000,6 +1222,7 @@ mod tests {
 
         let _ = find_by_user(
             &db,
+            &member(user_id),
             user_id,
             FindByUserParams {
                 scope: Scope::Assigned,
@@ -1022,7 +1245,7 @@ mod tests {
         let actions_sql = format!("{:?}", log[1]);
         assert!(
             actions_sql.contains(r#"JOIN \"refactor_platform\".\"coaching_sessions\""#),
-            "SQL must dynamically join coaching_sessions for Scope::Assigned, got: {actions_sql}"
+            "SQL must join coaching_sessions for Scope::Assigned, got: {actions_sql}"
         );
         assert!(
             actions_sql.contains(r#"AND \"coaching_sessions\".\"coaching_relationship_id\" ="#),
@@ -1046,6 +1269,7 @@ mod tests {
 
         let _ = find_by_user(
             &db,
+            &member(user_id),
             user_id,
             FindByUserParams {
                 scope: Scope::Sessions,
@@ -1153,7 +1377,7 @@ mod tests {
         assert!(!action.has_assignees());
     }
 
-    // ─── Batch Coachee Actions Tests ──────────────────────────────────
+    // ─── Batch Relationship Actions Tests ──────────────────────────────────
 
     /// Helper to construct a coaching_relationships::Model for tests.
     fn create_test_relationship(
@@ -1331,9 +1555,9 @@ mod tests {
         Ok(())
     }
 
-    /// Tests that find_by_user_relationships groups actions by coachee user ID.
+    /// Tests that find_by_user_relationships groups actions by relationship id.
     #[tokio::test]
-    async fn find_by_user_relationships_groups_by_coachee() -> Result<(), Error> {
+    async fn find_by_user_relationships_groups_by_relationship() -> Result<(), Error> {
         let coach_id = Id::new_v4();
         let org_id = Id::new_v4();
 
@@ -1390,19 +1614,19 @@ mod tests {
         let result =
             find_by_user_relationships(&db, &relationships, params, None, coach_id).await?;
 
-        // All 3 coachees should have keys
-        assert_eq!(result.len(), 3, "All coachees should have entries");
-        assert_eq!(result.get(&coachee_1).unwrap().len(), 1);
-        assert_eq!(result.get(&coachee_2).unwrap().len(), 2);
-        assert_eq!(result.get(&coachee_3).unwrap().len(), 0);
+        assert_eq!(result.len(), 3, "All relationships should have entries");
+        assert_eq!(result[&rel_1].len(), 1);
+        assert_eq!(result[&rel_2].len(), 2);
+        assert_eq!(result[&rel_3].len(), 0);
 
         Ok(())
     }
 
-    /// Tests that find_by_user_relationships includes coachees with no actions
+    /// Tests that find_by_user_relationships includes relationships with no actions
     /// as empty arrays in the result.
     #[tokio::test]
-    async fn find_by_user_relationships_includes_coachees_with_no_actions() -> Result<(), Error> {
+    async fn find_by_user_relationships_includes_relationships_with_no_actions() -> Result<(), Error>
+    {
         let coach_id = Id::new_v4();
         let org_id = Id::new_v4();
         let coachee_1 = Id::new_v4();
@@ -1433,9 +1657,9 @@ mod tests {
         let result =
             find_by_user_relationships(&db, &relationships, params, None, coach_id).await?;
 
-        assert_eq!(result.len(), 2, "Both coachees should have entries");
-        assert!(result.get(&coachee_1).unwrap().is_empty());
-        assert!(result.get(&coachee_2).unwrap().is_empty());
+        assert_eq!(result.len(), 2, "Both relationships should have entries");
+        assert!(result[&rel_1].is_empty());
+        assert!(result[&rel_2].is_empty());
 
         Ok(())
     }
@@ -1528,183 +1752,6 @@ mod tests {
         assert_eq!(CallerVisibility::for_relationship(unknown_id, &rel), None);
     }
 
-    /// Unknown caller through the full filter chain sees only unassigned.
-    #[tokio::test]
-    async fn find_by_coaching_relationship_unknown_caller_returns_empty() -> Result<(), Error> {
-        let relationship_id = Id::new_v4();
-        let session_id = Id::new_v4();
-        let coach_id = Id::new_v4();
-        let coachee_id = Id::new_v4();
-        let unknown_id = Id::new_v4();
-
-        let coach_action_id = Id::new_v4();
-        let coachee_action_id = Id::new_v4();
-        let unassigned_action_id = Id::new_v4();
-        let now = chrono::Utc::now();
-
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![
-                create_test_action(coach_action_id, session_id),
-                create_test_action(coachee_action_id, session_id),
-                create_test_action(unassigned_action_id, session_id),
-            ]])
-            .append_query_results(vec![vec![
-                entity::actions_users::Model {
-                    id: Id::new_v4(),
-                    action_id: coach_action_id,
-                    user_id: coach_id,
-                    created_at: now.into(),
-                    updated_at: now.into(),
-                },
-                entity::actions_users::Model {
-                    id: Id::new_v4(),
-                    action_id: coachee_action_id,
-                    user_id: coachee_id,
-                    created_at: now.into(),
-                    updated_at: now.into(),
-                },
-            ]])
-            .into_connection();
-
-        let params = FindByRelationshipParams {
-            status: None,
-            assignee_filter: AssigneeFilter::All,
-            assignee_user_id: None,
-            caller_visibility: CallerVisibility::CoacheeSelf {
-                user_id: unknown_id,
-            },
-            sort_column: None,
-            sort_order: None,
-        };
-
-        let results = find_by_coaching_relationship(&db, relationship_id, params).await?;
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].action.id, unassigned_action_id);
-
-        Ok(())
-    }
-
-    // ─── Coachee visibility integration tests ─────────────────────────
-
-    /// Coachee caller sees self-assigned + unassigned, never coach-assigned.
-    #[tokio::test]
-    async fn find_by_coaching_relationship_coachee_visibility_filters_coach_actions(
-    ) -> Result<(), Error> {
-        let relationship_id = Id::new_v4();
-        let session_id = Id::new_v4();
-        let coach_id = Id::new_v4();
-        let coachee_id = Id::new_v4();
-
-        let coach_action_id = Id::new_v4();
-        let coachee_action_id = Id::new_v4();
-        let unassigned_action_id = Id::new_v4();
-        let now = chrono::Utc::now();
-
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![
-                create_test_action(coach_action_id, session_id),
-                create_test_action(coachee_action_id, session_id),
-                create_test_action(unassigned_action_id, session_id),
-            ]])
-            .append_query_results(vec![vec![
-                entity::actions_users::Model {
-                    id: Id::new_v4(),
-                    action_id: coach_action_id,
-                    user_id: coach_id,
-                    created_at: now.into(),
-                    updated_at: now.into(),
-                },
-                entity::actions_users::Model {
-                    id: Id::new_v4(),
-                    action_id: coachee_action_id,
-                    user_id: coachee_id,
-                    created_at: now.into(),
-                    updated_at: now.into(),
-                },
-            ]])
-            .into_connection();
-
-        let params = FindByRelationshipParams {
-            status: None,
-            assignee_filter: AssigneeFilter::All,
-            assignee_user_id: None,
-            caller_visibility: CallerVisibility::CoacheeSelf {
-                user_id: coachee_id,
-            },
-            sort_column: None,
-            sort_order: None,
-        };
-
-        let results = find_by_coaching_relationship(&db, relationship_id, params).await?;
-
-        let returned_ids: HashSet<Id> = results.iter().map(|a| a.action.id).collect();
-
-        assert_eq!(results.len(), 2);
-        assert!(returned_ids.contains(&coachee_action_id));
-        assert!(returned_ids.contains(&unassigned_action_id));
-        assert!(
-            !returned_ids.contains(&coach_action_id),
-            "Coach-assigned action must never be returned to a coachee"
-        );
-
-        Ok(())
-    }
-
-    /// Coach caller (Unrestricted visibility) sees all three buckets. Regression guard.
-    #[tokio::test]
-    async fn find_by_coaching_relationship_coach_visibility_sees_all_three_buckets(
-    ) -> Result<(), Error> {
-        let relationship_id = Id::new_v4();
-        let session_id = Id::new_v4();
-        let coach_id = Id::new_v4();
-        let coachee_id = Id::new_v4();
-
-        let coach_action_id = Id::new_v4();
-        let coachee_action_id = Id::new_v4();
-        let unassigned_action_id = Id::new_v4();
-        let now = chrono::Utc::now();
-
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![
-                create_test_action(coach_action_id, session_id),
-                create_test_action(coachee_action_id, session_id),
-                create_test_action(unassigned_action_id, session_id),
-            ]])
-            .append_query_results(vec![vec![
-                entity::actions_users::Model {
-                    id: Id::new_v4(),
-                    action_id: coach_action_id,
-                    user_id: coach_id,
-                    created_at: now.into(),
-                    updated_at: now.into(),
-                },
-                entity::actions_users::Model {
-                    id: Id::new_v4(),
-                    action_id: coachee_action_id,
-                    user_id: coachee_id,
-                    created_at: now.into(),
-                    updated_at: now.into(),
-                },
-            ]])
-            .into_connection();
-
-        let params = FindByRelationshipParams {
-            status: None,
-            assignee_filter: AssigneeFilter::All,
-            assignee_user_id: None,
-            caller_visibility: CallerVisibility::Unrestricted,
-            sort_column: None,
-            sort_order: None,
-        };
-
-        let results = find_by_coaching_relationship(&db, relationship_id, params).await?;
-
-        assert_eq!(results.len(), 3, "Coach must see all three buckets");
-
-        Ok(())
-    }
-
     /// Coachee with `assignee_filter=assigned` sees only self-assigned, not unassigned.
     /// Combines visibility narrowing with the existing assignee_filter.
     #[tokio::test]
@@ -1751,86 +1798,44 @@ mod tests {
         Ok(())
     }
 
-    /// Mixed-role: caller is coach in one relationship, coachee in another.
-    /// Per-relationship visibility resolution narrows only the coachee-side
-    /// relationship, leaving the coach-side relationship unrestricted.
+    /// The completed statuses are excluded by the query, not after it: this runs on the
+    /// invite path for every single-session email, so it must not load rows it discards.
+    /// Asserting on returned rows would prove nothing, since MockDatabase echoes back
+    /// whatever the test appends regardless of the filter.
     #[tokio::test]
-    async fn find_by_user_relationships_mixed_role_resolves_per_relationship() -> Result<(), Error>
+    async fn test_find_open_by_coaching_session_id_excludes_completed_in_sql() -> Result<(), Error>
     {
-        let user_id = Id::new_v4();
-        let other_coach = Id::new_v4();
-        let other_coachee = Id::new_v4();
-        let org_id = Id::new_v4();
-
-        let rel_as_coach = Id::new_v4();
-        let rel_as_coachee = Id::new_v4();
-
-        let session_a = Id::new_v4();
-        let session_b = Id::new_v4();
-
-        let action_in_a = Id::new_v4();
-        let action_in_b_user_assigned = Id::new_v4();
-        let action_in_b_other_assigned = Id::new_v4();
-        let now = chrono::Utc::now();
-
-        let relationships = vec![
-            create_test_relationship(rel_as_coach, user_id, other_coachee, org_id),
-            create_test_relationship(rel_as_coachee, other_coach, user_id, org_id),
-        ];
-
+        let session_id = Id::new_v4();
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![create_test_action(action_in_a, session_a)]])
-            .append_query_results(vec![vec![entity::actions_users::Model {
-                id: Id::new_v4(),
-                action_id: action_in_a,
-                user_id: other_coach,
-                created_at: now.into(),
-                updated_at: now.into(),
-            }]])
-            .append_query_results(vec![vec![
-                create_test_action(action_in_b_user_assigned, session_b),
-                create_test_action(action_in_b_other_assigned, session_b),
-            ]])
-            .append_query_results(vec![vec![
-                entity::actions_users::Model {
-                    id: Id::new_v4(),
-                    action_id: action_in_b_user_assigned,
-                    user_id,
-                    created_at: now.into(),
-                    updated_at: now.into(),
-                },
-                entity::actions_users::Model {
-                    id: Id::new_v4(),
-                    action_id: action_in_b_other_assigned,
-                    user_id: other_coach,
-                    created_at: now.into(),
-                    updated_at: now.into(),
-                },
-            ]])
+            .append_query_results::<Model, _, _>(vec![vec![]])
             .into_connection();
 
-        let params = FindByRelationshipParams {
-            status: None,
-            assignee_filter: AssigneeFilter::All,
-            assignee_user_id: None,
-            caller_visibility: CallerVisibility::default(),
-            sort_column: None,
-            sort_order: None,
-        };
+        find_open_by_coaching_session_id(&db, session_id).await?;
 
-        let result = find_by_user_relationships(&db, &relationships, params, None, user_id).await?;
-
-        let coach_side = result.get(&other_coachee).expect("coach-side entry");
-        assert_eq!(
-            coach_side.len(),
-            1,
-            "Coach side returns all actions unrestricted"
+        let log = db.into_transaction_log();
+        let statement = log
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .find(|stmt| stmt.sql.contains(r#""actions""#))
+            .expect("expected a query against actions");
+        assert!(
+            statement.sql.contains(r#""actions"."status" NOT IN"#),
+            "the open/completed split must be pushed into SQL: {}",
+            statement.sql
         );
 
-        let coachee_side = result.get(&user_id).expect("coachee-side entry");
-        assert_eq!(coachee_side.len(), 1);
-        assert_eq!(coachee_side[0].action.id, action_in_b_user_assigned);
-
+        let bound: Vec<String> = statement
+            .values
+            .as_ref()
+            .map(|values| values.0.iter().map(|v| format!("{v:?}")).collect())
+            .unwrap_or_default();
+        for status in Status::COMPLETED {
+            let db_value = sea_orm::ActiveEnum::to_value(&status);
+            assert!(
+                bound.iter().any(|v| v.contains(&db_value)),
+                "{db_value} must be excluded by the query: {bound:?}"
+            );
+        }
         Ok(())
     }
 }

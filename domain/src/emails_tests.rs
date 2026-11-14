@@ -1,0 +1,5110 @@
+use super::*;
+#[cfg(feature = "mock")]
+use crate::coaching_session::{Frequency, Recurrence};
+use crate::{coaching_sessions, organizations, users, Id};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
+#[cfg(feature = "mock")]
+use chrono::DurationRound;
+use chrono::NaiveDate;
+use mockito::{Server, ServerGuard};
+#[cfg(feature = "mock")]
+use sea_orm::{DatabaseBackend, MockDatabase};
+use service::config::Config;
+#[cfg(feature = "mock")]
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
+
+async fn setup_test_server() -> ServerGuard {
+    Server::new_async().await
+}
+
+/// `Matcher::Json` for a Resend body that guards against a `subject` key —
+/// Resend templates own the subject line; payload-level subject is a bug.
+fn expect_resend_body(expected: serde_json::Value) -> mockito::Matcher {
+    assert!(
+        expected.get("subject").is_none(),
+        "test bug: expected body must not include `subject`",
+    );
+    mockito::Matcher::Json(expected)
+}
+
+/// Body matcher for a Resend request that also carries an `.ics` attachment:
+/// partial-JSON on the template vars plus regexes requiring the `invite.ics`
+/// attachment for the given `method`. The base64 `content` is intentionally not
+/// asserted (dtstamp is `now`).
+fn expect_resend_body_with_ics(
+    expected: serde_json::Value,
+    method: &ical::Method,
+) -> mockito::Matcher {
+    assert!(
+        expected.get("subject").is_none(),
+        "test bug: expected body must not include `subject`",
+    );
+    let method_name = match method {
+        ical::Method::Request => "REQUEST",
+        ical::Method::Cancel => "CANCEL",
+    };
+    mockito::Matcher::AllOf(vec![
+        mockito::Matcher::PartialJson(expected),
+        mockito::Matcher::Regex(r#""filename":"invite\.ics""#.to_string()),
+        mockito::Matcher::Regex(format!(
+            r#""content_type":"text/calendar; method={method_name}; charset=UTF-8""#
+        )),
+    ])
+}
+
+/// Captures the decoded `.ics` from the request Resend receives, so a test can assert
+/// *which* invite was attached. Without this, the base64 payload is opaque and swapping
+/// the two arms of an occurrence-vs-standalone dispatch changes nothing observable.
+#[derive(Clone, Default)]
+struct IcsCapture(Arc<Mutex<Option<String>>>);
+
+impl IcsCapture {
+    /// A `match_request` predicate that records and always matches: capturing is a
+    /// side effect, and letting it reject would surface as a confusing mock miss.
+    fn recorder(&self) -> impl Fn(&mockito::Request) -> bool + Send + Sync + 'static {
+        let slot = self.0.clone();
+        move |req| {
+            let decoded = req
+                .body()
+                .ok()
+                .and_then(|body| serde_json::from_slice::<serde_json::Value>(body).ok())
+                .and_then(|payload| {
+                    payload["attachments"][0]["content"]
+                        .as_str()
+                        .and_then(|content| STANDARD.decode(content).ok())
+                        .and_then(|bytes| String::from_utf8(bytes).ok())
+                })
+                // Unfolded: RFC 5545 wraps at 75 octets, and a UID is long enough to split.
+                .map(|ics| ics.replace("\r\n ", "").replace("\r\n\t", ""));
+            *slot.lock().unwrap() = decoded;
+            true
+        }
+    }
+
+    fn ics(&self) -> String {
+        self.0
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("no .ics attachment was captured")
+    }
+
+    /// Just the VEVENT. A spliced VTIMEZONE carries its own RRULE for DST, so a
+    /// whole-document search for "RRULE" matches even on an override instance.
+    fn vevent(&self) -> String {
+        let ics = self.ics();
+        let start = ics
+            .find("BEGIN:VEVENT")
+            .expect("no VEVENT in captured .ics");
+        let end = ics.find("END:VEVENT").expect("unterminated VEVENT");
+        ics[start..end].to_string()
+    }
+}
+
+/// Captures every decoded `.ics` on the request, paired with its filename. [`IcsCapture`]
+/// reads only the first attachment, so it cannot see a cancellation riding alongside an
+/// invite, nor tell whether the two parts are distinguishable to a client.
+/// Only the mock-gated series tests read more than one attachment.
+#[cfg(feature = "mock")]
+#[derive(Clone, Default)]
+struct AttachmentsCapture(Arc<Mutex<Vec<(String, String)>>>);
+
+#[cfg(feature = "mock")]
+impl AttachmentsCapture {
+    /// Records and always matches, for the same reason [`IcsCapture::recorder`] does.
+    fn recorder(&self) -> impl Fn(&mockito::Request) -> bool + Send + Sync + 'static {
+        let slot = self.0.clone();
+        move |req| {
+            let decoded = req
+                .body()
+                .ok()
+                .and_then(|body| serde_json::from_slice::<serde_json::Value>(body).ok())
+                .and_then(|payload| payload["attachments"].as_array().cloned())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|attachment| {
+                    let filename = attachment["filename"].as_str()?.to_string();
+                    let body = attachment["content"]
+                        .as_str()
+                        .and_then(|content| STANDARD.decode(content).ok())
+                        .and_then(|bytes| String::from_utf8(bytes).ok())?
+                        // Unfolded: RFC 5545 wraps at 75 octets, and a UID splits.
+                        .replace("\r\n ", "")
+                        .replace("\r\n\t", "");
+                    Some((filename, body))
+                })
+                .collect();
+            *slot.lock().unwrap() = decoded;
+            true
+        }
+    }
+
+    fn captured(&self) -> Vec<(String, String)> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+fn create_test_user() -> users::Model {
+    users::Model {
+        id: Id::new_v4(),
+        first_name: "John".to_string(),
+        last_name: "Doe".to_string(),
+        email: "john.doe@example.com".to_string(),
+        display_name: Some("John Doe".to_string()),
+        password: Some("hashed_password".to_string()),
+        github_username: None,
+        github_profile_url: None,
+        timezone: "UTC".to_string(),
+        default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+        working_hours_start: crate::working_hours::default_start(),
+        working_hours_end: crate::working_hours::default_end(),
+        roles: vec![],
+        invite_status: None,
+        created_at: chrono::Utc::now().fixed_offset(),
+        updated_at: chrono::Utc::now().fixed_offset(),
+    }
+}
+
+fn create_test_user_with(
+    first_name: &str,
+    last_name: &str,
+    email: &str,
+    timezone: &str,
+) -> users::Model {
+    users::Model {
+        id: Id::new_v4(),
+        first_name: first_name.to_string(),
+        last_name: last_name.to_string(),
+        email: email.to_string(),
+        display_name: Some(format!("{first_name} {last_name}")),
+        password: Some("hashed_password".to_string()),
+        github_username: None,
+        github_profile_url: None,
+        timezone: timezone.to_string(),
+        default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+        working_hours_start: crate::working_hours::default_start(),
+        working_hours_end: crate::working_hours::default_end(),
+        roles: vec![],
+        invite_status: None,
+        created_at: chrono::Utc::now().fixed_offset(),
+        updated_at: chrono::Utc::now().fixed_offset(),
+    }
+}
+
+fn create_test_session() -> coaching_sessions::Model {
+    coaching_sessions::Model {
+        id: Id::new_v4(),
+        coaching_relationship_id: Id::new_v4(),
+        coaching_session_series_id: None,
+        ical_sequence: 0,
+        ical_recurrence_id: None,
+        collab_document_name: None,
+        date: NaiveDate::from_ymd_opt(2026, 3, 4)
+            .unwrap()
+            .and_hms_opt(15, 0, 0)
+            .unwrap(),
+        duration_minutes: crate::duration::Duration::default_minutes(),
+        title: None,
+        meeting_url: None,
+        provider: None,
+        created_at: chrono::Utc::now().fixed_offset(),
+        updated_at: chrono::Utc::now().fixed_offset(),
+        hydrated_at: Some(chrono::Utc::now().fixed_offset()),
+        notice_given_at: chrono::Utc::now().into(),
+    }
+}
+
+/// A session materialized inside a recurring series, sitting at its original start.
+fn create_test_series_session(
+    series_id: Id,
+    original_start: NaiveDateTime,
+) -> coaching_sessions::Model {
+    coaching_sessions::Model {
+        coaching_session_series_id: Some(series_id),
+        ical_recurrence_id: Some(original_start),
+        date: original_start,
+        ..create_test_session()
+    }
+}
+
+fn create_test_organization() -> organizations::Model {
+    organizations::Model {
+        id: Id::new_v4(),
+        name: "Acme Corp".to_string(),
+        logo: None,
+        slug: "acme-corp".to_string(),
+        created_at: chrono::Utc::now().fixed_offset(),
+        updated_at: chrono::Utc::now().fixed_offset(),
+        archived_at: None,
+        archived_by: None,
+    }
+}
+
+fn create_config_with_mock(server_url: &str) -> Config {
+    Config::from_args([
+        "test",
+        "--resend-api-key=test_api_key_123",
+        "--welcome-email-template-id=template_123",
+        "--frontend-base-url=https://app.example.com",
+        &format!("--resend-base-url={server_url}"),
+    ])
+}
+
+fn create_full_config_with_mock(server_url: &str) -> Config {
+    Config::from_args([
+        "test",
+        "--resend-api-key=test_api_key_123",
+        "--welcome-email-template-id=template_123",
+        "--session-scheduled-email-template-id=session_template_456",
+        "--recurring-sessions-scheduled-email-template-id=recurring_template_xyz",
+        "--session-rescheduled-email-template-id=session_reschedule_template_abc",
+        "--recurring-sessions-rescheduled-email-template-id=series_reschedule_template_abc",
+        "--session-cancelled-email-template-id=session_cancel_template_abc",
+        "--recurring-sessions-cancelled-email-template-id=series_cancel_template_abc",
+        "--action-assigned-email-template-id=action_template_789",
+        "--session-reminder-email-template-id=session_reminder_template_001",
+        "--frontend-base-url=https://app.example.com",
+        &format!("--resend-base-url={server_url}"),
+    ])
+}
+
+#[tokio::test]
+async fn test_send_welcome_email_success() {
+    let mut server = setup_test_server().await;
+    let user = create_test_user();
+    let inviter = create_test_user_with("Sarah", "Coach", "sarah.coach@example.com", "UTC");
+    let config = create_config_with_mock(&server.url());
+
+    let _mock = server
+        .mock("POST", "/emails")
+        .match_header("authorization", "Bearer test_api_key_123")
+        .match_header("content-type", "application/json")
+        .match_body(expect_resend_body(serde_json::json!({
+            "from": FROM_ADDRESS,
+            "to": ["\"John Doe\" <john.doe@example.com>"],
+            "template": {
+                "id": "template_123",
+                "variables": {
+                    "first_name": "John",
+                    "last_name": "Doe",
+                    "coach_first_name": "Sarah",
+                    "coach_full_name": "Sarah Coach",
+                    "magic_link_url": "https://app.example.com/setup/test-magic-link-token"
+                }
+            }
+        })))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"id":"email_msg_123456789"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_send_welcome_email_missing_api_key() {
+    let config = Config::from_args(["test", "--welcome-email-template-id=template_123"]);
+    assert!(config.resend_api_key().is_none(), "API key should be None");
+
+    let user = create_test_user();
+    let inviter = create_test_user();
+
+    let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
+    assert!(result.is_err());
+
+    if let Err(e) = result {
+        match e.error_kind {
+            DomainErrorKind::Internal(InternalErrorKind::Config) => {}
+            _ => panic!("Expected Config error, got: {:?}", e.error_kind),
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_send_welcome_email_missing_template_id() {
+    let config = Config::from_args(["test", "--resend-api-key=test_api_key_123"]);
+    assert!(
+        config.resend_api_key().is_some(),
+        "API key should be present"
+    );
+    assert!(
+        config.welcome_email_template_id().is_none(),
+        "Template ID should be None"
+    );
+
+    let user = create_test_user();
+    let inviter = create_test_user();
+
+    let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
+    assert!(result.is_err());
+
+    if let Err(e) = result {
+        match e.error_kind {
+            DomainErrorKind::Internal(InternalErrorKind::Config) => {}
+            _ => panic!("Expected Config error, got: {:?}", e.error_kind),
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_send_welcome_email_http_error() {
+    let mut server = setup_test_server().await;
+    let user = create_test_user();
+    let inviter = create_test_user();
+    let config = create_config_with_mock(&server.url());
+
+    let _mock = server
+        .mock("POST", "/emails")
+        .with_status(400)
+        .with_body(r#"{"message": "Invalid request"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    // A 400 carries the response body, the caller's only diagnostic, and classifies as
+    // Rejected: retrying sends the same request and gets the same answer.
+    let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
+    let err = result.unwrap_err();
+    match err.error_kind {
+        DomainErrorKind::Internal(InternalErrorKind::Rejected(text)) => assert!(
+            text.contains("Invalid request"),
+            "response body not propagated into error, got: {text}"
+        ),
+        other => panic!("expected Internal(Rejected), got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_send_welcome_email_escapes_name_with_specials() {
+    // Integration-level counterpart to gateway::resend's
+    // `test_format_mailbox_quotes_and_escapes_specials`: a user whose
+    // assembled name contains a comma must land in the `to` field as a
+    // quoted-string, not as two malformed mailboxes.
+    let mut server = setup_test_server().await;
+    let user = create_test_user_with("Jane", "Doe, Jr.", "jane.jr@example.com", "UTC");
+    let inviter = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let config = create_config_with_mock(&server.url());
+
+    let _mock = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body(serde_json::json!({
+            "from": FROM_ADDRESS,
+            "to": ["\"Jane Doe, Jr.\" <jane.jr@example.com>"],
+            "template": {
+                "id": "template_123",
+                "variables": {
+                    "first_name": "Jane",
+                    "last_name": "Doe, Jr.",
+                    "coach_first_name": "Alex",
+                    "coach_full_name": "Alex Smith",
+                    "magic_link_url": "https://app.example.com/setup/test-magic-link-token"
+                }
+            }
+        })))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
+    assert!(result.is_ok());
+}
+
+// ── Password Reset Email Tests ─────────────────────────────────────
+
+#[tokio::test]
+async fn test_send_password_reset_email_wire_contract() {
+    // Pins the wire contract that the Resend template depends on. The
+    // gateway-level tests already prove the builder/HTTP plumbing works;
+    // this test exists to catch regressions that are unique to *how this
+    // function wires up* the request:
+    //   1. `from` is the `mail.` subdomain — apex would not be verified
+    //      in Resend and prod sends would silently fail.
+    //   2. Variable keys are exactly `first_name`, `last_name`,
+    //      `password_reset_url` — a rename would render to empty strings
+    //      in the recipient's inbox (Resend still returns 200).
+    //   3. The URL substitutes `{token}` (not `{session_id}` like other
+    //      email types) — a copy-paste regression would send a malformed
+    //      reset link.
+    //   4. No `subject` field is present in the JSON payload — main moved
+    //      subjects to be template-owned (commit 172907a); re-adding
+    //      `.subject(...)` here would override the template default.
+    let mut server = setup_test_server().await;
+    let user = create_test_user_with("John", "Doe", "john@example.com", "UTC");
+    let config = Config::from_args([
+        "test",
+        "--resend-api-key=test_api_key_123",
+        "--password-reset-email-template-id=pw_reset_template_test",
+        "--password-reset-email-url-path=/reset-password/{token}",
+        "--frontend-base-url=https://app.example.com",
+        &format!("--resend-base-url={}", server.url()),
+    ]);
+
+    // `Matcher::Json` is structural — any extra field (e.g. an
+    // accidentally-readded `subject`) or missing/renamed variable will
+    // fail the mock match and the test will hang on `expect(1)`.
+    let _mock = server
+        .mock("POST", "/emails")
+        .match_header("authorization", "Bearer test_api_key_123")
+        .match_body(expect_resend_body(serde_json::json!({
+            "from": FROM_ADDRESS,
+            "to": ["\"John Doe\" <john@example.com>"],
+            "template": {
+                "id": "pw_reset_template_test",
+                "variables": {
+                    "first_name": "John",
+                    "last_name": "Doe",
+                    "password_reset_url": "https://app.example.com/reset-password/raw-reset-token-abc"
+                }
+            }
+        })))
+        .with_status(200)
+        .with_body(r#"{"id":"email_pw_reset"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let result = send_password_reset_email(&config, &user, "raw-reset-token-abc").await;
+    assert!(
+        result.is_ok(),
+        "send_password_reset_email failed: {result:?}"
+    );
+}
+
+// ── Session Scheduled Email Tests ──────────────────────────────────
+
+/// RFC 5545 line unfolding: remove the CRLF followed by a leading space/tab.
+fn unfold(s: &str) -> String {
+    s.replace("\r\n ", "").replace("\r\n\t", "")
+}
+
+/// A single-session invite from a New York coach and a Los Angeles coachee.
+fn invite_ics_for_participants(coach: &users::Model, coachee: &users::Model) -> String {
+    let mut session = create_test_session();
+    session.date = NaiveDate::from_ymd_opt(2026, 9, 15)
+        .unwrap()
+        .and_hms_opt(19, 0, 0)
+        .unwrap();
+    session.duration_minutes = 60;
+    let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+
+    let ics = build_session_invite_ics(coach, coachee, &session, "desc".into(), dtstamp).unwrap();
+    unfold(&ics)
+}
+
+/// The title is coachee first, then coach.
+#[test]
+fn test_session_summary_puts_the_coachee_first() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+
+    assert_eq!(session_summary(&coach, &coachee), "Jane / Alex");
+}
+
+/// The `ORGANIZER` must equal the sending address: when the two disagree, calendar
+/// clients treat the invite as untrusted and silently drop reschedules.
+#[test]
+fn test_organizer_is_the_sending_address() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/Los_Angeles");
+    let ics = invite_ics_for_participants(&coach, &coachee);
+
+    let organizer = ics
+        .lines()
+        .find(|l| l.starts_with("ORGANIZER"))
+        .expect("no ORGANIZER line");
+    assert!(
+        organizer.contains(&format!("mailto:{FROM_ADDRESS}")),
+        "ORGANIZER must carry FROM_ADDRESS, got: {organizer}"
+    );
+}
+
+#[test]
+fn test_coach_and_coachee_are_both_attendees() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/Los_Angeles");
+    let ics = invite_ics_for_participants(&coach, &coachee);
+
+    let attendees: Vec<&str> = ics.lines().filter(|l| l.starts_with("ATTENDEE")).collect();
+    assert_eq!(attendees.len(), 2);
+    assert!(attendees
+        .iter()
+        .any(|l| l.contains("mailto:alex@example.com")));
+    assert!(attendees
+        .iter()
+        .any(|l| l.contains("mailto:jane@example.com")));
+
+    let organizer = ics
+        .lines()
+        .find(|l| l.starts_with("ORGANIZER"))
+        .expect("no ORGANIZER line");
+    assert!(!organizer.contains("alex@example.com"));
+    assert!(!organizer.contains("jane@example.com"));
+}
+
+/// The platform organizer has no meaningful zone, so the anchor stays the coach's.
+#[test]
+fn test_anchor_timezone_still_follows_the_coach() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/Los_Angeles");
+    let ics = invite_ics_for_participants(&coach, &coachee);
+
+    assert!(ics.contains("DTSTART;TZID=America/New_York:"));
+    assert!(ics.contains("BEGIN:VTIMEZONE"));
+    assert!(ics.contains("TZID:America/New_York"));
+}
+
+#[test]
+fn test_build_session_invite_ics_structure() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let mut session = create_test_session();
+    session.date = NaiveDate::from_ymd_opt(2026, 9, 15)
+        .unwrap()
+        .and_hms_opt(19, 0, 0)
+        .unwrap();
+    session.duration_minutes = 60;
+    session.ical_sequence = 0;
+    session.meeting_url = Some("https://meet.example/xyz".into());
+    let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+
+    let ics = build_session_invite_ics(
+        &coach,
+        &coachee,
+        &session,
+        "Join this session: https://app/x".into(),
+        dtstamp,
+    )
+    .unwrap();
+
+    assert!(ics.contains(&format!("UID:{}@myrefactor.com", session.id)));
+    assert!(ics.contains("METHOD:REQUEST"));
+    assert!(ics.contains("STATUS:CONFIRMED"));
+    assert!(ics.contains("SEQUENCE:0"));
+    assert!(ics.contains("SUMMARY:Jane / Alex"));
+    assert!(ics.contains("BEGIN:VTIMEZONE"));
+    assert!(ics.contains("TZID:America/New_York"));
+    assert!(ics.contains("DTSTART;TZID=America/New_York:20260915T150000"));
+    assert!(ics.contains("Join this session: https://app/x"));
+}
+
+/// A reschedule bumps `ical_sequence`; the invite must carry the bumped
+/// `SEQUENCE` while keeping the same `UID` (so calendar clients update the
+/// existing event in place rather than creating a duplicate).
+#[test]
+fn test_build_session_invite_ics_bumped_sequence() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let mut session = create_test_session();
+    session.date = NaiveDate::from_ymd_opt(2026, 9, 15)
+        .unwrap()
+        .and_hms_opt(19, 0, 0)
+        .unwrap();
+    session.duration_minutes = 60;
+    session.ical_sequence = 1;
+    session.meeting_url = Some("https://meet.example/xyz".into());
+    let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+
+    let ics = build_session_invite_ics(
+        &coach,
+        &coachee,
+        &session,
+        "Join this session: https://app/x".into(),
+        dtstamp,
+    )
+    .unwrap();
+
+    assert!(ics.contains("SEQUENCE:1"));
+    assert!(ics.contains("METHOD:REQUEST"));
+    // UID keys off the session id, unchanged from a SEQUENCE:0 invite.
+    assert!(ics.contains(&format!("UID:{}@myrefactor.com", session.id)));
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_session_scheduled_email_variables() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    // Description loaders return empty sets; the `.ics` content is not asserted here.
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<entity::coaching_session_topics::Model, _, _>(vec![vec![]])
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        .append_query_results::<entity::actions::Model, _, _>(vec![vec![]])
+        .into_connection();
+
+    // Coach and coachee in different timezones so a single body-match per
+    // recipient proves BOTH the role swap (coach <-> coachee) AND that each
+    // recipient's own timezone is used. Session is 2026-03-04 15:00 UTC:
+    //   - coachee (America/New_York, EST): 10:00 AM, Wed March 4
+    //   - coach   (Asia/Tokyo):            12:00 AM, Thu March 5 (date rolls)
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "Asia/Tokyo");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/New_York");
+    let session = create_test_session();
+    let org = create_test_organization();
+
+    let session_url = format!("https://app.example.com/coaching-sessions/{}", session.id);
+
+    // Email to coachee — other_user is the coach, formatted in NY time.
+    let mock_coachee = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "from": FROM_ADDRESS,
+                "to": ["\"Jane Doe\" <jane@example.com>"],
+                "template": {
+                    "id": "session_template_456",
+                    "variables": {
+                        "first_name": "Jane",
+                        "other_user_first_name": "Alex",
+                        "other_user_last_name": "Smith",
+                        "other_user_role": "coach",
+                        "organization_name": "Acme Corp",
+                        "session_date": "Wednesday, March 4, 2026",
+                        "session_time": "10:00 AM",
+                        "session_duration": "1 hour",
+                        "session_url": session_url.clone(),
+                    }
+                }
+            }),
+            &ical::Method::Request,
+        ))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    // Email to coach — other_user is the coachee, formatted in Tokyo time
+    // (the session date rolls forward a day).
+    let mock_coach = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "from": FROM_ADDRESS,
+                "to": ["\"Alex Smith\" <alex@example.com>"],
+                "template": {
+                    "id": "session_template_456",
+                    "variables": {
+                        "first_name": "Alex",
+                        "other_user_first_name": "Jane",
+                        "other_user_last_name": "Doe",
+                        "other_user_role": "coachee",
+                        "organization_name": "Acme Corp",
+                        "session_date": "Thursday, March 5, 2026",
+                        "session_time": "12:00 AM",
+                        "session_duration": "1 hour",
+                        "session_url": session_url.clone(),
+                    }
+                }
+            }),
+            &ical::Method::Request,
+        ))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let result = send_session_scheduled_email(
+        &db,
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+    )
+    .await;
+    assert!(result.is_ok());
+
+    // Sends are best-effort (errors are swallowed), so assert the mocks
+    // matched to prove the attachment-bearing bodies actually went out.
+    mock_coachee.assert_async().await;
+    mock_coach.assert_async().await;
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_session_rescheduled_email() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    // Description loaders return empty sets; the `.ics` content is not asserted here.
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<entity::coaching_session_topics::Model, _, _>(vec![vec![]])
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        .append_query_results::<entity::actions::Model, _, _>(vec![vec![]])
+        .into_connection();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "Asia/Tokyo");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/New_York");
+    // Already-bumped session: a reschedule invite carries SEQUENCE:2.
+    let mut session = create_test_session();
+    session.ical_sequence = 2;
+    let org = create_test_organization();
+
+    // Both recipients target the reschedule template and carry the
+    // `session_or_series=session` discriminant plus the `.ics` attachment.
+    let mock_coachee = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "to": ["\"Jane Doe\" <jane@example.com>"],
+                "template": {
+                    "id": "session_reschedule_template_abc",
+                    "variables": {
+                        "first_name": "Jane",
+                        "other_user_role": "coach",
+                        "session_or_series": "session",
+                    }
+                }
+            }),
+            &ical::Method::Request,
+        ))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let mock_coach = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "to": ["\"Alex Smith\" <alex@example.com>"],
+                "template": {
+                    "id": "session_reschedule_template_abc",
+                    "variables": {
+                        "first_name": "Alex",
+                        "other_user_role": "coachee",
+                        "session_or_series": "session",
+                    }
+                }
+            }),
+            &ical::Method::Request,
+        ))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    // The start moved forward from March 2.
+    let previous_start = NaiveDate::from_ymd_opt(2026, 3, 2)
+        .unwrap()
+        .and_hms_opt(15, 0, 0)
+        .unwrap();
+    let result = send_session_rescheduled_email(
+        &db,
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+        previous_start,
+    )
+    .await;
+    assert!(result.is_ok());
+
+    // The send swallows errors, so the mock assertions are what give this
+    // test teeth: they prove the reschedule template + attachment went out.
+    mock_coachee.assert_async().await;
+    mock_coach.assert_async().await;
+}
+
+/// Loaders for the single-session `.ics` description: topics, goals, actions.
+#[cfg(feature = "mock")]
+fn mock_description_loaders() -> DatabaseConnection {
+    MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<entity::coaching_session_topics::Model, _, _>(vec![vec![]])
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        .append_query_results::<entity::actions::Model, _, _>(vec![vec![]])
+        .into_connection()
+}
+
+/// The description loaders, then the series an occurrence invite reads its zone from.
+#[cfg(feature = "mock")]
+fn mock_occurrence_loaders(series: coaching_session_series::Model) -> DatabaseConnection {
+    MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<entity::coaching_session_topics::Model, _, _>(vec![vec![]])
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        .append_query_results::<entity::actions::Model, _, _>(vec![vec![]])
+        .append_query_results(vec![vec![series]])
+        .into_connection()
+}
+
+/// mockito has no negative body matcher, so absence of a template variable rides on
+/// `match_request`. An unreadable or unparsable body fails the match.
+fn reject_template_variables(keys: &'static [&'static str]) -> impl Fn(&mockito::Request) -> bool {
+    move |request| {
+        request
+            .utf8_lossy_body()
+            .ok()
+            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+            .map(|payload| {
+                keys.iter()
+                    .all(|key| payload["template"]["variables"].get(key).is_none())
+            })
+            .unwrap_or(false)
+    }
+}
+
+/// The exact set of template variables the payload may declare, plus the absence of a
+/// payload-level `subject`. The body matcher is a subset match (the base64 attachment
+/// cannot be predicted), so on its own it cannot see a renamed or stray variable. That
+/// matters in production: Resend fails a send with 422 when the template declares a
+/// variable the payload does not supply.
+#[cfg(feature = "mock")]
+fn expect_exact_template_variables(
+    keys: &'static [&'static str],
+) -> impl Fn(&mockito::Request) -> bool {
+    move |request| {
+        request
+            .utf8_lossy_body()
+            .ok()
+            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+            .and_then(|payload| {
+                let actual: BTreeSet<&str> = payload["template"]["variables"]
+                    .as_object()?
+                    .keys()
+                    .map(String::as_str)
+                    .collect();
+                Some(
+                    actual == keys.iter().copied().collect::<BTreeSet<&str>>()
+                        && payload.get("subject").is_none(),
+                )
+            })
+            .unwrap_or(false)
+    }
+}
+
+/// T1: both `when` variables ride along on a reschedule, each rendered in the
+/// recipient's own timezone.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_session_rescheduled_email_carries_both_when_variables_per_recipient() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let db = mock_description_loaders();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/Chicago");
+    // New start 2026-03-04 15:00 UTC: 9:00 AM Central, 10:00 AM Eastern.
+    let session = create_test_session();
+    let org = create_test_organization();
+    // Old start 2026-02-25 20:00 UTC: 2:00 PM Central, 3:00 PM Eastern.
+    let previous_start = NaiveDate::from_ymd_opt(2026, 2, 25)
+        .unwrap()
+        .and_hms_opt(20, 0, 0)
+        .unwrap();
+
+    let mock_coachee = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "to": ["\"Jane Doe\" <jane@example.com>"],
+                "template": {
+                    "id": "session_reschedule_template_abc",
+                    "variables": {
+                        "first_name": "Jane",
+                        "session_when": "Wednesday, March 4, 2026 at 9:00 AM",
+                        "previous_session_when": "Wednesday, February 25, 2026 at 2:00 PM",
+                    }
+                }
+            }),
+            &ical::Method::Request,
+        ))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let mock_coach = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "to": ["\"Alex Smith\" <alex@example.com>"],
+                "template": {
+                    "id": "session_reschedule_template_abc",
+                    "variables": {
+                        "first_name": "Alex",
+                        "session_when": "Wednesday, March 4, 2026 at 10:00 AM",
+                        "previous_session_when": "Wednesday, February 25, 2026 at 3:00 PM",
+                    }
+                }
+            }),
+            &ical::Method::Request,
+        ))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let result = send_session_rescheduled_email(
+        &db,
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+        previous_start,
+    )
+    .await;
+    assert!(result.is_ok());
+
+    mock_coachee.assert_async().await;
+    mock_coach.assert_async().await;
+}
+
+/// T2: a title-only reschedule leaves the start where it was, so the previous time
+/// reads `Unchanged` while the new time still shows the real start.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_session_rescheduled_email_unmoved_start_renders_unchanged() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let db = mock_description_loaders();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let mut session = create_test_session();
+    session.title = Some("Renamed session".to_string());
+    let org = create_test_organization();
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "template": {
+                    "id": "session_reschedule_template_abc",
+                    "variables": {
+                        "session_when": "Wednesday, March 4, 2026 at 3:00 PM",
+                        "previous_session_when": "Unchanged",
+                    }
+                }
+            }),
+            &ical::Method::Request,
+        ))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_session_rescheduled_email(
+        &db,
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+        session.date,
+    )
+    .await;
+    assert!(result.is_ok());
+
+    mock.assert_async().await;
+}
+
+/// T3: a moved start must render the old time, never the `Unchanged` literal.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_session_rescheduled_email_moved_start_is_not_unchanged() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let db = mock_description_loaders();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let session = create_test_session();
+    let org = create_test_organization();
+    let previous_start = NaiveDate::from_ymd_opt(2026, 3, 2)
+        .unwrap()
+        .and_hms_opt(15, 0, 0)
+        .unwrap();
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "template": {
+                    "id": "session_reschedule_template_abc",
+                    "variables": {
+                        "session_when": "Wednesday, March 4, 2026 at 3:00 PM",
+                        "previous_session_when": "Monday, March 2, 2026 at 3:00 PM",
+                    }
+                }
+            }),
+            &ical::Method::Request,
+        ))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_session_rescheduled_email(
+        &db,
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+        previous_start,
+    )
+    .await;
+    assert!(result.is_ok());
+
+    mock.assert_async().await;
+}
+
+/// T5: the scheduled path keeps its existing variables and carries neither
+/// `when` variable, whose template does not declare them.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_session_scheduled_email_omits_when_variables() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let db = mock_description_loaders();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let session = create_test_session();
+    let org = create_test_organization();
+    let session_url = format!("https://app.example.com/coaching-sessions/{}", session.id);
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "template": {
+                    "id": "session_template_456",
+                    "variables": {
+                        "organization_name": "Acme Corp",
+                        "session_date": "Wednesday, March 4, 2026",
+                        "session_time": "3:00 PM",
+                        "session_duration": "1 hour",
+                        "session_url": session_url,
+                    }
+                }
+            }),
+            &ical::Method::Request,
+        ))
+        .match_request(reject_template_variables(&[
+            "session_when",
+            "previous_session_when",
+        ]))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_session_scheduled_email(
+        &db,
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+    )
+    .await;
+    assert!(result.is_ok());
+
+    mock.assert_async().await;
+}
+
+/// Frequency is meaningless for a one-off session, so neither recurrence variable
+/// ships on the single-session reschedule.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_session_rescheduled_email_omits_recurrence_variables() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let db = mock_description_loaders();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let session = create_test_session();
+    let org = create_test_organization();
+    let previous_start = NaiveDate::from_ymd_opt(2026, 3, 2)
+        .unwrap()
+        .and_hms_opt(15, 0, 0)
+        .unwrap();
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "template": {
+                    "id": "session_reschedule_template_abc",
+                    "variables": {
+                        "previous_session_when": "Monday, March 2, 2026 at 3:00 PM",
+                    }
+                }
+            }),
+            &ical::Method::Request,
+        ))
+        .match_request(reject_template_variables(&[
+            "recurrence_summary",
+            "previous_recurrence_summary",
+        ]))
+        // The full contract for a single-session reschedule. A variable renamed on one
+        // side of the template boundary is a 422 in production, invisible to a subset match.
+        .match_request(expect_exact_template_variables(&[
+            "first_name",
+            "organization_name",
+            "other_user_first_name",
+            "other_user_last_name",
+            "other_user_role",
+            "previous_session_when",
+            "session_date",
+            "session_duration",
+            "session_or_series",
+            "session_time",
+            "session_url",
+            "session_when",
+        ]))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_session_rescheduled_email(
+        &db,
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+        previous_start,
+    )
+    .await;
+    assert!(result.is_ok());
+
+    mock.assert_async().await;
+}
+
+/// Moving one meeting of a series must address that occurrence, not the whole series:
+/// the invite carries the SERIES UID plus a `RECURRENCE-ID` naming the original start,
+/// and must not restate the `RRULE` (which would redefine the series from this
+/// occurrence forward). Decoding the attachment is the only way to see this: the
+/// template variables are identical either way.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_occurrence_rescheduled_email_addresses_the_occurrence() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let series = create_test_series();
+    let series_id = series.id;
+    let db = mock_occurrence_loaders(series);
+    let capture = IcsCapture::default();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let original_start = NaiveDate::from_ymd_opt(2026, 3, 4)
+        .unwrap()
+        .and_hms_opt(15, 0, 0)
+        .unwrap();
+    let session = create_test_series_session(series_id, original_start);
+    let org = create_test_organization();
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_session_rescheduled_email(
+        &db,
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+        original_start,
+    )
+    .await;
+    assert!(result.is_ok());
+    mock.assert_async().await;
+
+    let ics = capture.ics();
+    assert!(
+        ics.contains(&format!("UID:{series_id}@")),
+        "an occurrence move must address the series UID: {ics}"
+    );
+    assert!(
+        ics.contains("RECURRENCE-ID"),
+        "without RECURRENCE-ID this rewrites the whole series: {ics}"
+    );
+    assert!(ics.contains("METHOD:REQUEST"), "{ics}");
+    assert!(
+        !capture.vevent().contains("RRULE"),
+        "an override instance must not restate the series rule: {ics}"
+    );
+}
+
+/// The predicate that decides whether an edit earns a fresh invite. Each field it names
+/// is one the `.ics` actually carries, and `updated_at` is the control: a field the invite
+/// does not carry must not trigger a re-send.
+#[test]
+fn affects_invite_tracks_only_fields_the_invite_carries() {
+    let base = create_test_session();
+    assert!(!affects_invite(&base, &base.clone()));
+
+    let date_changed = coaching_sessions::Model {
+        date: base.date + chrono::Duration::hours(1),
+        ..base.clone()
+    };
+    assert!(affects_invite(&base, &date_changed), "DTSTART moved");
+
+    let duration_changed = coaching_sessions::Model {
+        duration_minutes: base.duration_minutes + 15,
+        ..base.clone()
+    };
+    assert!(affects_invite(&base, &duration_changed), "DTEND moved");
+
+    let url_changed = coaching_sessions::Model {
+        meeting_url: Some("https://meet.example/new".to_string()),
+        ..base.clone()
+    };
+    assert!(affects_invite(&base, &url_changed), "LOCATION/CONFERENCE");
+
+    let title_changed = coaching_sessions::Model {
+        title: Some("A title".to_string()),
+        ..base.clone()
+    };
+    assert!(affects_invite(&base, &title_changed), "DESCRIPTION");
+
+    let updated_at_changed = coaching_sessions::Model {
+        updated_at: base.updated_at + chrono::Duration::hours(2),
+        ..base.clone()
+    };
+    assert!(
+        !affects_invite(&base, &updated_at_changed),
+        "updated_at is not in the invite, so it must not re-send"
+    );
+}
+
+/// The predicate that decides whether an edit earns a "has been rescheduled" email. The
+/// title and meeting-URL cases pin the split from [`affects_invite`], which still carries
+/// them.
+#[test]
+fn affects_schedule_covers_only_the_start_and_the_length() {
+    let base = create_test_session();
+    assert!(!affects_schedule(&base, &base.clone()));
+
+    let date_changed = coaching_sessions::Model {
+        date: base.date + chrono::Duration::hours(1),
+        ..base.clone()
+    };
+    assert!(affects_schedule(&base, &date_changed), "start moved");
+
+    let duration_changed = coaching_sessions::Model {
+        duration_minutes: base.duration_minutes + 15,
+        ..base.clone()
+    };
+    assert!(affects_schedule(&base, &duration_changed), "length moved");
+
+    let title_changed = coaching_sessions::Model {
+        title: Some("A title".to_string()),
+        ..base.clone()
+    };
+    assert!(
+        !affects_schedule(&base, &title_changed),
+        "a title edit is not a reschedule"
+    );
+    assert!(
+        affects_invite(&base, &title_changed),
+        "but it still supersedes the invite"
+    );
+
+    let url_changed = coaching_sessions::Model {
+        meeting_url: Some("https://meet.example/new".to_string()),
+        ..base.clone()
+    };
+    assert!(
+        !affects_schedule(&base, &url_changed),
+        "a meeting URL edit is not a reschedule"
+    );
+    assert!(
+        affects_invite(&base, &url_changed),
+        "but it still supersedes the invite"
+    );
+}
+
+// ── Session Cancelled Email Tests ──────────────────────────────────
+
+/// A cancellation must supersede the invite it replaces: same `UID`, next `SEQUENCE`.
+#[test]
+fn test_build_session_cancel_ics_structure() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let mut session = create_test_session();
+    session.date = NaiveDate::from_ymd_opt(2026, 9, 15)
+        .unwrap()
+        .and_hms_opt(19, 0, 0)
+        .unwrap();
+    session.duration_minutes = 60;
+    // The caller bumps in the delete transaction; the builder carries what it is given.
+    session.ical_sequence = 3;
+    let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+
+    let ics = build_session_cancel_ics(
+        &coach,
+        &coachee,
+        &session,
+        SESSION_CANCELLED_DESCRIPTION.to_string(),
+        dtstamp,
+        session.ical_sequence,
+    )
+    .unwrap();
+
+    assert!(ics.contains("METHOD:CANCEL"));
+    assert!(ics.contains("STATUS:CANCELLED"));
+    assert!(ics.contains("SEQUENCE:3"));
+    assert!(ics.contains(&format!("UID:{}@myrefactor.com", session.id)));
+}
+
+#[tokio::test]
+async fn test_send_session_cancelled_email() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    // No session link: the row is gone by the time a recipient could click it.
+    assert!(
+        SessionCancelled::url_path_template(&config).is_none(),
+        "a cancellation must not carry a session URL template"
+    );
+
+    let capture = IcsCapture::default();
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "Asia/Tokyo");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/New_York");
+    let session = create_test_session();
+    let org = create_test_organization();
+
+    // Email to coachee: other_user is the coach, formatted in NY time.
+    let mock_coachee = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "from": FROM_ADDRESS,
+                "to": ["\"Jane Doe\" <jane@example.com>"],
+                "template": {
+                    "id": "session_cancel_template_abc",
+                    "variables": {
+                        "first_name": "Jane",
+                        "other_user_first_name": "Alex",
+                        "other_user_last_name": "Smith",
+                        "other_user_role": "coach",
+                        "organization_name": "Acme Corp",
+                        "session_date": "Wednesday, March 4, 2026",
+                        "session_time": "10:00 AM",
+                    }
+                }
+            }),
+            &ical::Method::Cancel,
+        ))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    // Email to coach: other_user is the coachee, Tokyo time rolls the date forward.
+    let mock_coach = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "from": FROM_ADDRESS,
+                "to": ["\"Alex Smith\" <alex@example.com>"],
+                "template": {
+                    "id": "session_cancel_template_abc",
+                    "variables": {
+                        "first_name": "Alex",
+                        "other_user_first_name": "Jane",
+                        "other_user_last_name": "Doe",
+                        "other_user_role": "coachee",
+                        "organization_name": "Acme Corp",
+                        "session_date": "Thursday, March 5, 2026",
+                        "session_time": "12:00 AM",
+                    }
+                }
+            }),
+            &ical::Method::Cancel,
+        ))
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let result = send_session_cancelled_email(
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+        anchor_tz(&coach),
+    )
+    .await;
+    assert!(result.is_ok());
+
+    // The send swallows errors, so the mock assertions are what give this test teeth.
+    mock_coachee.assert_async().await;
+    mock_coach.assert_async().await;
+
+    // Decoding the attachment is what separates this from its per-occurrence sibling:
+    // a standalone cancellation must address the session's own UID and must NOT name an
+    // occurrence, or a client would look for a parent series that does not exist.
+    let ics = capture.ics();
+    assert!(
+        ics.contains(&format!("UID:{}@", session.id)),
+        "a standalone cancellation must carry the session UID: {ics}"
+    );
+    assert!(
+        !ics.contains("RECURRENCE-ID"),
+        "a standalone session has no occurrence to name: {ics}"
+    );
+    assert!(ics.contains("METHOD:CANCEL"), "{ics}");
+}
+
+/// T5: a cancellation keeps its existing variables and carries neither `when`
+/// variable, whose template does not declare them.
+#[tokio::test]
+async fn test_send_session_cancelled_email_omits_when_variables() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let session = create_test_session();
+    let org = create_test_organization();
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "template": {
+                    "id": "session_cancel_template_abc",
+                    "variables": {
+                        "organization_name": "Acme Corp",
+                        "session_date": "Wednesday, March 4, 2026",
+                        "session_time": "3:00 PM",
+                    }
+                }
+            }),
+            &ical::Method::Cancel,
+        ))
+        .match_request(reject_template_variables(&[
+            "session_when",
+            "previous_session_when",
+        ]))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_session_cancelled_email(
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+        anchor_tz(&coach),
+    )
+    .await;
+    assert!(result.is_ok());
+
+    mock.assert_async().await;
+}
+
+// ── Per-Occurrence (Series Member) Tests ───────────────────────────
+
+/// The VEVENT span only. A spliced VTIMEZONE block carries its own daylight-saving
+/// `RRULE` lines, so whole-calendar RRULE assertions would be meaningless.
+fn vevent(ics: &str) -> &str {
+    let start = ics.find("BEGIN:VEVENT").expect("no BEGIN:VEVENT");
+    let end = ics.find("END:VEVENT").expect("no END:VEVENT");
+    &ics[start..end]
+}
+
+/// Cancelling one occurrence must address the SERIES event plus a RECURRENCE-ID.
+/// A session-id UID names an event no calendar holds.
+#[test]
+fn test_build_occurrence_cancel_ics_addresses_the_series_uid() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let series_id = Id::new_v4();
+    let original_start = NaiveDate::from_ymd_opt(2026, 9, 15)
+        .unwrap()
+        .and_hms_opt(19, 0, 0)
+        .unwrap();
+    let mut session = create_test_series_session(series_id, original_start);
+    // The caller bumps in the delete transaction; the builder carries what it is given.
+    session.ical_sequence = 3;
+    session.duration_minutes = 60;
+    let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+
+    let ics = build_occurrence_cancel_ics(
+        &coach,
+        &coachee,
+        &session,
+        series_id,
+        chrono_tz::America::New_York,
+        SESSION_CANCELLED_DESCRIPTION.to_string(),
+        dtstamp,
+    )
+    .unwrap();
+
+    assert!(ics.contains(&format!("UID:{series_id}@myrefactor.com")));
+    assert!(!ics.contains(&format!("UID:{}@myrefactor.com", session.id)));
+    assert!(ics.contains("RECURRENCE-ID;TZID=America/New_York:20260915T150000"));
+    assert!(ics.contains("METHOD:CANCEL"));
+    assert!(ics.contains("STATUS:CANCELLED"));
+    assert!(ics.contains("SEQUENCE:3"));
+    assert!(!vevent(&ics).contains("RRULE"));
+}
+
+/// Moving one occurrence: DTSTART carries the NEW time while RECURRENCE-ID keeps
+/// naming the original slot, which is what makes it an override and not a duplicate.
+#[test]
+fn test_build_occurrence_reschedule_ics_keeps_original_recurrence_id() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let series_id = Id::new_v4();
+    let original_start = NaiveDate::from_ymd_opt(2026, 9, 15)
+        .unwrap()
+        .and_hms_opt(19, 0, 0)
+        .unwrap();
+    let mut session = create_test_series_session(series_id, original_start);
+    session.ical_sequence = 3;
+    session.duration_minutes = 60;
+    session.date = NaiveDate::from_ymd_opt(2026, 9, 17)
+        .unwrap()
+        .and_hms_opt(20, 0, 0)
+        .unwrap();
+    let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+
+    let ics = build_occurrence_reschedule_ics(
+        &coach,
+        &coachee,
+        &session,
+        series_id,
+        chrono_tz::America::New_York,
+        "Join this session: https://app/x".into(),
+        dtstamp,
+    )
+    .unwrap();
+
+    assert!(ics.contains("DTSTART;TZID=America/New_York:20260917T160000"));
+    assert!(ics.contains("RECURRENCE-ID;TZID=America/New_York:20260915T150000"));
+    assert_ne!(session.date, original_start);
+    assert!(ics.contains(&format!("UID:{series_id}@myrefactor.com")));
+    assert!(!ics.contains(&format!("UID:{}@myrefactor.com", session.id)));
+    assert!(ics.contains("METHOD:REQUEST"));
+    assert!(ics.contains("SEQUENCE:3"));
+    assert!(!vevent(&ics).contains("RRULE"));
+}
+
+/// Standalone sessions keep their own UID and gain no RECURRENCE-ID.
+#[test]
+fn test_standalone_session_ics_carries_no_recurrence_id() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let session = create_test_session();
+    let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+
+    assert!(session.coaching_session_series_id.is_none());
+
+    let invite =
+        build_session_invite_ics(&coach, &coachee, &session, "desc".into(), dtstamp).unwrap();
+    assert!(invite.contains(&format!("UID:{}@myrefactor.com", session.id)));
+    assert!(!invite.contains("RECURRENCE-ID"));
+
+    let cancel = build_session_cancel_ics(
+        &coach,
+        &coachee,
+        &session,
+        "desc".into(),
+        dtstamp,
+        session.ical_sequence,
+    )
+    .unwrap();
+    assert!(cancel.contains(&format!("UID:{}@myrefactor.com", session.id)));
+    assert!(!cancel.contains("RECURRENCE-ID"));
+}
+
+/// A series member that predates `ical_recurrence_id` has no occurrence to override: its
+/// series was never published to a calendar. The cancellation is addressed by the
+/// session's own `UID` instead, which is what the standalone invite for it used.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_cancelling_a_legacy_series_member_addresses_it_by_its_own_uid() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = IcsCapture::default();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+
+    let series_id = Id::new_v4();
+    let mut session = create_test_session();
+    session.coaching_session_series_id = Some(series_id);
+    session.ical_recurrence_id = None;
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_session_cancelled_email(
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+        anchor_tz(&coach),
+    )
+    .await;
+    assert!(result.is_ok());
+    mock.assert_async().await;
+
+    let cancel = capture.ics();
+    assert!(
+        cancel.contains(&format!("UID:{}@myrefactor.com", session.id)),
+        "a legacy member is cancelled under its own UID, not the series': {cancel}"
+    );
+    assert!(
+        !cancel.contains(&format!("UID:{series_id}@myrefactor.com")),
+        "naming the series UID would act on the wrong instance: {cancel}"
+    );
+    assert!(
+        !capture.vevent().contains("RECURRENCE-ID"),
+        "a self-contained event overrides no occurrence"
+    );
+}
+
+/// The scheduled and rescheduled sends, for a series member with no `ical_recurrence_id`.
+/// Both must attach a self-contained invite rather than an occurrence override. These
+/// exist because the transaction-log tests below only prove the notify entry points stopped
+/// short-circuiting; they do not prove what actually leaves in the attachment.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_scheduling_and_rescheduling_a_legacy_series_member_send_standalone_invites() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = IcsCapture::default();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+
+    let mut session = create_test_session();
+    session.coaching_session_series_id = Some(Id::new_v4());
+    session.ical_recurrence_id = None;
+
+    // Two sends per flow, four in total, each carrying a self-contained invite.
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(4)
+        .create_async()
+        .await;
+
+    let scheduled = send_session_scheduled_email(
+        &mock_description_loaders(),
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+    )
+    .await;
+    assert!(scheduled.is_ok());
+
+    let rescheduled = send_session_rescheduled_email(
+        &mock_description_loaders(),
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+        session.date - chrono::Duration::days(1),
+    )
+    .await;
+    assert!(rescheduled.is_ok());
+
+    mock.assert_async().await;
+
+    assert!(
+        capture
+            .ics()
+            .contains(&format!("UID:{}@myrefactor.com", session.id)),
+        "a legacy member is invited under its own UID"
+    );
+    assert!(
+        !capture.vevent().contains("RECURRENCE-ID"),
+        "a self-contained event overrides no occurrence"
+    );
+}
+
+#[cfg(feature = "mock")]
+fn test_relationship() -> entity::coaching_relationships::Model {
+    entity::coaching_relationships::Model {
+        id: Id::new_v4(),
+        organization_id: Id::new_v4(),
+        coach_id: Id::new_v4(),
+        coachee_id: Id::new_v4(),
+        slug: "test".to_string(),
+        created_at: chrono::Utc::now().into(),
+        updated_at: chrono::Utc::now().into(),
+    }
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_notify_session_cancelled_no_longer_short_circuits_a_legacy_series_member() {
+    let server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let mut session = create_test_session();
+    session.coaching_session_series_id = Some(Id::new_v4());
+    session.ical_recurrence_id = None;
+    // Future-dated, so the past-session guard cannot be what decides the outcome.
+    session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+    notify_session_cancelled(&db, &config, &session).await;
+
+    assert!(
+        !db.into_transaction_log().is_empty(),
+        "a series member without a RECURRENCE-ID must still be looked up and emailed, \
+         not skipped before any statement runs"
+    );
+}
+
+/// The same regression on the other two entry points. All three shared the early return,
+/// so all three need the guard against it coming back.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_scheduled_and_rescheduled_no_longer_short_circuit_a_legacy_series_member() {
+    let server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let mut session = create_test_session();
+    session.coaching_session_series_id = Some(Id::new_v4());
+    session.ical_recurrence_id = None;
+    session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
+
+    let scheduled_db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+    notify_session_scheduled(
+        &scheduled_db,
+        &config,
+        &session,
+        &test_relationship(),
+        &create_test_organization(),
+        &[],
+    )
+    .await;
+    assert!(
+        !scheduled_db.into_transaction_log().is_empty(),
+        "scheduled must not skip a legacy series member"
+    );
+
+    let rescheduled_db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+    let _ = send_session_rescheduled(&rescheduled_db, &config, &session, session.date).await;
+    assert!(
+        !rescheduled_db.into_transaction_log().is_empty(),
+        "rescheduled must not skip a legacy series member"
+    );
+}
+
+/// Per-occurrence cancellations are still one session being cancelled, so they use the
+/// session template and the CANCEL attachment, not any series-level variant. The
+/// attachment itself is decoded: a cancellation of one occurrence must address the
+/// *series* UID and name the occurrence by `RECURRENCE-ID`, or a calendar client would
+/// cancel the whole series instead of the single meeting.
+#[tokio::test]
+async fn test_send_occurrence_cancelled_email_uses_session_template() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = IcsCapture::default();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "Asia/Tokyo");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/New_York");
+    let series_id = Id::new_v4();
+    let original_start = NaiveDate::from_ymd_opt(2026, 3, 4)
+        .unwrap()
+        .and_hms_opt(15, 0, 0)
+        .unwrap();
+    let session = create_test_series_session(series_id, original_start);
+    let org = create_test_organization();
+
+    let mock_coachee = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "to": ["\"Jane Doe\" <jane@example.com>"],
+                "template": {
+                    "id": "session_cancel_template_abc",
+                    "variables": {
+                        "first_name": "Jane",
+                        "other_user_role": "coach",
+                        "session_date": "Wednesday, March 4, 2026",
+                        "session_time": "10:00 AM",
+                    }
+                }
+            }),
+            &ical::Method::Cancel,
+        ))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let mock_coach = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "to": ["\"Alex Smith\" <alex@example.com>"],
+                "template": {
+                    "id": "session_cancel_template_abc",
+                    "variables": {
+                        "first_name": "Alex",
+                        "other_user_role": "coachee",
+                        "session_date": "Thursday, March 5, 2026",
+                        "session_time": "12:00 AM",
+                    }
+                }
+            }),
+            &ical::Method::Cancel,
+        ))
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let result = send_session_cancelled_email(
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+        anchor_tz(&coach),
+    )
+    .await;
+    assert!(result.is_ok());
+
+    // The send swallows errors, so the mock assertions are what give this test teeth.
+    mock_coachee.assert_async().await;
+    mock_coach.assert_async().await;
+
+    let ics = capture.ics();
+    assert!(
+        ics.contains(&format!("UID:{series_id}@")),
+        "an occurrence override must carry the series UID: {ics}"
+    );
+    assert!(
+        ics.contains("RECURRENCE-ID"),
+        "without RECURRENCE-ID this cancels the whole series: {ics}"
+    );
+    assert!(ics.contains("METHOD:CANCEL"), "{ics}");
+    assert!(
+        !capture.vevent().contains("RRULE"),
+        "an override instance must not restate the series rule: {ics}"
+    );
+}
+
+/// Deleting an already-completed session is housekeeping, not a cancellation. The
+/// guard must fire before any lookup, so the connection sees no statements at all.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_notify_session_cancelled_skips_past_session() {
+    let server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let mut session = create_test_session();
+    session.date = NaiveDate::from_ymd_opt(2020, 1, 15)
+        .unwrap()
+        .and_hms_opt(15, 0, 0)
+        .unwrap();
+
+    // Zero appended results: any query would panic or error rather than pass.
+    let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+    notify_session_cancelled(&db, &config, &session).await;
+
+    assert!(
+        db.into_transaction_log().is_empty(),
+        "a past session must return before any statement runs"
+    );
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_session_scheduled_email_missing_template_id() {
+    // Config has an API key and frontend base URL but no session-scheduled
+    // template id — mirrors the welcome/action missing-template-id tests.
+    // Fails at config resolution, before any loader query runs.
+    let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+    let server = setup_test_server().await;
+    let config = Config::from_args([
+        "test",
+        "--resend-api-key=test_api_key_123",
+        &format!("--resend-base-url={}", server.url()),
+        "--frontend-base-url=https://app.example.com",
+    ]);
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let session = create_test_session();
+    let org = create_test_organization();
+
+    let result = send_session_scheduled_email(
+        &db,
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &org,
+    )
+    .await;
+
+    assert!(result.is_err());
+    if let Err(e) = result {
+        match e.error_kind {
+            DomainErrorKind::Internal(InternalErrorKind::Config) => {}
+            _ => panic!("Expected Config error, got: {:?}", e.error_kind),
+        }
+    }
+}
+
+// ── Action Assigned Email Tests ────────────────────────────────────
+
+#[tokio::test]
+async fn test_send_action_assigned_email_success() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let assigner = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let assignee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let session_id = Id::new_v4();
+    let org = create_test_organization();
+
+    let session_url = format!("https://app.example.com/coaching-sessions/{session_id}?tab=actions");
+    let due_by: DateTime<FixedOffset> = NaiveDate::from_ymd_opt(2026, 3, 7)
+        .unwrap()
+        .and_hms_opt(17, 0, 0)
+        .unwrap()
+        .and_utc()
+        .fixed_offset();
+
+    let _mock = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body(serde_json::json!({
+            "from": FROM_ADDRESS,
+            "to": ["\"Jane Doe\" <jane@example.com>"],
+            "template": {
+                "id": "action_template_789",
+                "variables": {
+                    "first_name": "Jane",
+                    "action_body": "Read chapters 3-5 of Radical Candor",
+                    "due_date": "Saturday, March 7, 2026",
+                    "assigner_first_name": "Alex",
+                    "assigner_last_name": "Smith",
+                    "organization_name": "Acme Corp",
+                    "goal": "Improve communication",
+                    "session_url": session_url,
+                }
+            }
+        })))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let ctx = ActionEmailContext {
+        action_body: "Read chapters 3-5 of Radical Candor",
+        due_by: Some(due_by),
+        session_id,
+        organization: &org,
+        goal: Some("Improve communication"),
+    };
+
+    let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_send_action_assigned_email_no_due_date() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let assigner = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let assignee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let session_id = Id::new_v4();
+    let org = create_test_organization();
+
+    let session_url = format!("https://app.example.com/coaching-sessions/{session_id}?tab=actions");
+
+    let _mock = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body(serde_json::json!({
+            "from": FROM_ADDRESS,
+            "to": ["\"Jane Doe\" <jane@example.com>"],
+            "template": {
+                "id": "action_template_789",
+                "variables": {
+                    "first_name": "Jane",
+                    "action_body": "Follow up with team",
+                    "due_date": "No due date set",
+                    "assigner_first_name": "Alex",
+                    "assigner_last_name": "Smith",
+                    "organization_name": "Acme Corp",
+                    "session_url": session_url,
+                }
+            }
+        })))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let ctx = ActionEmailContext {
+        action_body: "Follow up with team",
+        due_by: None,
+        session_id,
+        organization: &org,
+        goal: None,
+    };
+
+    let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_send_action_assigned_email_multiple_assignees() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let assigner = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let assignee1 = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let assignee2 = create_test_user_with("Bob", "Jones", "bob@example.com", "UTC");
+    let session_id = Id::new_v4();
+    let org = create_test_organization();
+
+    let session_url = format!("https://app.example.com/coaching-sessions/{session_id}?tab=actions");
+
+    // Each assignee must get their OWN email with their OWN first_name and
+    // recipient address. Body-match per recipient so a regression that sends
+    // both emails to the same person (or with swapped variables) fails here.
+    let _mock_jane = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body(serde_json::json!({
+            "from": FROM_ADDRESS,
+            "to": ["\"Jane Doe\" <jane@example.com>"],
+            "template": {
+                "id": "action_template_789",
+                "variables": {
+                    "first_name": "Jane",
+                    "action_body": "Complete the survey",
+                    "due_date": "No due date set",
+                    "assigner_first_name": "Alex",
+                    "assigner_last_name": "Smith",
+                    "organization_name": "Acme Corp",
+                    "session_url": session_url.clone(),
+                }
+            }
+        })))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let _mock_bob = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body(serde_json::json!({
+            "from": FROM_ADDRESS,
+            "to": ["\"Bob Jones\" <bob@example.com>"],
+            "template": {
+                "id": "action_template_789",
+                "variables": {
+                    "first_name": "Bob",
+                    "action_body": "Complete the survey",
+                    "due_date": "No due date set",
+                    "assigner_first_name": "Alex",
+                    "assigner_last_name": "Smith",
+                    "organization_name": "Acme Corp",
+                    "session_url": session_url.clone(),
+                }
+            }
+        })))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let ctx = ActionEmailContext {
+        action_body: "Complete the survey",
+        due_by: None,
+        session_id,
+        organization: &org,
+        goal: None,
+    };
+
+    let result =
+        send_action_assigned_email(&config, &[assignee1, assignee2], &assigner, &ctx).await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_send_action_assigned_email_missing_template_id() {
+    let server = setup_test_server().await;
+    let config = Config::from_args([
+        "test",
+        "--resend-api-key=test_api_key_123",
+        &format!("--resend-base-url={}", server.url()),
+        "--frontend-base-url=https://app.example.com",
+    ]);
+
+    let assigner = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let assignee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let session_id = Id::new_v4();
+    let org = create_test_organization();
+
+    let ctx = ActionEmailContext {
+        action_body: "Some action",
+        due_by: None,
+        session_id,
+        organization: &org,
+        goal: None,
+    };
+
+    let result = send_action_assigned_email(&config, &[assignee], &assigner, &ctx).await;
+
+    assert!(result.is_err());
+    if let Err(e) = result {
+        match e.error_kind {
+            DomainErrorKind::Internal(InternalErrorKind::Config) => {}
+            _ => panic!("Expected Config error, got: {:?}", e.error_kind),
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_send_action_assigned_email_empty_assignees_sends_nothing() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let assigner = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let session_id = Id::new_v4();
+    let org = create_test_organization();
+
+    // Expect exactly zero calls — no assignees means no emails
+    let _mock = server
+        .mock("POST", "/emails")
+        .expect(0)
+        .create_async()
+        .await;
+
+    let ctx = ActionEmailContext {
+        action_body: "Some action",
+        due_by: None,
+        session_id,
+        organization: &org,
+        goal: None,
+    };
+
+    let result = send_action_assigned_email(&config, &[], &assigner, &ctx).await;
+    assert!(result.is_ok());
+}
+
+// ── build_session_url Unit Tests ────────────────────────────────────
+
+/// Helper to construct a `ResolvedEmailConfig` with an optional
+/// `SessionUrlBuilder`, without needing a real Resend client.
+async fn create_test_email_config(
+    server_url: &str,
+    url_builder: Option<SessionUrlBuilder>,
+) -> ResolvedEmailConfig {
+    let config = create_config_with_mock(server_url);
+    ResolvedEmailConfig {
+        client: ResendClient::new(&config).await.unwrap(),
+        template_id: "test_template".to_string(),
+        session_url_builder: url_builder,
+    }
+}
+
+#[tokio::test]
+async fn test_build_session_url_success() {
+    let server = setup_test_server().await;
+    let email_config = create_test_email_config(
+        &server.url(),
+        Some(SessionUrlBuilder {
+            base_url: "https://app.example.com".to_string(),
+            path_template: "/coaching-sessions/{session_id}".to_string(),
+        }),
+    )
+    .await;
+
+    let session_id = Id::new_v4();
+    let result = email_config.build_session_url(&session_id);
+
+    assert!(result.is_ok());
+    assert_eq!(
+        result.unwrap(),
+        format!("https://app.example.com/coaching-sessions/{session_id}")
+    );
+}
+
+#[tokio::test]
+async fn test_build_session_url_custom_path_template() {
+    let server = setup_test_server().await;
+    let email_config = create_test_email_config(
+        &server.url(),
+        Some(SessionUrlBuilder {
+            base_url: "https://app.example.com".to_string(),
+            path_template: "/sessions/{session_id}?tab=actions".to_string(),
+        }),
+    )
+    .await;
+
+    let session_id = Id::new_v4();
+    let result = email_config.build_session_url(&session_id).unwrap();
+
+    assert_eq!(
+        result,
+        format!("https://app.example.com/sessions/{session_id}?tab=actions")
+    );
+}
+
+#[tokio::test]
+async fn test_build_session_url_no_url_builder() {
+    let server = setup_test_server().await;
+    let email_config = create_test_email_config(&server.url(), None).await;
+
+    let result = email_config.build_session_url(&Id::new_v4());
+
+    assert!(result.is_err());
+    if let Err(e) = result {
+        match e.error_kind {
+            DomainErrorKind::Internal(InternalErrorKind::Config) => {}
+            _ => panic!("Expected Config error, got: {:?}", e.error_kind),
+        }
+    }
+}
+
+// ── Recurring Sessions Scheduled Email Tests ───────────────────────
+
+#[cfg(feature = "mock")]
+fn create_test_session_on(date: NaiveDate) -> coaching_sessions::Model {
+    coaching_sessions::Model {
+        id: Id::new_v4(),
+        coaching_relationship_id: Id::new_v4(),
+        coaching_session_series_id: None,
+        ical_sequence: 0,
+        ical_recurrence_id: None,
+        collab_document_name: None,
+        date: date.and_hms_opt(15, 0, 0).unwrap(),
+        duration_minutes: crate::duration::Duration::default_minutes(),
+        title: None,
+        meeting_url: None,
+        provider: None,
+        created_at: chrono::Utc::now().fixed_offset(),
+        updated_at: chrono::Utc::now().fixed_offset(),
+        hydrated_at: None,
+        notice_given_at: chrono::Utc::now().into(),
+    }
+}
+
+fn create_test_series() -> coaching_session_series::Model {
+    coaching_session_series::Model {
+        id: Id::new_v4(),
+        coaching_relationship_id: Id::new_v4(),
+        rule: serde_json::json!({
+            "start_at": "2026-09-15T15:00:00",
+            "recurrence": { "frequency": "weekly", "interval": 1 },
+            "duration_minutes": 60,
+            "timezone": "America/New_York",
+        }),
+        ical_sequence: 0,
+        created_by_user_id: Id::new_v4(),
+        created_at: chrono::Utc::now().fixed_offset(),
+        updated_at: chrono::Utc::now().fixed_offset(),
+    }
+}
+
+#[test]
+fn test_build_series_invite_ics_structure() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let mut first = create_test_session();
+    first.date = NaiveDate::from_ymd_opt(2026, 9, 15)
+        .unwrap()
+        .and_hms_opt(19, 0, 0)
+        .unwrap();
+    first.duration_minutes = 60;
+    first.meeting_url = Some("https://meet.example/xyz".into());
+    let mut org = create_test_organization();
+    org.name = "Acme".to_string();
+    let series = create_test_series();
+    let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+
+    let ics = build_series_invite_ics(
+        &coach,
+        &coachee,
+        &first,
+        &series,
+        "Join this session: https://app/x".into(),
+        dtstamp,
+    )
+    .unwrap();
+
+    assert!(ics.contains(&format!("UID:{}@myrefactor.com", series.id)));
+    assert!(ics.contains("METHOD:REQUEST"));
+    assert!(ics.contains("STATUS:CONFIRMED"));
+    assert!(ics.contains("SEQUENCE:0"));
+    assert!(ics.contains("RRULE:FREQ=WEEKLY"));
+    assert!(ics.contains("BEGIN:VTIMEZONE"));
+    assert!(ics.contains("TZID:America/New_York"));
+    assert!(ics.contains("DTSTART;TZID=America/New_York:20260915T150000"));
+    assert!(ics.contains("Join this session: https://app/x"));
+}
+
+/// A series reschedule bumps `ical_sequence`; the invite must carry the bumped
+/// `SEQUENCE` under the same series-derived `UID` so calendar clients replace the
+/// existing recurring event instead of duplicating it.
+#[test]
+fn test_build_series_invite_ics_carries_bumped_sequence() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let mut first = create_test_session();
+    first.date = NaiveDate::from_ymd_opt(2026, 9, 15)
+        .unwrap()
+        .and_hms_opt(19, 0, 0)
+        .unwrap();
+    first.duration_minutes = 60;
+    let mut series = create_test_series();
+    series.ical_sequence = 3;
+    let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+
+    let ics = build_series_invite_ics(
+        &coach,
+        &coachee,
+        &first,
+        &series,
+        "Join this session: https://app/x".into(),
+        dtstamp,
+    )
+    .unwrap();
+
+    assert!(ics.contains("SEQUENCE:3"));
+    assert!(ics.contains(&format!("UID:{}@myrefactor.com", series.id)));
+    assert!(ics.contains("RRULE:FREQ=WEEKLY"));
+    assert!(ics.contains("METHOD:REQUEST"));
+    assert!(ics.contains("STATUS:CONFIRMED"));
+}
+
+// ── Series Snapshot Tests ──────────────────────────────────────────
+
+/// A weekly, six-occurrence series starting at `start_at` (a Tuesday, UTC).
+fn snapshot_series(start_at: NaiveDateTime, ical_sequence: i32) -> coaching_session_series::Model {
+    coaching_session_series::Model {
+        rule: serde_json::json!({
+            "start_at": start_at,
+            "recurrence": { "frequency": "weekly", "interval": 1, "count": 6 },
+            "duration_minutes": 60,
+            "timezone": "America/Chicago",
+        }),
+        ical_sequence,
+        ..create_test_series()
+    }
+}
+
+fn at(year: i32, month: u32, day: u32, hour: u32) -> NaiveDateTime {
+    let date = NaiveDate::from_ymd_opt(year, month, day).unwrap();
+    date.and_hms_opt(hour, 0, 0).unwrap()
+}
+
+/// Tuesday Sep 15 2026, 19:00 UTC: 14:00 in Chicago (CDT) for all six weeks.
+fn snapshot_start() -> NaiveDateTime {
+    at(2026, 9, 15, 19)
+}
+
+/// One unmoved member per slot.
+fn snapshot_members(series: &coaching_session_series::Model) -> Vec<coaching_sessions::Model> {
+    let rule: SeriesRule = serde_json::from_value(series.rule.clone()).unwrap();
+    (0..6)
+        .map(|week| rule.start_at + chrono::Duration::weeks(week))
+        .map(|slot| coaching_sessions::Model {
+            duration_minutes: 60,
+            meeting_url: Some("https://meet.example/series".into()),
+            ..create_test_series_session(series.id, slot)
+        })
+        .collect()
+}
+
+/// The members with each `(slot, sequence)` in `moved` a day later at that sequence, and
+/// the `deleted` slots gone.
+fn edit_members(
+    series: &coaching_session_series::Model,
+    deleted: &[usize],
+    moved: &[(usize, i32)],
+) -> Vec<coaching_sessions::Model> {
+    let mut members = snapshot_members(series);
+    for &(slot, sequence) in moved {
+        members[slot].date += chrono::Duration::days(1);
+        members[slot].ical_sequence = sequence;
+    }
+    deleted.iter().rev().for_each(|&slot| {
+        members.remove(slot);
+    });
+    members
+}
+
+/// The unfolded snapshot for a Chicago coach.
+fn snapshot(
+    series: &coaching_session_series::Model,
+    members: &[coaching_sessions::Model],
+) -> String {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/Chicago");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let dtstamp = at(2026, 9, 1, 12);
+    let ics = build_series_snapshot_ics(
+        &coach,
+        &coachee,
+        series,
+        members,
+        &[],
+        "desc".into(),
+        dtstamp,
+    )
+    .unwrap();
+    unfold(&ics)
+}
+
+/// The snapshot of the series from `start` at `sequence`, edited as [`edit_members`] does.
+fn edited_snapshot(
+    start: NaiveDateTime,
+    sequence: i32,
+    deleted: &[usize],
+    moved: &[(usize, i32)],
+) -> String {
+    let series = snapshot_series(start, sequence);
+    snapshot(&series, &edit_members(&series, deleted, moved))
+}
+
+/// Asserts the master (Chicago local `dtstart`, `sequence`), exactly `exdates`, then one
+/// override per `(recurrence_id, dtstart, sequence)`, in order.
+fn assert_snapshot(
+    ics: &str,
+    (dtstart, sequence): (&str, i32),
+    exdates: &[&str],
+    overrides: &[(&str, &str, i32)],
+) {
+    let tz = "TZID=America/Chicago";
+    let events: Vec<&str> = ics
+        .match_indices("BEGIN:VEVENT")
+        .map(|(start, _)| &ics[start..start + ics[start..].find("END:VEVENT").unwrap()])
+        .collect();
+    assert_eq!(events.len(), 1 + overrides.len(), "{ics}");
+    let master = events[0];
+    assert!(master.contains(&format!("DTSTART;{tz}:{dtstart}")), "{ics}");
+    assert!(
+        master.contains("RRULE:FREQ=WEEKLY;WKST=MO;COUNT=6"),
+        "{ics}"
+    );
+    assert!(master.contains(&format!("SEQUENCE:{sequence}")), "{ics}");
+    assert!(master.contains("LOCATION:https://meet.example/series"));
+    assert_eq!(ics.matches("EXDATE").count(), exdates.len(), "{ics}");
+    for exdate in exdates {
+        assert!(ics.contains(&format!("EXDATE;{tz}:{exdate}")), "{ics}");
+    }
+    for (event, (recurrence_id, dtstart, sequence)) in events[1..].iter().zip(overrides) {
+        assert!(event.contains(&format!("RECURRENCE-ID;{tz}:{recurrence_id}")));
+        assert!(
+            event.contains(&format!("DTSTART;{tz}:{dtstart}")),
+            "{event}"
+        );
+        assert!(event.contains(&format!("SEQUENCE:{sequence}")), "{event}");
+        assert!(!event.contains("RRULE"), "{event}");
+    }
+}
+
+const FIRST: &str = "20260915T140000";
+
+/// The series' third occurrence (Sep 29), moved alone a day later before the edit.
+fn overridden_before_edit(series: &coaching_session_series::Model) -> coaching_sessions::Model {
+    coaching_sessions::Model {
+        date: at(2026, 9, 30, 19),
+        ical_sequence: 3,
+        ..snapshot_members(series)[2].clone()
+    }
+}
+
+/// Greptile on #471: an in-place edit can hand an overridden occurrence's address to a
+/// session on the rule. Nothing would cancel or replace the old override, so calendars
+/// would keep it. The snapshot re-sends that occurrence, outranking the old override.
+#[test]
+fn a_reused_override_address_is_reissued_above_the_old_override() {
+    let current = snapshot_series(snapshot_start(), 2);
+    let previous = coaching_session_series::Model {
+        ical_sequence: 1,
+        ..current.clone()
+    };
+    let before = overridden_before_edit(&previous);
+
+    let (reissued, stale) =
+        retire_previous_overrides(&previous, std::slice::from_ref(&before), &current).unwrap();
+    assert!(
+        stale.is_empty(),
+        "a cancel would remove the re-sent occurrence"
+    );
+    assert_eq!(
+        reissued,
+        vec![ReissuedOverride {
+            slot: at(2026, 9, 29, 19),
+            sequence: 3,
+        }]
+    );
+
+    // After the edit every member sits on the rule, Sep 29 included.
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/Chicago");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let ics = unfold(
+        &build_series_snapshot_ics(
+            &coach,
+            &coachee,
+            &current,
+            &snapshot_members(&current),
+            &reissued,
+            "desc".into(),
+            at(2026, 9, 1, 12),
+        )
+        .unwrap(),
+    );
+    assert_snapshot(
+        &ics,
+        (FIRST, 2),
+        &[],
+        &[("20260929T140000", "20260929T140000", 4)],
+    );
+}
+
+#[test]
+fn an_override_the_new_invite_no_longer_addresses_is_stale() {
+    let current = snapshot_series(snapshot_start(), 2);
+    let previous = coaching_session_series::Model {
+        ical_sequence: 1,
+        ..current.clone()
+    };
+    let before = overridden_before_edit(&previous);
+    let retire = |previous: &coaching_session_series::Model, current| {
+        retire_previous_overrides(previous, std::slice::from_ref(&before), current).unwrap()
+    };
+
+    // In place, but the new rule runs an hour later, so Sep 29 19:00 is no slot of it.
+    let shifted = snapshot_series(snapshot_start() + chrono::Duration::hours(1), 2);
+    assert_eq!(retire(&previous, &shifted), (vec![], vec![before.clone()]));
+
+    // A split publishes under a new UID, so every old override is stale.
+    let split_off = coaching_session_series::Model {
+        id: Id::new_v4(),
+        ..current.clone()
+    };
+    assert_eq!(
+        retire(&previous, &split_off),
+        (vec![], vec![before.clone()])
+    );
+}
+
+#[test]
+fn snapshot_untouched_series_is_master_only() {
+    let ics = edited_snapshot(snapshot_start(), 1, &[], &[]);
+    assert_snapshot(&ics, (FIRST, 1), &[], &[]);
+}
+
+#[test]
+fn snapshot_deleted_slot_becomes_exdate() {
+    let ics = edited_snapshot(snapshot_start(), 1, &[3], &[]);
+    assert_snapshot(&ics, (FIRST, 1), &["20261006T140000"], &[]);
+}
+
+#[test]
+fn snapshot_moved_slot_becomes_override() {
+    let ics = edited_snapshot(snapshot_start(), 1, &[], &[(2, 4)]);
+    let moved = ("20260929T140000", "20260930T140000", 4);
+    assert_snapshot(&ics, (FIRST, 1), &[], &[moved]);
+}
+
+#[test]
+fn snapshot_deleted_and_moved_together() {
+    let ics = edited_snapshot(snapshot_start(), 1, &[3], &[(2, 1)]);
+    let moved = ("20260929T140000", "20260930T140000", 1);
+    assert_snapshot(&ics, (FIRST, 1), &["20261006T140000"], &[moved]);
+}
+
+/// Nothing is filtered by `now`: a moved past occurrence still needs its override.
+#[test]
+fn snapshot_past_moved_member_kept() {
+    // Tuesday Jan 7 2025, 19:00 UTC: 13:00 in Chicago (CST).
+    let ics = edited_snapshot(at(2025, 1, 7, 19), 1, &[], &[(0, 1)]);
+    let moved = ("20250107T130000", "20250108T130000", 1);
+    assert_snapshot(&ics, ("20250107T130000", 1), &[], &[moved]);
+}
+
+#[test]
+fn snapshot_master_dtstart_is_rule_start_even_if_first_moved() {
+    let ics = edited_snapshot(snapshot_start(), 1, &[], &[(0, 1)]);
+    assert_snapshot(&ics, (FIRST, 1), &[], &[(FIRST, "20260916T140000", 1)]);
+}
+
+/// Google drops an override whose SEQUENCE trails its master; a higher one is kept.
+#[test]
+fn snapshot_override_sequence_is_at_least_the_master() {
+    let trailing = edited_snapshot(snapshot_start(), 3, &[], &[(3, 1)]);
+    let leading = edited_snapshot(snapshot_start(), 3, &[], &[(3, 5)]);
+    let moved = |sequence| ("20261006T140000", "20261007T140000", sequence);
+    assert_snapshot(&trailing, (FIRST, 3), &[], &[moved(3)]);
+    assert_snapshot(&leading, (FIRST, 3), &[], &[moved(5)]);
+}
+
+/// The snapshot with slot `index` unmoved but carrying `meeting_url`.
+fn snapshot_with_url(index: usize, meeting_url: Option<&str>) -> String {
+    let series = snapshot_series(snapshot_start(), 1);
+    let mut members = snapshot_members(&series);
+    members[index].meeting_url = meeting_url.map(Into::into);
+    snapshot(&series, &members)
+}
+
+#[test]
+fn snapshot_unmoved_member_with_own_url_becomes_override() {
+    let ics = snapshot_with_url(2, Some("https://meet.example/own"));
+    let unmoved = ("20260929T140000", "20260929T140000", 1);
+    assert_snapshot(&ics, (FIRST, 1), &[], &[unmoved]);
+    let override_event = &ics[ics.rfind("BEGIN:VEVENT").unwrap()..];
+    assert!(
+        override_event.contains("LOCATION:https://meet.example/own"),
+        "{ics}"
+    );
+}
+
+#[test]
+fn snapshot_unmoved_member_without_url_inherits_master() {
+    let ics = snapshot_with_url(2, None);
+    assert_snapshot(&ics, (FIRST, 1), &[], &[]);
+}
+
+#[test]
+fn snapshot_ignores_non_slot_and_null_members() {
+    let series = snapshot_series(snapshot_start(), 1);
+    let members = snapshot_members(&series);
+    let stray = |recurrence_id| coaching_sessions::Model {
+        coaching_session_series_id: Some(series.id),
+        ical_recurrence_id: recurrence_id,
+        date: snapshot_start() - chrono::Duration::weeks(2),
+        duration_minutes: 30,
+        meeting_url: Some("https://meet.example/stray".into()),
+        ical_sequence: 9,
+        ..create_test_session()
+    };
+    let off_slot = snapshot_start() + chrono::Duration::hours(1);
+    let with_strays = [members.clone(), vec![stray(None), stray(Some(off_slot))]].concat();
+
+    assert_eq!(snapshot(&series, &with_strays), snapshot(&series, &members));
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_recurring_sessions_scheduled_email_personalization() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    // Series description loads only the first session's in-progress goals.
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        .into_connection();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    let series = create_test_series();
+
+    let sessions = vec![
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap()),
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 11).unwrap()),
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 18).unwrap()),
+    ];
+
+    let first_session_url = format!(
+        "https://app.example.com/coaching-sessions/{}",
+        sessions[0].id
+    );
+
+    // Email to coachee — other_user is the coach. Body-match per recipient
+    // proves the role swap; the `.ics` attachment must be present.
+    let mock_coachee = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "from": FROM_ADDRESS,
+                "to": ["\"Jane Doe\" <jane@example.com>"],
+                "template": {
+                    "id": "recurring_template_xyz",
+                    "variables": {
+                        "first_name": "Jane",
+                        "other_user_first_name": "Alex",
+                        "other_user_last_name": "Smith",
+                        "other_user_role": "coach",
+                        "organization_name": "Acme Corp",
+                        "session_count": 3,
+                        "first_session_date": "Wednesday, March 4, 2026",
+                        "first_session_time": "3:00 PM",
+                        "last_session_date": "Wednesday, March 18, 2026",
+                        "session_duration": "1 hour",
+                        "session_url": first_session_url,
+                    }
+                }
+            }),
+            &ical::Method::Request,
+        ))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    // Email to coach — require the `.ics` attachment too.
+    let mock_coach = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "template": { "id": "recurring_template_xyz" }
+            }),
+            &ical::Method::Request,
+        ))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let result = send_recurring_sessions_scheduled_email(
+        &db,
+        &config,
+        &series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &sessions,
+        &org,
+    )
+    .await;
+    assert!(result.is_ok());
+
+    // Sends are best-effort (errors are swallowed), so assert the mocks
+    // matched to prove the attachment-bearing bodies actually went out.
+    mock_coachee.assert_async().await;
+    mock_coach.assert_async().await;
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_recurring_sessions_rescheduled_email() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    // Series description loads only the first session's in-progress goals.
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        .into_connection();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    // Already-bumped series: a reschedule invite carries SEQUENCE:3.
+    let mut series = create_test_series();
+    series.ical_sequence = 3;
+
+    let sessions = vec![
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap()),
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 11).unwrap()),
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 18).unwrap()),
+    ];
+
+    // Both recipients target the reschedule template and carry the
+    // `session_or_series=series` discriminant plus the `.ics` attachment.
+    let mock_coachee = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "to": ["\"Jane Doe\" <jane@example.com>"],
+                "template": {
+                    "id": "series_reschedule_template_abc",
+                    "variables": {
+                        "first_name": "Jane",
+                        "other_user_role": "coach",
+                        "session_or_series": "series",
+                    }
+                }
+            }),
+            &ical::Method::Request,
+        ))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let mock_coach = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "to": ["\"Alex Smith\" <alex@example.com>"],
+                "template": {
+                    "id": "series_reschedule_template_abc",
+                    "variables": {
+                        "first_name": "Alex",
+                        "other_user_role": "coachee",
+                        "session_or_series": "series",
+                    }
+                }
+            }),
+            &ical::Method::Request,
+        ))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let result = send_recurring_sessions_rescheduled_email(
+        &db,
+        &config,
+        &series,
+        &create_test_series(),
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &SeriesSessions {
+            current: &sessions,
+            replaced: &[],
+        },
+        &org,
+    )
+    .await;
+    assert!(result.is_ok());
+
+    // The send swallows errors, so the mock assertions are what give this
+    // test teeth: they prove the reschedule template + attachment went out.
+    mock_coachee.assert_async().await;
+    mock_coach.assert_async().await;
+}
+
+/// T4: the series reschedule shows the OLD rule's `start_at` as the previous time and
+/// the new first occurrence as the new time.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_recurring_sessions_rescheduled_email_previous_when_comes_from_old_rule() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    // Series description loads only the first session's in-progress goals.
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        .into_connection();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+
+    // Old rule starts 2026-09-15 15:00; the replacement rule starts three weeks later.
+    let previous_series = create_test_series();
+    let mut series = create_test_series();
+    series.ical_sequence = 1;
+    series.rule = serde_json::json!({
+        "start_at": "2026-10-06T15:00:00",
+        "recurrence": { "frequency": "weekly", "interval": 1 },
+        "duration_minutes": 60,
+    });
+    let sessions = vec![
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 10, 6).unwrap()),
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 10, 13).unwrap()),
+    ];
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "template": {
+                    "id": "series_reschedule_template_abc",
+                    "variables": {
+                        "session_when": "Tuesday, October 6, 2026 at 3:00 PM",
+                        "previous_session_when": "Tuesday, September 15, 2026 at 3:00 PM",
+                    }
+                }
+            }),
+            &ical::Method::Request,
+        ))
+        // The full contract for a series reschedule, including both Phase 11 recurrence
+        // variables. This is the widest payload we send, so a rename hides most easily here.
+        .match_request(expect_exact_template_variables(&[
+            "first_name",
+            "first_session_date",
+            "first_session_time",
+            "last_session_date",
+            "organization_name",
+            "other_user_first_name",
+            "other_user_last_name",
+            "other_user_role",
+            "previous_recurrence_summary",
+            "previous_session_when",
+            "recurrence_summary",
+            "session_count",
+            "session_duration",
+            "session_or_series",
+            "session_url",
+            "session_when",
+        ]))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_recurring_sessions_rescheduled_email(
+        &db,
+        &config,
+        &series,
+        &previous_series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &SeriesSessions {
+            current: &sessions,
+            replaced: &[],
+        },
+        &org,
+    )
+    .await;
+    assert!(result.is_ok());
+
+    mock.assert_async().await;
+}
+
+/// A series with a biweekly rule, starting on the given date.
+#[cfg(feature = "mock")]
+fn create_test_series_with_rule(rule: serde_json::Value) -> coaching_session_series::Model {
+    coaching_session_series::Model {
+        rule,
+        ..create_test_series()
+    }
+}
+
+/// The create path states the cadence and, having no previous rule, must not
+/// declare `previous_recurrence_summary`.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_recurring_sessions_scheduled_email_carries_recurrence_summary() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        .into_connection();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    let series = create_test_series_with_rule(serde_json::json!({
+        "start_at": "2026-03-04T15:00:00",
+        "recurrence": { "frequency": "weekly", "interval": 2 },
+        "duration_minutes": 60,
+    }));
+    let sessions = vec![
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap()),
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 18).unwrap()),
+    ];
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "template": {
+                    "id": "recurring_template_xyz",
+                    "variables": { "recurrence_summary": "Every 2 weeks" }
+                }
+            }),
+            &ical::Method::Request,
+        ))
+        .match_request(reject_template_variables(&["previous_recurrence_summary"]))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_recurring_sessions_scheduled_email(
+        &db,
+        &config,
+        &series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &sessions,
+        &org,
+    )
+    .await;
+    assert!(result.is_ok());
+
+    mock.assert_async().await;
+}
+
+/// A frequency-only reschedule: the previous cadence comes from the OLD rule, so the
+/// change is visible even though the start never moved.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_recurring_sessions_rescheduled_email_previous_recurrence_from_old_rule() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        .into_connection();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+
+    // Same start, weekly becomes biweekly.
+    let previous_series = create_test_series_with_rule(serde_json::json!({
+        "start_at": "2026-03-04T15:00:00",
+        "recurrence": { "frequency": "weekly", "interval": 1 },
+        "duration_minutes": 60,
+    }));
+    let mut series = create_test_series_with_rule(serde_json::json!({
+        "start_at": "2026-03-04T15:00:00",
+        "recurrence": { "frequency": "biweekly", "interval": 1 },
+        "duration_minutes": 60,
+    }));
+    series.ical_sequence = 1;
+    let sessions = vec![
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap()),
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 18).unwrap()),
+    ];
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "template": {
+                    "id": "series_reschedule_template_abc",
+                    "variables": {
+                        "recurrence_summary": "Every 2 weeks",
+                        "previous_recurrence_summary": "Weekly",
+                        "previous_session_when": "Unchanged",
+                    }
+                }
+            }),
+            &ical::Method::Request,
+        ))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_recurring_sessions_rescheduled_email(
+        &db,
+        &config,
+        &series,
+        &previous_series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &SeriesSessions {
+            current: &sessions,
+            replaced: &[],
+        },
+        &org,
+    )
+    .await;
+    assert!(result.is_ok());
+
+    mock.assert_async().await;
+}
+
+/// A start-only move keeps the cadence, so the previous cadence reads `Unchanged`
+/// while the previous start still shows a real date. The two checks are independent.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_recurring_sessions_rescheduled_email_unchanged_recurrence() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        .into_connection();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+
+    // Weekly both before and after; only the start moves.
+    let previous_series = create_test_series();
+    let mut series = create_test_series_with_rule(serde_json::json!({
+        "start_at": "2026-10-06T15:00:00",
+        "recurrence": { "frequency": "weekly", "interval": 1 },
+        "duration_minutes": 60,
+    }));
+    series.ical_sequence = 1;
+    let sessions = vec![
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 10, 6).unwrap()),
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 10, 13).unwrap()),
+    ];
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "template": {
+                    "id": "series_reschedule_template_abc",
+                    "variables": {
+                        "recurrence_summary": "Weekly",
+                        "previous_recurrence_summary": "Unchanged",
+                        "previous_session_when": "Tuesday, September 15, 2026 at 3:00 PM",
+                    }
+                }
+            }),
+            &ical::Method::Request,
+        ))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_recurring_sessions_rescheduled_email(
+        &db,
+        &config,
+        &series,
+        &previous_series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &SeriesSessions {
+            current: &sessions,
+            replaced: &[],
+        },
+        &org,
+    )
+    .await;
+    assert!(result.is_ok());
+
+    mock.assert_async().await;
+}
+
+/// A reschedule can legitimately leave zero future sessions. The early return must
+/// happen before any lookup, so the connection sees no statements at all.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_notify_recurring_sessions_rescheduled_with_no_sessions_does_nothing() {
+    let server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let series = create_test_series();
+
+    // Zero appended results: any query would panic or error rather than pass.
+    let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+    notify_recurring_sessions_rescheduled(
+        &db,
+        &config,
+        &series,
+        PreviousSeries(&series),
+        &[],
+        ReplacedSessions(&[]),
+        &[],
+    )
+    .await;
+
+    assert!(
+        db.into_transaction_log().is_empty(),
+        "an empty sessions slice must return before any statement runs"
+    );
+}
+
+// ── Series Cancelled Email Tests ───────────────────────────────────
+
+/// A series cancellation keeps the `UID`, `DTSTART`, and `RRULE` of the invite it
+/// supersedes so clients can match it, and carries the next `SEQUENCE`.
+#[test]
+fn test_build_series_cancel_ics_structure() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let mut first = create_test_session();
+    first.date = NaiveDate::from_ymd_opt(2026, 9, 15)
+        .unwrap()
+        .and_hms_opt(19, 0, 0)
+        .unwrap();
+    first.duration_minutes = 60;
+    let mut series = create_test_series();
+    // The caller bumps in the delete transaction; the builder carries what it is given.
+    series.ical_sequence = 5;
+    let dtstamp = NaiveDate::from_ymd_opt(2026, 9, 1)
+        .unwrap()
+        .and_hms_opt(12, 0, 0)
+        .unwrap();
+
+    let ics = build_series_cancel_ics(
+        &coach,
+        &coachee,
+        &first,
+        &series,
+        SERIES_CANCELLED_DESCRIPTION.to_string(),
+        dtstamp,
+    )
+    .unwrap();
+
+    assert!(ics.contains("METHOD:CANCEL"));
+    assert!(ics.contains("STATUS:CANCELLED"));
+    assert!(ics.contains("SEQUENCE:5"));
+    assert!(ics.contains(&format!("UID:{}@myrefactor.com", series.id)));
+    assert!(ics.contains("RRULE:FREQ=WEEKLY"));
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_recurring_sessions_cancelled_email() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    // No session link: the rows are gone by the time a recipient could click one.
+    assert!(
+        RecurringSessionsCancelled::url_path_template(&config).is_none(),
+        "a cancellation must not carry a session URL template"
+    );
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    let series = create_test_series();
+
+    let sessions = vec![
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap()),
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 11).unwrap()),
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 18).unwrap()),
+    ];
+
+    let mock_coachee = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "from": FROM_ADDRESS,
+                "to": ["\"Jane Doe\" <jane@example.com>"],
+                "template": {
+                    "id": "series_cancel_template_abc",
+                    "variables": {
+                        "first_name": "Jane",
+                        "other_user_first_name": "Alex",
+                        "other_user_last_name": "Smith",
+                        "other_user_role": "coach",
+                        "organization_name": "Acme Corp",
+                        "session_count": 3,
+                        "first_session_date": "Wednesday, March 4, 2026",
+                        "last_session_date": "Wednesday, March 18, 2026",
+                    }
+                }
+            }),
+            &ical::Method::Cancel,
+        ))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let mock_coach = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "from": FROM_ADDRESS,
+                "to": ["\"Alex Smith\" <alex@example.com>"],
+                "template": {
+                    "id": "series_cancel_template_abc",
+                    "variables": {
+                        "first_name": "Alex",
+                        "other_user_first_name": "Jane",
+                        "other_user_last_name": "Doe",
+                        "other_user_role": "coachee",
+                        "organization_name": "Acme Corp",
+                        "session_count": 3,
+                        "first_session_date": "Wednesday, March 4, 2026",
+                        "last_session_date": "Wednesday, March 18, 2026",
+                    }
+                }
+            }),
+            &ical::Method::Cancel,
+        ))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let result = send_recurring_sessions_cancelled_email(
+        &config,
+        &series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &sessions,
+        &org,
+    )
+    .await;
+    assert!(result.is_ok());
+
+    // The send swallows errors, so the mock assertions are what give this test teeth.
+    mock_coachee.assert_async().await;
+    mock_coach.assert_async().await;
+}
+
+/// A series reschedule deletes its future sessions and materializes new ones. Rows that
+/// had been invited standalone leave events behind that the new series invite cannot
+/// reach, so their cancellations ride on the same email.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_rescheduling_a_series_clears_the_standalone_events_it_replaced() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = AttachmentsCapture::default();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    let series = create_test_series();
+
+    let mut replaced = create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap());
+    replaced.coaching_session_series_id = Some(series.id);
+    replaced.ical_recurrence_id = None;
+    replaced.ical_sequence = 1;
+
+    let current = vec![create_test_series_session(
+        series.id,
+        NaiveDate::from_ymd_opt(2026, 3, 6)
+            .unwrap()
+            .and_hms_opt(15, 0, 0)
+            .unwrap(),
+    )];
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_recurring_sessions_rescheduled_email(
+        &mock_description_loaders(),
+        &config,
+        &series,
+        &series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &SeriesSessions {
+            current: &current,
+            replaced: std::slice::from_ref(&replaced),
+        },
+        &org,
+    )
+    .await;
+    assert!(result.is_ok());
+    mock.assert_async().await;
+
+    let attachments = capture.captured();
+    assert_eq!(
+        attachments.len(),
+        2,
+        "the new series invite plus one orphan cancellation"
+    );
+    assert!(attachments[0].1.contains("METHOD:REQUEST"));
+    assert!(attachments[1].1.contains("METHOD:CANCEL"));
+    assert!(
+        attachments[1]
+            .1
+            .contains(&format!("UID:{}@myrefactor.com", replaced.id)),
+        "the replaced row's own event is cleared: {}",
+        attachments[1].1
+    );
+}
+
+/// A "this and following" split publishes the new series and shortens the old one, so
+/// the email carries both invites. Without the second, calendars keep the old series'
+/// occurrences on top of the new ones. A moved session last invited on its own also gets
+/// its own event cancelled.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_a_split_reschedule_carries_the_new_and_the_shortened_series() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = AttachmentsCapture::default();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    let at = |day, hour| {
+        NaiveDate::from_ymd_opt(2026, 9, day)
+            .unwrap()
+            .and_hms_opt(hour, 0, 0)
+            .unwrap()
+    };
+    let series_with = |rule: SeriesRule, ical_sequence| coaching_session_series::Model {
+        rule: serde_json::to_value(rule).unwrap(),
+        ical_sequence,
+        ..create_test_series()
+    };
+    let weekly = |count, until| Recurrence {
+        frequency: Frequency::Weekly,
+        interval: 1,
+        by_weekdays: None,
+        count,
+        until,
+    };
+    let shortened = series_with(
+        SeriesRule {
+            start_at: at(1, 15),
+            recurrence: weekly(None, Some(at(15, 15) - chrono::Duration::seconds(1))),
+            duration_minutes: 60,
+            timezone: "UTC".into(),
+        },
+        4,
+    );
+    let split_off = series_with(
+        SeriesRule {
+            start_at: at(15, 17),
+            recurrence: weekly(Some(2), None),
+            duration_minutes: 60,
+            timezone: "UTC".into(),
+        },
+        0,
+    );
+    let earlier: Vec<_> = [at(1, 15), at(8, 15)]
+        .into_iter()
+        .map(|slot| create_test_series_session(shortened.id, slot))
+        .collect();
+    let moved: Vec<_> = [at(15, 17), at(22, 17)]
+        .into_iter()
+        .map(|slot| create_test_series_session(split_off.id, slot))
+        .collect();
+
+    // The first moved session as it was before the move: a legacy member invited on its own.
+    let legacy_before_move = coaching_sessions::Model {
+        coaching_session_series_id: Some(shortened.id),
+        ical_recurrence_id: None,
+        ical_sequence: 2,
+        ..moved[0].clone()
+    };
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let delivered = send_series_invite_email::<RecurringSessionsRescheduled>(
+        &mock_description_loaders(),
+        &config,
+        &split_off,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &SeriesSessions {
+            current: &moved,
+            replaced: std::slice::from_ref(&legacy_before_move),
+        },
+        &org,
+        SeriesInviteKind {
+            reschedule: Some(&RescheduleVars {
+                session_or_series: "series",
+                previous_start: at(15, 15),
+                previous_recurrence_summary: Some("Weekly".into()),
+            }),
+            shape: SeriesInviteShape::Snapshot {
+                rows: &moved,
+                split_from: Some(SeriesRows {
+                    series: &shortened,
+                    rows: &earlier,
+                }),
+                previous_overrides: None,
+            },
+        },
+    )
+    .await
+    .expect("the send runs");
+    assert_eq!(
+        (delivered.coach, delivered.coachee),
+        (Delivery::Sent, Delivery::Sent)
+    );
+    mock.assert_async().await;
+
+    let attachments = capture.captured();
+    let cancel = &attachments.last().expect("attachments").1;
+    assert!(cancel.contains("METHOD:CANCEL"), "{cancel}");
+    assert!(
+        cancel.contains(&format!("UID:{}@myrefactor.com", moved[0].id)),
+        "the moved legacy member's own event is cancelled: {cancel}"
+    );
+    assert_eq!(
+        attachments.len(),
+        3,
+        "the new series, the shortened one, then the moved legacy member's cancellation"
+    );
+    let (new_invite, old_invite) = (&attachments[0].1, &attachments[1].1);
+    assert!(new_invite.contains("METHOD:REQUEST") && old_invite.contains("METHOD:REQUEST"));
+    assert!(new_invite.contains(&format!("UID:{}@myrefactor.com", split_off.id)));
+    assert!(new_invite.contains("COUNT=2"), "{new_invite}");
+    assert!(old_invite.contains(&format!("UID:{}@myrefactor.com", shortened.id)));
+    assert!(old_invite.contains("SEQUENCE:4"), "{old_invite}");
+    assert!(old_invite.contains("UNTIL="), "{old_invite}");
+    assert!(!old_invite.contains("COUNT="), "{old_invite}");
+}
+
+/// The two invites a series sends.
+#[cfg(feature = "mock")]
+enum SeriesSend {
+    Resend,
+    Scheduled,
+}
+
+/// Sends a series with slot 4 deleted and slot 3 moved, the coachee's send answered with
+/// `coachee_status`. Returns the resend's outcome, if any, and the last send's attachments.
+#[cfg(feature = "mock")]
+async fn send_edited_series(
+    send: SeriesSend,
+    coachee_status: usize,
+) -> (Option<Delivered>, Vec<(String, String)>) {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = AttachmentsCapture::default();
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/Chicago");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let (series, org) = (
+        snapshot_series(snapshot_start(), 1),
+        create_test_organization(),
+    );
+    let rows = edit_members(&series, &[3], &[(2, 1)]);
+    // Loader for the series `.ics` description: the first session's in-progress goals.
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        .into_connection();
+
+    let mut mocks = Vec::new();
+    for (email, status) in [("jane@", coachee_status), ("alex@", 200)] {
+        let to = mockito::Matcher::Regex(format!(r#""to":\[[^\]]*{email}"#));
+        let mock = server.mock("POST", "/emails").match_body(to);
+        let mock = mock.match_request(capture.recorder()).with_status(status);
+        let mock = mock.with_body(r#"{"id":"e"}"#).expect(1);
+        mocks.push(mock.create_async().await);
+    }
+
+    let delivered = match send {
+        SeriesSend::Resend => {
+            let participants = Participants {
+                coach: &coach,
+                coachee: &coachee,
+            };
+            let delivered = send_series_invite_resend(
+                &db,
+                &config,
+                &series,
+                &Audience {
+                    participants: &participants,
+                    member_ids: &[coach.id, coachee.id],
+                },
+                &rows,
+                &rows,
+                &org,
+            )
+            .await;
+            Some(delivered.unwrap())
+        }
+        SeriesSend::Scheduled => {
+            send_recurring_sessions_scheduled_email(
+                &db,
+                &config,
+                &series,
+                &Audience {
+                    participants: &Participants {
+                        coach: &coach,
+                        coachee: &coachee,
+                    },
+                    member_ids: &[coach.id, coachee.id],
+                },
+                &rows,
+                &org,
+            )
+            .await
+            .unwrap();
+            None
+        }
+    };
+    for mock in mocks {
+        mock.assert_async().await;
+    }
+    (delivered, capture.captured())
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn series_resend_attaches_snapshot() {
+    let (delivered, attachments) = send_edited_series(SeriesSend::Resend, 200).await;
+
+    let delivered = delivered.unwrap();
+    assert_eq!(
+        (delivered.coachee, delivered.coach),
+        (Delivery::Sent, Delivery::Sent)
+    );
+    assert_eq!(attachments.len(), 1);
+    let ics = &attachments[0].1;
+    assert!(ics.contains("METHOD:REQUEST"));
+    assert_eq!(ics.matches("EXDATE").count(), 1);
+    assert_eq!(ics.matches("BEGIN:VEVENT").count(), 2);
+    assert!(ics.contains("RECURRENCE-ID"));
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn series_resend_reports_coachee_failure() {
+    let (delivered, _) = send_edited_series(SeriesSend::Resend, 400).await;
+
+    let delivered = delivered.unwrap();
+    assert_eq!(
+        (delivered.coachee, delivered.coach),
+        (Delivery::Failed, Delivery::Sent)
+    );
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn series_scheduled_still_master_only() {
+    let (_, attachments) = send_edited_series(SeriesSend::Scheduled, 200).await;
+
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0].1.matches("EXDATE").count(), 0);
+    assert_eq!(attachments[0].1.matches("BEGIN:VEVENT").count(), 1);
+}
+
+/// A reschedule can legitimately leave no future occurrences. There is then no series
+/// invite to attach anything to, but the rows it replaced are still deleted, and any
+/// standalone event they left is addressed by nothing else. Returning early here strands
+/// exactly the events this cleanup exists to clear, so each is cancelled on its own.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_a_reschedule_to_no_future_sessions_still_cancels_the_standalone_events() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = AttachmentsCapture::default();
+
+    let series = create_test_series();
+    let mut orphan = create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap());
+    orphan.coaching_session_series_id = Some(series.id);
+    orphan.ical_recurrence_id = None;
+    orphan.ical_sequence = 3;
+    orphan.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    // The whole lookup chain is mockable here: `notify_session_cancelled` reads the
+    // relationship, both users, and the organization by id, so unlike the sends that go
+    // through `user::find_by_id` this one reaches the email.
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    let mut relationship = test_relationship();
+    relationship.coach_id = coach.id;
+    relationship.coachee_id = coachee.id;
+    relationship.organization_id = org.id;
+
+    let db = sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Postgres)
+        .append_query_results(vec![vec![relationship.clone()]])
+        .append_query_results(vec![vec![coach]])
+        .append_query_results(vec![vec![coachee]])
+        .append_query_results(vec![vec![org]])
+        .into_connection();
+
+    notify_recurring_sessions_rescheduled(
+        &db,
+        &config,
+        &series,
+        PreviousSeries(&series),
+        &[],
+        ReplacedSessions(std::slice::from_ref(&orphan)),
+        &[],
+    )
+    .await;
+
+    mock.assert_async().await;
+
+    let attachments = capture.captured();
+    assert_eq!(attachments.len(), 1, "one cancellation, for the one orphan");
+    let cancel = &attachments[0].1;
+    assert!(cancel.contains("METHOD:CANCEL"), "{cancel}");
+    assert!(
+        cancel.contains(&format!("UID:{}@myrefactor.com", orphan.id)),
+        "the orphan is named directly: {cancel}"
+    );
+    assert!(
+        cancel.contains("SEQUENCE:4"),
+        "must outrank the invite that placed the event, which used 3: {cancel}"
+    );
+}
+
+/// The mirror of the case above: with nothing left on a calendar, an empty reschedule has
+/// no reason to touch the database at all.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_a_reschedule_to_no_future_sessions_stays_quiet_when_nothing_was_invited() {
+    let config = create_full_config_with_mock("http://localhost:1");
+    let series = create_test_series();
+    let mut never_invited = create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap());
+    never_invited.coaching_session_series_id = Some(series.id);
+    never_invited.ical_recurrence_id = None;
+    never_invited.ical_sequence = 0;
+    never_invited.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
+
+    let db = sea_orm::MockDatabase::new(sea_orm::DatabaseBackend::Postgres).into_connection();
+    notify_recurring_sessions_rescheduled(
+        &db,
+        &config,
+        &series,
+        PreviousSeries(&series),
+        &[],
+        ReplacedSessions(std::slice::from_ref(&never_invited)),
+        &[],
+    )
+    .await;
+
+    assert!(
+        db.into_transaction_log().is_empty(),
+        "no invite ever went out for these rows, so there is nothing to cancel"
+    );
+}
+
+/// The three conditions that together mean "we put a standalone event on a calendar for
+/// this row." Each is load-bearing: a standalone session was never a series member, a
+/// native member is addressed through its series, and a legacy member nobody has been
+/// invited to yet has no event to clear.
+#[test]
+fn only_a_previously_invited_legacy_series_member_is_an_orphaned_standalone() {
+    let legacy_invited = {
+        let mut session = create_test_session();
+        session.coaching_session_series_id = Some(Id::new_v4());
+        session.ical_recurrence_id = None;
+        session.ical_sequence = 1;
+        session
+    };
+    assert!(is_orphaned_standalone(&legacy_invited));
+
+    let never_invited = coaching_sessions::Model {
+        ical_sequence: 0,
+        ..legacy_invited.clone()
+    };
+    assert!(
+        !is_orphaned_standalone(&never_invited),
+        "no invite ever went out, so no event exists to cancel"
+    );
+
+    let native_member = coaching_sessions::Model {
+        ical_recurrence_id: Some(legacy_invited.date),
+        ..legacy_invited.clone()
+    };
+    assert!(
+        !is_orphaned_standalone(&native_member),
+        "a native member is addressed through its series, not by its own UID"
+    );
+
+    let standalone = coaching_sessions::Model {
+        coaching_session_series_id: None,
+        ..legacy_invited.clone()
+    };
+    assert!(
+        !is_orphaned_standalone(&standalone),
+        "a standalone session is not orphaned by a series-level operation"
+    );
+}
+
+/// The cancellation has to outrank the invite that placed the event, and the row it is
+/// derived from is about to be deleted, so the bump happens in memory.
+#[test]
+fn an_orphan_cancel_outranks_the_invite_that_placed_the_event() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+
+    let mut session = create_test_session();
+    session.coaching_session_series_id = Some(Id::new_v4());
+    session.ical_recurrence_id = None;
+    session.ical_sequence = 3;
+
+    let cancels = build_orphan_cancels(
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
+        std::slice::from_ref(&session),
+        session.date,
+    );
+
+    assert_eq!(cancels.len(), 1);
+    assert!(cancels[0].contains("SEQUENCE:4"), "{}", cancels[0]);
+    assert!(cancels[0].contains("METHOD:CANCEL"));
+    assert!(cancels[0].contains(&format!("UID:{}@myrefactor.com", session.id)));
+}
+
+/// A stale override is cancelled under the series it was published in, at the occurrence
+/// it overrode, outranking the override's `SEQUENCE` (the larger of session and series).
+#[test]
+fn a_stale_override_cancel_addresses_the_occurrence_it_overrode() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let series = coaching_session_series::Model {
+        ical_sequence: 5,
+        ..create_test_series()
+    };
+    let slot = NaiveDate::from_ymd_opt(2026, 9, 22)
+        .unwrap()
+        .and_hms_opt(19, 0, 0)
+        .unwrap();
+    let moved_alone = coaching_sessions::Model {
+        date: slot + chrono::TimeDelta::days(1),
+        ical_sequence: 2,
+        ..create_test_series_session(series.id, slot)
+    };
+
+    let cancels = build_stale_override_cancels(
+        &Participants {
+            coach: &coach,
+            coachee: &coachee,
+        },
+        &SeriesRows {
+            series: &series,
+            rows: std::slice::from_ref(&moved_alone),
+        },
+        slot,
+    );
+
+    assert_eq!(cancels.len(), 1);
+    let cancel = unfold(&cancels[0]);
+    assert!(cancel.contains("METHOD:CANCEL"), "{cancel}");
+    assert!(
+        cancel.contains(&format!("UID:{}@myrefactor.com", series.id)),
+        "{cancel}"
+    );
+    assert!(cancel.contains("SEQUENCE:6"), "{cancel}");
+    assert!(
+        cancel.contains("RECURRENCE-ID;TZID=America/New_York:20260922T150000"),
+        "{cancel}"
+    );
+}
+
+/// A series `CANCEL` names the series `UID`, which no calendar holds for a legacy series.
+/// The standalone event one of its members left behind therefore has to be cancelled by
+/// name in the same send, or it outlives the series that owned it.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_cancelling_a_series_also_clears_a_legacy_members_standalone_event() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = AttachmentsCapture::default();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    let series = create_test_series();
+
+    let mut orphan = create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap());
+    orphan.coaching_session_series_id = Some(series.id);
+    orphan.ical_recurrence_id = None;
+    orphan.ical_sequence = 2;
+    let sessions = vec![
+        orphan.clone(),
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 11).unwrap()),
+    ];
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_recurring_sessions_cancelled_email(
+        &config,
+        &series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &sessions,
+        &org,
+    )
+    .await;
+    assert!(result.is_ok());
+    mock.assert_async().await;
+
+    let attachments = capture.captured();
+    assert_eq!(
+        attachments.len(),
+        2,
+        "the series cancellation plus one orphan cancellation"
+    );
+    assert!(attachments[0]
+        .1
+        .contains(&format!("UID:{}@myrefactor.com", series.id)));
+    assert!(
+        attachments[1]
+            .1
+            .contains(&format!("UID:{}@myrefactor.com", orphan.id)),
+        "the orphan is named directly: {}",
+        attachments[1].1
+    );
+    assert_ne!(
+        attachments[0].0, attachments[1].0,
+        "clients key attachments by filename, so the two parts must differ"
+    );
+}
+
+/// The common case must stay a single-attachment email: every member of a series created
+/// after invites shipped is addressed through the series, so there is nothing to clear.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_cancelling_a_native_series_carries_only_the_series_cancellation() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = AttachmentsCapture::default();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    let series = create_test_series();
+
+    let sessions = vec![
+        create_test_series_session(
+            series.id,
+            NaiveDate::from_ymd_opt(2026, 3, 4)
+                .unwrap()
+                .and_hms_opt(15, 0, 0)
+                .unwrap(),
+        ),
+        create_test_series_session(
+            series.id,
+            NaiveDate::from_ymd_opt(2026, 3, 11)
+                .unwrap()
+                .and_hms_opt(15, 0, 0)
+                .unwrap(),
+        ),
+    ];
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_recurring_sessions_cancelled_email(
+        &config,
+        &series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &sessions,
+        &org,
+    )
+    .await;
+    assert!(result.is_ok());
+    mock.assert_async().await;
+
+    assert_eq!(
+        capture.captured().len(),
+        1,
+        "no member left a standalone event, so nothing extra rides along"
+    );
+}
+
+/// A cancelled series needs no cadence, so neither recurrence variable ships.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_recurring_sessions_cancelled_email_omits_recurrence_variables() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    let series = create_test_series();
+    let sessions = vec![
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 4).unwrap()),
+        create_test_session_on(NaiveDate::from_ymd_opt(2026, 3, 11).unwrap()),
+    ];
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body_with_ics(
+            serde_json::json!({
+                "template": { "id": "series_cancel_template_abc" }
+            }),
+            &ical::Method::Cancel,
+        ))
+        .match_request(reject_template_variables(&[
+            "recurrence_summary",
+            "previous_recurrence_summary",
+        ]))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    let result = send_recurring_sessions_cancelled_email(
+        &config,
+        &series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &sessions,
+        &org,
+    )
+    .await;
+    assert!(result.is_ok());
+
+    mock.assert_async().await;
+}
+
+/// The series row is deleted even when nothing upcoming remains. The early return must
+/// happen before any lookup, so the connection sees no statements at all.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_notify_recurring_sessions_cancelled_with_no_sessions_does_nothing() {
+    let server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let series = create_test_series();
+
+    // Zero appended results: any query would panic or error rather than pass.
+    let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+
+    notify_recurring_sessions_cancelled(&db, &config, &series, &[]).await;
+
+    assert!(
+        db.into_transaction_log().is_empty(),
+        "an empty sessions slice must return before any statement runs"
+    );
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_recurring_sessions_scheduled_email_single_session() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        .into_connection();
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    let series = create_test_series();
+
+    let sessions = vec![create_test_session_on(
+        NaiveDate::from_ymd_opt(2026, 3, 4).unwrap(),
+    )];
+
+    // With a single session, first and last dates must match.
+    let _mock_coachee = server
+        .mock("POST", "/emails")
+        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            "template": {
+                "variables": {
+                    "session_count": 1,
+                    "first_session_date": "Wednesday, March 4, 2026",
+                    "last_session_date": "Wednesday, March 4, 2026",
+                }
+            }
+        })))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let _mock_coach = server
+        .mock("POST", "/emails")
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let result = send_recurring_sessions_scheduled_email(
+        &db,
+        &config,
+        &series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &sessions,
+        &org,
+    )
+    .await;
+    assert!(result.is_ok());
+}
+
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_send_recurring_sessions_scheduled_email_missing_template_id() {
+    let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+    let server = setup_test_server().await;
+    let config = Config::from_args([
+        "test",
+        "--resend-api-key=test_api_key_123",
+        &format!("--resend-base-url={}", server.url()),
+        "--frontend-base-url=https://app.example.com",
+    ]);
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    let series = create_test_series();
+    let sessions = vec![create_test_session_on(
+        NaiveDate::from_ymd_opt(2026, 3, 4).unwrap(),
+    )];
+
+    let result = send_recurring_sessions_scheduled_email(
+        &db,
+        &config,
+        &series,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &sessions,
+        &org,
+    )
+    .await;
+
+    assert!(result.is_err());
+    if let Err(e) = result {
+        match e.error_kind {
+            DomainErrorKind::Internal(InternalErrorKind::Config) => {}
+            _ => panic!("Expected Config error, got: {:?}", e.error_kind),
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_send_recurring_series_email_to_recipient_empty_sessions_errors() {
+    let server = setup_test_server().await;
+    let email_config = create_test_email_config(
+        &server.url(),
+        Some(SessionUrlBuilder {
+            base_url: "https://app.example.com".to_string(),
+            path_template: "/coaching-sessions/{session_id}".to_string(),
+        }),
+    )
+    .await;
+
+    let recipient = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let other = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let org = create_test_organization();
+
+    let result = send_recurring_series_email_to_recipient(
+        &email_config,
+        &Recipient {
+            user: &recipient,
+            other_user: &other,
+            other_user_role: "coach",
+        },
+        &[],
+        &org,
+        &SeriesIcs {
+            body: String::new(),
+            orphan_cancels: Vec::new(),
+            split_from: None,
+        },
+        "Weekly",
+        None,
+    )
+    .await;
+
+    assert!(result.is_err());
+    if let Err(e) = result {
+        match e.error_kind {
+            DomainErrorKind::Internal(InternalErrorKind::Other(msg)) => {
+                assert!(msg.contains("sessions slice is empty"));
+            }
+            _ => panic!("Expected Internal(Other) error, got: {:?}", e.error_kind),
+        }
+    }
+}
+
+// ── format_session_date_time Unit Tests ────────────────────────────
+
+#[test]
+fn test_format_session_date_time_utc() {
+    let date = NaiveDate::from_ymd_opt(2026, 3, 4)
+        .unwrap()
+        .and_hms_opt(15, 0, 0)
+        .unwrap();
+    let (date_str, time_str) = format_session_date_time(date, "UTC");
+    assert_eq!(date_str, "Wednesday, March 4, 2026");
+    assert_eq!(time_str, "3:00 PM");
+}
+
+#[test]
+fn test_format_session_date_time_eastern() {
+    let date = NaiveDate::from_ymd_opt(2026, 3, 4)
+        .unwrap()
+        .and_hms_opt(15, 0, 0)
+        .unwrap();
+    let (date_str, time_str) = format_session_date_time(date, "America/New_York");
+    assert_eq!(date_str, "Wednesday, March 4, 2026");
+    assert_eq!(time_str, "10:00 AM");
+}
+
+#[test]
+fn test_format_session_date_time_invalid_timezone_falls_back_to_utc() {
+    let date = NaiveDate::from_ymd_opt(2026, 3, 4)
+        .unwrap()
+        .and_hms_opt(15, 0, 0)
+        .unwrap();
+    let (date_str, time_str) = format_session_date_time(date, "Invalid/Timezone");
+    assert_eq!(date_str, "Wednesday, March 4, 2026");
+    assert_eq!(time_str, "3:00 PM UTC");
+}
+
+#[test]
+fn test_format_session_date_time_date_rolls_over_with_timezone() {
+    // 2026-03-07 23:00 UTC → 2026-03-08 08:00 in Asia/Tokyo (UTC+9)
+    let date = NaiveDate::from_ymd_opt(2026, 3, 7)
+        .unwrap()
+        .and_hms_opt(23, 0, 0)
+        .unwrap();
+    let (date_str, time_str) = format_session_date_time(date, "Asia/Tokyo");
+    assert_eq!(date_str, "Sunday, March 8, 2026");
+    assert_eq!(time_str, "8:00 AM");
+}
+
+/// Full-payload match on the reminder: exact JSON, so it also proves the reminder
+/// carries no `.ics` (the invite already went out with the scheduled email) and that
+/// `session_title` / `meeting_url` are omitted — not blanked — when the session has
+/// neither. Times render in the coachee's zone: 2026-03-04 15:00 UTC is 10:00 AM EST.
+#[tokio::test]
+async fn test_send_session_reminder_email_variables() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "Asia/Tokyo");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/New_York");
+    let session = create_test_session();
+    let org = create_test_organization();
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_body(expect_resend_body(serde_json::json!({
+            "from": FROM_ADDRESS,
+            "to": ["\"Jane Doe\" <jane@example.com>"],
+            "template": {
+                "id": "session_reminder_template_001",
+                "variables": {
+                    "first_name": "Jane",
+                    "coach_first_name": "Alex",
+                    "coach_full_name": "Alex Smith",
+                    "organization_name": "Acme Corp",
+                    "session_date": "Wednesday, March 4, 2026",
+                    "session_time": "10:00 AM",
+                    "session_when": "Wednesday, March 4, 2026 at 10:00 AM",
+                    "session_duration": "1 hour",
+                    "session_url": format!("https://app.example.com/coaching-sessions/{}", session.id),
+                }
+            }
+        })))
+        .with_status(200)
+        .with_body(r#"{"id":"email_msg_reminder"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let email_config = ResolvedEmailConfig::new::<SessionReminder>(&config)
+        .await
+        .unwrap();
+
+    send_session_reminder_email(&email_config, &coachee, &coach, &session, &org)
+        .await
+        .unwrap();
+
+    mock.assert_async().await;
+}
+
+/// The coach is not a recipient. Only one request reaches Resend, and it is addressed
+/// to the coachee — a second send would trip `expect(1)`.
+#[tokio::test]
+async fn test_send_session_reminder_email_goes_only_to_the_coachee() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            "to": ["\"Jane Doe\" <jane@example.com>"],
+        })))
+        .with_status(200)
+        .with_body(r#"{"id":"email_msg_reminder"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let email_config = ResolvedEmailConfig::new::<SessionReminder>(&config)
+        .await
+        .unwrap();
+
+    send_session_reminder_email(
+        &email_config,
+        &coachee,
+        &coach,
+        &create_test_session(),
+        &create_test_organization(),
+    )
+    .await
+    .unwrap();
+
+    mock.assert_async().await;
+}
+
+/// A session that has a title and a meeting link carries both, so the template can
+/// render a join button and name the session.
+#[tokio::test]
+async fn test_send_session_reminder_email_carries_title_and_meeting_url() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let session = coaching_sessions::Model {
+        title: Some("Quarterly check-in".to_string()),
+        meeting_url: Some("https://meet.google.com/abc-defg-hij".to_string()),
+        ..create_test_session()
+    };
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            "template": {
+                "variables": {
+                    "session_title": "Quarterly check-in",
+                    "meeting_url": "https://meet.google.com/abc-defg-hij",
+                }
+            }
+        })))
+        .with_status(200)
+        .with_body(r#"{"id":"email_msg_reminder"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let email_config = ResolvedEmailConfig::new::<SessionReminder>(&config)
+        .await
+        .unwrap();
+
+    send_session_reminder_email(
+        &email_config,
+        &coachee,
+        &coach,
+        &session,
+        &create_test_organization(),
+    )
+    .await
+    .unwrap();
+
+    mock.assert_async().await;
+}
+
+/// Config resolution fails before any recipient is contacted when the template is unset,
+/// which is what keeps a misconfigured deploy from sending template-less mail.
+#[tokio::test]
+async fn test_session_reminder_missing_template_id() {
+    let config = Config::from_args([
+        "test",
+        "--resend-api-key=test_api_key_123",
+        "--frontend-base-url=https://app.example.com",
+    ]);
+    assert!(config.session_reminder_email_template_id().is_none());
+
+    let Err(err) = ResolvedEmailConfig::new::<SessionReminder>(&config).await else {
+        panic!("expected a Config error when the reminder template is unset");
+    };
+
+    match err.error_kind {
+        DomainErrorKind::Internal(InternalErrorKind::Config) => {}
+        other => panic!("Expected Config error, got: {other:?}"),
+    }
+}
+
+// ───── stored series zone vs the coach's current zone ─────
+
+/// Weekly Thursdays at 11:00 Chicago, published before its coach moved to New York.
+fn chicago_series() -> coaching_session_series::Model {
+    coaching_session_series::Model {
+        rule: serde_json::json!({
+            "start_at": "2026-09-10T16:00:00",
+            "recurrence": {
+                "frequency": "weekly",
+                "interval": 1,
+                "by_weekdays": ["Thu"],
+                "until": "2027-01-01T05:59:59",
+            },
+            "duration_minutes": 60,
+            "timezone": "America/Chicago",
+        }),
+        ..create_test_series()
+    }
+}
+
+fn relocated_coach() -> users::Model {
+    create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York")
+}
+
+/// An occurrence reads its zone from the series; anything else keeps the coach's, and
+/// a legacy member has no occurrence to address, so it reads nothing.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn invite_zone_is_the_series_zone_for_an_occurrence_only() {
+    let coach = relocated_coach();
+    let series = chicago_series();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results(vec![vec![series.clone()]])
+        .into_connection();
+    let member = create_test_series_session(series.id, at(2026, 11, 5, 17));
+    assert_eq!(
+        invite_zone(&db, &member, &coach).await.unwrap(),
+        chrono_tz::America::Chicago
+    );
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+    let legacy = coaching_sessions::Model {
+        ical_recurrence_id: None,
+        ..member.clone()
+    };
+    assert_eq!(
+        invite_zone(&db, &legacy, &coach).await.unwrap(),
+        chrono_tz::America::New_York
+    );
+    assert_eq!(
+        invite_zone(&db, &create_test_session(), &coach)
+            .await
+            .unwrap(),
+        chrono_tz::America::New_York
+    );
+    assert!(db.into_transaction_log().is_empty());
+}
+
+/// Moving one post-DST occurrence names the slot in the zone the calendar expanded the
+/// series in, not the coach's new one: 11:00 Chicago on Nov 5 is 17:00Z.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn occurrence_reschedule_uses_the_stored_series_zone() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let series = chicago_series();
+    let capture = IcsCapture::default();
+    let coach = relocated_coach();
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let slot = at(2026, 11, 5, 17);
+    let session = coaching_sessions::Model {
+        date: at(2026, 11, 5, 19),
+        ..create_test_series_session(series.id, slot)
+    };
+    let db = mock_occurrence_loaders(series);
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    send_session_rescheduled_email(
+        &db,
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &coach,
+                coachee: &coachee,
+            },
+            member_ids: &[coach.id, coachee.id],
+        },
+        &session,
+        &create_test_organization(),
+        slot,
+    )
+    .await
+    .unwrap();
+    mock.assert_async().await;
+
+    let ics = capture.ics();
+    assert!(
+        ics.contains("RECURRENCE-ID;TZID=America/Chicago:20261105T110000"),
+        "{ics}"
+    );
+    assert!(
+        ics.contains("DTSTART;TZID=America/Chicago:20261105T130000"),
+        "{ics}"
+    );
+    assert!(!ics.contains("America/New_York"), "{ics}");
+}
+
+/// Cancelling an occurrence addresses it in the stored zone too, through the same
+/// lookup the send path uses.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn occurrence_cancel_uses_the_stored_series_zone() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let series = chicago_series();
+    let capture = IcsCapture::default();
+    let coach = relocated_coach();
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let org = create_test_organization();
+    // Upcoming, or the notifier treats the delete as housekeeping.
+    let slot = (chrono::Utc::now() + chrono::Duration::days(30))
+        .naive_utc()
+        .duration_trunc(chrono::TimeDelta::hours(1))
+        .unwrap();
+    let session = create_test_series_session(series.id, slot);
+    let relationship = coaching_relationships::Model {
+        id: session.coaching_relationship_id,
+        organization_id: org.id,
+        coach_id: coach.id,
+        coachee_id: coachee.id,
+        slug: "test".into(),
+        created_at: chrono::Utc::now().into(),
+        updated_at: chrono::Utc::now().into(),
+    };
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results(vec![vec![relationship.clone()]])
+        .append_query_results(vec![vec![coach.clone()]])
+        .append_query_results(vec![vec![coachee]])
+        .append_query_results(vec![vec![org]])
+        .append_query_results(vec![vec![series]])
+        .into_connection();
+
+    let mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await;
+
+    notify_session_cancelled(&db, &config, &session).await;
+    mock.assert_async().await;
+
+    let local = Utc
+        .from_utc_datetime(&slot)
+        .with_timezone(&chrono_tz::America::Chicago)
+        .format("%Y%m%dT%H%M%S");
+    let ics = capture.ics();
+    assert!(
+        ics.contains(&format!("RECURRENCE-ID;TZID=America/Chicago:{local}")),
+        "{ics}"
+    );
+    assert!(ics.contains("METHOD:CANCEL"), "{ics}");
+    assert!(!ics.contains("America/New_York"), "{ics}");
+}
+
+/// The snapshot of a Chicago series across Nov 1, built for a coach now in New York:
+/// the master, its EXDATE and its override all sit at 11:00 Chicago on both sides of the
+/// change, which is where the calendar holds every instance.
+#[test]
+fn snapshot_across_dst_uses_the_stored_series_zone() {
+    let series = chicago_series();
+    let rule: SeriesRule = serde_json::from_value(series.rule.clone()).unwrap();
+    let slots = rule.slots().unwrap();
+    let nov_5 = slots
+        .iter()
+        .position(|s| *s == at(2026, 11, 5, 17))
+        .unwrap();
+    let nov_12 = slots
+        .iter()
+        .position(|s| *s == at(2026, 11, 12, 17))
+        .unwrap();
+
+    let members: Vec<coaching_sessions::Model> = slots
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != nov_12)
+        .map(|(i, slot)| coaching_sessions::Model {
+            duration_minutes: 60,
+            date: match i == nov_5 {
+                true => at(2026, 11, 5, 19),
+                false => *slot,
+            },
+            ..create_test_series_session(series.id, *slot)
+        })
+        .collect();
+
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let ics = unfold(
+        &build_series_snapshot_ics(
+            &relocated_coach(),
+            &coachee,
+            &series,
+            &members,
+            &[],
+            "desc".into(),
+            at(2026, 10, 20, 12),
+        )
+        .unwrap(),
+    );
+
+    assert!(
+        ics.contains("DTSTART;TZID=America/Chicago:20260910T110000"),
+        "{ics}"
+    );
+    assert!(
+        ics.contains("EXDATE;TZID=America/Chicago:20261112T110000"),
+        "{ics}"
+    );
+    assert!(
+        ics.contains("RECURRENCE-ID;TZID=America/Chicago:20261105T110000"),
+        "{ics}"
+    );
+    assert_eq!(ics.matches("RECURRENCE-ID").count(), 1, "{ics}");
+    assert!(!ics.contains("America/New_York"), "{ics}");
+}
+
+/// A monthly series on the 31st, stored before new series were limited to day 28, can
+/// still be resent: its snapshot skips the months without a 31st, as calendars do.
+#[test]
+fn snapshot_of_a_stored_late_month_series_still_builds() {
+    let series = coaching_session_series::Model {
+        rule: serde_json::json!({
+            "start_at": "2026-12-31T16:00:00",
+            "recurrence": { "frequency": "monthly", "interval": 1, "count": 4 },
+            "duration_minutes": 60,
+            "timezone": "America/Chicago",
+        }),
+        ..create_test_series()
+    };
+    let rule: SeriesRule = serde_json::from_value(series.rule.clone()).unwrap();
+    let slots = rule.slots().unwrap();
+    assert_eq!(
+        slots,
+        vec![
+            at(2026, 12, 31, 16),
+            at(2027, 1, 31, 16),
+            at(2027, 3, 31, 15),
+            at(2027, 5, 31, 15),
+        ]
+    );
+
+    let members: Vec<coaching_sessions::Model> = slots
+        .iter()
+        .map(|slot| coaching_sessions::Model {
+            duration_minutes: 60,
+            ..create_test_series_session(series.id, *slot)
+        })
+        .collect();
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let ics = unfold(
+        &build_series_snapshot_ics(
+            &relocated_coach(),
+            &coachee,
+            &series,
+            &members,
+            &[],
+            "desc".into(),
+            at(2026, 12, 1, 12),
+        )
+        .unwrap(),
+    );
+
+    assert!(ics.contains("RRULE:FREQ=MONTHLY;WKST=MO;COUNT=4"), "{ics}");
+    assert!(!ics.contains("EXDATE"), "{ics}");
+    assert!(!ics.contains("RECURRENCE-ID"), "{ics}");
+}
+
+/// A coach and coachee in one organization, with an upcoming series.
+#[cfg(feature = "mock")]
+struct MembershipFixture {
+    coach: users::Model,
+    coachee: users::Model,
+    org: organizations::Model,
+    relationship: coaching_relationships::Model,
+    series: coaching_session_series::Model,
+}
+
+#[cfg(feature = "mock")]
+impl MembershipFixture {
+    fn new() -> Self {
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let org = create_test_organization();
+        let relationship = coaching_relationships::Model {
+            organization_id: org.id,
+            coach_id: coach.id,
+            coachee_id: coachee.id,
+            ..test_relationship()
+        };
+        let series = coaching_session_series::Model {
+            coaching_relationship_id: relationship.id,
+            ..snapshot_series(snapshot_start(), 1)
+        };
+        Self {
+            coach,
+            coachee,
+            org,
+            relationship,
+            series,
+        }
+    }
+
+    fn sessions(&self) -> Vec<coaching_sessions::Model> {
+        snapshot_members(&self.series)
+            .into_iter()
+            .map(|session| coaching_sessions::Model {
+                coaching_relationship_id: self.relationship.id,
+                ..session
+            })
+            .collect()
+    }
+
+    /// The loads a series notify entry point makes, then `rest`.
+    fn loads(&self, rest: impl FnOnce(MockDatabase) -> MockDatabase) -> MockDatabase {
+        rest(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results(vec![vec![self.relationship.clone()]])
+                .append_query_results(vec![vec![self.coach.clone()]])
+                .append_query_results(vec![vec![self.coachee.clone()]])
+                .append_query_results(vec![vec![self.org.clone()]]),
+        )
+    }
+}
+
+#[cfg(feature = "mock")]
+const COACH_TO: &str = "\"Alex Smith\" <alex@example.com>";
+#[cfg(feature = "mock")]
+const COACHEE_TO: &str = "\"Jane Doe\" <jane@example.com>";
+
+/// One Resend request: its addressee and decoded `.ics` attachments.
+#[cfg(feature = "mock")]
+#[derive(Clone, Debug)]
+struct Mail {
+    to: String,
+    ics: Vec<String>,
+}
+
+/// Records every Resend request as a [`Mail`].
+#[cfg(feature = "mock")]
+#[derive(Clone, Default)]
+struct MailCapture(Arc<Mutex<Vec<Mail>>>);
+
+#[cfg(feature = "mock")]
+impl MailCapture {
+    fn recorder(&self) -> impl Fn(&mockito::Request) -> bool + Send + Sync + 'static {
+        let seen = self.0.clone();
+        move |request| {
+            let body = serde_json::from_slice::<serde_json::Value>(request.body().unwrap())
+                .unwrap_or_default();
+            let ics = body["attachments"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|attachment| {
+                    attachment["content"]
+                        .as_str()
+                        .and_then(|content| STANDARD.decode(content).ok())
+                        .and_then(|bytes| String::from_utf8(bytes).ok())
+                        .map(|ics| ics.replace("\r\n ", "").replace("\r\n\t", ""))
+                })
+                .collect();
+            seen.lock().unwrap().push(Mail {
+                to: body["to"][0].as_str().unwrap_or_default().to_string(),
+                ics,
+            });
+            true
+        }
+    }
+
+    fn to(&self, recipient: &str) -> Vec<Mail> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|mail| mail.to == recipient)
+            .cloned()
+            .collect()
+    }
+}
+
+/// M7-04: a removed coachee's orphan cancel carries no reschedule, and the coach's
+/// reschedule carries the orphan.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn m7_04_a_series_edit_cancels_an_orphan_for_a_removed_coachee_without_the_reschedule() {
+    let f = MembershipFixture::new();
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let capture = MailCapture::default();
+    let _mock = server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .create_async()
+        .await;
+    let sessions = f.sessions();
+    let orphan = coaching_sessions::Model {
+        coaching_session_series_id: Some(f.series.id),
+        ical_recurrence_id: None,
+        ical_sequence: 1,
+        coaching_relationship_id: f.relationship.id,
+        ..create_test_session()
+    };
+    let db = f
+        .loads(|db| db.append_query_results::<entity::goals::Model, _, _>(vec![vec![]]))
+        .into_connection();
+
+    notify_recurring_sessions_rescheduled(
+        &db,
+        &config,
+        &f.series,
+        PreviousSeries(&f.series),
+        &sessions,
+        ReplacedSessions(std::slice::from_ref(&orphan)),
+        &[f.coach.id],
+    )
+    .await;
+
+    let orphan_uid = format!("UID:{}@myrefactor.com", orphan.id);
+    let coachee = capture.to(COACHEE_TO);
+    let ics: Vec<&String> = coachee.iter().flat_map(|mail| &mail.ics).collect();
+    assert_eq!(ics.len(), 1, "only the orphan cancel: {ics:?}");
+    assert!(ics[0].contains("METHOD:CANCEL") && ics[0].contains(&orphan_uid));
+    assert!(
+        !ics[0].contains("METHOD:REQUEST"),
+        "no reschedule: {}",
+        ics[0]
+    );
+
+    let coach = capture.to(COACH_TO);
+    assert!(coach
+        .iter()
+        .flat_map(|mail| &mail.ics)
+        .any(|ics| ics.contains(&orphan_uid)));
+}

@@ -2,20 +2,22 @@ use crate::middleware::throttle::{PerIpThrottle, Throttle, ThrottlePolicy};
 use crate::{
     controller::{health_check_controller, oauth_callback_controller},
     middleware::auth::require_auth,
-    params, protect, AppState,
+    params, AppState,
 };
 use axum::{
-    middleware::{from_fn, from_fn_with_state},
-    routing::{delete, get, post, put},
+    extract::DefaultBodyLimit,
+    middleware::from_fn,
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use tower_http::services::ServeDir;
 
 use crate::controller::{
     action_controller, agreement_controller, coaching_session, coaching_session_controller,
-    goal_controller, jwt_controller, magic_link_controller, note_controller, oauth_controller,
-    organization, organization_controller, password_reset_controller, tiptap_metrics_controller,
-    user, user_controller, user_session_controller, webhook_controller,
+    coaching_session_series_controller, goal_controller, jwt_controller, magic_link_controller,
+    note_controller, oauth_controller, organization, organization_controller,
+    password_reset_controller, search_controller, tiptap_metrics_controller, user, user_controller,
+    user_session_controller, webhook_controller,
 };
 use crate::sse;
 
@@ -30,7 +32,11 @@ use utoipa_rapidoc::RapiDoc;
 #[derive(OpenApi)]
 #[openapi(
         info(
-            title = "Refactor Platform API"
+            title = "Refactor Platform API",
+            license(
+                name = "GNU General Public License v3.0",
+                url = "https://www.gnu.org/licenses/gpl-3.0.en.html"
+            )
         ),
         paths(
             action_controller::create,
@@ -46,13 +52,40 @@ use utoipa_rapidoc::RapiDoc;
             agreement_controller::delete,
             coaching_session_controller::index,
             coaching_session_controller::read,
+            coaching_session_controller::view,
             coaching_session_controller::create,
-            coaching_session_controller::create_recurring,
             coaching_session_controller::update,
+            coaching_session_controller::update_title,
             coaching_session_controller::delete,
+            coaching_session_controller::resend_invite,
+            coaching_session_series_controller::create,
+            coaching_session_series_controller::read,
+            coaching_session_series_controller::index,
+            coaching_session_series_controller::update,
+            coaching_session_series_controller::delete,
+            coaching_session_series_controller::resend_invite,
+            coaching_session_series_controller::reschedule_following,
             coaching_session::meeting_recording_controller::create,
             coaching_session::meeting_recording_controller::read,
             coaching_session::meeting_recording_controller::delete,
+            coaching_session::image_controller::create,
+            coaching_session::image_controller::read,
+            coaching_session::image_controller::delete,
+            coaching_session::image_controller::restore,
+            coaching_session::topic_controller::index,
+            coaching_session::topic_controller::create,
+            coaching_session::topic_controller::update,
+            coaching_session::topic_controller::reorder,
+            coaching_session::topic_controller::delete,
+            coaching_session::topic_controller::set_status,
+            coaching_session::topic_controller::undo,
+            coaching_session::transcript_suggestion_controller::index,
+            coaching_session::transcript_suggestion_controller::scan,
+            coaching_session::transcript_suggestion_controller::start_scan,
+            coaching_session::transcript_suggestion_controller::accept,
+            coaching_session::transcript_suggestion_controller::dismiss,
+            coaching_session::transcript_suggestion_controller::restore,
+            coaching_session::transcription_controller::read_latest,
             coaching_session::transcription_controller::read,
             coaching_session::transcription_segment_controller::index,
             health_check_controller::health_check,
@@ -72,6 +105,8 @@ use utoipa_rapidoc::RapiDoc;
             organization_controller::create,
             organization_controller::update,
             organization_controller::delete,
+            organization_controller::archive,
+            organization_controller::unarchive,
             organization::coaching_relationship_controller::create,
             organization::coaching_relationship_controller::index,
             organization::coaching_relationship_controller::read,
@@ -82,6 +117,10 @@ use utoipa_rapidoc::RapiDoc;
             organization::user_controller::create,
             organization::user_controller::resend_invite,
             organization::user_controller::delete,
+            organization::user::role_controller::attach_role,
+            organization::user::role_controller::read_role,
+            organization::user::role_controller::update_role,
+            organization::user::role_controller::remove_role,
             goal_controller::create,
             goal_controller::update,
             goal_controller::index,
@@ -94,6 +133,7 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::goal_controller::batch_index,
             goal_controller::coaching_sessions_by_goal,
             goal_controller::progress,
+            user_controller::index,
             user_controller::read,
             user_controller::update,
             user_session_controller::login,
@@ -107,7 +147,9 @@ use utoipa_rapidoc::RapiDoc;
             user::coaching_relationships_controller::index,
             user::coaching_session_controller::index,
             user::coaching_session_controller::counts,
+            user::coaching_session_controller::nearest,
             user::goal_controller::index,
+            search_controller::index,
             jwt_controller::generate_collab_token,
             tiptap_metrics_controller::platform_totals,
             tiptap_metrics_controller::per_org_metrics,
@@ -117,6 +159,12 @@ use utoipa_rapidoc::RapiDoc;
             schemas(
                 crate::controller::action_controller::ActionRequest,
                 crate::controller::coaching_session::meeting_recording_controller::StartRecordingParams,
+                crate::controller::coaching_session_controller::SessionWithOrganization,
+                crate::controller::coaching_session_series_controller::SeriesWithSessions,
+                crate::controller::coaching_session::topic_controller::CreateParams,
+                crate::controller::coaching_session::topic_controller::UpdateParams,
+                crate::controller::coaching_session::topic_controller::ReorderParams,
+                crate::controller::coaching_session::topic_controller::StatusParams,
                 crate::controller::oauth_controller::ConnectionResponse,
                 crate::controller::password_reset_controller::ValidateParams,
                 crate::controller::password_reset_controller::ValidateResponse,
@@ -126,10 +174,18 @@ use utoipa_rapidoc::RapiDoc;
                 crate::params::coaching_relationship::goal_progress::SortField,
                 crate::params::coaching_session::SortField,
                 crate::params::coaching_session::goal::LinkParams,
-                crate::params::coaching_session::recurring::CreateRecurringParams,
+                crate::params::coaching_session_series::CreateParams,
+                crate::params::coaching_session_series::RescheduleParams,
+                crate::params::coaching_session_series::RescheduleFollowingParams,
                 crate::params::goal::SortField,
+                crate::params::search::Mode,
+                crate::params::search::GoalFilter,
                 crate::params::sort::SortOrder,
+                crate::params::user::AttachRoleParams,
+                crate::params::user::UpdateRoleParams,
                 crate::params::user::CompleteSetupParams,
+                crate::params::user::CreateMemberParams,
+                crate::params::user::LookupParams,
                 crate::params::user::PasswordResetCompleteParams,
                 crate::params::user::PasswordResetRequestParams,
                 crate::params::user::goal::SortField,
@@ -137,18 +193,53 @@ use utoipa_rapidoc::RapiDoc;
                 domain::actions::Model,
                 domain::agreements::Model,
                 domain::coaching_relationship::CoachingRelationshipWithUserNames,
+                domain::coaching_relationship::Membership,
+                domain::coaching_relationship::WithMembership,
                 domain::coaching_relationships::Model,
                 domain::coaching_session::CountByMonth,
                 domain::coaching_session::EnrichedSession,
+                domain::coaching_session::SessionWithDisplayTitle,
+                domain::coaching_session_images::Model,
+                domain::coaching_session_topics::Model,
+                domain::coaching_session_view::MarkViewed,
                 domain::coaching_sessions::Model,
                 domain::coaching_sessions_goals::Model,
                 domain::goals::Model,
+                domain::transcript_suggestion::actions::ActionProposal,
+                domain::transcript_suggestion::review::ActionEdits,
+                domain::transcript_suggestion::review::ActionSuggestion,
+                domain::transcript_suggestion::review::DefaultDue,
+                domain::transcript_suggestion::review::DueSource,
+                domain::transcript_suggestion::review::DuplicateOf,
+                domain::transcript_suggestion::review::Scan,
+                domain::transcript_suggestion::review::ScanStatus,
+                domain::transcript_suggestion::review::SourceSegment,
+                domain::transcript_suggestion::review::UndatedReason,
                 domain::jwts::Jwt,
                 domain::notes::Model,
                 domain::organizations::Model,
-                domain::provider::Provider,
+                domain::meeting_provider::Provider,
+                domain::search::Results,
+                domain::search::Hit,
+                domain::search::Core,
+                domain::search::SessionHit,
+                domain::search::GoalHit,
+                domain::search::ActionHit,
+                domain::search::AgreementHit,
+                domain::search::TopicHit,
+                domain::search::TranscriptSuggestionHit,
                 domain::status::Status,
+                domain::transcript_export::LabeledSegment,
+                domain::transcript_export::Speaker,
+                domain::transcript_export::SpeakerRole,
+                domain::transcription::Model,
+                domain::transcription::WithSpeakers,
+                domain::topic_status::Status,
+                domain::transcript_suggestion_target::Target,
                 domain::user::Credentials,
+                domain::user_role::UserLookupResult,
+                domain::user_roles::Model,
+                domain::users::Role,
                 domain::users::Model,
                 params::coaching_session::UpdateParams,
                 params::user::UpdateParams,
@@ -160,7 +251,11 @@ use utoipa_rapidoc::RapiDoc;
             (name = "refactor_platform", description = "Refactor Coaching & Mentorship API")
         )
     )]
-struct ApiDoc;
+pub(crate) struct ApiDoc;
+
+#[cfg(test)]
+#[path = "router_tests.rs"]
+mod tests;
 
 struct SecurityAddon;
 
@@ -193,6 +288,11 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(goal_routes(app_state.clone()))
         .merge(coaching_session_goal_routes(app_state.clone()))
         .merge(coaching_session_meeting_recording_routes(app_state.clone()))
+        .merge(coaching_session_image_routes(app_state.clone()))
+        .merge(coaching_session_topic_routes(app_state.clone()))
+        .merge(coaching_session_transcript_suggestion_routes(
+            app_state.clone(),
+        ))
         .merge(coaching_session_transcription_routes(app_state.clone()))
         .merge(coaching_session_transcription_segment_routes(
             app_state.clone(),
@@ -211,6 +311,8 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(user_session_routes())
         .merge(user_session_protected_routes(app_state.clone()))
         .merge(coaching_sessions_routes(app_state.clone()))
+        .merge(coaching_session_series_routes(app_state.clone()))
+        .merge(search_routes(app_state.clone()))
         .merge(jwt_routes(app_state.clone()))
         .merge(tiptap_metrics_routes(app_state.clone()))
         // **** FIXME: protect the OpenAPI web UI
@@ -225,15 +327,7 @@ fn action_routes(app_state: AppState) -> Router {
         .route("/actions/:id", get(action_controller::read))
         .route("/actions/:id/status", put(action_controller::update_status))
         .route("/actions/:id", delete(action_controller::delete))
-        .merge(
-            // GET /actions
-            Router::new()
-                .route("/actions", get(action_controller::index))
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::actions::index,
-                )),
-        )
+        .route("/actions", get(action_controller::index))
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
@@ -242,15 +336,7 @@ fn agreement_routes(app_state: AppState) -> Router {
     Router::new()
         .route("/agreements", post(agreement_controller::create))
         .route("/agreements/:id", put(agreement_controller::update))
-        .merge(
-            // GET /agreements
-            Router::new()
-                .route("/agreements", get(agreement_controller::index))
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::agreements::index,
-                )),
-        )
+        .route("/agreements", get(agreement_controller::index))
         .route("/agreements/:id", get(agreement_controller::read))
         .route("/agreements/:id", delete(agreement_controller::delete))
         .route_layer(from_fn(require_auth))
@@ -264,51 +350,68 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
             post(coaching_session_controller::create),
         )
         .route(
-            "/coaching_sessions/recurring",
-            post(coaching_session_controller::create_recurring),
+            "/coaching_sessions",
+            get(coaching_session_controller::index),
         )
-        .merge(
-            // Get /coaching_sessions
-            Router::new()
-                .route(
-                    "/coaching_sessions",
-                    get(coaching_session_controller::index),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::coaching_sessions::index,
-                )),
+        .route(
+            "/coaching_sessions/:id",
+            get(coaching_session_controller::read),
         )
-        .merge(
-            // GET /coaching_sessions/:id
-            Router::new().route(
-                "/coaching_sessions/:id",
-                get(coaching_session_controller::read),
-            ),
+        .route(
+            "/coaching_sessions/:coaching_session_id/view",
+            post(coaching_session_controller::view),
         )
-        .merge(
-            // PUT /coaching_sessions/:id
-            Router::new()
-                .route(
-                    "/coaching_sessions/:id",
-                    put(coaching_session_controller::update),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::coaching_sessions::update,
-                )),
+        .route(
+            "/coaching_sessions/:id",
+            put(coaching_session_controller::update),
         )
-        .merge(
-            // DELETE /coaching_sessions
-            Router::new()
-                .route(
-                    "/coaching_sessions/:id",
-                    delete(coaching_session_controller::delete),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::coaching_sessions::delete,
-                )),
+        // Either participant; the coach-only PUT keeps the scheduling fields.
+        .route(
+            "/coaching_sessions/:id/title",
+            patch(coaching_session_controller::update_title),
+        )
+        .route(
+            "/coaching_sessions/:id",
+            delete(coaching_session_controller::delete),
+        )
+        .route(
+            "/coaching_sessions/:id/resend_invite",
+            post(coaching_session_controller::resend_invite),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+/// Routes for the recurring-series entity.
+pub fn coaching_session_series_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_session_series",
+            post(coaching_session_series_controller::create),
+        )
+        .route(
+            "/coaching_session_series",
+            get(coaching_session_series_controller::index),
+        )
+        .route(
+            "/coaching_session_series/:id",
+            get(coaching_session_series_controller::read),
+        )
+        .route(
+            "/coaching_session_series/:id",
+            put(coaching_session_series_controller::update),
+        )
+        .route(
+            "/coaching_session_series/:id",
+            delete(coaching_session_series_controller::delete),
+        )
+        .route(
+            "/coaching_session_series/:id/resend_invite",
+            post(coaching_session_series_controller::resend_invite),
+        )
+        .route(
+            "/coaching_session_series/:id/reschedule",
+            post(coaching_session_series_controller::reschedule_following),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
@@ -316,9 +419,8 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
 
 /// /admin/tiptap/metrics/* - SuperAdmin-only TipTap observability
 ///
-/// Layer order (outer -> inner): require_auth (cookie session) ->
-/// admin_only (SuperAdmin role) -> handler. Axum applies layers in reverse
-/// of registration; outermost-registered runs first.
+/// `require_auth` (cookie session) runs first; each handler then takes
+/// `SuperAdminAccess`.
 pub fn tiptap_metrics_routes(app_state: AppState) -> Router {
     Router::new()
         .route(
@@ -333,13 +435,6 @@ pub fn tiptap_metrics_routes(app_state: AppState) -> Router {
             "/admin/tiptap/metrics/abandoned",
             get(tiptap_metrics_controller::abandoned_documents),
         )
-        // Per-route authorization: SuperAdmin only.
-        .route_layer(from_fn_with_state(
-            app_state.clone(),
-            protect::tiptap_metrics::admin_only,
-        ))
-        // Outermost: session cookie required. Runs FIRST despite being
-        // registered last (axum layer ordering).
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
@@ -352,12 +447,7 @@ fn note_routes(app_state: AppState) -> Router {
     Router::new()
         .route("/notes", post(note_controller::create))
         .route("/notes/:id", put(note_controller::update))
-        .merge(
-            // GET /notes
-            Router::new()
-                .route("/notes", get(note_controller::index))
-                .route_layer(from_fn_with_state(app_state.clone(), protect::notes::index)),
-        )
+        .route("/notes", get(note_controller::index))
         .route("/notes/:id", get(note_controller::read))
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
@@ -366,14 +456,11 @@ fn note_routes(app_state: AppState) -> Router {
 fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
     Router::new()
         // POST /organizations/:organization_id/coaching_relationships
+        // Authorized by the OrganizationAdminAccess extractor, not a route layer.
         .route(
             "/organizations/:organization_id/coaching_relationships",
             post(organization::coaching_relationship_controller::create),
         )
-        .route_layer(from_fn_with_state(
-            app_state.clone(),
-            protect::organizations::coaching_relationships::create,
-        ))
         .merge(
             // GET /organizations/:organization_id/coaching_relationships
             Router::new().route(
@@ -415,41 +502,26 @@ fn organization_user_routes(app_state: AppState) -> Router {
                 get(organization::user_controller::index),
             ),
         )
-        .merge(
-            // POST /organizations/:organization_id/users
-            Router::new()
-                .route(
-                    "/organizations/:organization_id/users",
-                    post(organization::user_controller::create),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::organizations::users::create,
-                )),
+        // The routes below are authorized by the OrganizationAdminAccess extractor,
+        // not a route layer.
+        .route(
+            "/organizations/:organization_id/users",
+            post(organization::user_controller::create),
         )
-        .merge(
-            // POST /organizations/:organization_id/users/:user_id/resend-invite
-            Router::new()
-                .route(
-                    "/organizations/:organization_id/users/:user_id/resend-invite",
-                    post(organization::user_controller::resend_invite),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::organizations::users::resend_invite,
-                )),
+        .route(
+            "/organizations/:organization_id/users/:user_id/resend-invite",
+            post(organization::user_controller::resend_invite),
         )
-        .merge(
-            // DELETE /organizations/:organization_id/users/:user_id
-            Router::new()
-                .route(
-                    "/organizations/:organization_id/users/:user_id",
-                    delete(organization::user_controller::delete),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::organizations::users::delete,
-                )),
+        .route(
+            "/organizations/:organization_id/users/:user_id",
+            delete(organization::user_controller::delete),
+        )
+        .route(
+            "/organizations/:organization_id/users/:user_id/role",
+            get(organization::user::role_controller::read_role)
+                .post(organization::user::role_controller::attach_role)
+                .put(organization::user::role_controller::update_role)
+                .delete(organization::user::role_controller::remove_role),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
@@ -461,12 +533,20 @@ pub fn organization_routes(app_state: AppState) -> Router {
         // except we can use axum-extras `or` like is show here:
         // https://gist.github.com/davidpdrsn/eb4e703e7e068ece3efd975b8f6bc340#file-content_type_or-rs-L17
         .route("/organizations", get(organization_controller::index))
-        .route("/organizations/:id", get(organization_controller::read))
         .route("/organizations", post(organization_controller::create))
-        .route("/organizations/:id", put(organization_controller::update))
         .route(
-            "/organizations/:id",
-            delete(organization_controller::delete),
+            "/organizations/:organization_id",
+            get(organization_controller::read)
+                .put(organization_controller::update)
+                .delete(organization_controller::delete),
+        )
+        .route(
+            "/organizations/:organization_id/archive",
+            post(organization_controller::archive),
+        )
+        .route(
+            "/organizations/:organization_id/unarchive",
+            post(organization_controller::unarchive),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
@@ -475,26 +555,16 @@ pub fn organization_routes(app_state: AppState) -> Router {
 pub fn goal_routes(app_state: AppState) -> Router {
     Router::new()
         .route("/goals", post(goal_controller::create))
-        .merge(
-            // GET /goals — protected by coaching_relationship_id query param
-            Router::new()
-                .route("/goals", get(goal_controller::index))
-                .route_layer(from_fn_with_state(app_state.clone(), protect::goals::index)),
+        .route("/goals", get(goal_controller::index))
+        .route("/goals/:id", put(goal_controller::update))
+        .route("/goals/:id", delete(goal_controller::delete))
+        .route("/goals/:id", get(goal_controller::read))
+        .route("/goals/:id/status", put(goal_controller::update_status))
+        .route(
+            "/goals/:id/sessions",
+            get(goal_controller::coaching_sessions_by_goal),
         )
-        .merge(
-            // Routes protected by goal :id path param
-            Router::new()
-                .route("/goals/:id", put(goal_controller::update))
-                .route("/goals/:id", delete(goal_controller::delete))
-                .route("/goals/:id", get(goal_controller::read))
-                .route("/goals/:id/status", put(goal_controller::update_status))
-                .route(
-                    "/goals/:id/sessions",
-                    get(goal_controller::coaching_sessions_by_goal),
-                )
-                .route("/goals/:id/progress", get(goal_controller::progress))
-                .route_layer(from_fn_with_state(app_state.clone(), protect::goals::by_id)),
-        )
+        .route("/goals/:id/progress", get(goal_controller::progress))
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
@@ -509,29 +579,13 @@ fn coaching_session_goal_routes(app_state: AppState) -> Router {
             "/coaching_sessions/:coaching_session_id/goals/:id",
             delete(coaching_session::goal_controller::delete),
         )
-        .merge(
-            // GET goals by session — protected by coaching_session_id path param
-            Router::new()
-                .route(
-                    "/coaching_sessions/:coaching_session_id/goals",
-                    get(coaching_session::goal_controller::index),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::goals::by_coaching_session_id,
-                )),
+        .route(
+            "/coaching_sessions/:coaching_session_id/goals",
+            get(coaching_session::goal_controller::index),
         )
-        .merge(
-            // GET batch session goals — protected by relationship or session ownership
-            Router::new()
-                .route(
-                    "/coaching_sessions/goals",
-                    get(coaching_session::goal_controller::batch_index),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::goals::batch_by_session,
-                )),
+        .route(
+            "/coaching_sessions/goals",
+            get(coaching_session::goal_controller::batch_index),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
@@ -539,20 +593,11 @@ fn coaching_session_goal_routes(app_state: AppState) -> Router {
 
 pub fn user_routes(app_state: AppState) -> Router {
     Router::new()
-        .merge(
-            // GET /users/:id
-            Router::new()
-                .route("/users/:id", get(user_controller::read))
-                .route_layer(from_fn_with_state(app_state.clone(), protect::users::read)),
-        )
-        .merge(
-            // PUT /users/:id
-            Router::new()
-                .route("/users/:id", put(user_controller::update))
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::users::update,
-                )),
+        // GET /users?email= — authorized in the handler against the target user.
+        .route("/users", get(user_controller::index))
+        .route(
+            "/users/:user_id",
+            get(user_controller::read).put(user_controller::update),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
@@ -561,13 +606,9 @@ pub fn user_routes(app_state: AppState) -> Router {
 pub fn user_password_routes(app_state: AppState) -> Router {
     Router::new()
         .route(
-            "/users/:id/password",
+            "/users/:user_id/password",
             put(user::password_controller::update_password),
         )
-        .route_layer(from_fn_with_state(
-            app_state.clone(),
-            protect::users::passwords::update_password,
-        ))
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
@@ -619,32 +660,31 @@ fn password_reset_routes(app_state: AppState) -> Router {
         .with_state(app_state)
 }
 
+fn search_routes(app_state: AppState) -> Router {
+    // Per-IP throttle sized for search-as-you-type; see
+    // `ThrottlePolicy::SEARCH_ENDPOINT` and `docs/architecture/throttling.md`.
+    Router::new()
+        .route("/search", get(search_controller::index))
+        .route_layer(from_fn(require_auth))
+        .layer(PerIpThrottle::new(ThrottlePolicy::SEARCH_ENDPOINT).into_layer())
+        .with_state(app_state)
+}
+
 fn jwt_routes(app_state: AppState) -> Router {
     Router::new()
         .route(
             "/jwt/generate_collab_token",
             get(jwt_controller::generate_collab_token),
         )
-        .route_layer(from_fn_with_state(
-            app_state.clone(),
-            protect::jwt::generate_collab_token,
-        ))
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
 
 fn user_organizations_routes(app_state: AppState) -> Router {
     Router::new()
-        .merge(
-            Router::new()
-                .route(
-                    "/users/:user_id/organizations",
-                    get(user::organization_controller::index),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::users::organizations::index,
-                )),
+        .route(
+            "/users/:user_id/organizations",
+            get(user::organization_controller::index),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
@@ -652,16 +692,9 @@ fn user_organizations_routes(app_state: AppState) -> Router {
 
 fn user_actions_routes(app_state: AppState) -> Router {
     Router::new()
-        .merge(
-            Router::new()
-                .route(
-                    "/users/:user_id/actions",
-                    get(user::action_controller::index),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::users::actions::index,
-                )),
+        .route(
+            "/users/:user_id/actions",
+            get(user::action_controller::index),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
@@ -669,20 +702,17 @@ fn user_actions_routes(app_state: AppState) -> Router {
 
 fn user_coaching_sessions_routes(app_state: AppState) -> Router {
     Router::new()
-        .merge(
-            Router::new()
-                .route(
-                    "/users/:user_id/coaching_sessions",
-                    get(user::coaching_session_controller::index),
-                )
-                .route(
-                    "/users/:user_id/coaching_sessions/counts",
-                    get(user::coaching_session_controller::counts),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::users::coaching_sessions::index,
-                )),
+        .route(
+            "/users/:user_id/coaching_sessions",
+            get(user::coaching_session_controller::index),
+        )
+        .route(
+            "/users/:user_id/coaching_sessions/counts",
+            get(user::coaching_session_controller::counts),
+        )
+        .route(
+            "/users/:user_id/coaching_sessions/nearest",
+            get(user::coaching_session_controller::nearest),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
@@ -690,27 +720,16 @@ fn user_coaching_sessions_routes(app_state: AppState) -> Router {
 
 fn user_goals_routes(app_state: AppState) -> Router {
     Router::new()
-        .merge(
-            Router::new()
-                .route("/users/:user_id/goals", get(user::goal_controller::index))
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::users::goals::index,
-                )),
-        )
+        .route("/users/:user_id/goals", get(user::goal_controller::index))
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
 
 fn user_coaching_relationships_routes(app_state: AppState) -> Router {
     Router::new()
-        .merge(
-            Router::new()
-                .route(
-                    "/users/:user_id/coaching-relationships",
-                    get(user::coaching_relationships_controller::index),
-                )
-                .route_layer(from_fn_with_state(app_state.clone(), protect::users::read)),
+        .route(
+            "/users/:user_id/coaching-relationships",
+            get(user::coaching_relationships_controller::index),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
@@ -758,10 +777,103 @@ fn coaching_session_meeting_recording_routes(app_state: AppState) -> Router {
         .with_state(app_state)
 }
 
+fn coaching_session_topic_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_sessions/:coaching_session_id/topics",
+            get(coaching_session::topic_controller::index)
+                .post(coaching_session::topic_controller::create),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/topics/reorder",
+            patch(coaching_session::topic_controller::reorder),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/topics/:topic_id",
+            put(coaching_session::topic_controller::update)
+                .delete(coaching_session::topic_controller::delete),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/topics/:topic_id/status",
+            patch(coaching_session::topic_controller::set_status),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/topics/:topic_id/undo",
+            post(coaching_session::topic_controller::undo),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+fn coaching_session_transcript_suggestion_routes(app_state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcript_suggestions",
+            get(coaching_session::transcript_suggestion_controller::index),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcript_suggestions/scan",
+            get(coaching_session::transcript_suggestion_controller::scan)
+                .post(coaching_session::transcript_suggestion_controller::start_scan),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcript_suggestions/:suggestion_id/accept",
+            post(coaching_session::transcript_suggestion_controller::accept),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcript_suggestions/:suggestion_id/dismiss",
+            post(coaching_session::transcript_suggestion_controller::dismiss),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcript_suggestions/:suggestion_id/restore",
+            post(coaching_session::transcript_suggestion_controller::restore),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
+/// Multipart framing (boundaries, part headers, filenames) rides along with the bytes, so
+/// the transport limit sits a little above the image cap the handler enforces.
+const MULTIPART_FRAMING_SLACK_BYTES: u64 = 64 * 1024;
+
+fn coaching_session_image_routes(app_state: AppState) -> Router {
+    // Raised on this route alone: axum's 2 MB default would 413 an ordinary phone photo
+    // with an error the handler never sees, and every other endpoint wants the default.
+    let body_limit = usize::try_from(
+        app_state
+            .config
+            .coaching_session_image_max_bytes()
+            .saturating_add(MULTIPART_FRAMING_SLACK_BYTES),
+    )
+    .unwrap_or(usize::MAX);
+
+    Router::new()
+        .route(
+            "/coaching_sessions/:coaching_session_id/images",
+            post(coaching_session::image_controller::create)
+                .layer(DefaultBodyLimit::max(body_limit)),
+        )
+        .route(
+            "/coaching_session_images/:image_id",
+            get(coaching_session::image_controller::read)
+                .delete(coaching_session::image_controller::delete),
+        )
+        .route(
+            "/coaching_session_images/:image_id/restore",
+            post(coaching_session::image_controller::restore),
+        )
+        .route_layer(from_fn(require_auth))
+        .with_state(app_state)
+}
+
 fn coaching_session_transcription_routes(app_state: AppState) -> Router {
     Router::new()
         .route(
             "/coaching_sessions/:coaching_session_id/transcriptions",
+            get(coaching_session::transcription_controller::read_latest),
+        )
+        .route(
+            "/coaching_sessions/:coaching_session_id/transcriptions/:transcription_id",
             get(coaching_session::transcription_controller::read),
         )
         .route_layer(from_fn(require_auth))

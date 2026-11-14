@@ -1,0 +1,2610 @@
+//! Domain orchestration for `coaching_session_series` — the entity that owns
+//! a recurrence rule and groups the materialized `coaching_sessions` rows
+//! created from it.
+//!
+//! This module owns the JSONB rule serialization: callers interact with the
+//! typed [`SeriesRule`] struct, never with `serde_json::Value` directly.
+
+use crate::coaching_relationship::{self, ensure_coachee_is_member};
+use crate::coaching_session;
+use crate::coaching_session_image;
+use crate::coaching_sessions;
+use crate::duration::Duration;
+use crate::emails;
+use crate::error::{reason, DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
+use crate::gateway::ical;
+use crate::gateway::tiptap::TiptapDocument;
+use crate::Id;
+use chrono::{NaiveDateTime, TimeDelta};
+use chrono_tz::Tz;
+use entity_api::coaching_session_series;
+use futures::stream::{self, StreamExt, TryStreamExt};
+use log::{debug, warn};
+use sea_orm::{DatabaseConnection, TransactionTrait};
+use serde::{Deserialize, Serialize};
+use service::config::Config;
+
+pub use coaching_session::{Frequency, Recurrence, RecurrenceError};
+pub use entity_api::coaching_session_series::find_by_id;
+pub use entity_api::coaching_session_series::Model;
+
+/// Typed shape of the JSONB `rule` column on `coaching_session_series`.
+/// Stored at create time and re-read at reschedule time, which is why
+/// `duration_minutes` is captured here — a coach who updates their default
+/// duration between create and reschedule shouldn't see the existing series
+/// flip durations under them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeriesRule {
+    pub start_at: NaiveDateTime,
+    pub recurrence: Recurrence,
+    pub duration_minutes: i16,
+    /// IANA zone the series was published in: its invites are written in it and its
+    /// slots expanded in it, so a coach changing zone later cannot split the two.
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
+}
+
+fn default_timezone() -> String {
+    chrono_tz::UTC.name().to_string()
+}
+
+impl SeriesRule {
+    /// The zone to expand and publish in. An unknown name falls back to UTC, as an
+    /// invite for it would.
+    pub fn zone(&self) -> Tz {
+        self.timezone
+            .parse()
+            .map_or(chrono_tz::UTC, ical::emitted_zone)
+    }
+
+    /// The original start of every occurrence, in the form `ical_recurrence_id` stores.
+    pub(crate) fn slots(&self) -> Result<Vec<NaiveDateTime>, Error> {
+        coaching_session::series_slots(self.start_at, &self.recurrence, self.zone())
+    }
+}
+
+/// Create a series and materialize its sessions in a single transaction.
+///
+/// 1. Authorizes the caller: `acting_user_id` must be the coach on the target
+///    relationship (the relationship id arrives in the request body, so this
+///    coach-only gate lives here rather than in a `FromRequestParts` extractor
+///    like the path/query-keyed series routes), and the coachee must still be a
+///    member of its organization.
+/// 2. Expands and validates the recurrence rule.
+/// 3. Resolves the coach's effective duration via the defaulting cascade.
+/// 4. Inserts the series row with the resolved rule (including the resolved
+///    `duration_minutes`) serialized to JSONB.
+/// 5. Bulk-inserts the materialized sessions linked back to the series via
+///    `coaching_session_series_id`.
+///
+/// Returns `(series, sessions)`. Tiptap docs, meeting URLs, and goal links
+/// are NOT created here — those run lazily on first read via
+/// `coaching_session::ensure_hydrated`.
+pub async fn create_with_sessions(
+    db: &DatabaseConnection,
+    config: &Config,
+    coaching_relationship_id: Id,
+    acting_user_id: Id,
+    start_at: NaiveDateTime,
+    recurrence: Recurrence,
+    requested_duration: Option<Duration>,
+) -> Result<(Model, Vec<coaching_sessions::Model>), Error> {
+    let relationship =
+        entity_api::coaching_relationship::find_by_id(db, coaching_relationship_id).await?;
+    if relationship.coach_id != acting_user_id {
+        return Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::Forbidden,
+            )),
+        });
+    }
+    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
+    ensure_coachee_is_member(&relationship, &member_ids)?;
+    let coach_id = relationship.coach_id;
+    let zone = publication_zone(db, coach_id).await?;
+
+    let dates = coaching_session::expand_recurrence(start_at, &recurrence, zone)?;
+    let resolved_duration =
+        entity_api::coaching_session::resolve_duration(db, coach_id, requested_duration).await?;
+
+    let rule = SeriesRule {
+        start_at,
+        recurrence,
+        duration_minutes: resolved_duration.minutes(),
+        timezone: zone.name().to_string(),
+    };
+    let rule_json = serde_json::to_value(&rule)?;
+
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+
+    let series_input = Model {
+        id: Id::nil(),
+        coaching_relationship_id,
+        rule: rule_json,
+        ical_sequence: 0,
+        created_by_user_id: acting_user_id,
+        created_at: chrono::Utc::now().into(),
+        updated_at: chrono::Utc::now().into(),
+    };
+    let series = coaching_session_series::create(&txn, series_input).await?;
+
+    let sessions = coaching_session::bulk_create_recurring(
+        &txn,
+        coaching_relationship_id,
+        coach_id,
+        series.id,
+        dates,
+        Some(resolved_duration),
+    )
+    .await?;
+
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+
+    // Best-effort, after commit: a failed invite must not undo a created series.
+    emails::notify_recurring_sessions_scheduled(
+        db,
+        config,
+        &series,
+        &sessions,
+        &relationship,
+        &member_ids,
+    )
+    .await;
+
+    Ok((series, sessions))
+}
+
+/// The zone a series published now by this coach is written in.
+async fn publication_zone(db: &DatabaseConnection, coach_id: Id) -> Result<Tz, Error> {
+    let coach = entity_api::user::find_by_id_without_roles(db, coach_id).await?;
+    Ok(emails::publication_zone(&coach))
+}
+
+/// List every series owned by the given coaching relationship.
+pub async fn find_by_relationship(
+    db: &DatabaseConnection,
+    coaching_relationship_id: Id,
+) -> Result<Vec<Model>, Error> {
+    Ok(coaching_session_series::find_by_relationship(db, coaching_relationship_id).await?)
+}
+
+/// Outcome of a reschedule request.
+#[derive(Debug)]
+pub struct Rescheduled {
+    pub series: Model,
+    pub sessions: Vec<coaching_sessions::Model>,
+    /// False when the requested rule already matched the stored one, so nothing was
+    /// re-materialized and no invites are owed.
+    pub changed: bool,
+}
+
+/// Replace the rule on an existing series and re-materialize its future
+/// sessions. Future sessions are deleted unconditionally: goal links, topics,
+/// recordings, and transcriptions cascade via the FK, but notes, actions and
+/// agreements do not, so a future session holding any of them fails the delete.
+/// Tiptap documents are cleaned up best-effort after the DB transaction commits.
+///
+/// A request whose rule matches the stored one short-circuits: re-materializing
+/// would destroy live session rows and their notes to recreate an identical
+/// schedule, and would re-send invites under a burned SEQUENCE. Any other is
+/// refused when the coachee is no longer in the organization.
+pub async fn reschedule(
+    db: &DatabaseConnection,
+    config: &Config,
+    series_id: Id,
+    coach_id: Id,
+    new_start_at: NaiveDateTime,
+    new_recurrence: Recurrence,
+    new_requested_duration: Option<Duration>,
+) -> Result<Rescheduled, Error> {
+    // Validate new inputs before any DB write. A reschedule only ever touches
+    // future sessions (past sessions are left untouched), so a past
+    // `new_start_at` would re-materialize the past on top of surviving history
+    // — reject it up front rather than corrupt the timeline.
+    let now_naive = chrono::Utc::now().naive_utc();
+    if new_start_at < now_naive {
+        return Err(RecurrenceError::StartAtInPast.into());
+    }
+
+    // A reschedule re-publishes the series, so it adopts the coach's zone as it is now.
+    let zone = publication_zone(db, coach_id).await?;
+    let new_dates = coaching_session::expand_recurrence(new_start_at, &new_recurrence, zone)?;
+
+    // Resolve the duration for the re-materialized sessions. A reschedule moves
+    // the meetings; it must not silently restretch them. So when the caller
+    // omits a duration, reuse the value persisted on the existing series rule
+    // rather than re-deriving the coach's *current* default (which may have
+    // changed since the series was created). An explicit request still wins.
+    let existing = coaching_session_series::find_by_id(db, series_id).await?;
+    // An unreadable stored rule is treated as "differs", which re-materializes rather
+    // than wrongly reporting no change.
+    let existing_rule: Option<SeriesRule> = serde_json::from_value(existing.rule.clone()).ok();
+    let resolved_duration = match (new_requested_duration, &existing_rule) {
+        (Some(duration), _) => duration,
+        (None, Some(rule)) => Duration::from_minutes_unchecked(rule.duration_minutes),
+        // Only reachable when the stored rule is unreadable; re-parse so the caller
+        // sees the actual deserialization error rather than an invented one.
+        (None, None) => serde_json::from_value::<SeriesRule>(existing.rule.clone())
+            .map(|rule| Duration::from_minutes_unchecked(rule.duration_minutes))?,
+    };
+
+    let new_rule = SeriesRule {
+        start_at: new_start_at,
+        recurrence: new_recurrence,
+        duration_minutes: resolved_duration.minutes(),
+        timezone: zone.name().to_string(),
+    };
+
+    let future_sessions =
+        entity_api::coaching_session::find_future_sessions_by_series_id(db, series_id, now_naive)
+            .await?;
+
+    // Compared as parsed rules, not as JSON: field order, an omitted-vs-null optional, or
+    // a field that gained a serde default would all read as "changed" on a blob compare.
+    if existing_rule.as_ref() == Some(&new_rule) {
+        debug!("Reschedule of series {series_id} matches the stored rule; nothing to do");
+        return Ok(Rescheduled {
+            series: existing,
+            sessions: future_sessions,
+            changed: false,
+        });
+    }
+
+    let relationship =
+        coaching_relationship::find_by_id(db, existing.coaching_relationship_id).await?;
+    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
+    ensure_coachee_is_member(&relationship, &member_ids)?;
+
+    let new_rule = serde_json::to_value(&new_rule)?;
+
+    // Snapshot Tiptap docs to clean up *after* the DB txn commits.
+    let doc_names_to_cleanup: Vec<String> = future_sessions
+        .iter()
+        .filter_map(|s| s.collab_document_name.clone())
+        .collect();
+    let future_ids: Vec<Id> = future_sessions.iter().map(|s| s.id).collect();
+
+    // Read before the delete: the image rows' FK cascades, and `storage_key` is the only
+    // pointer to the bytes.
+    let image_keys = coaching_session_image::storage_keys_for_sessions(db, &future_ids).await?;
+
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+
+    for id in &future_ids {
+        entity_api::coaching_session::acquire_advisory_lock(&txn, *id).await?;
+    }
+
+    // Re-read under the locks. The snapshot above was taken before them, so an individual
+    // reschedule committing in between would have bumped an `ical_sequence` it does not
+    // show. Cancelling a standalone event off that stale number reuses a `SEQUENCE` the
+    // client has already applied, and it drops the cancellation as a duplicate without
+    // erroring anywhere.
+    let replaced_sessions =
+        entity_api::coaching_session::find_future_sessions_by_series_id(&txn, series_id, now_naive)
+            .await?;
+
+    entity_api::coaching_session::bulk_delete_by_ids(&txn, &future_ids).await?;
+
+    let updated_series = coaching_session_series::update_rule(&txn, series_id, new_rule).await?;
+
+    let new_sessions = coaching_session::bulk_create_recurring(
+        &txn,
+        updated_series.coaching_relationship_id,
+        coach_id,
+        updated_series.id,
+        new_dates,
+        Some(resolved_duration),
+    )
+    .await?;
+
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+
+    cleanup_orphaned_docs(config, series_id, "reschedule", &doc_names_to_cleanup).await;
+    coaching_session_image::destroy_objects(config, &image_keys).await;
+
+    // Best-effort, after commit. Fired here rather than from the caller because the
+    // previous rule is only in scope inside this function.
+    emails::notify_recurring_sessions_rescheduled(
+        db,
+        config,
+        &updated_series,
+        emails::PreviousSeries(&existing),
+        &new_sessions,
+        emails::ReplacedSessions(&replaced_sessions),
+        &member_ids,
+    )
+    .await;
+
+    Ok(Rescheduled {
+        series: updated_series,
+        sessions: new_sessions,
+        changed: true,
+    })
+}
+
+/// A "this and following" reschedule: one session of a series and every session after it.
+#[derive(Debug)]
+pub struct FollowingReschedule {
+    /// The first session to move.
+    pub coaching_session_id: Id,
+    /// The new start of that session.
+    pub start_at: NaiveDateTime,
+    /// `None` keeps the series' current duration.
+    pub duration: Option<Duration>,
+    /// `None` keeps the series' cadence, carried on from `start_at`.
+    pub recurrence: Option<Recurrence>,
+}
+
+/// How a "this and following" reschedule lands, worked out before anything is written.
+#[derive(Debug, PartialEq)]
+struct FollowingPlan {
+    /// The rule the moved sessions are published under.
+    rule: SeriesRule,
+    /// The old series' rule cut short before the first moved session, when earlier
+    /// occurrences stay behind on it.
+    split_from: Option<SeriesRule>,
+    /// Where each affected session lands, the anchor first, then in slot order.
+    moves: Vec<Move>,
+    /// Slots past the last affected session, materialized as new sessions.
+    extras: Vec<NaiveDateTime>,
+    /// Affected sessions past the last slot, which are deleted.
+    leftovers: Vec<coaching_sessions::Model>,
+}
+
+/// Where one affected session lands.
+#[derive(Debug, PartialEq)]
+struct Move {
+    /// The session as it was before the reschedule.
+    session: coaching_sessions::Model,
+    /// The new rule's slot it takes, which becomes its `ical_recurrence_id`.
+    slot: NaiveDateTime,
+    /// Its new start: the slot, or its own date when it was moved on its own.
+    date: NaiveDateTime,
+    /// Its new length: the rule's, or its own when it was resized on its own.
+    duration: Duration,
+}
+
+impl Move {
+    fn changes_nothing(&self) -> bool {
+        self.session.date == self.date
+            && self.session.ical_recurrence_id == Some(self.slot)
+            && self.session.duration_minutes == self.duration.minutes()
+    }
+}
+
+impl FollowingPlan {
+    fn duration(&self) -> Duration {
+        Duration::from_minutes_unchecked(self.rule.duration_minutes)
+    }
+
+    /// True when every affected session already sits where it lands, and nothing is added
+    /// or removed.
+    fn changes_nothing(&self) -> bool {
+        self.extras.is_empty()
+            && self.leftovers.is_empty()
+            && self.moves.iter().all(Move::changes_nothing)
+    }
+
+    /// The sessions the reschedule touches, in the order they are locked: by date, as the
+    /// other series writes lock them.
+    fn affected_ids(&self) -> Vec<Id> {
+        let mut affected = self.superseded();
+        affected.sort_by_key(|session| (session.date, session.id));
+        affected.into_iter().map(|session| session.id).collect()
+    }
+
+    fn leftover_ids(&self) -> Vec<Id> {
+        self.leftovers.iter().map(|session| session.id).collect()
+    }
+
+    /// Every affected session as it was before the reschedule. Whatever calendar event
+    /// each last received is superseded: the moved ones get new slots, the leftovers go.
+    fn superseded(&self) -> Vec<coaching_sessions::Model> {
+        self.moves
+            .iter()
+            .map(|landing| &landing.session)
+            .chain(&self.leftovers)
+            .cloned()
+            .collect()
+    }
+
+    /// Affected sessions, as they were, that may hold their own override under `previous`.
+    /// The new invite has to retire each one: re-sent where its address is reused, else
+    /// cancelled.
+    fn previous_overrides(&self, previous: &SeriesRule) -> Vec<coaching_sessions::Model> {
+        self.superseded()
+            .into_iter()
+            .filter(|session| had_override(session, previous))
+            .collect()
+    }
+}
+
+/// A session moved on its own: off the slot its occurrence was published at.
+fn moved_alone(session: &coaching_sessions::Model) -> bool {
+    session
+        .ical_recurrence_id
+        .is_some_and(|slot| slot != session.date)
+}
+
+/// A session resized on its own: series writes give every session the rule's length.
+fn resized_alone(session: &coaching_sessions::Model, rule: &SeriesRule) -> bool {
+    session.duration_minutes != rule.duration_minutes
+}
+
+/// Whether `session` may hold its own override VEVENT under `rule`'s invite. Errs toward
+/// yes on a meeting link, since cancelling an address nothing overrides is harmless.
+fn had_override(session: &coaching_sessions::Model, rule: &SeriesRule) -> bool {
+    session.ical_recurrence_id.is_some()
+        && (moved_alone(session) || resized_alone(session, rule) || session.meeting_url.is_some())
+}
+
+/// Pair the affected sessions with the new rule's slots. Pure, so every edge of the
+/// pairing is testable without a database.
+///
+/// The anchor takes the first slot and the request's values. The rest take the following
+/// slots in the order of the slots they held, and keep whatever was changed on them alone:
+/// a date moved off its slot (unless it now falls before `start_at`) and a resized length.
+///
+/// The series splits only when a session left behind still holds one of the old rule's
+/// slots. Otherwise the rule is replaced in place, as a full series reschedule does.
+fn plan_following(
+    existing: &SeriesRule,
+    sessions: &[coaching_sessions::Model],
+    request: &FollowingReschedule,
+    zone: Tz,
+    now: NaiveDateTime,
+) -> Result<FollowingPlan, Error> {
+    let anchor_index = sessions
+        .iter()
+        .position(|session| session.id == request.coaching_session_id)
+        .ok_or_else(|| {
+            Error::validation("`coaching_session_id` is not a session of this series.")
+        })?;
+    let (earlier, affected) = sessions.split_at(anchor_index);
+    let anchor = &affected[0];
+    if anchor.date < now {
+        return Err(Error::validation(
+            "`coaching_session_id` has already happened; only upcoming sessions can be rescheduled.",
+        ));
+    }
+    if request.start_at < now {
+        return Err(RecurrenceError::StartAtInPast.into());
+    }
+
+    let recurrence = request
+        .recurrence
+        .clone()
+        .unwrap_or_else(|| existing.recurrence.continued(affected.len()));
+    let slots = coaching_session::publishable_slots(request.start_at, &recurrence, zone)?;
+    let rule = SeriesRule {
+        start_at: request.start_at,
+        recurrence,
+        duration_minutes: request
+            .duration
+            .map_or(existing.duration_minutes, |duration| duration.minutes()),
+        timezone: zone.name().to_string(),
+    };
+
+    // The series splits when a session left behind still holds one of the old rule's slots,
+    // so its meeting stays on calendars. Its rule then runs through the latest such slot,
+    // even past the anchor's for a session moved on its own; emptied slots are excluded.
+    let anchor_slot = anchor.ical_recurrence_id.unwrap_or(anchor.date);
+    let old_slots = existing.slots()?;
+    let kept_slots: Vec<NaiveDateTime> = earlier
+        .iter()
+        .filter_map(|session| session.ical_recurrence_id)
+        .filter(|slot| old_slots.contains(slot))
+        .collect();
+    let split_from = (!kept_slots.is_empty()).then(|| {
+        let last_kept_slot = kept_slots
+            .iter()
+            .copied()
+            .filter(|slot| *slot > anchor_slot)
+            .max()
+            .unwrap_or(anchor_slot - TimeDelta::seconds(1));
+        SeriesRule {
+            recurrence: existing.recurrence.ending_at(last_kept_slot),
+            ..existing.clone()
+        }
+    });
+
+    let mut following = affected[1..].to_vec();
+    following.sort_by_key(|session| session.ical_recurrence_id.unwrap_or(session.date));
+    let in_slot_order: Vec<coaching_sessions::Model> =
+        std::iter::once(anchor.clone()).chain(following).collect();
+
+    let new_duration = Duration::from_minutes_unchecked(rule.duration_minutes);
+    let follow = |session: &coaching_sessions::Model, slot: NaiveDateTime| Move {
+        session: session.clone(),
+        slot,
+        date: slot,
+        duration: new_duration,
+    };
+    let keep_own = |session: &coaching_sessions::Model, slot: NaiveDateTime| Move {
+        date: Some(session.date)
+            .filter(|date| moved_alone(session) && *date >= request.start_at)
+            .unwrap_or(slot),
+        duration: if resized_alone(session, existing) {
+            Duration::from_minutes_unchecked(session.duration_minutes)
+        } else {
+            new_duration
+        },
+        ..follow(session, slot)
+    };
+    let moves = in_slot_order
+        .iter()
+        .zip(slots.iter().copied())
+        .enumerate()
+        .map(|(position, (session, slot))| match position {
+            0 => follow(session, slot),
+            _ => keep_own(session, slot),
+        })
+        .collect();
+
+    Ok(FollowingPlan {
+        moves,
+        extras: slots.iter().skip(affected.len()).copied().collect(),
+        leftovers: in_slot_order.iter().skip(slots.len()).cloned().collect(),
+        rule,
+        split_from,
+    })
+}
+
+/// Store the `SEQUENCE` each session's override is about to be published at, since its
+/// next edit sends its own `ical_sequence` + 1 and a calendar ignores anything lower.
+/// Overrides go out at least at their series' (Google drops one trailing its master), and
+/// above an old override whose occurrence they take over.
+async fn store_published_sequences(
+    txn: &impl sea_orm::ConnectionTrait,
+    target: &Model,
+    split_from: Option<&Model>,
+    reissued: &[emails::ReissuedOverride],
+) -> Result<(), Error> {
+    for series in std::iter::once(target).chain(split_from) {
+        entity_api::coaching_session::raise_series_ical_sequence(
+            txn,
+            series.id,
+            series.ical_sequence,
+        )
+        .await?;
+    }
+    for old in reissued {
+        entity_api::coaching_session::raise_ical_sequence_at(
+            txn,
+            target.id,
+            old.slot,
+            old.sequence.saturating_add(1),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Sessions in date order, as the response lists them: a session that kept its own date
+/// can sort out of slot order.
+fn by_date(
+    sessions: impl IntoIterator<Item = coaching_sessions::Model>,
+) -> Vec<coaching_sessions::Model> {
+    let mut sessions: Vec<_> = sessions.into_iter().collect();
+    sessions.sort_by_key(|session| (session.date, session.id));
+    sessions
+}
+
+fn rule_of(series: &Model) -> Result<SeriesRule, Error> {
+    Ok(serde_json::from_value(series.rule.clone())?)
+}
+
+/// Reschedule one session of a series and every session after it, in place.
+///
+/// Each affected session takes a slot of the new rule and keeps its id and everything hung
+/// off it, plus a date or length it was given on its own (see [`plan_following`]). Extra
+/// slots become new sessions. Leftover sessions are deleted,
+/// unless one holds content, which refuses the whole request with a 409 instead. When
+/// earlier occurrences stay behind, the series splits: the old one's rule ends before the
+/// moved session and a new series holds the moved ones, as calendars model "this and
+/// following". A request that changes nothing writes nothing and sends no email; any other
+/// is refused when the coachee is no longer in the organization.
+pub async fn reschedule_following(
+    db: &DatabaseConnection,
+    config: &Config,
+    series_id: Id,
+    coach_id: Id,
+    request: FollowingReschedule,
+) -> Result<Rescheduled, Error> {
+    let zone = publication_zone(db, coach_id).await?;
+    let now = chrono::Utc::now().naive_utc();
+
+    // Planned once to reject a bad request before taking locks, then again under them.
+    let snapshot_rule = rule_of(&coaching_session_series::find_by_id(db, series_id).await?)?;
+    let snapshot = entity_api::coaching_session::find_by_series_id(db, series_id).await?;
+    let draft = plan_following(&snapshot_rule, &snapshot, &request, zone, now)?;
+
+    // Session locks first, then the series row: the order the other series writes take.
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    for id in draft.affected_ids() {
+        entity_api::coaching_session::acquire_advisory_lock(&txn, id).await?;
+    }
+    let existing = coaching_session_series::find_by_id_for_update(&txn, series_id).await?;
+    let existing_rule = rule_of(&existing)?;
+    let sessions = entity_api::coaching_session::find_by_series_id(&txn, series_id).await?;
+    let plan = plan_following(&existing_rule, &sessions, &request, zone, now)?;
+
+    if plan.changes_nothing() {
+        debug!("Following reschedule of series {series_id} matches its sessions; nothing to do");
+        return Ok(Rescheduled {
+            series: existing,
+            sessions: by_date(plan.moves.into_iter().map(|landing| landing.session)),
+            changed: false,
+        });
+    }
+
+    let relationship =
+        coaching_relationship::find_by_id(&txn, existing.coaching_relationship_id).await?;
+    let member_ids = coaching_relationship::notify_member_ids(&txn, &relationship).await?;
+    ensure_coachee_is_member(&relationship, &member_ids)?;
+
+    let leftover_ids = plan.leftover_ids();
+    entity_api::coaching_session::lock_for_update(&txn, &leftover_ids).await?;
+    let with_content =
+        entity_api::coaching_session::find_ids_with_content(&txn, &leftover_ids).await?;
+    if !with_content.is_empty() {
+        let blocking: Vec<Id> = leftover_ids
+            .iter()
+            .copied()
+            .filter(|id| with_content.contains(id))
+            .collect();
+        return Err(Error::conflict_because(
+            reason::SESSIONS_HAVE_CONTENT,
+            "The new schedule leaves out sessions that have notes, actions, agreements or topics.",
+            serde_json::json!({ "coaching_session_ids": blocking }),
+        ));
+    }
+
+    // Read before the delete: the image rows' FK cascades, and `storage_key` is the only
+    // pointer to the bytes.
+    let image_keys = coaching_session_image::storage_keys_for_sessions(&txn, &leftover_ids).await?;
+
+    let (target, split_from) = match &plan.split_from {
+        Some(shortened) => {
+            let split_from = coaching_session_series::update_rule(
+                &txn,
+                series_id,
+                serde_json::to_value(shortened)?,
+            )
+            .await?;
+            let target = coaching_session_series::create(
+                &txn,
+                Model {
+                    id: Id::nil(),
+                    coaching_relationship_id: existing.coaching_relationship_id,
+                    rule: serde_json::to_value(&plan.rule)?,
+                    ical_sequence: 0,
+                    created_by_user_id: coach_id,
+                    created_at: chrono::Utc::now().into(),
+                    updated_at: chrono::Utc::now().into(),
+                },
+            )
+            .await?;
+            (target, Some(split_from))
+        }
+        None => (
+            coaching_session_series::update_rule(
+                &txn,
+                series_id,
+                serde_json::to_value(&plan.rule)?,
+            )
+            .await?,
+            None,
+        ),
+    };
+
+    let moved: Vec<coaching_sessions::Model> = stream::iter(&plan.moves)
+        .then(|landing| {
+            entity_api::coaching_session::move_to_slot(
+                &txn,
+                landing.session.id,
+                entity_api::coaching_session::Landing {
+                    series_id: target.id,
+                    slot: landing.slot,
+                    date: landing.date,
+                    duration: landing.duration,
+                },
+            )
+        })
+        .try_collect()
+        .await?;
+    let created = coaching_session::bulk_create_recurring(
+        &txn,
+        existing.coaching_relationship_id,
+        coach_id,
+        target.id,
+        plan.extras.clone(),
+        Some(plan.duration()),
+    )
+    .await?;
+    entity_api::coaching_session::bulk_delete_by_ids(&txn, &leftover_ids).await?;
+
+    let previous_overrides = plan.previous_overrides(&existing_rule);
+    let (reissued, _) = emails::retire_previous_overrides(&existing, &previous_overrides, &target)?;
+    store_published_sequences(&txn, &target, split_from.as_ref(), &reissued).await?;
+    let published = entity_api::coaching_session::find_by_series_id(&txn, target.id).await?;
+    let as_published = |session: coaching_sessions::Model| {
+        published
+            .iter()
+            .find(|row| row.id == session.id)
+            .cloned()
+            .unwrap_or(session)
+    };
+    let moved: Vec<coaching_sessions::Model> = moved.into_iter().map(as_published).collect();
+    let created: Vec<coaching_sessions::Model> = created.into_iter().map(as_published).collect();
+
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+
+    let doc_names: Vec<String> = plan
+        .leftovers
+        .iter()
+        .filter_map(|session| session.collab_document_name.clone())
+        .collect();
+    cleanup_orphaned_docs(config, series_id, "reschedule", &doc_names).await;
+    coaching_session_image::destroy_objects(config, &image_keys).await;
+
+    let listed = by_date(moved.iter().chain(&created).cloned());
+    let superseded = plan.superseded();
+    let told = emails::notify_recurring_sessions_rescheduled_following(
+        db,
+        config,
+        &emails::FollowingRescheduleNotice {
+            series: &target,
+            sessions: &listed,
+            previous_series: emails::PreviousSeries(&existing),
+            previous_start: plan
+                .moves
+                .first()
+                .map_or(request.start_at, |landing| landing.session.date),
+            replaced: emails::ReplacedSessions(&superseded),
+            previous_overrides: &previous_overrides,
+            split_from: split_from.as_ref(),
+            member_ids: &member_ids,
+        },
+    )
+    .await;
+
+    let moved = record_following_notice(db, told, moved).await;
+
+    Ok(Rescheduled {
+        series: target,
+        sessions: by_date(moved.into_iter().chain(created)),
+        changed: true,
+    })
+}
+
+/// Records what a "this and following" email did for the moved sessions, returning them as
+/// the response carries them. Created sessions were stamped on insert. Moved ones are
+/// stamped once the email reached the coachee; a coachee no longer in the organization is
+/// owed nothing, so their pending reschedules settle unstamped.
+async fn record_following_notice(
+    db: &DatabaseConnection,
+    told: emails::Delivery,
+    moved: Vec<coaching_sessions::Model>,
+) -> Vec<coaching_sessions::Model> {
+    match told {
+        emails::Delivery::Sent => {
+            stream::iter(moved)
+                .then(|session| async move {
+                    coaching_session::record_notice(db, &session)
+                        .await
+                        .unwrap_or(session)
+                })
+                .collect()
+                .await
+        }
+        emails::Delivery::NoLongerAMember => {
+            stream::iter(&moved)
+                .for_each(|session| coaching_session::record_announced(db, session))
+                .await;
+            moved
+        }
+        emails::Delivery::Failed => moved,
+    }
+}
+
+/// Delete the series row and its future sessions. Past sessions survive as
+/// orphan one-offs: the FK's `ON DELETE SET NULL` clears
+/// `coaching_session_series_id` for every row that the explicit future
+/// delete didn't touch, so their notes / meeting URLs / collab docs stay
+/// intact.
+///
+pub async fn delete_with_future_sessions(
+    db: &DatabaseConnection,
+    config: &Config,
+    series_id: Id,
+) -> Result<(), Error> {
+    let now_naive = chrono::Utc::now().naive_utc();
+    let future_sessions =
+        entity_api::coaching_session::find_future_sessions_by_series_id(db, series_id, now_naive)
+            .await?;
+
+    let doc_names_to_cleanup: Vec<String> = future_sessions
+        .iter()
+        .filter_map(|s| s.collab_document_name.clone())
+        .collect();
+    let future_ids: Vec<Id> = future_sessions.iter().map(|s| s.id).collect();
+
+    // Read before the delete: the image rows' FK cascades, and `storage_key` is the only
+    // pointer to the bytes.
+    let image_keys = coaching_session_image::storage_keys_for_sessions(db, &future_ids).await?;
+
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+
+    for id in &future_ids {
+        entity_api::coaching_session::acquire_advisory_lock(&txn, *id).await?;
+    }
+
+    // Re-read under the locks, for the same reason the series SEQUENCE is bumped inside
+    // this transaction rather than in memory beforehand: the snapshot above predates the
+    // locks, and a per-session cancellation built off a stale `ical_sequence` reuses a
+    // number the client already applied, which it drops as a duplicate.
+    let cancelled_sessions =
+        entity_api::coaching_session::find_future_sessions_by_series_id(&txn, series_id, now_naive)
+            .await?;
+
+    entity_api::coaching_session::bulk_delete_by_ids(&txn, &future_ids).await?;
+
+    // Bump the SEQUENCE inside the delete transaction so the cancellation outranks any
+    // reschedule that commits alongside it. Reading the series before the transaction and
+    // adding one in memory would let a concurrent reschedule claim the same number, and a
+    // calendar client that already applied that reschedule drops the equal-SEQUENCE
+    // cancellation as a duplicate. Best-effort: deleting a nonexistent series still
+    // succeeds silently, it just cannot announce a cancellation.
+    let cancelled = coaching_session_series::increment_ical_sequence(&txn, series_id)
+        .await
+        .ok();
+
+    coaching_session_series::delete(&txn, series_id).await?;
+
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+
+    cleanup_orphaned_docs(config, series_id, "delete", &doc_names_to_cleanup).await;
+    coaching_session_image::destroy_objects(config, &image_keys).await;
+
+    if let Some(series) = cancelled {
+        emails::notify_recurring_sessions_cancelled(db, config, &series, &cancelled_sessions).await;
+    }
+
+    Ok(())
+}
+
+/// Resend a series' invite to both participants as it stands today, under a bumped
+/// SEQUENCE so calendars replace the recurring event they hold. Refused when nothing is
+/// left to attend, when an upcoming member predates `ical_recurrence_id` (such a series
+/// was never published as one, so a snapshot would not line up with what calendars hold),
+/// or when the coachee is no longer in the organization.
+pub async fn resend_invite(
+    db: &DatabaseConnection,
+    config: &Config,
+    series_id: Id,
+) -> Result<(), Error> {
+    let series = coaching_session_series::find_by_id(db, series_id).await?;
+    let rows = entity_api::coaching_session::find_by_series_id(db, series_id).await?;
+    let now = chrono::Utc::now().naive_utc();
+    let mut upcoming: Vec<coaching_sessions::Model> =
+        rows.iter().filter(|s| s.date > now).cloned().collect();
+    upcoming.sort_by_key(|s| s.date);
+
+    if upcoming.is_empty() {
+        return Err(Error::conflict_because(
+            reason::NO_UPCOMING_SESSIONS,
+            "This series has no upcoming sessions.",
+            serde_json::json!({}),
+        ));
+    }
+    if upcoming.iter().any(|s| s.ical_recurrence_id.is_none()) {
+        return Err(Error::conflict_because(
+            reason::LEGACY_SERIES,
+            "This series predates resendable invites.",
+            serde_json::json!({}),
+        ));
+    }
+
+    let relationship =
+        coaching_relationship::find_by_id(db, series.coaching_relationship_id).await?;
+    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
+    ensure_coachee_is_member(&relationship, &member_ids)?;
+
+    // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
+    // Members are raised with the series because Google drops an override whose SEQUENCE
+    // trails its master.
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    let bumped = coaching_session_series::increment_ical_sequence(&txn, series.id).await?;
+    let rows = entity_api::coaching_session::raise_series_ical_sequence(
+        &txn,
+        series.id,
+        bumped.ical_sequence,
+    )
+    .await?;
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+
+    let mut upcoming: Vec<coaching_sessions::Model> =
+        rows.iter().filter(|s| s.date > now).cloned().collect();
+    upcoming.sort_by_key(|s| s.date);
+    let parties = emails::InviteParties::load(db, &relationship).await?;
+    let delivered = emails::send_series_invite_resend(
+        db,
+        config,
+        &bumped,
+        &emails::Audience {
+            participants: &parties.participants(),
+            member_ids: &member_ids,
+        },
+        &upcoming,
+        &rows,
+        &parties.organization,
+    )
+    .await?;
+    coaching_session::ensure_coachee_reached(&delivered, &relationship)?;
+    stream::iter(&upcoming)
+        .for_each(|session| coaching_session::record_announced(db, session))
+        .await;
+    Ok(())
+}
+
+async fn cleanup_orphaned_docs(
+    config: &Config,
+    series_id: Id,
+    operation: &str,
+    doc_names: &[String],
+) {
+    if doc_names.is_empty() {
+        return;
+    }
+    match TiptapDocument::new(config).await {
+        Ok(tiptap) => {
+            for name in doc_names {
+                if let Err(err) = tiptap.delete(name).await {
+                    warn!(
+                        "Tiptap cleanup failed for orphaned doc {name:?} after series \
+                         {operation} {series_id}: {err}"
+                    );
+                }
+            }
+        }
+        Err(err) => {
+            warn!(
+                "Could not construct Tiptap client to clean up {} orphaned doc(s) \
+                 after series {operation} {series_id}: {err}",
+                doc_names.len()
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "coaching_session_series_following_tests.rs"]
+mod following_tests;
+
+#[cfg(test)]
+#[path = "coaching_session_series_sqlite_tests.rs"]
+mod sqlite_tests;
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+mod tests {
+    use super::*;
+    use crate::coaching_session::Frequency;
+    use crate::coaching_session_images;
+    use crate::test_utils::mock::{
+        both_participants_are_members, members, membership_statements, user_with_email, Mailbox,
+    };
+    use chrono::NaiveDate;
+    use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
+
+    fn weekly_rule_count(n: u32) -> Recurrence {
+        Recurrence {
+            frequency: Frequency::Weekly,
+            interval: 1,
+            by_weekdays: None,
+            count: Some(n),
+            until: None,
+        }
+    }
+
+    /// The coach row the series reads its publication zone from.
+    fn coach_row(timezone: &str) -> entity::users::Model {
+        let now = chrono::Utc::now();
+        entity::users::Model {
+            id: Id::new_v4(),
+            email: "coach@example.com".into(),
+            first_name: "Coach".into(),
+            last_name: "One".into(),
+            display_name: None,
+            password: None,
+            github_username: None,
+            github_profile_url: None,
+            timezone: timezone.into(),
+            default_coaching_session_duration_minutes: 60,
+            working_hours_start: crate::working_hours::default_start(),
+            working_hours_end: crate::working_hours::default_end(),
+            roles: vec![],
+            invite_status: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        }
+    }
+
+    /// The loads an invite makes after commit: both users, then the organization.
+    fn invite_loads(
+        db: MockDatabase,
+        organization_id: Id,
+        coach: &entity::users::Model,
+        coachee: &entity::users::Model,
+    ) -> MockDatabase {
+        let now = chrono::Utc::now();
+        db.append_query_results(vec![vec![coach.clone()]])
+            .append_query_results(vec![vec![coachee.clone()]])
+            .append_query_results(vec![vec![entity::organizations::Model {
+                id: organization_id,
+                name: "Acme".into(),
+                logo: None,
+                slug: "acme".into(),
+                created_at: now.into(),
+                updated_at: now.into(),
+                archived_at: None,
+                archived_by: None,
+            }]])
+    }
+
+    /// A relationship whose coach left its organization while the coachee stayed.
+    struct LapsedCoach {
+        coach: entity::users::Model,
+        coachee: entity::users::Model,
+        relationship: entity::coaching_relationships::Model,
+    }
+
+    impl LapsedCoach {
+        fn new(relationship_id: Id) -> Self {
+            let (coach, coachee) = (
+                user_with_email("coach@example.com"),
+                user_with_email("coachee@example.com"),
+            );
+            let relationship = entity::coaching_relationships::Model {
+                coach_id: coach.id,
+                coachee_id: coachee.id,
+                ..member_relationship(relationship_id)
+            };
+            Self {
+                coach,
+                coachee,
+                relationship,
+            }
+        }
+
+        /// The membership check's rows: only the coachee.
+        fn members(&self) -> Vec<std::collections::BTreeMap<String, sea_orm::Value>> {
+            members(&[self.coachee.id])
+        }
+    }
+
+    /// `n` weekly sessions of `series` from `first`, each addressed as an occurrence.
+    fn occurrences(series: &Model, first: NaiveDateTime, n: i64) -> Vec<coaching_sessions::Model> {
+        let now = chrono::Utc::now();
+        (0..n)
+            .map(|week| {
+                let date = first + chrono::Duration::weeks(week);
+                coaching_sessions::Model {
+                    id: Id::new_v4(),
+                    coaching_relationship_id: series.coaching_relationship_id,
+                    coaching_session_series_id: Some(series.id),
+                    ical_sequence: 0,
+                    ical_recurrence_id: Some(date),
+                    collab_document_name: None,
+                    date,
+                    duration_minutes: 60,
+                    title: None,
+                    meeting_url: None,
+                    provider: None,
+                    created_at: now.into(),
+                    updated_at: now.into(),
+                    hydrated_at: None,
+                    notice_given_at: now.into(),
+                }
+            })
+            .collect()
+    }
+
+    /// M5-09: with the coach removed, a series reschedule emails only the coachee.
+    #[tokio::test]
+    async fn m5_09_series_reschedule_emails_only_current_members() -> Result<(), Error> {
+        let mailbox = Mailbox::new().await;
+        let p = LapsedCoach::new(Id::new_v4());
+        let now = chrono::Utc::now();
+        let series = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: p.relationship.id,
+            rule: serde_json::to_value(SeriesRule {
+                start_at: start(),
+                recurrence: weekly_rule_count(2),
+                duration_minutes: 60,
+                timezone: "UTC".into(),
+            })?,
+            ical_sequence: 1,
+            created_by_user_id: p.coach.id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let future = occurrences(&series, start(), 2);
+        let new_start = start() + chrono::Duration::hours(1);
+        let updated = Model {
+            ical_sequence: 2,
+            ..series.clone()
+        };
+        let rematerialized = occurrences(&series, new_start, 3);
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![coach_row("UTC")]])
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![future.clone()])
+            .append_query_results(vec![vec![p.relationship.clone()]])
+            .append_query_results(vec![p.members()])
+            .append_query_results(vec![Vec::<coaching_session_images::Model>::new()])
+            // BEGIN, a lock per session, the locked re-read, the delete
+            .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
+            .append_query_results(vec![future])
+            .append_exec_results(vec![exec_ok()])
+            .append_query_results(vec![vec![updated]])
+            .append_query_results(vec![rematerialized])
+            .append_exec_results(vec![exec_ok()]);
+        let db = invite_loads(
+            db.append_query_results(vec![vec![p.relationship.clone()]]),
+            p.relationship.organization_id,
+            &p.coach,
+            &p.coachee,
+        )
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        .into_connection();
+
+        reschedule(
+            &db,
+            &mailbox.config(),
+            series.id,
+            p.coach.id,
+            new_start,
+            weekly_rule_count(3),
+            None,
+        )
+        .await?;
+
+        mailbox.assert_only_to("coachee@example.com");
+        Ok(())
+    }
+
+    /// M5-10: with the coach removed, a "this and following" reschedule emails only the
+    /// coachee.
+    #[tokio::test]
+    async fn m5_10_reschedule_following_emails_only_current_members() -> Result<(), Error> {
+        let mailbox = Mailbox::new().await;
+        let (series, _, sessions) = following_fixture(2);
+        let p = LapsedCoach::new(series.coaching_relationship_id);
+        let new_start = sessions[0].date + chrono::Duration::hours(1);
+        let moved: Vec<_> = sessions
+            .iter()
+            .enumerate()
+            .map(|(week, session)| {
+                let slot = new_start + chrono::Duration::weeks(week as i64);
+                coaching_sessions::Model {
+                    date: slot,
+                    ical_recurrence_id: Some(slot),
+                    ical_sequence: session.ical_sequence + 1,
+                    ..session.clone()
+                }
+            })
+            .collect();
+        let bumped = Model {
+            ical_sequence: series.ical_sequence + 1,
+            ..series.clone()
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![coach_row("UTC")]])
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![sessions.clone()])
+            .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![sessions.clone()])
+            .append_query_results(vec![vec![p.relationship.clone()]])
+            .append_query_results(vec![p.members()])
+            .append_query_results(vec![vec![bumped]])
+            .append_query_results(vec![vec![moved[0].clone()]])
+            .append_query_results(vec![vec![moved[1].clone()]])
+            .append_query_results(vec![moved.clone()])
+            .append_query_results(vec![moved.clone()])
+            .append_exec_results(vec![exec_ok()]);
+        let db = invite_loads(
+            db.append_query_results(vec![vec![p.relationship.clone()]]),
+            p.relationship.organization_id,
+            &p.coach,
+            &p.coachee,
+        )
+        .append_query_results(vec![moved.clone()])
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        // record_notice × 2
+        .append_exec_results(vec![exec_ok(), exec_ok()])
+        .append_query_results(vec![vec![moved[0].clone()]])
+        .append_query_results(vec![vec![moved[0].clone()]])
+        .append_query_results(vec![vec![moved[1].clone()]])
+        .append_query_results(vec![vec![moved[1].clone()]])
+        .into_connection();
+
+        reschedule_following(
+            &db,
+            &mailbox.config(),
+            series.id,
+            p.coach.id,
+            FollowingReschedule {
+                coaching_session_id: sessions[0].id,
+                start_at: new_start,
+                duration: None,
+                recurrence: None,
+            },
+        )
+        .await?;
+
+        mailbox.assert_only_to("coachee@example.com");
+        Ok(())
+    }
+
+    /// The relationship `id` names, with both participants members of its organization.
+    fn member_relationship(id: Id) -> entity::coaching_relationships::Model {
+        let now = chrono::Utc::now();
+        entity::coaching_relationships::Model {
+            id,
+            organization_id: Id::new_v4(),
+            coach_id: Id::new_v4(),
+            coachee_id: Id::new_v4(),
+            slug: "test".into(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        }
+    }
+
+    fn start() -> NaiveDateTime {
+        // Relative to now so `reschedule`'s past-guard (and date rollover)
+        // can't make this flaky; a fixed calendar date eventually goes stale.
+        (chrono::Utc::now() + chrono::Duration::days(7)).naive_utc()
+    }
+
+    #[tokio::test]
+    async fn create_with_sessions_inserts_series_and_sessions_in_one_transaction(
+    ) -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let coach_id = Id::new_v4();
+        let now = chrono::Utc::now();
+        let rule = weekly_rule_count(3);
+
+        // The acting user is the coach on this relationship, so authz passes.
+        let relationship = entity::coaching_relationships::Model {
+            id: relationship_id,
+            organization_id: Id::new_v4(),
+            coach_id,
+            coachee_id: Id::new_v4(),
+            slug: "test".into(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let series = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship_id,
+            rule: serde_json::json!({}),
+            ical_sequence: 0,
+            created_by_user_id: coach_id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let coach = entity::users::Model {
+            id: coach_id,
+            email: "coach@example.com".into(),
+            first_name: "Coach".into(),
+            last_name: "One".into(),
+            display_name: None,
+            password: None,
+            github_username: None,
+            github_profile_url: None,
+            timezone: "UTC".into(),
+            default_coaching_session_duration_minutes: 60,
+            working_hours_start: crate::working_hours::default_start(),
+            working_hours_end: crate::working_hours::default_end(),
+            roles: vec![],
+            invite_status: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let make_session = |date: NaiveDateTime| coaching_sessions::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship_id,
+            coaching_session_series_id: Some(series.id),
+            ical_sequence: 0,
+            ical_recurrence_id: None,
+            collab_document_name: None,
+            date,
+            duration_minutes: 60,
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
+        };
+
+        let expected_sessions = vec![
+            make_session(start()),
+            make_session(start() + chrono::Duration::days(7)),
+            make_session(start() + chrono::Duration::days(14)),
+        ];
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // 1. authz → coaching_relationship::find_by_id
+            .append_query_results(vec![vec![relationship.clone()]])
+            // 1b. the coachee is still a member
+            .append_query_results(vec![both_participants_are_members(&relationship)])
+            // 2. publication zone → the coach
+            .append_query_results(vec![vec![coach_row("UTC")]])
+            // 3. resolve_duration → user::find_by_id with related user_roles
+            .append_query_results::<(entity::users::Model, Option<entity::user_roles::Model>), _, _>(
+                vec![vec![(coach, None)]],
+            )
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![expected_sessions.clone()])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }]);
+        let db = invite_loads(
+            db,
+            relationship.organization_id,
+            &coach_row("UTC"),
+            &coach_row("UTC"),
+        )
+        .into_connection();
+
+        let (returned_series, returned_sessions) = create_with_sessions(
+            &db,
+            &test_config(),
+            relationship_id,
+            coach_id,
+            start(),
+            rule,
+            None,
+        )
+        .await?;
+
+        assert_eq!(returned_series.id, series.id);
+        assert_eq!(returned_sessions.len(), 3);
+        assert!(returned_sessions
+            .iter()
+            .all(|s| s.coaching_session_series_id == Some(series.id)));
+        // M5-04: the invite reuses the create's membership check.
+        let log = db.into_transaction_log();
+        assert_eq!(membership_statements(&log), 1, "{log:?}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_with_sessions_rejects_invalid_recurrence() {
+        let coach_id = Id::new_v4();
+        let relationship_id = Id::new_v4();
+        let now = chrono::Utc::now();
+        // Authz must pass first, so the failure is attributable to the rule.
+        let relationship = entity::coaching_relationships::Model {
+            id: relationship_id,
+            organization_id: Id::new_v4(),
+            coach_id,
+            coachee_id: Id::new_v4(),
+            slug: "test".into(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship]])
+            .append_query_results(vec![vec![coach_row("UTC")]])
+            .into_connection();
+        let bad_rule = Recurrence {
+            frequency: Frequency::Weekly,
+            interval: 1,
+            by_weekdays: None,
+            count: Some(3),
+            until: Some(start() + chrono::Duration::days(21)),
+        };
+        let result = create_with_sessions(
+            &db,
+            &test_config(),
+            relationship_id,
+            coach_id,
+            start(),
+            bad_rule,
+            Some(Duration::default()),
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    /// Happy-path reschedule over unhydrated future sessions, with the duration
+    /// omitted: validates inputs, reuses the duration persisted on the existing
+    /// series rule (no coach lookup), deletes the old future rows, rewrites the
+    /// rule, and bulk-inserts the new schedule — all in one transaction. Tiptap
+    /// is never contacted because no future session has a collab doc.
+    #[tokio::test]
+    async fn reschedule_replaces_future_unhydrated_sessions() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let coach_id = Id::new_v4();
+        let series_id = Id::new_v4();
+        let now = chrono::Utc::now();
+
+        // The series as it currently exists: its rule carries the duration the
+        // None-path reschedule must reuse instead of re-deriving a default.
+        let existing_series = Model {
+            id: series_id,
+            coaching_relationship_id: relationship_id,
+            rule: serde_json::to_value(SeriesRule {
+                start_at: start(),
+                recurrence: weekly_rule_count(3),
+                duration_minutes: 60,
+                timezone: "UTC".into(),
+            })?,
+            ical_sequence: 0,
+            created_by_user_id: Id::new_v4(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let make_session = |date: NaiveDateTime, doc: Option<String>| coaching_sessions::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship_id,
+            coaching_session_series_id: Some(series_id),
+            ical_sequence: 0,
+            ical_recurrence_id: None,
+            collab_document_name: doc,
+            date,
+            duration_minutes: 60,
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
+        };
+
+        // Two future sessions, neither hydrated, neither carrying a Tiptap doc.
+        let future_sessions = vec![
+            make_session(start() + chrono::Duration::days(7), None),
+            make_session(start() + chrono::Duration::days(14), None),
+        ];
+
+        // The series row as returned by update_rule's UPDATE ... RETURNING.
+        let updated_series = Model {
+            id: series_id,
+            coaching_relationship_id: relationship_id,
+            rule: serde_json::json!({}),
+            ical_sequence: 0,
+            created_by_user_id: Id::new_v4(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        // New schedule: 3 weekly occurrences starting at start().
+        let new_sessions = vec![
+            make_session(start(), None),
+            make_session(start() + chrono::Duration::days(7), None),
+            make_session(start() + chrono::Duration::days(14), None),
+        ];
+
+        let relationship = member_relationship(relationship_id);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // 0. publication zone → the coach
+            .append_query_results(vec![vec![coach_row("UTC")]])
+            // 1. duration omitted → find_by_id on the series to read its stored rule
+            .append_query_results(vec![vec![existing_series.clone()]])
+            // 2. find_future_sessions_by_series_id → 2 future rows
+            .append_query_results(vec![future_sessions.clone()])
+            // the relationship, then its coachee's membership
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![both_participants_are_members(&relationship)])
+            // 2b. storage_keys_for_sessions → no images to strand
+            .append_query_results(vec![Vec::<coaching_session_images::Model>::new()])
+            // 3. BEGIN
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            // 4. acquire_advisory_lock × 2 (one exec per session)
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            // 5. re-read of the future sessions, now under the locks
+            .append_query_results(vec![future_sessions.clone()])
+            // 6. bulk_delete_by_ids → DELETE
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 2,
+            }])
+            // 7. update_rule → a single UPDATE ... RETURNING
+            .append_query_results(vec![vec![updated_series.clone()]])
+            // 8. bulk_create_recurring → INSERT ... RETURNING
+            .append_query_results(vec![new_sessions.clone()])
+            // 9. COMMIT
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }]);
+        let db = invite_loads(
+            db.append_query_results(vec![vec![relationship.clone()]]),
+            relationship.organization_id,
+            &coach_row("UTC"),
+            &coach_row("UTC"),
+        )
+        .into_connection();
+
+        let rescheduled = reschedule(
+            &db,
+            &test_config(),
+            series_id,
+            coach_id,
+            start(),
+            weekly_rule_count(3),
+            None,
+        )
+        .await?;
+
+        assert!(rescheduled.changed);
+        assert_eq!(rescheduled.series.id, series_id);
+        assert_eq!(rescheduled.sessions.len(), 3);
+        assert!(rescheduled
+            .sessions
+            .iter()
+            .all(|s| s.coaching_session_series_id == Some(series_id)));
+        // M5-04: the invite reuses the reschedule's membership check.
+        let log = db.into_transaction_log();
+        assert_eq!(membership_statements(&log), 1, "{log:?}");
+        Ok(())
+    }
+
+    /// A reschedule whose rule matches the stored one must not re-materialize.
+    /// Doing so would delete live session rows (taking their notes and goal links
+    /// with them) only to recreate an identical schedule, and would burn a
+    /// SEQUENCE re-inviting both people to a meeting that never moved.
+    /// Proven by the transaction log: no BEGIN, no DELETE, no UPDATE.
+    #[tokio::test]
+    async fn reschedule_with_an_unchanged_rule_is_a_no_op() -> Result<(), Error> {
+        let series_id = Id::new_v4();
+        let now = chrono::Utc::now();
+        // One `start()` value, reused: the helper is `now() + 7d`, so two calls differ.
+        let start_at = start();
+        let stored_rule = serde_json::to_value(SeriesRule {
+            start_at,
+            recurrence: weekly_rule_count(3),
+            duration_minutes: 60,
+            timezone: "UTC".into(),
+        })?;
+        let existing_series = Model {
+            id: series_id,
+            coaching_relationship_id: Id::new_v4(),
+            rule: stored_rule,
+            ical_sequence: 4,
+            created_by_user_id: Id::new_v4(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let future_session = coaching_sessions::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: existing_series.coaching_relationship_id,
+            coaching_session_series_id: Some(series_id),
+            ical_sequence: 0,
+            ical_recurrence_id: None,
+            collab_document_name: None,
+            date: start_at + chrono::Duration::days(7),
+            duration_minutes: 60,
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![coach_row("UTC")]])
+            .append_query_results(vec![vec![existing_series.clone()]])
+            .append_query_results(vec![vec![future_session.clone()]])
+            .into_connection();
+
+        let rescheduled = reschedule(
+            &db,
+            &test_config(),
+            series_id,
+            Id::new_v4(),
+            start_at,
+            weekly_rule_count(3),
+            None,
+        )
+        .await?;
+
+        assert!(!rescheduled.changed, "an identical rule changed nothing");
+        assert_eq!(rescheduled.series.ical_sequence, 4, "SEQUENCE not burned");
+        assert_eq!(
+            rescheduled.sessions,
+            vec![future_session],
+            "the surviving sessions are returned, not recreated ones"
+        );
+
+        let sql: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .map(|stmt| stmt.sql.clone())
+            .collect();
+        assert!(
+            !sql.iter()
+                .any(|s| s.contains("DELETE") || s.contains("UPDATE") || s.contains("INSERT")),
+            "a no-op reschedule must not write: {sql:?}"
+        );
+        Ok(())
+    }
+
+    /// The stored rule is compared as a parsed `SeriesRule`, not as a JSON blob. Here it
+    /// carries an extra key that serde ignores, so the rules mean the same thing while
+    /// their JSON differs. A blob comparison would call this a change and destroy every
+    /// future session to rebuild an identical schedule.
+    #[tokio::test]
+    async fn reschedule_compares_rules_by_meaning_not_by_json() -> Result<(), Error> {
+        let series_id = Id::new_v4();
+        let now = chrono::Utc::now();
+        let start_at = start();
+        let mut stored_rule = serde_json::to_value(SeriesRule {
+            start_at,
+            recurrence: weekly_rule_count(3),
+            duration_minutes: 60,
+            timezone: "UTC".into(),
+        })?;
+        // A field written by some other version of this struct.
+        stored_rule["legacy_field"] = serde_json::json!("ignored");
+
+        let existing_series = Model {
+            id: series_id,
+            coaching_relationship_id: Id::new_v4(),
+            rule: stored_rule,
+            ical_sequence: 9,
+            created_by_user_id: Id::new_v4(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let future_session = coaching_sessions::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: existing_series.coaching_relationship_id,
+            coaching_session_series_id: Some(series_id),
+            ical_sequence: 0,
+            ical_recurrence_id: None,
+            collab_document_name: None,
+            date: start_at + chrono::Duration::days(7),
+            duration_minutes: 60,
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![coach_row("UTC")]])
+            .append_query_results(vec![vec![existing_series.clone()]])
+            .append_query_results(vec![vec![future_session]])
+            .into_connection();
+
+        let rescheduled = reschedule(
+            &db,
+            &test_config(),
+            series_id,
+            Id::new_v4(),
+            start_at,
+            weekly_rule_count(3),
+            None,
+        )
+        .await?;
+
+        assert!(
+            !rescheduled.changed,
+            "an ignored extra key does not change what the rule means"
+        );
+        assert_eq!(rescheduled.series.ical_sequence, 9, "SEQUENCE not burned");
+        Ok(())
+    }
+
+    /// A reschedule with a `start_at` in the past is rejected before any DB
+    /// access — re-materializing the past on top of surviving past sessions
+    /// would corrupt the series timeline.
+    #[tokio::test]
+    async fn reschedule_rejects_past_start_at() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
+        let past = NaiveDate::from_ymd_opt(2000, 1, 1)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+
+        let result = reschedule(
+            &db,
+            &test_config(),
+            Id::new_v4(),
+            Id::new_v4(),
+            past,
+            weekly_rule_count(3),
+            None,
+        )
+        .await;
+
+        let err = result.expect_err("a past start_at must be rejected");
+        assert!(
+            matches!(
+                err.error_kind,
+                crate::error::DomainErrorKind::Validation(ref m) if m.contains("past")
+            ),
+            "expected a past-start validation error, got {err:?}"
+        );
+    }
+
+    /// Series delete: future sessions are loaded, locked, bulk-deleted, and
+    /// then the series row itself is removed. Past sessions are not touched.
+    /// Tiptap is never reached because no future session has a
+    /// collab doc.
+    #[tokio::test]
+    async fn delete_with_future_sessions_clears_future_and_series_rows() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let series_id = Id::new_v4();
+        let now = chrono::Utc::now();
+
+        let make_session = |date: NaiveDateTime| coaching_sessions::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship_id,
+            coaching_session_series_id: Some(series_id),
+            ical_sequence: 0,
+            ical_recurrence_id: None,
+            collab_document_name: None,
+            date,
+            duration_minutes: 60,
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
+        };
+
+        let future_sessions = vec![
+            make_session(start() + chrono::Duration::days(7)),
+            make_session(start() + chrono::Duration::days(14)),
+        ];
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // find_future_sessions_by_series_id → 2 future rows
+            .append_query_results(vec![future_sessions.clone()])
+            // storage_keys_for_sessions → no images to strand
+            .append_query_results(vec![Vec::<coaching_session_images::Model>::new()])
+            // BEGIN
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            // acquire_advisory_lock × 2
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            // re-read of the future sessions, now under the locks
+            .append_query_results(vec![future_sessions.clone()])
+            // bulk_delete_by_ids → DELETE
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 2,
+            }])
+            // coaching_session_series::delete → DELETE
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            // COMMIT
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        delete_with_future_sessions(&db, &test_config(), series_id).await?;
+        Ok(())
+    }
+
+    /// The pre-transaction read happens before the advisory locks, so an individual
+    /// reschedule committing in between bumps an `ical_sequence` that snapshot cannot see.
+    /// A cancellation built off the stale number reuses a `SEQUENCE` the client already
+    /// applied and is silently dropped, so the rows have to be read again under the locks.
+    #[tokio::test]
+    async fn reschedule_rereads_the_replaced_sessions_under_the_locks() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let series_id = Id::new_v4();
+        let now = chrono::Utc::now();
+        let session_id = Id::new_v4();
+
+        let existing_series = Model {
+            id: series_id,
+            coaching_relationship_id: relationship_id,
+            rule: serde_json::to_value(SeriesRule {
+                start_at: start(),
+                recurrence: weekly_rule_count(1),
+                duration_minutes: 60,
+                timezone: "UTC".into(),
+            })?,
+            ical_sequence: 0,
+            created_by_user_id: Id::new_v4(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+
+        let session = |ical_sequence: i32| coaching_sessions::Model {
+            id: session_id,
+            coaching_relationship_id: relationship_id,
+            coaching_session_series_id: Some(series_id),
+            ical_sequence,
+            ical_recurrence_id: None,
+            collab_document_name: None,
+            date: start() + chrono::Duration::days(7),
+            duration_minutes: 60,
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
+        };
+
+        let relationship = member_relationship(relationship_id);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![coach_row("UTC")]])
+            .append_query_results(vec![vec![existing_series.clone()]])
+            // The pre-lock snapshot still shows SEQUENCE 1.
+            .append_query_results(vec![vec![session(1)]])
+            // the relationship, then its coachee's membership
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![both_participants_are_members(&relationship)])
+            // storage_keys_for_sessions → no images to strand
+            .append_query_results(vec![Vec::<coaching_session_images::Model>::new()])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            // Under the locks it reads 4: an individual reschedule got in between.
+            .append_query_results(vec![vec![session(4)]])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_results(vec![vec![existing_series.clone()]])
+            .append_query_results(vec![vec![session(0)]])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        reschedule(
+            &db,
+            &test_config(),
+            series_id,
+            Id::new_v4(),
+            start(),
+            weekly_rule_count(1),
+            Some(Duration::from_minutes_unchecked(60)),
+        )
+        .await?;
+
+        // Two selects against coaching_sessions: one before the locks, one after. Without
+        // the second, the cancellation would be built from a SEQUENCE that is already spent.
+        let selects = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .filter(|statement| {
+                statement.sql.contains("SELECT")
+                    && statement
+                        .sql
+                        .contains(r#"FROM "refactor_platform"."coaching_sessions""#)
+            })
+            .count();
+        assert_eq!(
+            selects, 2,
+            "the replaced sessions must be read again once the locks are held"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delete_swallows_tiptap_cleanup_failure() -> Result<(), Error> {
+        let relationship_id = Id::new_v4();
+        let series_id = Id::new_v4();
+        let now = chrono::Utc::now();
+
+        // One future session carrying a collab doc → cleanup is attempted.
+        let future_session = coaching_sessions::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship_id,
+            coaching_session_series_id: Some(series_id),
+            ical_sequence: 0,
+            ical_recurrence_id: None,
+            collab_document_name: Some("doc-to-clean-up".to_string()),
+            date: start() + chrono::Duration::days(7),
+            duration_minutes: 60,
+            title: None,
+            meeting_url: None,
+            provider: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+            hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // find_future_sessions_by_series_id → 1 future row (with a doc)
+            .append_query_results(vec![vec![future_session.clone()]])
+            // storage_keys_for_sessions → no images to strand
+            .append_query_results(vec![Vec::<coaching_session_images::Model>::new()])
+            // BEGIN
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            // acquire_advisory_lock × 1
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            // re-read of the future sessions, now under the locks
+            .append_query_results(vec![vec![future_session.clone()]])
+            // bulk_delete_by_ids → DELETE
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            // coaching_session_series::delete → DELETE
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            // COMMIT
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        // Tiptap is unreachable, so cleanup fails internally — but the call
+        // returns Ok, proving the failure is swallowed rather than propagated.
+        delete_with_future_sessions(&db, &test_config(), series_id).await?;
+        Ok(())
+    }
+
+    fn test_config() -> Config {
+        Config::from_args([
+            "test",
+            "--tiptap-auth-key=test-auth-key",
+            "--tiptap-url=http://127.0.0.1:0",
+        ])
+    }
+
+    fn exec_ok() -> MockExecResult {
+        MockExecResult {
+            last_insert_id: 0,
+            rows_affected: 1,
+        }
+    }
+
+    /// A weekly series of `n` sessions, one on each slot of its stored rule.
+    fn following_fixture(n: u32) -> (Model, SeriesRule, Vec<coaching_sessions::Model>) {
+        let now = chrono::Utc::now();
+        let rule = SeriesRule {
+            start_at: start(),
+            recurrence: weekly_rule_count(n),
+            duration_minutes: 60,
+            timezone: "UTC".into(),
+        };
+        let series = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            rule: serde_json::to_value(&rule).unwrap(),
+            ical_sequence: 3,
+            created_by_user_id: Id::new_v4(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let sessions = rule
+            .slots()
+            .unwrap()
+            .into_iter()
+            .map(|slot| coaching_sessions::Model {
+                id: Id::new_v4(),
+                coaching_relationship_id: series.coaching_relationship_id,
+                coaching_session_series_id: Some(series.id),
+                ical_sequence: 1,
+                ical_recurrence_id: Some(slot),
+                collab_document_name: None,
+                date: slot,
+                duration_minutes: 60,
+                title: None,
+                meeting_url: None,
+                provider: None,
+                created_at: now.into(),
+                updated_at: now.into(),
+                hydrated_at: None,
+                notice_given_at: now.into(),
+            })
+            .collect();
+        (series, rule, sessions)
+    }
+
+    fn written_sql(db: sea_orm::DatabaseConnection) -> Vec<String> {
+        db.into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .map(|stmt| stmt.sql.clone())
+            .collect()
+    }
+
+    fn is_write(sql: &str) -> bool {
+        ["DELETE", "UPDATE", "INSERT"]
+            .iter()
+            .any(|verb| sql.starts_with(verb))
+    }
+
+    fn writes(sql: &[String]) -> Vec<&String> {
+        sql.iter().filter(|s| is_write(s)).collect()
+    }
+
+    /// Asserts `err` is the 409 for `relationship`'s coachee no longer being a member.
+    fn assert_coachee_not_a_member(
+        err: Error,
+        relationship: &entity::coaching_relationships::Model,
+    ) {
+        let DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Conflict {
+            details: Some(details),
+            ..
+        })) = err.error_kind
+        else {
+            panic!("expected a conflict, got {err:?}");
+        };
+        assert_eq!(details["reason"], "coachee_not_a_member");
+        assert_eq!(
+            details["user_id"],
+            serde_json::json!(relationship.coachee_id)
+        );
+        assert_eq!(
+            details["organization_id"],
+            serde_json::json!(relationship.organization_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn reschedule_following_with_a_coachee_no_longer_in_the_organization_is_refused() {
+        let (series, _, sessions) = following_fixture(3);
+        let anchor = sessions[1].clone();
+        let relationship = member_relationship(series.coaching_relationship_id);
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![coach_row("UTC")]])
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![sessions.clone()])
+            .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
+            // the series, locked
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![sessions.clone()])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![members(&[relationship.coach_id])])
+            .into_connection();
+
+        let err = reschedule_following(
+            &db,
+            &test_config(),
+            series.id,
+            Id::new_v4(),
+            FollowingReschedule {
+                coaching_session_id: anchor.id,
+                start_at: anchor.date + chrono::Duration::hours(1),
+                duration: None,
+                recurrence: None,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_coachee_not_a_member(err, &relationship);
+        let sql = written_sql(db);
+        assert!(writes(&sql).is_empty(), "a refusal must not write: {sql:?}");
+    }
+
+    #[tokio::test]
+    async fn reschedule_following_onto_the_slots_it_already_holds_writes_nothing(
+    ) -> Result<(), Error> {
+        let (series, _, sessions) = following_fixture(3);
+        let anchor = sessions[1].clone();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![coach_row("UTC")]])
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![sessions.clone()])
+            .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
+            // the series, locked
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![sessions.clone()])
+            .into_connection();
+
+        let rescheduled = reschedule_following(
+            &db,
+            &test_config(),
+            series.id,
+            Id::new_v4(),
+            FollowingReschedule {
+                coaching_session_id: anchor.id,
+                start_at: anchor.date,
+                duration: None,
+                recurrence: None,
+            },
+        )
+        .await?;
+
+        assert!(!rescheduled.changed);
+        assert_eq!(rescheduled.series.ical_sequence, 3, "SEQUENCE not burned");
+        assert_eq!(rescheduled.sessions, sessions[1..].to_vec());
+        let sql = written_sql(db);
+        assert!(writes(&sql).is_empty(), "a no-op must not write: {sql:?}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reschedule_following_refuses_to_drop_leftovers_with_content() {
+        let (series, _, sessions) = following_fixture(3);
+        let with_note = sessions[2].id;
+        let noted = |id: Id| {
+            std::collections::BTreeMap::from([("coaching_session_id", sea_orm::Value::from(id))])
+        };
+
+        let relationship = member_relationship(series.coaching_relationship_id);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![coach_row("UTC")]])
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![sessions.clone()])
+            .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok(), exec_ok()])
+            // the series, locked
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![sessions.clone()])
+            // the relationship, then its coachee's membership
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![both_participants_are_members(&relationship)])
+            // the leftovers, locked, then the content UNION
+            .append_query_results(vec![vec![noted(sessions[1].id), noted(with_note)]])
+            .append_query_results(vec![vec![noted(with_note)]])
+            .into_connection();
+
+        let err = reschedule_following(
+            &db,
+            &test_config(),
+            series.id,
+            Id::new_v4(),
+            FollowingReschedule {
+                coaching_session_id: sessions[0].id,
+                start_at: sessions[0].date,
+                duration: None,
+                recurrence: Some(weekly_rule_count(1)),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        let DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Conflict {
+            details: Some(details),
+            ..
+        })) = err.error_kind
+        else {
+            panic!("expected a conflict, got {err:?}");
+        };
+        assert_eq!(details["reason"], "sessions_have_content");
+        assert_eq!(
+            details["coaching_session_ids"],
+            serde_json::json!([with_note])
+        );
+        let sql = written_sql(db);
+        assert!(writes(&sql).is_empty(), "a refusal must not write: {sql:?}");
+
+        // Session locks, then the series row, then the leftovers, then their content: the
+        // rule is read locked, and nothing can land on a leftover after it is checked.
+        let position = |needle: &str| {
+            sql.iter()
+                .position(|s| s.contains(needle))
+                .unwrap_or_else(|| panic!("no statement with {needle}: {sql:?}"))
+        };
+        let last_advisory_lock = sql
+            .iter()
+            .rposition(|s| s.contains("pg_advisory_xact_lock"))
+            .expect("session locks");
+        let series_lock = position(
+            r#"FROM "refactor_platform"."coaching_session_series" WHERE "coaching_session_series"."id" = $1 LIMIT $2 FOR UPDATE"#,
+        );
+        let leftover_lock = position(
+            r#"SELECT "coaching_sessions"."id" FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."id" IN"#,
+        );
+        let content_check = position(r#"FROM "refactor_platform"."notes""#);
+        assert!(last_advisory_lock < series_lock, "{sql:?}");
+        assert!(series_lock < leftover_lock, "{sql:?}");
+        assert!(
+            sql[leftover_lock].ends_with("FOR UPDATE"),
+            "{}",
+            sql[leftover_lock]
+        );
+        assert!(leftover_lock < content_check, "{sql:?}");
+    }
+
+    #[tokio::test]
+    async fn reschedule_following_splits_off_a_new_series_for_the_moved_sessions(
+    ) -> Result<(), Error> {
+        let (series, rule, sessions) = following_fixture(3);
+        let anchor = sessions[1].clone();
+        let new_start = anchor.date + chrono::Duration::hours(1);
+        let now = chrono::Utc::now();
+        let shortened = Model {
+            ical_sequence: 4,
+            ..series.clone()
+        };
+        let new_series = Model {
+            id: Id::new_v4(),
+            ical_sequence: 0,
+            created_at: now.into(),
+            updated_at: now.into(),
+            ..series.clone()
+        };
+        let moved = |session: &coaching_sessions::Model, slot| coaching_sessions::Model {
+            coaching_session_series_id: Some(new_series.id),
+            date: slot,
+            ical_recurrence_id: Some(slot),
+            ical_sequence: session.ical_sequence + 1,
+            ..session.clone()
+        };
+        let moved_rows = vec![
+            moved(&sessions[1], new_start),
+            moved(&sessions[2], new_start + chrono::Duration::weeks(1)),
+        ];
+
+        let relationship = member_relationship(series.coaching_relationship_id);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![coach_row("UTC")]])
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![sessions.clone()])
+            .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
+            // the series, locked
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![sessions.clone()])
+            // the relationship, then its coachee's membership
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![both_participants_are_members(&relationship)])
+            // update_rule on the old series, then the new series' insert
+            .append_query_results(vec![vec![shortened.clone()]])
+            .append_query_results(vec![vec![new_series.clone()]])
+            // move_to_slot × 2
+            .append_query_results(vec![vec![moved_rows[0].clone()]])
+            .append_query_results(vec![vec![moved_rows[1].clone()]])
+            // published sequences: the new series, the old one, then the re-read
+            .append_query_results(vec![moved_rows.clone()])
+            .append_query_results(vec![vec![sessions[0].clone()]])
+            .append_query_results(vec![moved_rows.clone()])
+            .append_exec_results(vec![exec_ok()])
+            .into_connection();
+
+        let rescheduled = reschedule_following(
+            &db,
+            &test_config(),
+            series.id,
+            Id::new_v4(),
+            FollowingReschedule {
+                coaching_session_id: anchor.id,
+                start_at: new_start,
+                duration: None,
+                recurrence: None,
+            },
+        )
+        .await?;
+
+        assert!(rescheduled.changed);
+        assert_eq!(rescheduled.series.id, new_series.id);
+        assert_eq!(rescheduled.sessions, moved_rows);
+
+        let log = db.into_transaction_log();
+        let statements: Vec<_> = log.iter().flat_map(|txn| txn.statements()).collect();
+        let written: Vec<_> = statements.iter().filter(|s| is_write(&s.sql)).collect();
+        assert_eq!(written.len(), 6, "{written:?}");
+
+        let until = (anchor.date - chrono::Duration::seconds(1))
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string();
+        assert!(written[0]
+            .sql
+            .starts_with(r#"UPDATE "refactor_platform"."coaching_session_series""#));
+        assert!(
+            format!("{:?}", written[0].values).contains(&until),
+            "the old rule ends just before the anchor: {:?}",
+            written[0].values
+        );
+        assert!(written[1]
+            .sql
+            .starts_with(r#"INSERT INTO "refactor_platform"."coaching_session_series""#));
+        // The new series starts at the moved session, not at the old rule's first slot.
+        let old_start = rule.start_at.format("%Y-%m-%dT%H:%M").to_string();
+        let new_series_values = format!("{:?}", written[1].values);
+        assert!(new_series_values.contains(&new_start.format("%Y-%m-%dT%H:%M").to_string()));
+        assert!(!new_series_values.contains(&old_start));
+        for move_statement in &written[2..4] {
+            assert!(move_statement
+                .sql
+                .starts_with(r#"UPDATE "refactor_platform"."coaching_sessions""#));
+            assert!(
+                format!("{:?}", move_statement.values).contains(&new_series.id.to_string()),
+                "sessions move onto the new series: {:?}",
+                move_statement.values
+            );
+        }
+        // Each series' sessions are raised to the SEQUENCE their invite publishes.
+        for (raise, series_id) in written[4..].iter().zip([new_series.id, series.id]) {
+            assert!(raise.sql.contains("GREATEST"), "{}", raise.sql);
+            assert!(
+                format!("{:?}", raise.values).contains(&series_id.to_string()),
+                "{:?}",
+                raise.values
+            );
+        }
+        assert!(
+            !statements.iter().any(|s| s.sql.contains("DELETE")),
+            "a split that keeps every session deletes nothing"
+        );
+        Ok(())
+    }
+
+    /// Once the email reaches the coachee, each moved session is stamped as noticed, and
+    /// the response carries the stamped rows rather than the ones from before the stamp.
+    #[tokio::test]
+    async fn reschedule_following_returns_moved_sessions_as_stamped_once_told() -> Result<(), Error>
+    {
+        let mut resend = mockito::Server::new_async().await;
+        let sends = resend
+            .mock("POST", "/emails")
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(2)
+            .create_async()
+            .await;
+        let config = Config::from_args([
+            "test",
+            "--resend-api-key=test_api_key",
+            "--recurring-sessions-rescheduled-email-template-id=series_reschedule_template",
+            "--frontend-base-url=https://app.example.com",
+            &format!("--resend-base-url={}", resend.url()),
+        ]);
+
+        let (series, _, sessions) = following_fixture(2);
+        let now = chrono::Utc::now();
+        let new_start = sessions[0].date + chrono::Duration::hours(1);
+        let moved: Vec<_> = sessions
+            .iter()
+            .enumerate()
+            .map(|(week, session)| {
+                let slot = new_start + chrono::Duration::weeks(week as i64);
+                coaching_sessions::Model {
+                    date: slot,
+                    ical_recurrence_id: Some(slot),
+                    ical_sequence: session.ical_sequence + 1,
+                    ..session.clone()
+                }
+            })
+            .collect();
+        let stamped_at: chrono::DateTime<chrono::FixedOffset> =
+            (now + chrono::Duration::minutes(5)).into();
+        let stamped: Vec<_> = moved
+            .iter()
+            .map(|session| coaching_sessions::Model {
+                notice_given_at: stamped_at,
+                ..session.clone()
+            })
+            .collect();
+        let (coach, coachee) = (coach_row("UTC"), coach_row("UTC"));
+        let organization = entity::organizations::Model {
+            id: Id::new_v4(),
+            name: "Acme".into(),
+            logo: None,
+            slug: "acme".into(),
+            created_at: now.into(),
+            updated_at: now.into(),
+            archived_at: None,
+            archived_by: None,
+        };
+        let relationship = entity::coaching_relationships::Model {
+            id: series.coaching_relationship_id,
+            organization_id: organization.id,
+            coach_id: coach.id,
+            coachee_id: coachee.id,
+            slug: "test".into(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let bumped = Model {
+            ical_sequence: series.ical_sequence + 1,
+            ..series.clone()
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![coach_row("UTC")]])
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![sessions.clone()])
+            .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
+            // the series, locked
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![sessions.clone()])
+            // the relationship, then its coachee's membership
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![both_participants_are_members(&relationship)])
+            // update_rule in place, then move_to_slot × 2
+            .append_query_results(vec![vec![bumped.clone()]])
+            .append_query_results(vec![vec![moved[0].clone()]])
+            .append_query_results(vec![vec![moved[1].clone()]])
+            // published sequences, then the re-read
+            .append_query_results(vec![moved.clone()])
+            .append_query_results(vec![moved.clone()])
+            .append_exec_results(vec![exec_ok()])
+            // the email: parties, the series' rows, the first session's goals
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![coach]])
+            .append_query_results(vec![vec![coachee]])
+            .append_query_results(vec![vec![organization]])
+            .append_query_results(vec![moved.clone()])
+            .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+            // record_notice × 2: the locked re-read and its clear, then mark_notice_given
+            .append_exec_results(vec![exec_ok(), exec_ok()])
+            .append_query_results(vec![vec![moved[0].clone()]])
+            .append_query_results(vec![vec![stamped[0].clone()]])
+            .append_query_results(vec![vec![moved[1].clone()]])
+            .append_query_results(vec![vec![stamped[1].clone()]])
+            .into_connection();
+
+        let rescheduled = reschedule_following(
+            &db,
+            &config,
+            series.id,
+            Id::new_v4(),
+            FollowingReschedule {
+                coaching_session_id: sessions[0].id,
+                start_at: new_start,
+                duration: None,
+                recurrence: None,
+            },
+        )
+        .await?;
+
+        sends.assert_async().await;
+        assert_eq!(
+            rescheduled.series.id, series.id,
+            "the first session replaces in place"
+        );
+        assert_eq!(rescheduled.sessions, stamped);
+        // M5-04: the invite reuses the in-transaction membership check.
+        let log = db.into_transaction_log();
+        assert_eq!(membership_statements(&log), 1, "{log:?}");
+        Ok(())
+    }
+
+    /// A delivered series resend told participants every upcoming session's schedule.
+    #[tokio::test]
+    async fn series_resend_clears_each_upcoming_sessions_pending_reschedule() -> Result<(), Error> {
+        let mut resend = mockito::Server::new_async().await;
+        let sends = resend
+            .mock("POST", "/emails")
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .expect(2)
+            .create_async()
+            .await;
+        let config = Config::from_args([
+            "test",
+            "--resend-api-key=test_api_key",
+            "--recurring-sessions-scheduled-email-template-id=series_template",
+            "--frontend-base-url=https://app.example.com",
+            &format!("--resend-base-url={}", resend.url()),
+        ]);
+
+        let (series, _, sessions) = following_fixture(2);
+        let now = chrono::Utc::now();
+        let (coach, coachee) = (coach_row("UTC"), coach_row("UTC"));
+        let organization = entity::organizations::Model {
+            id: Id::new_v4(),
+            name: "Acme".into(),
+            logo: None,
+            slug: "acme".into(),
+            created_at: now.into(),
+            updated_at: now.into(),
+            archived_at: None,
+            archived_by: None,
+        };
+        let relationship = entity::coaching_relationships::Model {
+            id: series.coaching_relationship_id,
+            organization_id: organization.id,
+            coach_id: coach.id,
+            coachee_id: coachee.id,
+            slug: "test".into(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let bumped = Model {
+            ical_sequence: series.ical_sequence + 1,
+            ..series.clone()
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![sessions.clone()])
+            // the relationship and its members
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![both_participants_are_members(&relationship)])
+            // the series bump, then its members raised
+            .append_query_results(vec![vec![bumped]])
+            .append_query_results(vec![sessions.clone()])
+            // the email: parties, then the first session's goals
+            .append_query_results(vec![vec![coach]])
+            .append_query_results(vec![vec![coachee]])
+            .append_query_results(vec![vec![organization]])
+            .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+            // each upcoming session's locked re-read, then its clear
+            .append_query_results(vec![vec![sessions[0].clone()]])
+            .append_query_results(vec![vec![sessions[1].clone()]])
+            .append_exec_results(vec![exec_ok(), exec_ok()])
+            .into_connection();
+
+        resend_invite(&db, &config, series.id).await?;
+
+        sends.assert_async().await;
+        let clears = written_sql(db)
+            .into_iter()
+            .filter(|sql| {
+                sql.starts_with("DELETE") && sql.contains("coaching_session_pending_reschedules")
+            })
+            .count();
+        assert_eq!(clears, sessions.len(), "one clear per upcoming session");
+        Ok(())
+    }
+}

@@ -3,6 +3,7 @@ pub(crate) mod action_controller;
 pub(crate) mod agreement_controller;
 pub(crate) mod coaching_session;
 pub(crate) mod coaching_session_controller;
+pub(crate) mod coaching_session_series_controller;
 pub(crate) mod goal_controller;
 pub(crate) mod health_check_controller;
 pub(crate) mod jwt_controller;
@@ -13,11 +14,37 @@ pub(crate) mod oauth_controller;
 pub(crate) mod organization;
 pub(crate) mod organization_controller;
 pub(crate) mod password_reset_controller;
+pub(crate) mod search_controller;
 pub(crate) mod tiptap_metrics_controller;
 pub(crate) mod user;
 pub(crate) mod user_controller;
 pub(crate) mod user_session_controller;
 pub(crate) mod webhook_controller;
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "coaching_session_view_tests.rs"]
+mod coaching_session_view_tests;
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "user_lookup_tests.rs"]
+mod user_lookup_tests;
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "resend_invite_tests.rs"]
+mod resend_invite_tests;
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "reschedule_following_tests.rs"]
+mod reschedule_following_tests;
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "participant_membership_tests.rs"]
+mod participant_membership_tests;
 
 #[derive(Debug, Serialize)]
 struct ApiResponse<T: Serialize> {

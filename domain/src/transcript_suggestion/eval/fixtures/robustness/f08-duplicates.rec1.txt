@@ -1,0 +1,12 @@
+# Real transcript of a f08-duplicates recording (rec1), transcription errors kept; names changed.
+# session: Saturday 2026-10-17
+# next_session: Sunday 2026-10-18 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+# existing a1: Send the Q4 hiring plan to Dana.
+# existing a2: Update the onboarding doc.
+[s1 00:45] Coachee: Hello there.
+[s2 00:48] Coachee: I'll get the Q4 hiring plan over to Dana.
+[s3 00:56] Coachee: Oh, and I really do need to finish updating the onboarding doc. I'll get it done this week.
+[s4 01:06] Coachee: I'll also write a separate onboarding checklist for interns.
+[s5 01:13] Coachee: Good to see you. Goodbye.

@@ -121,6 +121,7 @@ mod tests {
             domain::events::EventPublisher::default(),
             None,
             None,
+            None,
         );
 
         async fn handler(SvixSignature(_): SvixSignature) -> &'static str {
@@ -189,6 +190,7 @@ mod tests {
             service_state,
             Arc::new(sse::Manager::new()),
             domain::events::EventPublisher::default(),
+            None,
             None,
             None,
         );

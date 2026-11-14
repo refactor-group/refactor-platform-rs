@@ -5,7 +5,7 @@ When creating pull requests for this repository:
 1. Always use the template found in `.github/pull_request_template.md`
 2. Output the PR description in a markdown code block for easy copying
 3. Keep descriptions concise and focused
-4. Only include sections that are relevant to the changes
+4. Only include sections that are relevant to the changes, except "Risk" and "How to Revert", which every PR fills in. Set the tier from `docs/cicd/review-risk-tiers.md`
 5. For database migrations, note any breaking changes or required manual steps
 6. Always output the pull request text as markdown format
 

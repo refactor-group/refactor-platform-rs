@@ -1,0 +1,11 @@
+[
+  {"segments": ["s1"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "transcript lost 'revised budget' and 'by Friday'"},
+  {"segments": ["s2", "s3"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "wiki, split across two lines"},
+  {"segments": ["s4"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "one-on-one"},
+  {"segments": ["s5"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "shared drive"},
+  {"segments": ["s6"], "assignees": ["coachee"], "due_dates": ["2026-10-23"], "duplicate_of": null, "note": "this week, from a Sunday"},
+  {"segments": ["s7"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "leave by six"},
+  {"segments": ["s8"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "HR headcount"},
+  {"segments": ["s9"], "assignees": ["coach"], "due_dates": ["2026-10-18"], "duplicate_of": null, "note": "after our call"},
+  {"segments": ["s10"], "assignees": ["coach"], "due_dates": [null], "duplicate_of": null, "note": "template"}
+]

@@ -1,12 +1,13 @@
 [package]
 name = "domain"
-version = "1.0.0-beta3"
+version = "1.0.0-beta4"
 edition = "2021"
 
 [dependencies]
 aes-gcm = "0.10"
 async-trait = "0.1.83"
 base64 = "0.22"
+futures = "0.3.31"
 chrono = { version = "0.4.38", features = ["serde"] }
 chrono-tz = "0.10"
 email_address = "0.2"
@@ -14,6 +15,9 @@ entity = { path = "../entity" }
 entity_api = { path = "../entity_api" }
 events = { path = "../events" }
 hex = "0.4"
+icalendar = { version = "0.17", features = ["recurrence", "chrono-tz"] }
+imagesize = "0.15"
+infer = "0.22"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 meeting-ai = { path = "../meeting-ai" }
 meeting-auth = { path = "../meeting-auth" }
@@ -21,23 +25,41 @@ secrecy = { version = "0.8", features = ["serde"] }
 service = { path = "../service" }
 log = "0.4.22"
 rand = "0.8"
-reqwest = { version = "0.12.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12.12", features = ["json", "rustls-tls", "stream"] }
+rusty-s3 = { version = "0.10", default-features = false, features = ["rustcrypto"] }
 sha2 = "0.10"
+tempfile = "3"
 serde_json = "1.0.128"
 serde = {version = "1.0.210", features = ["derive"] }
 tokio = { version = "1.0", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
 urlencoding = "2.1"
+utoipa = { version = "5.5.0", features = ["axum_extras", "uuid", "chrono", "config"] }
 uuid = { version = "1.0", features = ["v4"] }
+vtimezones-rs = "0.3"
 
 [dependencies.sea-orm]
-version = "1.1.0"                                                       # sea-orm version
+version = "2.0.3"                                                       # sea-orm version
 features = ["debug-print", "runtime-tokio-native-tls", "sqlx-postgres"]
 
 [dev-dependencies]
 mockito = "1.6"
+# RFC 5545 expander used as an oracle: series slots must equal what a client expands
+# from the exact DTSTART;TZID + RRULE the invite carries.
+rrule = "0.14"
+# In-memory SQLite: executes the purge's real queries in-process, which the mock cannot.
+sea-orm = { version = "2.0.3", features = ["sqlx-sqlite", "schema-sync"] }
+# `test-util` (not part of `full`) provides the paused clock the job-scheduler tests
+# use to assert tick timing without sleeping in real time.
+tokio = { version = "1.0", features = ["full", "test-util"] }
 
 [features]
 mock = ["entity_api/mock"]
+# Exposes `test_utils::sqlite` to other crates' tests; enable only as a dev-dependency feature.
+test-sqlite = ["sea-orm/sqlx-sqlite", "sea-orm/schema-sync"]
 
 
 
+
+[build-dependencies]
+utoipa-config = "0.1"

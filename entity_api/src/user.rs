@@ -1,20 +1,34 @@
+use super::actor::Actor;
 use super::error::{EntityApiErrorKind, Error};
+use super::mutate::{self, UpdateMap};
 use async_trait::async_trait;
 use axum_login::{AuthnBackend, UserId};
-use chrono::Utc;
+use chrono::{NaiveTime, Utc};
 
 use entity::users::{ActiveModel, Column, Entity, Model};
+use entity::working_hours::{self, Field, Invalid};
 use entity::{roles, user_roles, Id};
 use log::*;
 use password_auth;
 use sea_orm::{
-    entity::prelude::*, Condition, ConnectionTrait, DatabaseConnection, Set, TransactionTrait,
+    entity::prelude::*,
+    sea_query::{Expr, Func},
+    Condition, ConnectionTrait, DatabaseConnection, DatabaseTransaction, ExprTrait,
+    IntoActiveModel, QuerySelect, RuntimeErr, Set, SqlErr, TransactionTrait,
 };
 use serde::Deserialize;
 use std::sync::Arc;
 use utoipa::{IntoParams, ToSchema};
 
 pub use entity::users::Role;
+
+/// Postgres index backing the global uniqueness of `users.email`.
+const EMAIL_UNIQUE_INDEX: &str = "users_email_key";
+
+/// Postgres CHECK constraints on `users` working hours.
+const WORKING_HOURS_ORDER_CHECK: &str = "users_working_hours_order";
+const WORKING_HOURS_START_STEP_CHECK: &str = "users_working_hours_start_step";
+const WORKING_HOURS_END_STEP_CHECK: &str = "users_working_hours_end_step";
 
 pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Model, Error> {
     debug!("New User Relationship Model to be inserted: {user_model:?}");
@@ -34,7 +48,29 @@ pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Mode
         ..Default::default()
     };
 
-    let mut created_user = user_active_model.insert(db).await?;
+    let mut created_user = user_active_model
+        .insert(db)
+        .await
+        // `users.email` is globally unique. Surface the collision as a 4xx pointing at
+        // the multi-org path instead of letting it bubble up as a bare 500. Matched on
+        // the constraint name rather than the message, which is locale and version
+        // sensitive, and would also catch unrelated indexes containing "email".
+        .map_err(|err| match err.sql_err() {
+            Some(SqlErr::UniqueConstraintViolation(constraint))
+                if constraint.contains(EMAIL_UNIQUE_INDEX) =>
+            {
+                Error {
+                    source: Some(err),
+                    error_kind: EntityApiErrorKind::ValidationError {
+                        message:
+                            "A user with that email already exists. Add them as an existing member instead."
+                                .into(),
+                        details: None,
+                    },
+                }
+            }
+            _ => Error::from(err),
+        })?;
 
     // Newly created users will not have roles at this point so we will add an empty vec manually
     created_user.roles = Vec::new();
@@ -42,25 +78,26 @@ pub async fn create(db: &impl ConnectionTrait, user_model: Model) -> Result<Mode
 }
 
 pub async fn create_by_organization(
-    db: &impl TransactionTrait,
+    db: &impl TransactionTrait<Transaction = DatabaseTransaction>,
+    actor: Actor,
     organization_id: Id,
     user_model: Model,
 ) -> Result<Model, Error> {
     let txn = db.begin().await?;
 
+    let organization = crate::organization::find_by_id(&txn, organization_id).await?;
+    if organization.archived_at.is_some() {
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::OrganizationArchived,
+        });
+    }
+
     let mut user = create(&txn, user_model).await?;
-    let now = Utc::now();
 
-    let default_user_role = user_roles::ActiveModel {
-        user_id: Set(user.id),
-        organization_id: Set(Some(organization_id)),
-        role: Set(roles::Role::User),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    };
-
-    let role = default_user_role.insert(&txn).await?;
+    // Audits the grant as a side effect, so no separate record call is needed.
+    let role =
+        crate::user_role::create(&txn, actor, user.id, organization_id, roles::Role::User).await?;
 
     user.roles = vec![role];
 
@@ -84,6 +121,35 @@ pub async fn find_by_email(db: &impl ConnectionTrait, email: &str) -> Result<Opt
     }
 }
 
+/// Finds a user by email, case-insensitively, with their roles hydrated.
+///
+/// Distinct from [`find_by_email`], which stays exact-match because login depends
+/// on it. Returns `None` in the `Ok` variant when no user matches.
+pub async fn find_by_email_ci(
+    db: &impl ConnectionTrait,
+    email: &str,
+) -> Result<Option<Model>, Error> {
+    let results = Entity::find()
+        .filter(Expr::expr(Func::lower(Expr::col(Column::Email))).eq(Func::lower(email)))
+        .find_with_related(user_roles::Entity)
+        .all(db)
+        .await?;
+
+    Ok(results.into_iter().next().map(|(mut user, roles)| {
+        user.roles = roles;
+        user
+    }))
+}
+
+/// Drops every role that belongs to another organization, keeping global roles.
+///
+/// `Model::roles` is serialized to API clients, so an unscoped listing would tell
+/// one organization's admin which other organizations each member belongs to.
+pub fn scope_roles_to_organization(user: &mut Model, organization_id: Id) {
+    user.roles
+        .retain(|role| role.organization_id.is_none_or(|id| id == organization_id));
+}
+
 pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
     let results = Entity::find_by_id(id)
         .find_with_related(user_roles::Entity)
@@ -102,6 +168,39 @@ pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Erro
     }
 }
 
+/// `find_by_id` without hydrating roles.
+///
+/// The join costs a row per role and is wasted on callers that only need the person:
+/// their name, email, and timezone. Returning an empty `roles` is safe for those and
+/// wrong for anyone making an authorization decision, so reach for `find_by_id` there.
+pub async fn find_by_id_without_roles(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id).one(db).await?.ok_or(Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })
+}
+
+/// `find_by_id` holding an exclusive lock on the row until the transaction ends.
+///
+/// Membership changes and account deletion both read a user's set of roles and
+/// then act on it, but neither sees the other's uncommitted rows. Contending on
+/// the one row they share serializes them.
+///
+/// Unlike `find_by_id`, the returned model has no roles hydrated: Postgres
+/// refuses to lock the nullable side of the join that would fetch them.
+///
+/// Callers must run inside a transaction for the lock to outlive this call.
+pub async fn find_by_id_for_update(db: &impl ConnectionTrait, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id)
+        .lock_exclusive()
+        .one(db)
+        .await?
+        .ok_or(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
+}
+
 pub async fn find_by_organization(
     db: &DatabaseConnection,
     organization_id: Id,
@@ -114,17 +213,14 @@ pub async fn find_by_organization(
     Ok(results
         .into_iter()
         .filter_map(|(mut user, roles)| {
-            // Check if user has any role in the specified organization
-            let has_role_in_org = roles
+            roles
                 .iter()
-                .any(|r| r.organization_id == Some(organization_id));
-
-            if has_role_in_org {
-                user.roles = roles;
-                Some(user)
-            } else {
-                None
-            }
+                .any(|role| role.organization_id == Some(organization_id))
+                .then(|| {
+                    user.roles = roles;
+                    scope_roles_to_organization(&mut user, organization_id);
+                    user
+                })
         })
         .collect())
 }
@@ -180,6 +276,97 @@ pub async fn find_by_ids(db: &impl ConnectionTrait, ids: &[Id]) -> Result<Vec<Mo
             user
         })
         .collect())
+}
+
+/// Working hours parsed from a request, `None` where the field was not sent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WorkingHoursPatch {
+    pub start: Option<NaiveTime>,
+    pub end: Option<NaiveTime>,
+}
+
+/// Parses optional `"HH:MM"` working hours; the start is checked first.
+pub fn parse_working_hours(
+    start: Option<&str>,
+    end: Option<&str>,
+) -> Result<WorkingHoursPatch, Error> {
+    Ok(WorkingHoursPatch {
+        start: start
+            .map(|value| working_hours::parse(Field::Start, value))
+            .transpose()?,
+        end: end
+            .map(|value| working_hours::parse(Field::End, value))
+            .transpose()?,
+    })
+}
+
+/// Checks the update map's working hours, filling a missing one from `existing`.
+///
+/// A map that sets neither passes, since the stored pair is already in order.
+pub fn validate_working_hours_in_update_map(
+    update_map: &UpdateMap,
+    existing: &Model,
+) -> Result<(), Error> {
+    let start = working_hours_in_update_map(update_map, Field::Start)?;
+    let end = working_hours_in_update_map(update_map, Field::End)?;
+    if start.is_none() && end.is_none() {
+        return Ok(());
+    }
+    working_hours::check_order(
+        start.unwrap_or(existing.working_hours_start),
+        end.unwrap_or(existing.working_hours_end),
+    )
+    .map_err(Error::from)
+}
+
+/// The update map's time for `field`; any non-time value is rejected.
+fn working_hours_in_update_map(
+    update_map: &UpdateMap,
+    field: Field,
+) -> Result<Option<NaiveTime>, Error> {
+    match update_map.get_value(&field.to_string()) {
+        None => Ok(None),
+        Some(Value::ChronoTime(Some(time))) => Ok(Some(*time)),
+        Some(_) => Err(Error::from(Invalid::NotOnStep(field))),
+    }
+}
+
+/// Writes `update_map` onto `existing`, surfacing a working-hours CHECK violation as invalid input.
+///
+/// Two concurrent single-field updates can each pass the pair check and still
+/// break the order together; the database constraint is the last word.
+pub async fn update_fields(
+    db: &impl ConnectionTrait,
+    existing: Model,
+    update_map: UpdateMap,
+) -> Result<Model, Error> {
+    let active_model = existing.into_active_model();
+    mutate::update::<ActiveModel, Column>(db, active_model, update_map)
+        .await
+        .map_err(
+            |err| match err.source.as_ref().and_then(violated_working_hours_check) {
+                Some(invalid) => Error {
+                    error_kind: EntityApiErrorKind::WorkingHours(invalid),
+                    ..err
+                },
+                None => err,
+            },
+        )
+}
+
+/// The working-hours rule a failed write broke, matched on the constraint name.
+fn violated_working_hours_check(err: &DbErr) -> Option<Invalid> {
+    let (DbErr::Exec(RuntimeErr::SqlxError(sqlx_err))
+    | DbErr::Query(RuntimeErr::SqlxError(sqlx_err))) = err
+    else {
+        return None;
+    };
+    match sqlx_err.as_database_error()?.constraint()? {
+        WORKING_HOURS_ORDER_CHECK => Some(Invalid::StartNotBeforeEnd),
+        WORKING_HOURS_START_STEP_CHECK => Some(Invalid::NotOnStep(Field::Start)),
+        WORKING_HOURS_END_STEP_CHECK => Some(Invalid::NotOnStep(Field::End)),
+        _ => None,
+    }
 }
 
 pub async fn delete(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error> {
@@ -284,9 +471,6 @@ impl AuthnBackend for Backend {
 pub type AuthSession = axum_login::AuthSession<Backend>;
 
 #[cfg(test)]
-// We need to gate seaORM's mock feature behind conditional compilation because
-// the feature removes the Clone trait implementation from seaORM's DatabaseConnection.
-// see https://github.com/SeaQL/sea-orm/issues/830
 #[cfg(feature = "mock")]
 mod test {
     use super::*;
@@ -304,7 +488,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", CAST("users"."role" AS "text") AS "A_role", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."email" = $1 ORDER BY "users"."id" ASC"#,
+                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", "users"."working_hours_start" AS "A_working_hours_start", "users"."working_hours_end" AS "A_working_hours_end", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."email" = $1 ORDER BY "users"."id" ASC"#,
                 [user_email.into()]
             )]
         );
@@ -323,7 +507,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", CAST("users"."role" AS "text") AS "A_role", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."id" = $1 ORDER BY "users"."id" ASC"#,
+                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", "users"."working_hours_start" AS "A_working_hours_start", "users"."working_hours_end" AS "A_working_hours_end", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" WHERE "users"."id" = $1 ORDER BY "users"."id" ASC"#,
                 [user_id.into()]
             )]
         );
@@ -342,7 +526,7 @@ mod test {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", CAST("users"."role" AS "text") AS "A_role", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" ORDER BY "users"."id" ASC"#,
+                r#"SELECT "users"."id" AS "A_id", "users"."email" AS "A_email", "users"."first_name" AS "A_first_name", "users"."last_name" AS "A_last_name", "users"."display_name" AS "A_display_name", "users"."password" AS "A_password", "users"."github_username" AS "A_github_username", "users"."github_profile_url" AS "A_github_profile_url", "users"."timezone" AS "A_timezone", "users"."default_coaching_session_duration_minutes" AS "A_default_coaching_session_duration_minutes", "users"."working_hours_start" AS "A_working_hours_start", "users"."working_hours_end" AS "A_working_hours_end", "users"."created_at" AS "A_created_at", "users"."updated_at" AS "A_updated_at", "user_roles"."id" AS "B_id", CAST("user_roles"."role" AS "text") AS "B_role", "user_roles"."organization_id" AS "B_organization_id", "user_roles"."user_id" AS "B_user_id", "user_roles"."created_at" AS "B_created_at", "user_roles"."updated_at" AS "B_updated_at" FROM "refactor_platform"."users" LEFT JOIN "refactor_platform"."user_roles" ON "users"."id" = "user_roles"."user_id" ORDER BY "users"."id" ASC"#,
                 []
             )]
         );
@@ -356,6 +540,7 @@ mod test {
         let user_id = Id::new_v4();
         let organization_id = Id::new_v4();
         let user_role_id = Id::new_v4();
+        let actor_user_id = Id::new_v4();
 
         let user_model = entity::users::Model {
             id: user_id,
@@ -368,9 +553,10 @@ mod test {
             github_profile_url: None,
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+            working_hours_start: crate::working_hours::default_start(),
+            working_hours_end: crate::working_hours::default_end(),
             created_at: now.into(),
             updated_at: now.into(),
-            role: entity::users::Role::User,
             roles: vec![],
             invite_status: None,
         };
@@ -385,11 +571,24 @@ mod test {
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([[test_org(organization_id, false)]])
             .append_query_results([[user_model.clone()]])
             .append_query_results([[user_role_model.clone()]])
+            .append_query_results([[test_role_change(
+                actor_user_id,
+                user_id,
+                organization_id,
+                entity::roles::Role::User,
+            )]])
             .into_connection();
 
-        let user = create_by_organization(&db, organization_id, user_model.clone()).await?;
+        let user = create_by_organization(
+            &db,
+            Actor::new(actor_user_id),
+            organization_id,
+            user_model.clone(),
+        )
+        .await?;
 
         assert_eq!(user.id, user_model.id);
         assert_eq!(user.email, user_model.email);
@@ -419,19 +618,98 @@ mod test {
             github_profile_url: None,
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+            working_hours_start: crate::working_hours::default_start(),
+            working_hours_end: crate::working_hours::default_end(),
             created_at: now.into(),
             updated_at: now.into(),
-            role: entity::users::Role::User,
             roles: vec![],
             invite_status: None,
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([[test_org(organization_id, false)]])
             .append_query_errors([sea_orm::DbErr::Custom("Duplicate email".to_string())])
             .into_connection();
 
-        let result = create_by_organization(&db, organization_id, user_model).await;
+        let result =
+            create_by_organization(&db, Actor::new(Id::new_v4()), organization_id, user_model)
+                .await;
         assert!(result.is_err());
+
+        Ok(())
+    }
+
+    /// The audit row `create_by_organization` writes alongside the default role.
+    fn test_role_change(
+        actor_user_id: Id,
+        target_user_id: Id,
+        organization_id: Id,
+        new_role: entity::roles::Role,
+    ) -> entity::user_role_changes::Model {
+        entity::user_role_changes::Model {
+            id: Id::new_v4(),
+            actor_user_id: Some(actor_user_id),
+            target_user_id,
+            organization_id: Some(organization_id),
+            previous_role: None,
+            new_role: Some(new_role),
+            changed_at: chrono::Utc::now().into(),
+        }
+    }
+
+    fn test_org(id: Id, archived: bool) -> entity::organizations::Model {
+        let now = chrono::Utc::now();
+        entity::organizations::Model {
+            id,
+            name: "Test Org".to_owned(),
+            logo: None,
+            slug: "test-org".to_owned(),
+            created_at: now.into(),
+            updated_at: now.into(),
+            archived_at: archived.then(|| now.into()),
+            archived_by: archived.then(Id::new_v4),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_by_organization_rejects_archived_organization() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let organization_id = Id::new_v4();
+
+        let user_model = entity::users::Model {
+            id: Id::new_v4(),
+            email: "test@test.com".to_owned(),
+            first_name: "Test".to_owned(),
+            last_name: "User".to_owned(),
+            display_name: None,
+            password: Some("password123".to_owned()),
+            github_username: None,
+            github_profile_url: None,
+            timezone: "UTC".to_string(),
+            default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+            working_hours_start: crate::working_hours::default_start(),
+            working_hours_end: crate::working_hours::default_end(),
+            created_at: now.into(),
+            updated_at: now.into(),
+            roles: vec![],
+            invite_status: None,
+        };
+
+        // After begin, the guard issues find_by_id(org) first; archived org
+        // returns before any user/role insert.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([[test_org(organization_id, true)]])
+            .into_connection();
+
+        let result =
+            create_by_organization(&db, Actor::new(Id::new_v4()), organization_id, user_model)
+                .await;
+
+        let err = result.expect_err("expected archived-org rejection");
+        assert!(matches!(
+            err.error_kind,
+            EntityApiErrorKind::OrganizationArchived
+        ));
 
         Ok(())
     }
@@ -587,9 +865,10 @@ mod test {
             github_profile_url: None,
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+            working_hours_start: crate::working_hours::default_start(),
+            working_hours_end: crate::working_hours::default_end(),
             created_at: now.into(),
             updated_at: now.into(),
-            role: entity::users::Role::User,
             roles: vec![],
             invite_status: None,
         };
@@ -654,3 +933,7 @@ mod test {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "user_working_hours_tests.rs"]
+mod working_hours_tests;

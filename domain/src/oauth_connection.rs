@@ -1,34 +1,28 @@
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 use crate::gateway::oauth::{self, Provider};
+use crate::meeting_provider::Provider as MeetingProvider;
 use crate::oauth_connections::Model as OauthConnectionModel;
 use crate::oauth_token_storage::DbOAuthTokenStorage;
-use crate::provider::Provider as OauthProvider;
 use crate::Id;
-use entity_api::oauth_connection;
+use entity_api::oauth_connection as ConnectionApi;
 use log::*;
 use meeting_auth::oauth::token::{encryption, Manager, Plain};
 use meeting_auth::oauth::UserInfo;
-use sea_orm::DatabaseConnection;
+use sea_orm::{DatabaseConnection, TransactionTrait};
 use secrecy::{ExposeSecret, SecretString};
 use service::config::Config;
 
 pub use entity_api::oauth_connection::{
-    delete_by_user_and_provider, find_all_by_user, find_by_user, find_by_user_and_provider,
-    get_by_user_and_provider,
+    find_all_by_user, find_by_user, find_by_user_and_provider, get_by_user_and_provider,
 };
 
 /// Build the Provider's OAuth authorization URL with the given CSRF state token.
 pub fn authorize_url(
     config: &Config,
     state: &str,
-    provider: OauthProvider,
+    provider: MeetingProvider,
 ) -> Result<String, Error> {
-    let oauth_provider: Box<dyn Provider> = match provider {
-        OauthProvider::Google => Box::new(create_google_provider(config)?),
-        OauthProvider::Zoom => Box::new(create_zoom_provider(config)?),
-    };
-
-    let auth_request = oauth_provider.authorization_url(state, None);
+    let auth_request = create_provider(config, provider)?.authorization_url(state, None);
 
     Ok(auth_request.url)
 }
@@ -41,7 +35,7 @@ pub async fn exchange_and_store_tokens(
     config: &Config,
     user_id: Id,
     authorization_code: &str,
-    provider: OauthProvider,
+    provider: MeetingProvider,
 ) -> Result<String, Error> {
     info!(
         "Processing {} OAuth callback for user {}",
@@ -53,10 +47,7 @@ pub async fn exchange_and_store_tokens(
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
     })?);
 
-    let oauth_provider: Box<dyn Provider> = match provider {
-        OauthProvider::Google => Box::new(create_google_provider(config)?),
-        OauthProvider::Zoom => Box::new(create_zoom_provider(config)?),
-    };
+    let oauth_provider = create_provider(config, provider)?;
 
     let tokens_raw = oauth_provider
         .exchange_code(authorization_code, None)
@@ -101,18 +92,28 @@ pub async fn exchange_and_store_tokens(
             )),
         })?;
 
-    let existing = oauth_connection::find_by_user_and_provider(db, user_id, provider).await?;
+    let existing = ConnectionApi::find_by_user_and_provider(db, user_id, provider).await?;
 
     match existing {
         Some(conn) => {
-            oauth_connection::update_tokens(
-                db,
+            // Tokens and the account they belong to are saved together or not at all.
+            let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+            ConnectionApi::update_tokens(
+                &txn,
                 conn.id,
                 encrypted_access,
                 encrypted_refresh,
                 tokens.expires_at,
             )
             .await?;
+            ConnectionApi::update_identity(
+                &txn,
+                conn.id,
+                Some(user_info.id),
+                Some(user_info.email),
+            )
+            .await?;
+            txn.commit().await.map_err(entity_api::error::Error::from)?;
         }
         None => {
             let model = create_oauth_connection_model(
@@ -124,7 +125,7 @@ pub async fn exchange_and_store_tokens(
                 encrypted_access,
                 encrypted_refresh,
             );
-            oauth_connection::create(db, model).await?;
+            ConnectionApi::create(db, model).await?;
         }
     }
 
@@ -149,7 +150,7 @@ pub async fn get_valid_access_token(
     db: &DatabaseConnection,
     config: &Config,
     user_id: Id,
-    provider: OauthProvider,
+    provider: MeetingProvider,
 ) -> Result<String, Error> {
     let encryption_key = SecretString::from(config.encryption_key().ok_or_else(|| Error {
         source: None,
@@ -160,7 +161,7 @@ pub async fn get_valid_access_token(
     let manager = Manager::new(storage);
 
     let result = match provider {
-        OauthProvider::Google => {
+        MeetingProvider::Google => {
             let oauth_provider = create_google_provider(config)?;
             manager
                 .get_valid_token(&oauth_provider, &user_id.to_string())
@@ -172,7 +173,7 @@ pub async fn get_valid_access_token(
                     )
                 })
         }
-        OauthProvider::Zoom => {
+        MeetingProvider::Zoom => {
             let oauth_provider = create_zoom_provider(config)?;
             manager
                 .get_valid_token(&oauth_provider, &user_id.to_string())
@@ -200,7 +201,10 @@ pub async fn get_valid_access_token(
                 "Refresh token revoked for user {}, removing connection",
                 user_id
             );
-            if let Err(del_err) = delete_by_user_and_provider(db, user_id, provider).await {
+            // The provider already revoked this grant, so drop the row without a revoke round trip.
+            if let Err(del_err) =
+                ConnectionApi::delete_by_user_and_provider(db, user_id, provider).await
+            {
                 warn!(
                     "Failed to delete revoked OAuth connection for user {}: {:?}",
                     user_id, del_err
@@ -214,6 +218,133 @@ pub async fn get_valid_access_token(
             })
         }
         Err(e) => Err(e.into()),
+    }
+}
+
+/// The user's account id on `provider`, looked up from the provider once when not yet stored.
+///
+/// `None` when the user has no connection for `provider`. A stored id is returned without any
+/// network call; a missing one is fetched with the user's token and saved for next time.
+pub async fn external_account_id(
+    db: &DatabaseConnection,
+    config: &Config,
+    user_id: Id,
+    provider: MeetingProvider,
+) -> Result<Option<String>, Error> {
+    let Some(connection) = ConnectionApi::find_by_user_and_provider(db, user_id, provider).await?
+    else {
+        return Ok(None);
+    };
+
+    if let Some(stored) = connection.external_account_id {
+        return Ok(Some(stored));
+    }
+
+    let token = get_valid_access_token(db, config, user_id, provider).await?;
+    let info = create_provider(config, provider)?
+        .get_user_info(&token)
+        .await?;
+
+    ConnectionApi::update_identity(db, connection.id, Some(info.id.clone()), Some(info.email))
+        .await?;
+
+    info!("Backfilled {provider} account id for user {user_id}");
+
+    Ok(Some(info.id))
+}
+
+/// Disconnect a user from a provider: revoke the stored grant, then delete the connection.
+///
+/// Revocation is best effort. It is attempted first so that a token is never orphaned at the
+/// provider, but a failure is logged rather than propagated: leaving the row behind would strand
+/// the user in a connected-but-broken state with no way to retry. In the reverse case, where the
+/// grant is revoked but the delete fails, the next token use fails as `TokenRevoked` and
+/// `get_valid_access_token` drops the row then.
+///
+/// A refresh or reconnect that writes to the row while revocation is in flight is deleted along
+/// with it: the grant it belongs to has already been revoked, so the disconnect wins.
+///
+/// # Errors
+///
+/// Returns `RecordNotFound` when the user has no connection for `provider`.
+pub async fn delete_by_user_and_provider(
+    db: &DatabaseConnection,
+    config: &Config,
+    user_id: Id,
+    provider: MeetingProvider,
+) -> Result<(), Error> {
+    let connection = ConnectionApi::get_by_user_and_provider(db, user_id, provider).await?;
+
+    revoke_stored_tokens(config, &connection, provider).await;
+
+    // Delete by id rather than re-resolving the pair, so a concurrent disconnect that already
+    // removed the row still succeeds instead of surfacing a 404 after a completed revoke.
+    ConnectionApi::delete_by_id(db, connection.id).await?;
+
+    info!("Disconnected {} for user {}", provider, user_id);
+
+    Ok(())
+}
+
+/// Revoke a connection's stored grant with the provider, logging and returning on any failure.
+///
+/// Tries the refresh token first, since it outlives the access token, and falls back to the access
+/// token. Google revokes the whole grant given either, while Zoom documents only the access token,
+/// so trying both is what makes one code path correct for both providers.
+async fn revoke_stored_tokens(
+    config: &Config,
+    connection: &OauthConnectionModel,
+    provider: MeetingProvider,
+) {
+    let user_id = connection.user_id;
+
+    let Some(encryption_key) = config.encryption_key() else {
+        warn!("Cannot revoke {provider} token for user {user_id}: no encryption key configured");
+        return;
+    };
+
+    let tokens = revocable_tokens(connection, &encryption_key);
+    if tokens.is_empty() {
+        warn!("Cannot revoke {provider} token for user {user_id}: no token could be decrypted");
+        return;
+    }
+
+    let oauth_provider = match create_provider(config, provider) {
+        Ok(oauth_provider) => oauth_provider,
+        Err(e) => {
+            warn!("Cannot revoke {provider} token for user {user_id}: {e:?}");
+            return;
+        }
+    };
+
+    for token in &tokens {
+        match oauth_provider.revoke_token(token).await {
+            Ok(()) => {
+                info!("Revoked {provider} grant for user {user_id}");
+                return;
+            }
+            Err(e) => warn!("Failed to revoke {provider} token for user {user_id}: {e:?}"),
+        }
+    }
+}
+
+/// The connection's decryptable tokens, refresh first, skipping any that fail to decrypt.
+fn revocable_tokens(connection: &OauthConnectionModel, encryption_key: &str) -> Vec<String> {
+    [
+        connection.refresh_token.as_deref(),
+        Some(connection.access_token.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|stored| encryption::decrypt(stored, encryption_key).ok())
+    .collect()
+}
+
+/// Create the OAuth provider implementation backing a meeting provider.
+fn create_provider(config: &Config, provider: MeetingProvider) -> Result<Box<dyn Provider>, Error> {
+    match provider {
+        MeetingProvider::Google => Ok(Box::new(create_google_provider(config)?)),
+        MeetingProvider::Zoom => Ok(Box::new(create_zoom_provider(config)?)),
     }
 }
 
@@ -267,7 +398,7 @@ fn create_zoom_provider(config: &Config) -> Result<impl Provider, Error> {
 
 fn create_oauth_connection_model(
     user_id: Id,
-    provider: OauthProvider,
+    provider: MeetingProvider,
     user_info: UserInfo,
     tokens: &Plain,
     scopes: String,
@@ -276,13 +407,12 @@ fn create_oauth_connection_model(
 ) -> OauthConnectionModel {
     let now = chrono::Utc::now();
 
-    // Start with common fields
-    let mut model = OauthConnectionModel {
+    OauthConnectionModel {
         id: Id::new_v4(),
         user_id,
         provider,
-        external_account_id: None,
-        external_email: None,
+        external_account_id: Some(user_info.id),
+        external_email: Some(user_info.email),
         access_token: encrypted_access,
         refresh_token: encrypted_refresh,
         token_expires_at: tokens.expires_at.map(|dt| dt.into()),
@@ -290,21 +420,148 @@ fn create_oauth_connection_model(
         scopes,
         created_at: now.into(),
         updated_at: now.into(),
-    };
+    }
+}
 
-    match provider {
-        OauthProvider::Google => apply_google_fields(&mut model, user_info),
-        OauthProvider::Zoom => apply_zoom_fields(&mut model, user_info),
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "oauth_connection_identity_tests.rs"]
+mod identity_tests;
+
+#[cfg(test)]
+#[path = "oauth_connection_sqlite_tests.rs"]
+mod sqlite_tests;
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+mod tests {
+    use super::*;
+    use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
+
+    fn test_model() -> OauthConnectionModel {
+        let now = chrono::Utc::now();
+        OauthConnectionModel {
+            id: Id::new_v4(),
+            user_id: Id::new_v4(),
+            provider: MeetingProvider::Google,
+            external_account_id: None,
+            external_email: Some("coach@example.com".to_string()),
+            access_token: "encrypted-access".to_string(),
+            refresh_token: Some("encrypted-refresh".to_string()),
+            token_expires_at: Some(now.into()),
+            token_type: "Bearer".to_string(),
+            scopes: "openid email".to_string(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        }
     }
 
-    model
-}
+    /// 32 bytes hex, matching what `encryption::encrypt` expects.
+    const TEST_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-fn apply_google_fields(model: &mut OauthConnectionModel, user_info: UserInfo) {
-    model.external_email = Some(user_info.email);
-}
+    /// Every statement the mock saw, flattened across transactions.
+    fn statements(db: DatabaseConnection) -> Vec<String> {
+        db.into_transaction_log()
+            .iter()
+            .flat_map(|transaction| {
+                transaction
+                    .statements()
+                    .iter()
+                    .map(|statement| statement.sql.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
 
-fn apply_zoom_fields(model: &mut OauthConnectionModel, user_info: UserInfo) {
-    model.external_account_id = Some(user_info.id);
-    model.external_email = Some(user_info.email);
+    /// An unusable revoke path must never strand the user in a connected-but-broken state.
+    #[tokio::test]
+    async fn delete_removes_the_connection_even_when_revocation_cannot_run() -> Result<(), Error> {
+        let model = test_model();
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![model.clone()]])
+            .append_exec_results(vec![MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        // Revocation cannot reach the network here whichever way the ambient environment is
+        // configured: without an encryption key it bails before decrypting, and with one it bails
+        // because neither stored token is valid ciphertext.
+        delete_by_user_and_provider(
+            &db,
+            &Config::default(),
+            model.user_id,
+            MeetingProvider::Google,
+        )
+        .await?;
+
+        assert!(
+            statements(db).iter().any(|sql| sql.starts_with("DELETE")),
+            "the connection row must be deleted even when revocation cannot run"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn revocable_tokens_prefers_the_refresh_token() {
+        let model = OauthConnectionModel {
+            access_token: encryption::encrypt("access", TEST_KEY).unwrap(),
+            refresh_token: Some(encryption::encrypt("refresh", TEST_KEY).unwrap()),
+            ..test_model()
+        };
+
+        assert_eq!(
+            revocable_tokens(&model, TEST_KEY),
+            vec!["refresh", "access"]
+        );
+    }
+
+    #[test]
+    fn revocable_tokens_falls_back_to_the_access_token() {
+        let model = OauthConnectionModel {
+            access_token: encryption::encrypt("access", TEST_KEY).unwrap(),
+            refresh_token: None,
+            ..test_model()
+        };
+
+        assert_eq!(revocable_tokens(&model, TEST_KEY), vec!["access"]);
+    }
+
+    #[test]
+    fn revocable_tokens_skips_what_it_cannot_decrypt() {
+        let model = OauthConnectionModel {
+            access_token: encryption::encrypt("access", TEST_KEY).unwrap(),
+            refresh_token: Some("not-ciphertext".to_string()),
+            ..test_model()
+        };
+
+        assert_eq!(revocable_tokens(&model, TEST_KEY), vec!["access"]);
+    }
+
+    #[test]
+    fn revocable_tokens_is_empty_when_nothing_decrypts() {
+        assert!(revocable_tokens(&test_model(), TEST_KEY).is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_errors_when_the_user_has_no_connection_for_the_provider() {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results::<OauthConnectionModel, Vec<OauthConnectionModel>, _>(vec![
+                vec![],
+            ])
+            .into_connection();
+
+        let result = delete_by_user_and_provider(
+            &db,
+            &Config::default(),
+            Id::new_v4(),
+            MeetingProvider::Google,
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
 }

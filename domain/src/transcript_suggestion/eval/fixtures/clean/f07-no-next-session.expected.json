@@ -1,0 +1,6 @@
+[
+  {"segments": ["s1"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "before our next session, none scheduled: blank"},
+  {"segments": ["s2"], "assignees": ["coach"], "due_dates": [null], "duplicate_of": null, "note": "by next time, none scheduled: blank"},
+  {"segments": ["s3"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "before we meet again, none scheduled: blank"},
+  {"segments": ["s4", "s5"], "assignees": ["coach"], "due_dates": [null], "duplicate_of": null, "note": "deadline on the next line, none scheduled: blank"}
+]

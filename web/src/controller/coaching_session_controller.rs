@@ -1,35 +1,51 @@
 use crate::controller::ApiResponse;
-use crate::error::WebErrorKind;
-use crate::extractors::coaching_session_access::CoachingSessionAccess;
-use crate::extractors::{
-    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+use crate::extractors::coaching_session_access::{
+    CoachingSessionAccess, CoachingSessionCoachAccess, CoachingSessionContextAccess,
 };
-use crate::params::coaching_session::recurring::CreateRecurringParams;
-use crate::params::coaching_session::{CreateParams, IndexParams, SortField, UpdateParams};
+use crate::extractors::{
+    authenticated_user::AuthenticatedUser,
+    coaching_relationship_access::{authorize_relationship_coach, CoachingRelationshipQueryAccess},
+    compare_api_version::CompareApiVersion,
+};
+use crate::params::coaching_session::{
+    CreateParams, IndexParams, SortField, TitleUpdateParams, UpdateParams,
+};
 use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
-use domain::{
-    coaching_relationship as CoachingRelationshipApi, coaching_session as CoachingSessionApi,
-    emails as EmailsApi, Id,
-};
+use domain::{coaching_session as CoachingSessionApi, coaching_sessions, Id};
+use serde::Serialize;
 use service::config::ApiVersion;
+use utoipa::ToSchema;
 
 use log::*;
 
+/// A coaching session with the organization that owns its coaching relationship.
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct SessionWithOrganization {
+    #[serde(flatten)]
+    session: coaching_sessions::Model,
+    /// The organization that owns this session's coaching relationship.
+    organization_id: Id,
+}
+
 /// GET a Coaching Session by ID
+///
+/// Returns the session with `organization_id`, the organization that owns its coaching
+/// relationship, so a caller can switch to that organization before reading anything
+/// scoped to it.
 #[utoipa::path(
     get,
     path = "/coaching_sessions/{id}",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Coaching Session ID to retrieve")
+        ("id" = Uuid, Path, description = "Coaching Session ID to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a Coaching Session", body = coaching_sessions::Model),
+        (status = 200, description = "Successfully retrieved a Coaching Session", body = SessionWithOrganization),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Coaching Session not found"),
         (status = 405, description = "Method not allowed"),
@@ -42,9 +58,9 @@ use log::*;
 pub async fn read(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    CoachingSessionAccess(coaching_session): CoachingSessionAccess,
+    CoachingSessionContextAccess(coaching_session, relationship): CoachingSessionContextAccess,
 ) -> Result<impl IntoResponse, Error> {
-    let coaching_session = CoachingSessionApi::ensure_hydrated(
+    let session = CoachingSessionApi::ensure_hydrated(
         app_state.db_conn_ref(),
         &app_state.config,
         app_state.event_publisher.as_ref(),
@@ -53,8 +69,42 @@ pub async fn read(
     .await?;
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),
-        coaching_session,
+        SessionWithOrganization {
+            session,
+            organization_id: relationship.organization_id,
+        },
     )))
+}
+
+/// Mark a coaching session viewed by the caller, returning the prior marker.
+///
+/// Upserts the authenticated caller's view marker for this session to now() and returns the
+/// value it had immediately before, so the caller can compute what is new since their last view.
+/// Idempotent. Participant-only (same access as reading the session).
+#[utoipa::path(
+    post,
+    path = "/coaching_sessions/{coaching_session_id}/view",
+    params(
+        ApiVersion,
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
+    ),
+    responses(
+        (status = 200, description = "Marker advanced; prior value returned", body = domain::coaching_session_view::MarkViewed),
+        (status = 401, description = "Unauthorized or not a participant"),
+        (status = 404, description = "Coaching session not found"),
+    ),
+    security(("cookie_auth" = []))
+)]
+pub async fn view(
+    CompareApiVersion(_v): CompareApiVersion,
+    CoachingSessionAccess(session): CoachingSessionAccess,
+    AuthenticatedUser(user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+) -> Result<impl IntoResponse, Error> {
+    let result =
+        domain::coaching_session_view::mark_viewed(app_state.db_conn_ref(), session.id, user.id)
+            .await?;
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), result)))
 }
 
 #[utoipa::path(
@@ -62,15 +112,16 @@ pub async fn read(
     path = "/coaching_sessions",
     params(
         ApiVersion,
-        ("coaching_relationship_id" = Option<Id>, Query, description = "Filter by coaching_relationship_id"),
+        ("coaching_relationship_id" = Option<Uuid>, Query, description = "Filter by coaching_relationship_id"),
         ("from_date" = Option<NaiveDate>, Query, description = "Filter by from_date"),
         ("to_date" = Option<NaiveDate>, Query, description = "Filter by to_date"),
         ("sort_by" = Option<crate::params::coaching_session::SortField>, Query, description = "Sort by field. Valid values: 'date', 'created_at', 'updated_at'. Must be provided with sort_order.", example = "date"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc' (ascending), 'desc' (descending). Must be provided with sort_by.", example = "desc")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved all Coaching Sessions", body = [coaching_sessions::Model]),
+        (status = 200, description = "Successfully retrieved all Coaching Sessions", body = [domain::coaching_session::SessionWithDisplayTitle]),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -79,10 +130,9 @@ pub async fn read(
     )
 )]
 pub async fn index(
+    CoachingRelationshipQueryAccess(relationship): CoachingRelationshipQueryAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
     State(app_state): State<AppState>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
@@ -91,9 +141,11 @@ pub async fn index(
 
     // Apply default sorting parameters
     let mut params = params;
+    params.coaching_relationship_id = relationship.id;
     IndexParams::apply_sort_defaults(&mut params.sort_by, &mut params.sort_order, SortField::Date);
 
-    let coaching_sessions = CoachingSessionApi::find_by(app_state.db_conn_ref(), params).await?;
+    let coaching_sessions =
+        CoachingSessionApi::find_by_with_display_title(app_state.db_conn_ref(), params).await?;
 
     debug!("Found Coaching Sessions: {coaching_sessions:?}");
 
@@ -110,10 +162,13 @@ pub async fn index(
     params(ApiVersion),
     request_body = CreateParams,
     responses(
-        (status = 201, description = "Successfully Created a new Coaching Session", body = [domain::coaching_sessions::Model]),
+        (status = 201, description = "Successfully Created a new Coaching Session", body = domain::coaching_sessions::Model),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Coaching relationship not found"),
         (status = 405, description = "Method not allowed"),
+        (status = 409, description = "The coachee is no longer a member of the organization; `details.reason` is `coachee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -122,13 +177,17 @@ pub async fn index(
 )]
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
+    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Json(params): Json<CreateParams>,
-) -> Result<impl IntoResponse, Error> {
+) -> Result<Response, Error> {
     debug!("POST Create a new Coaching Session from: {params:?}");
+
+    if let Err(rejection) =
+        authorize_relationship_coach(&app_state, &user, params.coaching_relationship_id).await
+    {
+        return Ok(rejection.into_response());
+    }
 
     // Validate wire `Option<i16>` → `Option<Duration>` so lower layers see
     // only already-validated values. Out-of-range propagates as 422.
@@ -146,76 +205,11 @@ pub async fn create(
 
     debug!("New Coaching Session: {coaching_session:?}");
 
-    EmailsApi::notify_session_scheduled(
-        app_state.db_conn_ref(),
-        &app_state.config,
-        &coaching_session,
-    )
-    .await;
-
     Ok(Json(ApiResponse::new(
         StatusCode::CREATED.into(),
         coaching_session,
-    )))
-}
-
-/// POST create a recurring series of coaching sessions in one request.
-/// Returns the inserted rows.
-///
-/// Each session's meeting provider (Zoom, Google Meet, etc.) is resolved
-/// lazily on first read using the coach's then-current OAuth connection —
-/// not at the time this endpoint is called. If the coach reconnects a
-/// different provider before opening a session, that session will use the
-/// new provider.
-#[utoipa::path(
-    post,
-    path = "/coaching_sessions/recurring",
-    params(ApiVersion),
-    request_body = CreateRecurringParams,
-    responses(
-        (status = 201, description = "Successfully created the recurring series", body = [domain::coaching_sessions::Model]),
-        (status = 401, description = "Unauthorized"),
-        (status = 405, description = "Method not allowed"),
-        (status = 422, description = "Unprocessable Entity (invalid recurrence rule)"),
-        (status = 503, description = "Service temporarily unavailable")
-    ),
-    security(
-        ("cookie_auth" = [])
-    )
-)]
-pub async fn create_recurring(
-    CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(user): AuthenticatedUser,
-    State(app_state): State<AppState>,
-    Json(params): Json<CreateRecurringParams>,
-) -> Result<impl IntoResponse, Error> {
-    debug!("POST Create recurring coaching sessions: {params:?}");
-
-    let db = app_state.db_conn_ref();
-
-    let dates = CoachingSessionApi::expand_recurrence(params.start_at, &params.recurrence)?;
-
-    let relationship =
-        CoachingRelationshipApi::find_by_id(db, params.coaching_relationship_id).await?;
-    if relationship.coach_id != user.id {
-        return Err(Error::Web(WebErrorKind::Auth));
-    }
-
-    // Validate duration at the wire boundary (see `create` above).
-    let requested_duration = CoachingSessionApi::parse_duration_minutes(params.duration_minutes)?;
-
-    let sessions = CoachingSessionApi::bulk_create_recurring(
-        db,
-        params.coaching_relationship_id,
-        relationship.coach_id,
-        dates,
-        requested_duration,
-    )
-    .await?;
-
-    EmailsApi::notify_recurring_sessions_scheduled(db, &app_state.config, &sessions).await;
-
-    Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), sessions)))
+    ))
+    .into_response())
 }
 
 /// PUT update a Coaching Session
@@ -224,12 +218,14 @@ pub async fn create_recurring(
     path = "/coaching_sessions/{id}",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Coaching Session ID to Update")
+        ("id" = Uuid, Path, description = "Coaching Session ID to Update")
     ),
     request_body = UpdateParams,
     responses(
         (status = 204, description = "Successfully updated a Coaching Session", body = ()),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 409, description = "A new `date` or `duration_minutes` while the coachee is no longer a member of the organization; `details.reason` is `coachee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status = 503, description = "Service temporarily unavailable"),
     ),
     security(
@@ -237,24 +233,65 @@ pub async fn create_recurring(
     )
 )]
 pub async fn update(
+    CoachingSessionCoachAccess(coaching_session, _relationship): CoachingSessionCoachAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(coaching_session_id): Path<Id>,
     Json(params): Json<UpdateParams>,
 ) -> Result<impl IntoResponse, Error> {
-    CoachingSessionApi::update(app_state.db_conn_ref(), coaching_session_id, params).await?;
+    CoachingSessionApi::update(app_state.db_conn_ref(), coaching_session.id, params).await?;
     Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
+}
+
+/// PATCH update only the title of a Coaching Session.
+///
+/// Either participant (coach or coachee) may edit the title; the scheduling fields stay on the
+/// coach-only `PUT /coaching_sessions/{id}`. Authorization is the `CoachingSessionAccess`
+/// extractor (participant-gated). Returns the updated session.
+#[utoipa::path(
+    patch,
+    path = "/coaching_sessions/{id}/title",
+    params(
+        ApiVersion,
+        ("id" = Uuid, Path, description = "Coaching Session ID to Update")
+    ),
+    request_body = TitleUpdateParams,
+    responses(
+        (status = 200, description = "Successfully updated the title", body = domain::coaching_sessions::Model),
+        (status = 401, description = "Unauthorized"),
+        (status = 422, description = "Title exceeds the maximum length"),
+        (status = 503, description = "Service temporarily unavailable"),
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn update_title(
+    CompareApiVersion(_v): CompareApiVersion,
+    CoachingSessionAccess(coaching_session): CoachingSessionAccess,
+    State(app_state): State<AppState>,
+    Json(params): Json<TitleUpdateParams>,
+) -> Result<impl IntoResponse, Error> {
+    let updated = CoachingSessionApi::update_title(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        coaching_session.id,
+        params,
+    )
+    .await?;
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), updated)))
 }
 
 /// DELETE a Coaching Session
 #[utoipa::path(
     delete,
     path = "/coaching_sessions/{id}",
-    params(ApiVersion, ("id" = Id, Path, description = "Coaching Session ID to Delete")),
+    params(ApiVersion, ("id" = Uuid, Path, description = "Coaching Session ID to Delete")),
     responses(
         (status = 204, description = "Successfully deleted a Coaching Session", body = ()),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 409, description = "The session has notes, actions or agreements; `details.reason` is `sessions_have_content`, with `details.coaching_session_id`"),
         (status = 503, description = "Service temporarily unavailable"),
     ),
     security(
@@ -262,19 +299,52 @@ pub async fn update(
     )
 )]
 pub async fn delete(
+    CoachingSessionCoachAccess(coaching_session, _relationship): CoachingSessionCoachAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(coaching_session_id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
     CoachingSessionApi::delete(
         app_state.db_conn_ref(),
         &app_state.config,
-        coaching_session_id,
+        coaching_session.id,
     )
     .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
+}
+
+/// POST resend a Coaching Session's invite to both participants. Synchronous, so the
+/// answer says whether it went.
+#[utoipa::path(
+    post,
+    path = "/coaching_sessions/{id}/resend_invite",
+    params(ApiVersion, ("id" = Uuid, Path, description = "Coaching Session ID")),
+    responses(
+        (status = 204, description = "Invite resent"),
+        (status = 400, description = "Missing or unsupported API version header"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden — not the coach on the relationship"),
+        (status = 404, description = "Coaching Session not found"),
+        (status = 409, description = "Not resendable; `details.reason` is `no_upcoming_sessions`, `series_member`, or `coachee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
+        (status = 502, description = "The invite did not reach the coachee"),
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn resend_invite(
+    CoachingSessionCoachAccess(coaching_session, _relationship): CoachingSessionCoachAccess,
+    CompareApiVersion(_v): CompareApiVersion,
+    State(app_state): State<AppState>,
+) -> Result<impl IntoResponse, Error> {
+    CoachingSessionApi::resend_invite(
+        app_state.db_conn_ref(),
+        &app_state.config,
+        coaching_session.id,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]
@@ -283,36 +353,9 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
     use chrono::Utc;
-    use domain::{
-        coaching_relationships,
-        coaching_session::{Frequency, Recurrence},
-        users,
-    };
     use sea_orm::{DatabaseBackend, MockDatabase};
     use service::config::Config;
     use std::sync::Arc;
-
-    fn test_user(id: Id) -> users::Model {
-        let now = Utc::now();
-        users::Model {
-            id,
-            email: "user@example.com".to_string(),
-            first_name: "Test".to_string(),
-            last_name: "User".to_string(),
-            display_name: None,
-            password: None,
-            github_username: None,
-            github_profile_url: None,
-            timezone: "UTC".to_string(),
-            default_coaching_session_duration_minutes: domain::duration::Duration::default_minutes(
-            ),
-            role: users::Role::User,
-            roles: vec![],
-            invite_status: None,
-            created_at: now.into(),
-            updated_at: now.into(),
-        }
-    }
 
     fn test_app_state(db: Arc<sea_orm::DatabaseConnection>) -> AppState {
         AppState::new(
@@ -321,61 +364,102 @@ mod tests {
             domain::events::EventPublisher::default(),
             None,
             None,
+            None,
         )
     }
 
-    #[tokio::test]
-    async fn create_recurring_rejects_non_coach_with_auth_error() {
-        let user = test_user(Id::new_v4());
+    fn test_session(id: Id, relationship_id: Id) -> domain::coaching_sessions::Model {
         let now = Utc::now();
-        let relationship = coaching_relationships::Model {
-            id: Id::new_v4(),
-            organization_id: Id::new_v4(),
-            coach_id: Id::new_v4(),
-            coachee_id: Id::new_v4(),
-            slug: "test".to_string(),
+        domain::coaching_sessions::Model {
+            id,
+            coaching_relationship_id: relationship_id,
+            coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
+            collab_document_name: None,
+            date: now.naive_utc(),
+            duration_minutes: 60,
+            title: None,
+            meeting_url: None,
+            provider: None,
             created_at: now.into(),
             updated_at: now.into(),
-        };
-        assert_ne!(user.id, relationship.coach_id);
+            hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
+        }
+    }
 
+    // The participant gate lives in CoachingSessionAccess (tested there); here we assert the
+    // handler wires a participant-authorized request through to a title update and returns the
+    // updated session. Constructing the extractor directly stands in for a passed gate.
+    #[tokio::test]
+    async fn update_title_updates_and_returns_session() {
+        let session = test_session(Id::new_v4(), Id::new_v4());
+        let updated = domain::coaching_sessions::Model {
+            title: Some("New title".to_string()),
+            ..session.clone()
+        };
+
+        let bumped = domain::coaching_sessions::Model {
+            ical_sequence: 1,
+            ..updated.clone()
+        };
+
+        // Setting the title bumps SEQUENCE: find_by_id → UPDATE ... RETURNING →
+        // increment_ical_sequence (find_by_id → UPDATE ... RETURNING) → the title event,
+        // whose participant lookup short-circuits on the empty result below.
         let db = Arc::new(
             MockDatabase::new(DatabaseBackend::Postgres)
-                .append_query_results(vec![vec![relationship.clone()]])
+                .append_query_results(vec![vec![session.clone()]]) // domain update: find_by_id
+                .append_query_results(vec![vec![updated.clone()]]) // UPDATE ... RETURNING
+                .append_query_results(vec![vec![session.clone()]]) // increment: find_by_id
+                .append_query_results(vec![vec![bumped.clone()]]) // increment: UPDATE ... RETURNING
+                .append_query_results::<domain::coaching_sessions::Model, Vec<domain::coaching_sessions::Model>, _>(vec![vec![]]) // participant lookup: empty
                 .into_connection(),
         );
-        let app_state = test_app_state(db);
 
-        let params = CreateRecurringParams {
-            coaching_relationship_id: relationship.id,
-            start_at: chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
-                .unwrap()
-                .and_hms_opt(10, 0, 0)
-                .unwrap(),
-            recurrence: Recurrence {
-                frequency: Frequency::Weekly,
-                interval: 1,
-                by_weekdays: None,
-                count: Some(3),
-                until: None,
-            },
-            duration_minutes: None,
-        };
-
-        let result = create_recurring(
+        let result = update_title(
             CompareApiVersion(HeaderValue::from_static("1.0.0")),
-            AuthenticatedUser(user),
-            State(app_state),
-            Json(params),
+            CoachingSessionAccess(session.clone()),
+            State(test_app_state(db)),
+            Json(TitleUpdateParams {
+                title: Some(Some("New title".to_string())),
+            }),
         )
         .await;
 
-        let err = result
-            .err()
-            .expect("expected the handler to reject a non-coach caller");
+        result.expect("participant title update should succeed");
+    }
+
+    // Title-only map: a value sets it, explicit null clears it, absence leaves it untouched.
+    #[tokio::test]
+    async fn title_update_params_build_a_title_only_map() {
+        use domain::IntoUpdateMap;
+        use sea_orm::Value;
+
+        let set = TitleUpdateParams {
+            title: Some(Some("Hi".to_string())),
+        }
+        .into_update_map();
+        assert!(matches!(
+            set.get_value("title"),
+            Some(Value::String(Some(_)))
+        ));
+
+        let clear = TitleUpdateParams { title: Some(None) }.into_update_map();
+        assert!(matches!(
+            clear.get_value("title"),
+            Some(Value::String(None))
+        ));
+
+        let absent = TitleUpdateParams { title: None }.into_update_map();
         assert!(
-            matches!(err, Error::Web(WebErrorKind::Auth)),
-            "expected Err(Web(Auth)), got {err:?}"
+            absent.get_value("title").is_none(),
+            "absent title is a no-op"
         );
     }
 }
+
+#[cfg(test)]
+#[path = "coaching_session_controller_sqlite_tests.rs"]
+mod sqlite_tests;

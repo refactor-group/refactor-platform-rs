@@ -17,6 +17,7 @@ pub(crate) const MAX_LIMIT: u32 = 100;
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[schema(example = "updated_at")]
 #[allow(clippy::enum_variant_names)]
+#[schema(as = params::coaching_relationship::goal_progress::SortField)]
 pub(crate) enum SortField {
     #[serde(rename = "updated_at")]
     UpdatedAt,

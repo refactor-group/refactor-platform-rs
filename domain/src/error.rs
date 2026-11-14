@@ -1,10 +1,15 @@
 //! Error types for the `domain` layer.
+use std::error::Error as StdError;
+use std::fmt;
+use std::time::Duration;
+
 use entity_api::error::{EntityApiErrorKind, Error as EntityApiError};
+use entity_api::Id;
 use meeting_auth::error::{
     Error as MeetingAuthError, ErrorKind as MeetingAuthErrorKind, OAuthErrorKind,
 };
-use std::error::Error as StdError;
-use std::fmt;
+
+use crate::transcript_export::SpeakerRole;
 
 /// Top-level domain error type.
 /// Errors in the Domain layer are modeled as a tree structure
@@ -34,6 +39,16 @@ pub enum DomainErrorKind {
 pub enum InternalErrorKind {
     Entity(EntityErrorKind),
     Config,
+    /// Refused for now. Retrying is expected.
+    RateLimited {
+        retry_after: Option<Duration>,
+    },
+    /// Upstream failed. Retrying may resolve it.
+    Unavailable(String),
+    /// The request itself was refused, so retrying it unchanged gets the same answer.
+    /// Also covers a payload rejected before it was sent, which is refused just as surely.
+    Rejected(String),
+    /// The request could not be made at all, which says nothing about the request.
     Other(String),
 }
 
@@ -45,18 +60,51 @@ pub enum EntityErrorKind {
     NotFound,
     Invalid,
     Unauthenticated,
+    Forbidden,
     Conflict {
         message: String,
         details: Option<serde_json::Value>,
     },
     CannotLinkCompletedGoal,
     GoalAlreadyLinkedToSession,
+    OrganizationNotEmpty {
+        coaching_relationship_count: u64,
+        coaching_session_count: u64,
+        member_count: u64,
+    },
+    OrganizationNameTaken {
+        name: String,
+    },
+    OrganizationArchived,
+    /// User already holds a role in the target organization.
+    UserAlreadyInOrganization {
+        organization_id: Id,
+    },
+    /// Removing this user would leave the organization with no admin.
+    LastOrganizationAdmin {
+        organization_id: Id,
+    },
+    /// User belongs to more than one organization; global delete refused.
+    UserBelongsToMultipleOrganizations {
+        organization_count: u64,
+    },
     /// Token missing, expired, or has wrong purpose. Collapsed deliberately
     /// for password-reset endpoints so attackers can't distinguish these
     /// three cases via the response.
     InvalidOrExpiredToken,
     /// User has exceeded the per-email password-reset request rate limit.
     PasswordResetRateLimited,
+    /// Requester has exceeded the per-user cap on user-lookup requests.
+    UserLookupRateLimited,
+    /// Transcription id is not under the requested coaching session.
+    TranscriptionNotFound,
+    /// Plain-text export requested before the transcription reached `completed`.
+    TranscriptionNotCompleted,
+    /// A requested speaker role's participant matched none of the transcript's labels.
+    SpeakerNotIdentified {
+        role: SpeakerRole,
+        labels: Vec<String>,
+    },
     DbTransaction,
     ServiceUnavailable,
     Other(String),
@@ -68,6 +116,57 @@ pub enum ExternalErrorKind {
     Network,
     OauthTokenRevoked(String), // provider permanently revoked the refresh token
     Other(String),
+}
+
+impl Error {
+    /// A request refused as invalid, answered with a 422 carrying `message`.
+    pub(crate) fn validation(message: impl Into<String>) -> Self {
+        Self {
+            source: None,
+            error_kind: DomainErrorKind::Validation(message.into()),
+        }
+    }
+
+    /// A request that cannot apply as things stand, answered with a 409 carrying
+    /// machine-readable `details`.
+    pub(crate) fn conflict(message: impl Into<String>, details: serde_json::Value) -> Self {
+        Self {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::Conflict {
+                    message: message.into(),
+                    details: Some(details),
+                },
+            )),
+        }
+    }
+
+    /// A 409 whose `details` carry a machine-readable `reason` (one of [`reason`]) beside
+    /// the other keys of `details`, which must be an object.
+    pub(crate) fn conflict_because(
+        reason: &str,
+        message: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Self {
+        debug_assert!(details.is_object(), "409 details must be an object");
+        let mut details = match details {
+            serde_json::Value::Object(map) => map,
+            _ => serde_json::Map::new(),
+        };
+        details.insert("reason".to_string(), reason.into());
+        Self::conflict(message, details.into())
+    }
+}
+
+/// The `details.reason` values a 409 can carry.
+pub(crate) mod reason {
+    pub(crate) const COACHEE_NOT_A_MEMBER: &str = "coachee_not_a_member";
+    pub(crate) const ASSIGNEE_NOT_A_MEMBER: &str = "assignee_not_a_member";
+    pub(crate) const USER_HAS_COACHING_HISTORY: &str = "user_has_coaching_history";
+    pub(crate) const SESSIONS_HAVE_CONTENT: &str = "sessions_have_content";
+    pub(crate) const NO_UPCOMING_SESSIONS: &str = "no_upcoming_sessions";
+    pub(crate) const SERIES_MEMBER: &str = "series_member";
+    pub(crate) const LEGACY_SERIES: &str = "legacy_series";
 }
 
 impl fmt::Display for Error {
@@ -104,6 +203,39 @@ impl From<EntityApiError> for Error {
                     error_kind: DomainErrorKind::Validation(message),
                 };
             }
+            EntityApiErrorKind::WorkingHours(invalid) => {
+                let message = invalid.to_string();
+                return Error {
+                    source: Some(Box::new(err)),
+                    error_kind: DomainErrorKind::Validation(message),
+                };
+            }
+            EntityApiErrorKind::TopicReorderMismatch => {
+                return Error {
+                    source: Some(Box::new(err)),
+                    error_kind: DomainErrorKind::Validation(
+                        "Reorder id set does not match the coaching session's current topics."
+                            .to_string(),
+                    ),
+                };
+            }
+            // Over-long text field → 422 `validation_error`, same path as
+            // `OutOfRange`. The variant carries the bound and the offending
+            // length as context for the message.
+            EntityApiErrorKind::TitleTooLong { max, actual } => {
+                let message = format!("title must be at most {max} characters (got {actual})");
+                return Error {
+                    source: Some(Box::new(err)),
+                    error_kind: DomainErrorKind::Validation(message),
+                };
+            }
+            EntityApiErrorKind::OrganizationNameInvalid { message } => {
+                let message = message.clone();
+                return Error {
+                    source: Some(Box::new(err)),
+                    error_kind: DomainErrorKind::Validation(message),
+                };
+            }
             EntityApiErrorKind::RecordNotFound => EntityErrorKind::NotFound,
             EntityApiErrorKind::InvalidQueryTerm => EntityErrorKind::Invalid,
             EntityApiErrorKind::RecordUnauthenticated => EntityErrorKind::Unauthenticated,
@@ -115,6 +247,34 @@ impl From<EntityApiError> for Error {
             EntityApiErrorKind::GoalAlreadyLinkedToSession => {
                 EntityErrorKind::GoalAlreadyLinkedToSession
             }
+            EntityApiErrorKind::OrganizationNotEmpty {
+                coaching_relationship_count,
+                coaching_session_count,
+                member_count,
+            } => EntityErrorKind::OrganizationNotEmpty {
+                coaching_relationship_count: *coaching_relationship_count,
+                coaching_session_count: *coaching_session_count,
+                member_count: *member_count,
+            },
+            EntityApiErrorKind::OrganizationNameTaken { name } => {
+                EntityErrorKind::OrganizationNameTaken { name: name.clone() }
+            }
+            EntityApiErrorKind::OrganizationArchived => EntityErrorKind::OrganizationArchived,
+            EntityApiErrorKind::UserAlreadyInOrganization { organization_id } => {
+                EntityErrorKind::UserAlreadyInOrganization {
+                    organization_id: *organization_id,
+                }
+            }
+            EntityApiErrorKind::LastOrganizationAdmin { organization_id } => {
+                EntityErrorKind::LastOrganizationAdmin {
+                    organization_id: *organization_id,
+                }
+            }
+            EntityApiErrorKind::UserBelongsToMultipleOrganizations { organization_count } => {
+                EntityErrorKind::UserBelongsToMultipleOrganizations {
+                    organization_count: *organization_count,
+                }
+            }
             EntityApiErrorKind::SystemError => EntityErrorKind::ServiceUnavailable,
             _ => EntityErrorKind::Other("EntityErrorKind".to_string()),
         };
@@ -122,6 +282,17 @@ impl From<EntityApiError> for Error {
         Error {
             source: Some(Box::new(err)),
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(entity_error_kind)),
+        }
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(err: serde_json::Error) -> Self {
+        Error {
+            source: Some(Box::new(err)),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "JSON serialization error".to_string(),
+            )),
         }
     }
 }
@@ -202,5 +373,36 @@ impl From<MeetingAuthError> for Error {
             source: Some(Box::new(err)),
             error_kind,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// M8-01: the reason joins the details and every other key stays.
+    #[test]
+    fn m8_01_conflict_because_adds_the_reason_to_the_details() {
+        let error = Error::conflict_because(
+            reason::COACHEE_NOT_A_MEMBER,
+            "refused",
+            serde_json::json!({ "user_id": "u", "organization_id": "o" }),
+        );
+        let DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Conflict {
+            message,
+            details,
+        })) = error.error_kind
+        else {
+            panic!("expected a conflict, got {:?}", error.error_kind);
+        };
+        assert_eq!(message, "refused");
+        assert_eq!(
+            details,
+            Some(serde_json::json!({
+                "reason": "coachee_not_a_member",
+                "user_id": "u",
+                "organization_id": "o",
+            }))
+        );
     }
 }

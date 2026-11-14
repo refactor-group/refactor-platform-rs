@@ -1,5 +1,7 @@
 //! Recall.ai API client for recording bot management and async transcription.
 
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use log::*;
@@ -19,11 +21,26 @@ pub struct Provider {
     base_url: String,
 }
 
+/// How long Recall.ai keeps a recording's media, transcript included, before deleting it.
+const RETENTION_HOURS: u32 = 168;
+
 #[derive(Debug, Serialize)]
 struct CreateBotRequest {
     meeting_url: String,
     bot_name: String,
     metadata: BotMetadata,
+    recording_config: RecordingConfig,
+}
+
+#[derive(Debug, Serialize)]
+struct RecordingConfig {
+    retention: Retention,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Retention {
+    Timed { hours: u32 },
 }
 
 #[derive(Debug, Serialize)]
@@ -126,8 +143,14 @@ pub struct Timestamp {
 #[derive(Debug, Deserialize)]
 struct BotDetailResponse {
     id: String,
-    meeting_url: Option<String>,
+    meeting_url: Option<RecallMeetingUrl>,
     status_changes: Option<Vec<RecallBotStatusChange>>,
+}
+
+/// The meeting a bot joined, as Recall.ai describes it.
+#[derive(Debug, Deserialize)]
+struct RecallMeetingUrl {
+    meeting_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -188,11 +211,56 @@ fn recall_transcript_status(status_str: Option<&str>) -> transcription_types::St
 /// Maximum silence gap (seconds) between same-speaker words before starting a new segment.
 const SEGMENT_GAP_SECS: f64 = 1.5;
 
+/// Stable per-transcription key: Recall id, else the name, else a shared "unknown" bucket.
+fn participant_key(participant: &Participant) -> String {
+    participant
+        .id
+        .map(|id| id.to_string())
+        .or_else(|| {
+            participant
+                .name
+                .as_deref()
+                .filter(|n| !n.trim().is_empty())
+                .map(|n| format!("name:{n}"))
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Recall's stable cross-meeting Zoom id; Meet exposes none.
+fn account_id(participant: &Participant) -> Option<String> {
+    participant
+        .extra_data
+        .as_ref()?
+        .get("zoom")?
+        .get("conf_user_id")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// One provider-agnostic participant per distinct key, in first-appearance order.
+fn participants_of(entries: &[ParticipantEntry]) -> Vec<transcription_types::Participant> {
+    let mut seen = HashSet::new();
+    entries
+        .iter()
+        .map(|entry| &entry.participant)
+        .filter(|p| seen.insert(participant_key(p)))
+        .map(|p| transcription_types::Participant {
+            provider_id: participant_key(p),
+            display_name: p.name.clone().filter(|n| !n.trim().is_empty()),
+            is_host: p.is_host,
+            platform: p.platform.clone(),
+            account_id: account_id(p),
+            extra_data: p.extra_data.clone(),
+        })
+        .collect()
+}
+
 /// Coalesces Recall.ai participant word entries into meeting-ai `Segment` objects.
 ///
-/// Words are sorted chronologically, then grouped by speaker with a gap threshold.
+/// Words are sorted chronologically, then grouped by participant with a gap threshold.
 fn coalesce_entries(entries: Vec<ParticipantEntry>) -> Vec<transcription_types::Segment> {
     struct WordEntry {
+        key: String,
         speaker: String,
         text: String,
         start_s: f64,
@@ -201,6 +269,7 @@ fn coalesce_entries(entries: Vec<ParticipantEntry>) -> Vec<transcription_types::
 
     let mut all_words: Vec<WordEntry> = Vec::new();
     for entry in &entries {
+        let key = participant_key(&entry.participant);
         let speaker = entry
             .participant
             .name
@@ -214,6 +283,7 @@ fn coalesce_entries(entries: Vec<ParticipantEntry>) -> Vec<transcription_types::
             let start_s = word.start_timestamp.relative.unwrap_or(0.0);
             let end_s = word.end_timestamp.relative.unwrap_or(start_s);
             all_words.push(WordEntry {
+                key: key.clone(),
                 speaker: speaker.clone(),
                 text: word.text.clone(),
                 start_s,
@@ -230,13 +300,14 @@ fn coalesce_entries(entries: Vec<ParticipantEntry>) -> Vec<transcription_types::
 
     let mut segments: Vec<transcription_types::Segment> = Vec::new();
     if let Some(first) = all_words.first() {
+        let mut seg_key = first.key.clone();
         let mut seg_speaker = first.speaker.clone();
         let mut seg_words: Vec<String> = vec![first.text.clone()];
         let mut seg_start = first.start_s;
         let mut seg_end = first.end_s;
 
         for word in all_words.iter().skip(1) {
-            let same_speaker = word.speaker == seg_speaker;
+            let same_speaker = word.key == seg_key;
             let small_gap = word.start_s - seg_end < SEGMENT_GAP_SECS;
 
             if same_speaker && small_gap {
@@ -246,11 +317,13 @@ fn coalesce_entries(entries: Vec<ParticipantEntry>) -> Vec<transcription_types::
                 segments.push(transcription_types::Segment {
                     text: seg_words.join(" "),
                     speaker: seg_speaker.clone(),
+                    participant_id: Some(seg_key.clone()),
                     start_ms: (seg_start * 1000.0) as i64,
                     end_ms: (seg_end * 1000.0) as i64,
                     confidence: 0.0,
                     words: vec![],
                 });
+                seg_key = word.key.clone();
                 seg_speaker = word.speaker.clone();
                 seg_words = vec![word.text.clone()];
                 seg_start = word.start_s;
@@ -260,6 +333,7 @@ fn coalesce_entries(entries: Vec<ParticipantEntry>) -> Vec<transcription_types::
         segments.push(transcription_types::Segment {
             text: seg_words.join(" "),
             speaker: seg_speaker,
+            participant_id: Some(seg_key),
             start_ms: (seg_start * 1000.0) as i64,
             end_ms: (seg_end * 1000.0) as i64,
             confidence: 0.0,
@@ -300,7 +374,8 @@ fn bot_detail_to_info(detail: BotDetailResponse) -> recording_types::Info {
 
     recording_types::Info {
         id: detail.id,
-        meeting_url: detail.meeting_url.unwrap_or_default(),
+        meeting_url: String::new(),
+        meeting_id: detail.meeting_url.and_then(|url| url.meeting_id),
         status: current_status,
         artifacts: None,
         error_message,
@@ -370,6 +445,11 @@ impl Provider {
             bot_name: bot_name.to_string(),
             metadata: BotMetadata {
                 coaching_session_id: coaching_session_id.to_string(),
+            },
+            recording_config: RecordingConfig {
+                retention: Retention::Timed {
+                    hours: RETENTION_HOURS,
+                },
             },
         };
 
@@ -730,6 +810,7 @@ impl recording_bot::Provider for Provider {
         Ok(recording_types::Info {
             id: bot.id,
             meeting_url: config.meeting_url,
+            meeting_id: None,
             status: recording_types::Status::Pending,
             artifacts: None,
             error_message: None,
@@ -788,6 +869,7 @@ impl transcription_trait::Provider for Provider {
             text: None,
             words: vec![],
             segments: vec![],
+            participants: vec![],
             chapters: vec![],
             sentiment_analysis: vec![],
             confidence: None,
@@ -809,14 +891,14 @@ impl transcription_trait::Provider for Provider {
 
         let status = recall_transcript_status(metadata.status_str());
 
-        let segments = if let Some(url) = metadata.download_url() {
+        let (participants, segments) = if let Some(url) = metadata.download_url() {
             let entries = self
                 .download_transcript(url)
                 .await
                 .map_err(to_meeting_ai_err)?;
-            coalesce_entries(entries)
+            (participants_of(&entries), coalesce_entries(entries))
         } else {
-            vec![]
+            (vec![], vec![])
         };
 
         Ok(transcription_types::Transcription {
@@ -825,6 +907,7 @@ impl transcription_trait::Provider for Provider {
             text: None,
             words: vec![],
             segments,
+            participants,
             chapters: vec![],
             sentiment_analysis: vec![],
             confidence: None,
@@ -848,6 +931,14 @@ impl transcription_trait::Provider for Provider {
         "recall_ai"
     }
 }
+
+#[cfg(test)]
+#[path = "participants_tests.rs"]
+mod participants_tests;
+
+#[cfg(test)]
+#[path = "bot_detail_tests.rs"]
+mod bot_detail_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1049,6 +1140,28 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap().id, "bot-test-123");
+    }
+
+    #[tokio::test]
+    async fn create_bot_asks_recall_to_delete_the_recording_after_seven_days() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/bot/")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "recording_config": { "retention": { "type": "timed", "hours": 168 } }
+            })))
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"bot-test-123"}"#)
+            .create_async()
+            .await;
+
+        let provider = test_provider(&server.url());
+        let result = provider
+            .create_bot("session-abc", "https://zoom.us/j/123", "Bot")
+            .await;
+
+        assert!(result.is_ok(), "the request carried no 7-day retention");
     }
 
     #[tokio::test]

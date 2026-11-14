@@ -1,0 +1,11 @@
+# F11 a session with no commitments, reworded.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:05] Coach: What are you bringing into the room today?
+[s2 00:10] Coachee: Exhaustion, to be honest. This week has been a lot.
+[s3 00:17] Coach: Where has it weighed on you most?
+[s4 00:22] Coachee: I feel like I'm failing my team. I say yes to every request.
+[s5 00:34] Coach: How about we just stay with that today, without fixing anything.
+[s6 00:41] Coachee: That sounds good. I might mull it over, but no assignments this week, please.

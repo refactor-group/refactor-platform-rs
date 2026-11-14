@@ -31,6 +31,40 @@ mod m20260513_000000_add_purpose_to_magic_link_tokens;
 mod m20260514_000000_add_password_reset_attempts;
 mod m20260515_000000_add_duration_minutes_to_coaching_sessions;
 mod m20260515_000001_add_default_coaching_session_duration_minutes_to_users;
+mod m20260529_000000_rename_provider_to_meeting_provider;
+mod m20260529_000001_add_cost_tables;
+mod m20260604_000000_create_collab_documents;
+mod m20260607_000000_add_title_to_coaching_sessions;
+mod m20260607_000001_create_coaching_session_topics;
+mod m20260607_000002_add_topic_priority_status;
+mod m20260610_000000_add_topic_undo_snapshot;
+mod m20260610_000000_create_coaching_session_views;
+mod m20260611_000000_add_coaching_session_series;
+mod m20260611_000000_add_topic_deleted_at;
+mod m20260624_000000_add_archive_to_organizations;
+mod m20260624_000001_add_organizations_name_slug_unique;
+mod m20260701_000000_user_roles_org_fk_restrict;
+mod m20260806_000000_user_roles_one_role_per_org;
+mod m20260807_000000_users_lower_email_index;
+mod m20260812_000000_add_ical_sequence;
+mod m20260815_000000_drop_users_role_column;
+mod m20260816_000000_add_user_role_changes;
+mod m20260818_000000_add_user_lookup_attempts;
+mod m20260818_000000_create_coaching_session_reminders;
+mod m20260820_000000_add_notice_given_at_to_coaching_sessions;
+mod m20260922_000000_add_search_fts_indexes;
+mod m20260922_000000_create_coaching_session_images;
+mod m20261005_000000_add_transcript_participants;
+mod m20261009_000000_index_transcript_participant_links;
+mod m20261010_000000_add_transcript_suggestions;
+mod m20261021_000000_add_timezone_to_series_rules;
+mod m20261101_000000_add_transcript_suggestion_search_index;
+mod m20261105_000000_add_working_hours_to_users;
+mod m20261106_000000_create_coaching_session_pending_reschedules;
+mod m20261112_000000_drop_topic_priority;
+mod m20261114_000000_add_scheduled_by_to_coaching_sessions;
+mod m20261114_000001_add_meeting_url_created_by_to_coaching_sessions;
+mod m20261114_000002_create_coaching_session_notices;
 
 pub struct Migrator;
 
@@ -71,6 +105,40 @@ impl MigratorTrait for Migrator {
             Box::new(
                 m20260515_000001_add_default_coaching_session_duration_minutes_to_users::Migration,
             ),
+            Box::new(m20260529_000000_rename_provider_to_meeting_provider::Migration),
+            Box::new(m20260529_000001_add_cost_tables::Migration),
+            Box::new(m20260604_000000_create_collab_documents::Migration),
+            Box::new(m20260607_000000_add_title_to_coaching_sessions::Migration),
+            Box::new(m20260607_000001_create_coaching_session_topics::Migration),
+            Box::new(m20260607_000002_add_topic_priority_status::Migration),
+            Box::new(m20260610_000000_add_topic_undo_snapshot::Migration),
+            Box::new(m20260611_000000_add_topic_deleted_at::Migration),
+            Box::new(m20260610_000000_create_coaching_session_views::Migration),
+            Box::new(m20260611_000000_add_coaching_session_series::Migration),
+            Box::new(m20260624_000000_add_archive_to_organizations::Migration),
+            Box::new(m20260624_000001_add_organizations_name_slug_unique::Migration),
+            Box::new(m20260701_000000_user_roles_org_fk_restrict::Migration),
+            Box::new(m20260806_000000_user_roles_one_role_per_org::Migration),
+            Box::new(m20260807_000000_users_lower_email_index::Migration),
+            Box::new(m20260812_000000_add_ical_sequence::Migration),
+            Box::new(m20260815_000000_drop_users_role_column::Migration),
+            Box::new(m20260816_000000_add_user_role_changes::Migration),
+            Box::new(m20260818_000000_add_user_lookup_attempts::Migration),
+            Box::new(m20260818_000000_create_coaching_session_reminders::Migration),
+            Box::new(m20260820_000000_add_notice_given_at_to_coaching_sessions::Migration),
+            Box::new(m20260922_000000_create_coaching_session_images::Migration),
+            Box::new(m20260922_000000_add_search_fts_indexes::Migration),
+            Box::new(m20261005_000000_add_transcript_participants::Migration),
+            Box::new(m20261009_000000_index_transcript_participant_links::Migration),
+            Box::new(m20261010_000000_add_transcript_suggestions::Migration),
+            Box::new(m20261021_000000_add_timezone_to_series_rules::Migration),
+            Box::new(m20261101_000000_add_transcript_suggestion_search_index::Migration),
+            Box::new(m20261105_000000_add_working_hours_to_users::Migration),
+            Box::new(m20261106_000000_create_coaching_session_pending_reschedules::Migration),
+            Box::new(m20261112_000000_drop_topic_priority::Migration),
+            Box::new(m20261114_000000_add_scheduled_by_to_coaching_sessions::Migration),
+            Box::new(m20261114_000001_add_meeting_url_created_by_to_coaching_sessions::Migration),
+            Box::new(m20261114_000002_create_coaching_session_notices::Migration),
         ]
     }
 }

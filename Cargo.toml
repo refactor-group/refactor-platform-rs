@@ -1,14 +1,14 @@
 [package]
 name = "refactor_platform_rs"
-version = "1.0.0-beta3"
+version = "1.0.0-beta4"
 edition = "2021"
 
 default-run = "refactor_platform_rs"
 
 [workspace]
-members = [".", "entity_api", "entity", "events", "migration", "service", "web", "domain", "sse", "testing-tools", "meeting-auth", "meeting-ai"]
-# Exclude testing-tools from default builds - it's a development/testing tool only
-# and should not be built or deployed in production environments
+members = [".", "entity_api", "entity", "events", "migration", "service", "web", "domain", "sse", "testing-tools", "meeting-auth", "meeting-ai", "docs-collab-server"]
+# Exclude testing-tools and docs-collab-server from default builds: dev/experimental
+# crates that should not be built or deployed with the main application.
 default-members = [".", "entity_api", "entity", "events", "migration", "service", "web", "domain", "sse", "meeting-auth", "meeting-ai"]
 
 [dependencies]
@@ -23,7 +23,16 @@ sse = { path = "sse" }
 
 clap = { version = "4.5.20", features = ["cargo", "derive", "env"] }
 log = "0.4.22"
-simplelog = { version = "0.12.2", features = ["paris"] }
 tokio = "1.44.2"
 openssl-sys = { version = "0.9.107", features = ["vendored"] }
 
+[profile.dev]
+# Keep file/line numbers in panic backtraces, much smaller target output
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+# Unoptimized argon2 makes every test login take seconds.
+[profile.dev.package.argon2]
+opt-level = 3

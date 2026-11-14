@@ -31,7 +31,7 @@ impl MigrationTrait for Migration {
         "#;
 
         let result = conn
-            .query_one(Statement::from_string(backend, validation_sql))
+            .query_one_raw(Statement::from_string(backend, validation_sql))
             .await?
             .ok_or_else(|| DbErr::Custom("Validation query failed".to_string()))?;
 

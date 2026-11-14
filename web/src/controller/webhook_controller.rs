@@ -53,6 +53,8 @@ pub async fn recall_ai(
     match domain::webhook::dispatch(
         &app_state.database_connection,
         app_state.transcription_provider.clone(),
+        app_state.recording_bot_provider.clone(),
+        &app_state.config,
         &app_state.event_publisher,
         event,
     )

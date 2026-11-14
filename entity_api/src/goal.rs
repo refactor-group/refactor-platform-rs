@@ -1,12 +1,16 @@
+use super::coaching_relationship::accessible_to;
 use super::error::{EntityApiErrorKind, Error};
-use entity::goals::{ActiveModel, Column, Entity, Model};
+use super::query::{self, IntoQueryFilterMap, QuerySort};
+use entity::coaching_relationships::Visibility;
+use entity::goals::{ActiveModel, Column, Entity, Model, Relation};
 use entity::{status::Status, Id};
 use sea_orm::ActiveValue;
 use sea_orm::{
     entity::prelude::*,
     ActiveModelTrait,
     ActiveValue::{Set, Unchanged},
-    ConnectionTrait, DatabaseConnection, QueryFilter, TransactionTrait, TryIntoModel,
+    ConnectionTrait, DatabaseConnection, JoinType, QueryFilter, QuerySelect, TransactionTrait,
+    TryIntoModel,
 };
 
 use log::*;
@@ -17,6 +21,22 @@ const MAX_IN_PROGRESS_GOALS: usize = 3;
 /// Returns the maximum number of `InProgress` goals allowed per coaching relationship.
 pub fn max_in_progress_goals() -> usize {
     MAX_IN_PROGRESS_GOALS
+}
+
+/// The goals matching `params` in relationships `viewer` may access (see
+/// [`accessible_to`]).
+pub async fn find_accessible_by<P>(
+    db: &DatabaseConnection,
+    viewer: &Visibility,
+    params: P,
+) -> Result<Vec<Model>, Error>
+where
+    P: IntoQueryFilterMap + QuerySort<Column>,
+{
+    let select = Entity::find()
+        .join(JoinType::InnerJoin, Relation::CoachingRelationships.def())
+        .filter(accessible_to(viewer));
+    query::find_by_within::<Entity, Column, P>(db, select, params).await
 }
 
 pub async fn create(
@@ -50,6 +70,30 @@ pub async fn create(
     Ok(goal_active_model.save(db).await?.try_into_model()?)
 }
 
+/// `status_changed_at` records when the status last changed, so keeping the status leaves it alone.
+fn status_changed_at(
+    goal: &Model,
+    next_status: &Status,
+) -> ActiveValue<Option<DateTimeWithTimeZone>> {
+    if &goal.status == next_status {
+        Unchanged(goal.status_changed_at)
+    } else {
+        Set(Some(chrono::Utc::now().into()))
+    }
+}
+
+/// `completed_at` is stamped on entering `Completed` and cleared on leaving it.
+fn completed_at(goal: &Model, next_status: &Status) -> ActiveValue<Option<DateTimeWithTimeZone>> {
+    match (
+        goal.status == Status::Completed,
+        next_status == &Status::Completed,
+    ) {
+        (false, true) => Set(Some(chrono::Utc::now().into())),
+        (true, false) => Set(None),
+        _ => Unchanged(goal.completed_at),
+    }
+}
+
 pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Model, Error> {
     let result = Entity::find_by_id(id).one(db).await?;
 
@@ -62,15 +106,7 @@ pub async fn update(db: &DatabaseConnection, id: Id, model: Model) -> Result<Mod
                 check_in_progress_goal_limit(db, goal.coaching_relationship_id).await?;
             }
 
-            // Automatically update status_changed_at if the last status and new status differ:
-            let av_status_changed_at: ActiveValue<Option<DateTimeWithTimeZone>> =
-                if model.status != goal.status {
-                    debug!("Updating status_changed_at for Goal to now");
-                    Set(Some(chrono::Utc::now().into()))
-                } else {
-                    Unchanged(model.status_changed_at)
-                };
-
+            let av_status_changed_at = status_changed_at(&goal, &model.status);
             let active_model: ActiveModel = ActiveModel {
                 id: Unchanged(goal.id),
                 coaching_relationship_id: Unchanged(goal.coaching_relationship_id),
@@ -115,6 +151,8 @@ pub async fn update_status(
                 check_in_progress_goal_limit(db, goal.coaching_relationship_id).await?;
             }
 
+            let av_status_changed_at = status_changed_at(&goal, &status);
+            let av_completed_at = completed_at(&goal, &status);
             let active_model: ActiveModel = ActiveModel {
                 id: Unchanged(goal.id),
                 coaching_relationship_id: Unchanged(goal.coaching_relationship_id),
@@ -123,8 +161,8 @@ pub async fn update_status(
                 body: Unchanged(goal.body),
                 title: Unchanged(goal.title),
                 status: Set(status),
-                status_changed_at: Set(Some(chrono::Utc::now().into())),
-                completed_at: Unchanged(goal.completed_at),
+                status_changed_at: av_status_changed_at,
+                completed_at: av_completed_at,
                 target_date: Unchanged(goal.target_date),
                 updated_at: Set(chrono::Utc::now().into()),
                 created_at: Unchanged(goal.created_at),
@@ -219,9 +257,6 @@ pub(crate) async fn check_in_progress_goal_limit(
 }
 
 #[cfg(test)]
-// We need to gate seaORM's mock feature behind conditional compilation because
-// the feature removes the Clone trait implementation from seaORM's DatabaseConnection.
-// see https://github.com/SeaQL/sea-orm/issues/830
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
@@ -335,6 +370,51 @@ mod tests {
 
         assert_eq!(goal.status, Status::Completed);
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn update_status_writes_the_sent_status_with_the_enum_cast() -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        let existing = Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: Id::new_v4(),
+            created_in_session_id: None,
+            title: Some("title".to_owned()),
+            body: Some("This is a goal".to_owned()),
+            user_id: Id::new_v4(),
+            completed_at: None,
+            status_changed_at: None,
+            status: Status::InProgress,
+            target_date: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let on_hold = Model {
+            status: Status::OnHold,
+            ..existing.clone()
+        };
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![existing.clone()], vec![on_hold]])
+            .into_connection();
+
+        update_status(&db, existing.id, Status::OnHold).await?;
+
+        // SQLite stores enums as text, so only the recorded statement shows the cast.
+        let updates: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|transaction| transaction.statements().iter().map(|s| s.to_string()))
+            .filter(|sql| sql.starts_with("UPDATE"))
+            .collect();
+        let [update] = updates.as_slice() else {
+            panic!("expected one UPDATE, got {updates:?}");
+        };
+        let set = update.split(" WHERE ").next().unwrap_or_default();
+        assert!(
+            set.contains(r#""status" = CAST('on_hold' AS "status")"#),
+            "{set}"
+        );
         Ok(())
     }
 

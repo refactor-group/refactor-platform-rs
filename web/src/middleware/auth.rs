@@ -63,8 +63,14 @@ mod tests {
         let service_state = service::AppState::new(config, &db);
         let sse_manager = Arc::new(sse::Manager::new());
         let event_publisher = EventPublisher::new();
-        let app_state =
-            crate::AppState::new(service_state, sse_manager, event_publisher, None, None);
+        let app_state = crate::AppState::new(
+            service_state,
+            sse_manager,
+            event_publisher,
+            None,
+            None,
+            None,
+        );
 
         // Set up session layer
         let session_store = MemoryStore::default();
@@ -96,8 +102,14 @@ mod tests {
         let service_state = service::AppState::new(config, &db);
         let sse_manager = Arc::new(sse::Manager::new());
         let event_publisher = EventPublisher::new();
-        let app_state =
-            crate::AppState::new(service_state, sse_manager, event_publisher, None, None);
+        let app_state = crate::AppState::new(
+            service_state,
+            sse_manager,
+            event_publisher,
+            None,
+            None,
+            None,
+        );
 
         // Set up session layer
         let session_store = MemoryStore::default();
@@ -147,9 +159,10 @@ mod tests {
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: domain::duration::Duration::default_minutes(
             ),
+            working_hours_start: domain::working_hours::default_start(),
+            working_hours_end: domain::working_hours::default_end(),
             created_at: now.into(),
             updated_at: now.into(),
-            role: users::Role::User,
             roles: vec![], // Will be populated by find_with_related
             invite_status: None,
         };
@@ -177,8 +190,14 @@ mod tests {
         let service_state = service::AppState::new(config, &db);
         let sse_manager = Arc::new(sse::Manager::new());
         let event_publisher = EventPublisher::new();
-        let app_state =
-            crate::AppState::new(service_state, sse_manager, event_publisher, None, None);
+        let app_state = crate::AppState::new(
+            service_state,
+            sse_manager,
+            event_publisher,
+            None,
+            None,
+            None,
+        );
 
         // Set up session layer
         let session_store = MemoryStore::default();

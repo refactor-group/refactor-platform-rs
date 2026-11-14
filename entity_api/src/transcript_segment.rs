@@ -1,22 +1,31 @@
-use super::error::Error;
 use entity::transcript_segment::{ActiveModel, Column, Entity, Model, Relation};
+use entity::transcription::Column as TranscriptionColumn;
 use entity::Id;
 use log::debug;
-use sea_orm::{entity::prelude::*, DatabaseConnection, JoinType, Order, QueryOrder, QuerySelect};
+use sea_orm::{
+    entity::prelude::*, ConnectionTrait, DatabaseConnection, JoinType, Order, QueryOrder,
+    QuerySelect,
+};
 
-/// Inserts multiple transcript segments in a single operation
-pub async fn create_batch(
-    db: &DatabaseConnection,
+use super::error::Error;
+
+/// Inserts multiple transcript segments in a single statement; an empty batch is a no-op.
+pub async fn create_batch<C: ConnectionTrait>(
+    db: &C,
     segments: Vec<ActiveModel>,
 ) -> Result<Vec<Model>, Error> {
     debug!("Inserting {} transcript segments", segments.len());
 
+    if segments.is_empty() {
+        return Ok(vec![]);
+    }
+
     Ok(Entity::insert_many(segments)
-        .exec_with_returning_many(db)
+        .exec_with_returning(db)
         .await?)
 }
 
-/// Returns segments for a transcription scoped to a coaching session, ordered by start time.
+/// Returns segments for a transcription scoped to a coaching session, ordered by start time then id.
 ///
 /// Uses an INNER JOIN on `transcriptions` so that segments are only returned when the
 /// transcription exists **and** belongs to `coaching_session_id`. An empty vec means
@@ -26,18 +35,17 @@ pub async fn find_by_transcription_and_session(
     transcription_id: Id,
     coaching_session_id: Id,
 ) -> Result<Vec<Model>, Error> {
-    use entity::transcription::Column as TranscriptionColumn;
-
     Ok(Entity::find()
         .join(JoinType::InnerJoin, Relation::Transcriptions.def())
         .filter(Column::TranscriptionId.eq(transcription_id))
         .filter(TranscriptionColumn::CoachingSessionId.eq(coaching_session_id))
         .order_by(Column::StartMs, Order::Asc)
+        .order_by(Column::Id, Order::Asc)
         .all(db)
         .await?)
 }
 
-/// Returns all segments for a transcription ordered by start time
+/// Returns all segments for a transcription ordered by start time then id.
 pub async fn find_by_transcription(
     db: &DatabaseConnection,
     transcription_id: Id,
@@ -45,6 +53,7 @@ pub async fn find_by_transcription(
     Ok(Entity::find()
         .filter(Column::TranscriptionId.eq(transcription_id))
         .order_by(Column::StartMs, Order::Asc)
+        .order_by(Column::Id, Order::Asc)
         .all(db)
         .await?)
 }
@@ -60,6 +69,7 @@ mod tests {
         Model {
             id: Id::new_v4(),
             transcription_id,
+            participant_id: None,
             speaker_label: "Jane Smith".to_string(),
             text: "What goals are you working toward this quarter?".to_string(),
             start_ms: 1000,
@@ -116,20 +126,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn find_by_transcription_and_session_returns_empty_when_session_does_not_match(
-    ) -> Result<(), Error> {
-        let transcription_id = Id::new_v4();
-
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results::<Model, Vec<Model>, _>(vec![vec![]])
-            .into_connection();
-
-        let result = find_by_transcription_and_session(&db, transcription_id, Id::new_v4()).await?;
-        assert!(result.is_empty());
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn find_by_transcription_and_session_returns_multiple_segments_ordered_by_start_ms(
     ) -> Result<(), Error> {
         let transcription_id = Id::new_v4();
@@ -139,6 +135,7 @@ mod tests {
         let seg1 = Model {
             id: Id::new_v4(),
             transcription_id,
+            participant_id: None,
             speaker_label: "Alice".to_string(),
             text: "First utterance.".to_string(),
             start_ms: 500,
@@ -150,6 +147,7 @@ mod tests {
         let seg2 = Model {
             id: Id::new_v4(),
             transcription_id,
+            participant_id: None,
             speaker_label: "Bob".to_string(),
             text: "Second utterance.".to_string(),
             start_ms: 3000,

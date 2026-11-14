@@ -1,0 +1,425 @@
+//! Who can list, read and create an organization's coaching relationships, and read their goal
+//! progress.
+//!
+//! Each test signs in as one kind of person, calls one of this module's routes against a
+//! real database, and checks that the right people get through and everyone else is refused
+//! with nothing changed.
+//! `web/src/test_utils/README.md` describes the people and the database.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use axum::http::{Method, StatusCode};
+use domain::test_utils::sqlite::fixture::set_role;
+use domain::test_utils::sqlite::read_back::relationships_between;
+use domain::test_utils::sqlite::{within_time_limit, Caller};
+use domain::users::Role;
+use domain::Id;
+use serde_json::json;
+
+use crate::test_utils::sqlite::{
+    assert_signed_out_refused, field_ids, ids, TestApp, NON_PARTICIPANTS,
+};
+
+/// The goal progress path for R1.
+fn goal_progress(app: &TestApp, query: &str) -> String {
+    format!(
+        "/organizations/{}/coaching_relationships/{}/goal_progress{query}",
+        app.fixture.o1, app.fixture.r1
+    )
+}
+
+/// Asserts one caller's list of O1's relationships.
+async fn assert_org_list(caller: Caller, expected: impl Fn(&TestApp) -> BTreeSet<Id>) {
+    let mut app = TestApp::new().await;
+    let path = format!("/organizations/{}/coaching_relationships", app.fixture.o1);
+    let expected = expected(&app);
+
+    assert_eq!(
+        app.expect(caller, Method::GET, &path, None).await,
+        (StatusCode::OK, expected),
+        "{caller:?}"
+    );
+}
+
+/// GOAL-19
+#[tokio::test]
+async fn participants_read_the_relationships_goal_progress() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let g1 = app.fixture.g1;
+        let coachee = app.fixture.user(Caller::Coachee);
+        let queries = [
+            String::new(),
+            "?assignee=coach".to_string(),
+            "?assignee=coachee".to_string(),
+            format!("?assignee={coachee}"),
+        ];
+
+        for caller in [Caller::Coach, Caller::Coachee] {
+            for query in &queries {
+                let path = goal_progress(&app, query);
+                let reply = app.send(caller, Method::GET, &path, None).await;
+                assert_eq!(reply.status, StatusCode::OK, "{caller:?} {query}");
+                assert_eq!(
+                    field_ids(&reply.body["data"]["goal_progress"], "goal_id"),
+                    ids([g1]),
+                    "{caller:?} {query}"
+                );
+            }
+        }
+    })
+    .await;
+}
+
+/// GOAL-20
+#[tokio::test]
+async fn goal_progress_refuses_a_non_participant_assignee() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let member = app.fixture.user(Caller::Member);
+        let path = goal_progress(&app, &format!("?assignee={member}"));
+
+        let (status, _) = app.expect(Caller::Coach, Method::GET, &path, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    })
+    .await;
+}
+
+/// GOAL-21
+#[tokio::test]
+async fn non_participants_cannot_read_the_relationships_goal_progress() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let path = goal_progress(&app, "");
+
+        for caller in NON_PARTICIPANTS {
+            let (status, _) = app.expect(caller, Method::GET, &path, None).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{caller:?}");
+        }
+    })
+    .await;
+}
+
+/// REL-01
+#[tokio::test]
+async fn a_coach_lists_only_their_own_relationships() {
+    within_time_limit(assert_org_list(Caller::Coach, |b| {
+        ids([b.fixture.r1, b.fixture.r3])
+    }))
+    .await;
+}
+
+/// REL-02
+#[tokio::test]
+async fn a_coachee_lists_only_their_own_relationships() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let fixture = &app.fixture;
+        let path = format!("/organizations/{}/coaching_relationships", fixture.o1);
+        let expected = ids([fixture.r1, fixture.r2]);
+
+        assert_eq!(
+            app.expect(Caller::Coachee, Method::GET, &path, None).await,
+            (StatusCode::OK, expected)
+        );
+    })
+    .await;
+}
+
+/// REL-03
+#[tokio::test]
+async fn another_coach_lists_only_their_relationship() {
+    within_time_limit(assert_org_list(Caller::OtherCoach, |b| ids([b.fixture.r2]))).await;
+}
+
+/// REL-04
+#[tokio::test]
+async fn a_member_in_no_relationship_lists_none() {
+    within_time_limit(assert_org_list(Caller::Member, |_| BTreeSet::new())).await;
+}
+
+/// REL-05
+#[tokio::test]
+async fn an_admin_lists_every_relationship_in_the_org() {
+    within_time_limit(assert_org_list(Caller::Admin, |b| {
+        ids([b.fixture.r1, b.fixture.r2, b.fixture.r3])
+    }))
+    .await;
+}
+
+/// REL-06
+#[tokio::test]
+async fn a_super_admin_lists_every_relationship_in_the_org() {
+    within_time_limit(assert_org_list(Caller::Super, |b| {
+        ids([b.fixture.r1, b.fixture.r2, b.fixture.r3])
+    }))
+    .await;
+}
+
+/// REL-07
+#[tokio::test]
+async fn non_members_cannot_list_the_orgs_relationships() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let path = format!("/organizations/{}/coaching_relationships", app.fixture.o1);
+
+        for caller in [Caller::Outsider, Caller::Removed] {
+            let (status, _) = app.expect(caller, Method::GET, &path, None).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{caller:?}");
+        }
+    })
+    .await;
+}
+
+/// REL-08
+#[tokio::test]
+async fn participants_read_their_relationship_with_names() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, r1) = (app.fixture.o1, app.fixture.r1);
+        let path = format!("/organizations/{o1}/coaching_relationships/{r1}");
+
+        for caller in [Caller::Coach, Caller::Coachee] {
+            let reply = app.send(caller, Method::GET, &path, None).await;
+
+            assert_eq!(reply.status, StatusCode::OK, "{caller:?}");
+            assert_eq!(reply.ids(), ids([r1]), "{caller:?}");
+            let data = &reply.body["data"];
+            assert_eq!(data["coach_first_name"], "Coach", "{caller:?}");
+            assert_eq!(data["coachee_first_name"], "Coachee", "{caller:?}");
+        }
+    })
+    .await;
+}
+
+/// REL-09
+#[tokio::test]
+async fn non_participants_cannot_read_a_relationship() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, r1) = (app.fixture.o1, app.fixture.r1);
+        let path = format!("/organizations/{o1}/coaching_relationships/{r1}");
+
+        for caller in NON_PARTICIPANTS {
+            let (status, _) = app.expect(caller, Method::GET, &path, None).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{caller:?}");
+        }
+    })
+    .await;
+}
+
+/// REL-10
+#[tokio::test]
+async fn a_relationship_under_another_org_is_not_found() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o2, r1) = (app.fixture.o2, app.fixture.r1);
+        let path = format!("/organizations/{o2}/coaching_relationships/{r1}");
+
+        let (status, _) = app.expect(Caller::Coach, Method::GET, &path, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    })
+    .await;
+}
+
+/// REL-11
+#[tokio::test]
+async fn a_removed_coachee_cannot_read_their_relationship() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, r3) = (app.fixture.o1, app.fixture.r3);
+        let path = format!("/organizations/{o1}/coaching_relationships/{r3}");
+
+        let (status, _) = app.expect(Caller::Removed, Method::GET, &path, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    })
+    .await;
+}
+
+/// REL-12
+#[tokio::test]
+async fn a_coach_keeps_a_relationship_whose_coachee_left() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, r3) = (app.fixture.o1, app.fixture.r3);
+        let path = format!("/organizations/{o1}/coaching_relationships/{r3}");
+
+        let reply = app.send(Caller::Coach, Method::GET, &path, None).await;
+
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(reply.ids(), ids([r3]));
+        assert_eq!(reply.body["data"]["coach_is_member"], true);
+        assert_eq!(reply.body["data"]["coachee_is_member"], false);
+    })
+    .await;
+}
+
+/// REL-15
+#[tokio::test]
+async fn admins_create_a_relationship_once_per_pair() {
+    within_time_limit(async {
+        for caller in [Caller::Admin, Caller::Super] {
+            let mut app = TestApp::new().await;
+            let (coach, member) = (
+                app.fixture.user(Caller::Coach),
+                app.fixture.user(Caller::Member),
+            );
+            let path = format!("/organizations/{}/coaching_relationships", app.fixture.o1);
+            let body = json!({ "coach_id": coach, "coachee_id": member });
+
+            let created = app
+                .send(caller, Method::POST, &path, Some(body.clone()))
+                .await;
+            assert_eq!(created.status, StatusCode::OK, "{caller:?}");
+            assert_eq!(created.body["status_code"], 201, "{caller:?}");
+            let stored = relationships_between(app.db(), coach, member).await;
+            assert_eq!(stored.len(), 1, "{caller:?}");
+            assert_eq!(created.ids(), stored, "{caller:?}");
+
+            let again = app.send(caller, Method::POST, &path, Some(body)).await;
+            assert_eq!(again.status, StatusCode::OK, "{caller:?} again");
+            assert_eq!(again.ids(), stored, "{caller:?} again");
+            assert_eq!(
+                relationships_between(app.db(), coach, member).await,
+                stored,
+                "{caller:?} again"
+            );
+        }
+    })
+    .await;
+}
+
+/// REL-16
+#[tokio::test]
+async fn non_admins_cannot_create_a_relationship() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (coach, member) = (
+            app.fixture.user(Caller::Coach),
+            app.fixture.user(Caller::Member),
+        );
+        let path = format!("/organizations/{}/coaching_relationships", app.fixture.o1);
+        let body = json!({ "coach_id": coach, "coachee_id": member });
+
+        for caller in [
+            Caller::Coach,
+            Caller::Coachee,
+            Caller::Member,
+            Caller::Outsider,
+        ] {
+            let (status, _) = app
+                .expect(caller, Method::POST, &path, Some(body.clone()))
+                .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{caller:?}");
+            assert_eq!(
+                relationships_between(app.db(), coach, member).await,
+                BTreeSet::new(),
+                "{caller:?}"
+            );
+        }
+    })
+    .await;
+}
+
+/// REL-18
+#[tokio::test]
+async fn an_admin_sees_who_is_still_a_member() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let fixture = &app.fixture;
+        let path = format!("/organizations/{}/coaching_relationships", fixture.o1);
+        let expected = BTreeMap::from([
+            (fixture.r1, (true, true)),
+            (fixture.r2, (true, true)),
+            (fixture.r3, (true, false)),
+        ]);
+
+        let reply = app.send(Caller::Admin, Method::GET, &path, None).await;
+
+        assert_eq!(reply.status, StatusCode::OK);
+        let membership: BTreeMap<Id, (bool, bool)> = reply.body["data"]
+            .as_array()
+            .expect("a list of relationships")
+            .iter()
+            .map(|relationship| {
+                let id = relationship["id"]
+                    .as_str()
+                    .and_then(|id| id.parse().ok())
+                    .expect("each relationship has an id");
+                let flag = |field: &str| relationship[field].as_bool().expect("a membership flag");
+                (id, (flag("coach_is_member"), flag("coachee_is_member")))
+            })
+            .collect();
+        assert_eq!(membership, expected);
+    })
+    .await;
+}
+
+/// REL-19
+#[tokio::test]
+async fn an_unknown_organizations_relationships_are_not_found() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let path = format!("/organizations/{}/coaching_relationships", Id::new_v4());
+
+        for caller in [Caller::Coach, Caller::Admin, Caller::Super] {
+            let (status, _) = app.expect(caller, Method::GET, &path, None).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{caller:?}");
+        }
+    })
+    .await;
+}
+
+/// REL-20
+#[tokio::test]
+async fn an_admin_of_another_org_cannot_create_a_relationship() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let fixture = &app.fixture;
+        let (coach, member, outsider) = (
+            fixture.user(Caller::Coach),
+            fixture.user(Caller::Member),
+            fixture.user(Caller::Outsider),
+        );
+        let (o1, o2) = (fixture.o1, fixture.o2);
+        set_role(app.db(), outsider, Role::Admin, o2).await;
+
+        let (status, _) = app
+            .expect(
+                Caller::Outsider,
+                Method::POST,
+                &format!("/organizations/{o1}/coaching_relationships"),
+                Some(json!({ "coach_id": coach, "coachee_id": member })),
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            relationships_between(app.db(), coach, member).await,
+            BTreeSet::new()
+        );
+    })
+    .await;
+}
+
+/// REL-21
+#[tokio::test]
+async fn signed_out_callers_cannot_reach_relationships() {
+    within_time_limit(assert_signed_out_refused(|app| {
+        let (o1, r1) = (app.fixture.o1, app.fixture.r1);
+        let relationships = format!("/organizations/{o1}/coaching_relationships");
+        vec![
+            (Method::GET, relationships.clone()),
+            (Method::POST, relationships.clone()),
+            (Method::GET, format!("{relationships}/{r1}")),
+            (
+                Method::GET,
+                format!(
+                    "/users/{}/coaching-relationships",
+                    app.fixture.user(Caller::Coach)
+                ),
+            ),
+        ]
+    }))
+    .await;
+}

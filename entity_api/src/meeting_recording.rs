@@ -54,6 +54,11 @@ pub async fn find_latest_by_coaching_session(
         .await?)
 }
 
+/// Finds a recording by its primary key
+pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>, Error> {
+    Ok(Entity::find_by_id(id).one(db).await?)
+}
+
 /// Finds a recording by Recall.ai bot ID — used by webhook handlers
 pub async fn find_by_bot_id(db: &DatabaseConnection, bot_id: &str) -> Result<Option<Model>, Error> {
     Ok(Entity::find()
@@ -557,7 +562,7 @@ mod tests {
             Some(stmt) => {
                 let idx = bind_index_for_column(&stmt.sql, "ended_at");
                 match &stmt.values.as_ref().unwrap().0[idx] {
-                    Value::ChronoDateTimeWithTimeZone(opt) => opt.as_deref().copied(),
+                    Value::ChronoDateTimeWithTimeZone(opt) => *opt,
                     other => panic!("bind for ended_at not a timestamp: {other:?}"),
                 }
             }
@@ -606,7 +611,7 @@ mod tests {
             .expect("no UPDATE in log");
         let idx = bind_index_for_column(&stmt.sql, "ended_at");
         let bound = match &stmt.values.as_ref().unwrap().0[idx] {
-            Value::ChronoDateTimeWithTimeZone(opt) => opt.as_deref().copied(),
+            Value::ChronoDateTimeWithTimeZone(opt) => *opt,
             other => panic!("bind for ended_at not a timestamp: {other:?}"),
         };
         assert_eq!(

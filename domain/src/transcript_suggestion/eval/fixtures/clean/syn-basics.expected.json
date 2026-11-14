@@ -1,0 +1,8 @@
+[
+  {"segments": ["s6"], "assignees": ["coachee"], "due_dates": ["2026-10-09"], "duplicate_of": null, "note": "1 plain future + by Friday"},
+  {"segments": ["s12"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": "a1", "note": "18 duplicate"},
+  {"segments": ["s13"], "assignees": ["coach"], "due_dates": ["2026-10-08"], "duplicate_of": null, "note": "6 coach follow-up, tomorrow"},
+  {"segments": ["s15", "s16"], "assignees": ["coachee"], "due_dates": ["2026-10-21"], "duplicate_of": null, "note": "2 accepted request, before next session"},
+  {"segments": ["s18"], "assignees": ["coachee"], "due_dates": ["2026-10-21"], "duplicate_of": null, "note": "8 split: coachee part"},
+  {"segments": ["s18"], "assignees": ["coach"], "due_dates": ["2026-10-21"], "duplicate_of": null, "note": "8 split: coach part"}
+]

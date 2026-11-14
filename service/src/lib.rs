@@ -16,12 +16,28 @@ pub fn load_env_file() {
     dotenvy::dotenv().ok();
 }
 
+/// Session store pool size, carved out of `db_max_connections`.
+pub const SESSION_POOL_MAX_CONNECTIONS: u32 = 3;
+
+/// Main pool `(max, min)` after reserving the session pool; max stays at least 1.
+fn main_pool_bounds(db_max_connections: u32, db_min_connections: u32) -> (u32, u32) {
+    let max = db_max_connections
+        .saturating_sub(SESSION_POOL_MAX_CONNECTIONS)
+        .max(1);
+    (max, db_min_connections.min(max))
+}
+
 pub async fn init_database(config: &Config) -> Result<DatabaseConnection, DbErr> {
+    let (max_connections, min_connections) =
+        main_pool_bounds(config.db_max_connections, config.db_min_connections);
+
     info!(
         "Database pool config: max_connections={}, min_connections={}, \
-         connect_timeout={}s, acquire_timeout={}s, idle_timeout={}s, max_lifetime={}s",
-        config.db_max_connections,
-        config.db_min_connections,
+         session_pool_max_connections={}, connect_timeout={}s, acquire_timeout={}s, \
+         idle_timeout={}s, max_lifetime={}s",
+        max_connections,
+        min_connections,
+        SESSION_POOL_MAX_CONNECTIONS,
         config.db_connect_timeout_secs,
         config.db_acquire_timeout_secs,
         config.db_idle_timeout_secs,
@@ -29,8 +45,8 @@ pub async fn init_database(config: &Config) -> Result<DatabaseConnection, DbErr>
     );
 
     let mut opt = ConnectOptions::new::<&str>(config.database_url());
-    opt.max_connections(config.db_max_connections)
-        .min_connections(config.db_min_connections)
+    opt.max_connections(max_connections)
+        .min_connections(min_connections)
         .connect_timeout(Duration::from_secs(config.db_connect_timeout_secs))
         .acquire_timeout(Duration::from_secs(config.db_acquire_timeout_secs))
         .idle_timeout(Duration::from_secs(config.db_idle_timeout_secs))
@@ -68,3 +84,7 @@ impl AppState {
         self.database_connection = Arc::new(db);
     }
 }
+
+#[cfg(test)]
+#[path = "lib_tests.rs"]
+mod tests;

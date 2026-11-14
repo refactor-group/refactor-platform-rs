@@ -1,0 +1,8 @@
+# F10 a third person in the meeting, worded as the manual script.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:05] Coach: Thanks for joining us today, Priya.
+[s2 00:10] Priya Shah: Happy to help. I'll send Casey the org chart after this call.
+[s3 00:18] Coachee: Thanks. I'll review it by Thursday.

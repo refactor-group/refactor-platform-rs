@@ -15,7 +15,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect};
 use axum::Json;
 
-use domain::{oauth_connection, oauth_connections, provider::Provider, Id};
+use domain::{meeting_provider::Provider, oauth_connection, oauth_connections, Id};
 use sea_orm::prelude::DateTimeWithTimeZone;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -56,7 +56,8 @@ impl From<oauth_connections::Model> for ConnectionResponse {
     get,
     path = "/oauth/{provider}/authorize",
     params(
-        ("user_id" = Id, Query, description = "User ID to associate with Google account"),
+        ("provider" = Provider, Path, description = "OAuth provider (e.g. google)"),
+        ("user_id" = Uuid, Query, description = "User ID to associate with Google account"),
     ),
     responses(
         (status = 302, description = "Redirect to Google OAuth"),
@@ -151,6 +152,9 @@ pub async fn read(
 /// DELETE /oauth/connections/:provider
 ///
 /// Disconnects (deletes) the OAuth connection for the authenticated user and given provider.
+///
+/// Revokes the stored grant with the provider before deleting the connection. Revocation is best
+/// effort: the connection is removed, and this endpoint reports success, even when it fails.
 #[utoipa::path(
     delete,
     path = "/oauth/connections/{provider}",
@@ -172,10 +176,19 @@ pub async fn delete(
     State(app_state): State<AppState>,
     Path(provider): Path<Provider>,
 ) -> Result<impl IntoResponse, Error> {
-    oauth_connection::delete_by_user_and_provider(app_state.db_conn_ref(), user.id, provider)
-        .await?;
+    oauth_connection::delete_by_user_and_provider(
+        app_state.db_conn_ref(),
+        &app_state.config,
+        user.id,
+        provider,
+    )
+    .await?;
 
     Ok(Json(ApiResponse::<()>::no_content(
         StatusCode::NO_CONTENT.into(),
     )))
 }
+
+#[cfg(test)]
+#[path = "oauth_controller_sqlite_tests.rs"]
+mod sqlite_tests;

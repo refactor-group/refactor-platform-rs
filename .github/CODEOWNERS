@@ -1,0 +1,48 @@
+# High-tier paths: a change here needs a person. See docs/cicd/review-risk-tiers.md.
+# Later matches win, so keep the most specific patterns last.
+
+# CI, deploy, and runtime
+/.github/                           @jhodapp
+/Dockerfile                         @jhodapp
+/entrypoint.sh                      @jhodapp
+/docker-compose*.yaml               @jhodapp
+/nginx/                             @jhodapp
+/nginx-preview/                     @jhodapp
+
+# Migrations
+/migration/                         @jhodapp
+
+# Authentication and authorization
+/web/src/lib.rs                     @jhodapp
+/web/src/router.rs                  @jhodapp
+/web/src/controller/user_session_controller.rs    @jhodapp
+/web/src/controller/magic_link_controller.rs      @jhodapp
+/web/src/controller/oauth_controller.rs           @jhodapp
+/web/src/controller/oauth_callback_controller.rs  @jhodapp
+/web/src/controller/password_reset_controller.rs  @jhodapp
+/web/src/controller/jwt_controller.rs             @jhodapp
+/web/src/controller/webhook_controller.rs         @jhodapp
+/web/src/controller/user/password_controller.rs   @jhodapp
+/domain/src/magic_link_token.rs     @jhodapp
+/web/src/extractors/                @jhodapp
+/web/src/middleware/                @jhodapp
+/domain/src/jwt/                    @jhodapp
+/domain/src/gateway/auth.rs         @jhodapp
+/domain/src/gateway/oauth/          @jhodapp
+/domain/src/oauth_token_storage.rs  @jhodapp
+/domain/src/password_policy.rs      @jhodapp
+/domain/src/password_reset.rs       @jhodapp
+/meeting-auth/                      @jhodapp
+/docs-collab-server/src/auth.rs     @jhodapp
+/docs-collab-server/src/rest.rs     @jhodapp
+
+# Real-time delivery: who receives which event
+/web/src/sse/                       @jhodapp
+/sse/                               @jhodapp
+
+# Agent and reviewer instructions
+/.claude/                           @jhodapp
+/AGENTS.md                          @jhodapp
+/CLAUDE.md                          @jhodapp
+/REVIEW.md                          @jhodapp
+/docs/cicd/review-risk-tiers.md     @jhodapp

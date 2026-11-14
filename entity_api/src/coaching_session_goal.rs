@@ -13,7 +13,7 @@ use sea_orm::{
     entity::prelude::*,
     sea_query::OnConflict,
     ActiveValue::{Set, Unchanged},
-    ConnectionTrait, DatabaseConnection, TryIntoModel,
+    ConnectionTrait, DatabaseConnection, QueryOrder, TryIntoModel,
 };
 
 use log::*;
@@ -333,16 +333,24 @@ pub async fn link_in_progress_goals_to_session(
         })
         .collect();
 
+    let inserted = insert_links_skipping_existing(db, rows).await?;
+
+    Ok(inserted.into_iter().map(|link| link.goal_id).collect())
+}
+
+/// Bulk-inserts `rows`, skipping any session-goal pair already linked; returns only the rows written.
+pub async fn insert_links_skipping_existing(
+    db: &impl ConnectionTrait,
+    rows: Vec<ActiveModel>,
+) -> Result<Vec<Model>, DbErr> {
     let on_conflict = OnConflict::columns([Column::CoachingSessionId, Column::GoalId])
         .do_nothing()
         .to_owned();
 
-    let inserted = Entity::insert_many(rows)
+    Entity::insert_many(rows)
         .on_conflict(on_conflict)
-        .exec_with_returning_many(db)
-        .await?;
-
-    Ok(inserted.into_iter().map(|link| link.goal_id).collect())
+        .exec_with_returning(db)
+        .await
 }
 
 /// Finds all goal models for multiple coaching sessions at once, grouped by session ID.
@@ -367,9 +375,13 @@ pub async fn find_goals_grouped_by_session_ids(
         return Ok(HashMap::new());
     }
 
+    // Deterministic order so callers that take "the first goal" (e.g. the
+    // display_title goal tier) get a stable, reproducible result across requests.
     let links_with_goals = Entity::find()
         .filter(Column::CoachingSessionId.is_in(session_ids.iter().copied()))
         .find_also_related(goals::Entity)
+        .order_by_asc(goals::Column::CreatedAt)
+        .order_by_asc(goals::Column::Id)
         .all(db)
         .await?;
 
@@ -936,26 +948,36 @@ mod tests {
         let session1 = entity::coaching_sessions::Model {
             id: session1_id,
             coaching_relationship_id: relationship_id,
+            coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: now.naive_utc(),
             duration_minutes: entity::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider: None,
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
+            notice_given_at: chrono::Utc::now().into(),
         };
         let session2 = entity::coaching_sessions::Model {
             id: session2_id,
             coaching_relationship_id: relationship_id,
+            coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: now.naive_utc(),
             duration_minutes: entity::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider: None,
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
+            notice_given_at: chrono::Utc::now().into(),
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)

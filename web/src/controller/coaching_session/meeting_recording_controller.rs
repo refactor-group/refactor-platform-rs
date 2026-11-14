@@ -26,7 +26,7 @@ pub struct StartRecordingParams {
     path = "/coaching_sessions/{coaching_session_id}/meeting_recording",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     responses(
         (status = 200, description = "Recording status retrieved"),
@@ -58,7 +58,7 @@ pub async fn read(
     path = "/coaching_sessions/{coaching_session_id}/meeting_recording",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     request_body = StartRecordingParams,
     responses(
@@ -124,7 +124,7 @@ pub async fn create(
     path = "/coaching_sessions/{coaching_session_id}/meeting_recording",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     responses(
         (status = 200, description = "Recording bot stopped"),
@@ -177,7 +177,7 @@ mod tests {
     use tower_sessions::Expiry;
 
     const X_VERSION: &str = "x-version";
-    const API_VERSION: &str = "1.0.0-beta1";
+    const API_VERSION: &str = "1.0.0";
 
     fn test_user() -> users::Model {
         let now = Utc::now();
@@ -193,7 +193,8 @@ mod tests {
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: domain::duration::Duration::default_minutes(
             ),
-            role: users::Role::User,
+            working_hours_start: domain::working_hours::default_start(),
+            working_hours_end: domain::working_hours::default_end(),
             roles: vec![],
             invite_status: None,
             created_at: now.into(),
@@ -201,12 +202,17 @@ mod tests {
         }
     }
 
+    /// Fixtures share one organization so a participant is also a member of it.
+    fn fixture_organization_id() -> Id {
+        Id::from_u128(1)
+    }
+
     fn test_role(user_id: Id) -> user_roles::Model {
         let now = Utc::now();
         user_roles::Model {
             id: Id::new_v4(),
             role: users::Role::User,
-            organization_id: Some(Id::new_v4()),
+            organization_id: Some(fixture_organization_id()),
             user_id,
             created_at: now.into(),
             updated_at: now.into(),
@@ -238,6 +244,7 @@ mod tests {
             service_state,
             Arc::new(sse::Manager::new()),
             domain::events::EventPublisher::default(),
+            None,
             None,
             None,
         );
@@ -295,12 +302,17 @@ mod tests {
         let session = coaching_sessions::Model {
             id: session_id,
             coaching_relationship_id: relationship_id,
+            coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: now.naive_utc(),
             duration_minutes: domain::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider: None,
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -309,7 +321,7 @@ mod tests {
             id: relationship_id,
             coach_id: Id::new_v4(),
             coachee_id: user.id,
-            organization_id: Id::new_v4(),
+            organization_id: fixture_organization_id(),
             slug: "test".to_string(),
             created_at: now.into(),
             updated_at: now.into(),
@@ -353,12 +365,17 @@ mod tests {
         let session = coaching_sessions::Model {
             id: session_id,
             coaching_relationship_id: relationship_id,
+            coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: now.naive_utc(),
             duration_minutes: domain::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider: None,
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             created_at: now.into(),
             updated_at: now.into(),
         };
@@ -367,7 +384,7 @@ mod tests {
             id: relationship_id,
             coach_id: Id::new_v4(),
             coachee_id: user.id,
-            organization_id: Id::new_v4(),
+            organization_id: fixture_organization_id(),
             slug: "test".to_string(),
             created_at: now.into(),
             updated_at: now.into(),
@@ -397,3 +414,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }
+
+#[cfg(test)]
+#[path = "meeting_recording_controller_sqlite_tests.rs"]
+mod sqlite_tests;

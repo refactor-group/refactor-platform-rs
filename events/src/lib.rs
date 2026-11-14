@@ -94,6 +94,62 @@ pub enum DomainEvent {
         /// User IDs to receive SSE notifications (coach + coachee from relationship).
         notify_user_ids: Vec<Id>,
     },
+    /// Emitted when an agreement is created within a coaching session.
+    /// Carries the full serialized agreement entity for optimistic UI updates.
+    AgreementCreated {
+        /// The coaching session the agreement belongs to.
+        coaching_session_id: Id,
+        /// Complete serialized agreement entity for the frontend cache.
+        agreement: Value,
+        /// User IDs to receive SSE notifications (coach + coachee from the session's relationship).
+        notify_user_ids: Vec<Id>,
+    },
+    /// Emitted when an agreement is modified.
+    AgreementUpdated {
+        /// The coaching session the agreement belongs to.
+        coaching_session_id: Id,
+        /// Complete updated agreement entity for the frontend cache.
+        agreement: Value,
+        /// User IDs to receive SSE notifications (coach + coachee from the session's relationship).
+        notify_user_ids: Vec<Id>,
+    },
+    /// Emitted when an agreement is removed.
+    AgreementDeleted {
+        /// The coaching session the agreement belonged to.
+        coaching_session_id: Id,
+        /// ID of the deleted agreement (full entity not included since it no longer exists).
+        agreement_id: Id,
+        /// User IDs to receive SSE notifications (coach + coachee from the session's relationship).
+        notify_user_ids: Vec<Id>,
+    },
+    /// Emitted when an action is created within a coaching session.
+    /// Carries the full serialized action (with assignees) for optimistic UI updates.
+    ActionCreated {
+        /// The coaching session the action belongs to.
+        coaching_session_id: Id,
+        /// Complete serialized action (with assignees) for the frontend cache.
+        action: Value,
+        /// User IDs to receive SSE notifications (coach + coachee from the session's relationship).
+        notify_user_ids: Vec<Id>,
+    },
+    /// Emitted when an action is modified (body, status, due date, assignees, etc.).
+    ActionUpdated {
+        /// The coaching session the action belongs to.
+        coaching_session_id: Id,
+        /// Complete updated action (with assignees) for the frontend cache.
+        action: Value,
+        /// User IDs to receive SSE notifications (coach + coachee from the session's relationship).
+        notify_user_ids: Vec<Id>,
+    },
+    /// Emitted when an action is removed.
+    ActionDeleted {
+        /// The coaching session the action belonged to.
+        coaching_session_id: Id,
+        /// ID of the deleted action (full entity not included since it no longer exists).
+        action_id: Id,
+        /// User IDs to receive SSE notifications (coach + coachee from the session's relationship).
+        notify_user_ids: Vec<Id>,
+    },
     /// Emitted when a meeting recording status changes (any webhook-driven transition).
     /// Triggers SSE notifications so participants see the current recording state without polling.
     MeetingRecordingUpdated {
@@ -102,12 +158,39 @@ pub enum DomainEvent {
         /// User IDs to receive SSE notifications (coach + coachee from coaching relationship).
         notify_user_ids: Vec<Id>,
     },
+    /// Emitted on ANY topic mutation (add/edit/delete/reorder/rate). Coarse: carries no
+    /// entity — participants refetch the session's topics. Triggers SSE to coach + coachee.
+    TopicsChanged {
+        /// The coaching session whose topics changed.
+        coaching_session_id: Id,
+        /// User IDs to receive SSE notifications (coach + coachee from the relationship).
+        notify_user_ids: Vec<Id>,
+    },
+    /// Emitted when a coaching session's title is set/changed via the title endpoint.
+    /// Coarse: carries no entity — participants refetch the session. Triggers SSE to coach + coachee.
+    CoachingSessionTitleUpdated {
+        /// The coaching session whose title changed.
+        coaching_session_id: Id,
+        /// User IDs to receive SSE notifications (coach + coachee from the relationship).
+        notify_user_ids: Vec<Id>,
+    },
     /// Emitted when a transcription status changes (created, completed, or failed).
     /// Triggers SSE notifications so participants see the current transcription state without polling.
     TranscriptionUpdated {
         /// The coaching session whose transcription changed.
         coaching_session_id: Id,
         /// User IDs to receive SSE notifications (coach + coachee from coaching relationship).
+        notify_user_ids: Vec<Id>,
+    },
+    /// Emitted when new transcript suggestions are stored for a session.
+    ///
+    /// Coarse: carries no suggestions, so participants refetch them. Triggers SSE to coach + coachee.
+    TranscriptSuggestionsChanged {
+        /// The coaching session the suggestions belong to.
+        coaching_session_id: Id,
+        /// The suggested entity type in snake_case, e.g. "action".
+        target: String,
+        /// User IDs to receive SSE notifications (coach + coachee from the relationship).
         notify_user_ids: Vec<Id>,
     },
 }

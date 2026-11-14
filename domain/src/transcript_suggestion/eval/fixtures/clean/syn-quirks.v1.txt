@@ -1,0 +1,16 @@
+# Synthetic case syn-quirks, original wording.
+# session: Wednesday 2026-10-07
+# next_session: none
+# coach: Jim Hodapp
+# coachee: Alex Rivera
+[s1 00:04] Coach: Thanks for having Priya join us today.
+[s2 00:10] Priya Shah: Happy to be here. I'll send Alex the org chart after this call.
+[s3 00:50] Coachee: So I'll, um, I'll, uh, send the
+[s4 00:53] Coachee: the escalation summary to the leadership channel by Friday.
+[s5 01:40] Coach: Before our next session, could you map out your stakeholders?
+[s6 01:46] Coachee: Yep, I'll do the stake holder map before next time.
+[s7 02:30] Coachee: And I'll talk to Dana about the on-call rotation.
+[s8 05:10] Coach: Let's recap. You're sending the escalation summary by Friday, the stakeholder map, and talking to Dana.
+[s9 05:18] Coachee: Yes, all three.
+[s10 05:30] Coach: And I'll look up a couple of facilitation guides for you.
+[s11 05:40] Coachee: Oh, and the escalation summary, I'll definitely get that done Friday.

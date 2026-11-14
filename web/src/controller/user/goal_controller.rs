@@ -1,14 +1,13 @@
 use crate::controller::ApiResponse;
-use crate::extractors::{
-    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
-};
+use crate::extractors::{compare_api_version::CompareApiVersion, user_self_access::UserSelfAccess};
 use crate::params::user::goal::IndexParams;
 use crate::{AppState, Error};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use domain::{goal as GoalApi, Id};
+use domain::goal as GoalApi;
+use domain::search::visibility_for;
 use service::config::ApiVersion;
 
 use log::*;
@@ -19,14 +18,15 @@ use log::*;
     path = "/users/{user_id}/goals",
     params(
         ApiVersion,
-        ("user_id" = Id, Path, description = "User ID to retrieve goals for"),
-        ("coaching_relationship_id" = Option<Id>, Query, description = "Filter by coaching_relationship_id"),
+        ("user_id" = Uuid, Path, description = "User ID to retrieve goals for"),
+        ("coaching_relationship_id" = Option<Uuid>, Query, description = "Filter by coaching_relationship_id"),
         ("status" = Option<String>, Query, description = "Filter by status (e.g., 'in_progress', 'completed')"),
         ("sort_by" = Option<crate::params::user::goal::SortField>, Query, description = "Sort by field. Valid values: 'title', 'created_at', 'updated_at'. Must be provided with sort_order.", example = "title"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc' (ascending), 'desc' (descending). Must be provided with sort_by.", example = "desc")
     ),
     responses(
         (status = 200, description = "Successfully retrieved goals for user", body = [domain::goals::Model]),
+        (status = 400, description = "Invalid user_id"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "User not found"),
@@ -38,21 +38,27 @@ use log::*;
     )
 )]
 pub async fn index(
+    UserSelfAccess(user): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(user_id): Path<Id>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
+    let user_id = user.id;
     debug!("GET Goals for User: {user_id}");
     debug!("Filter Params: {params:?}");
 
     // Set user_id from path parameter and apply default sorting
     let params = params.with_user_id(user_id).apply_defaults();
 
-    let goals = GoalApi::find_by(app_state.db_conn_ref(), params).await?;
+    let goals =
+        GoalApi::find_accessible_by(app_state.db_conn_ref(), &visibility_for(&user), params)
+            .await?;
 
     debug!("Found {} goals for user {user_id}", goals.len());
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), goals)))
 }
+
+#[cfg(test)]
+#[path = "goal_controller_sqlite_tests.rs"]
+mod sqlite_tests;

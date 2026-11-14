@@ -1,0 +1,14 @@
+# F1 plain commitments, worded as the manual script.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:05] Coachee: I'll send the revised budget to Priya by Friday.
+[s2 00:14] Coachee: I will update the team wiki with the new process.
+[s3 00:22] Coachee: I'm going to book a one-on-one with my manager.
+[s4 00:30] Coachee: I'm gonna clean up the shared drive.
+[s5 00:38] Coachee: My plan this week is to finish the vendor comparison.
+[s6 00:47] Coachee: I'm committing to leaving work by six every day.
+[s7 00:55] Coachee: Let me check with HR on the headcount numbers and get back to you.
+[s8 01:06] Coach: I'll send you that article on feedback after our call.
+[s9 01:14] Coach: I'll find you a template for the project charter.

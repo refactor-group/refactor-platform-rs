@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use crate::controller::ApiResponse;
 use crate::error::WebErrorKind;
 use crate::extractors::{
-    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    authenticated_user::AuthenticatedUser,
+    coaching_session_access::{CoachingSessionAccess, CoachingSessionContextAccess},
+    coaching_session_goal_access::CoachingSessionGoalBatchAccess,
+    compare_api_version::CompareApiVersion,
 };
 use crate::params::coaching_session::goal::{BatchIndexParams, LinkParams};
 use crate::{AppState, Error};
@@ -24,12 +27,14 @@ use log::*;
     path = "/coaching_sessions/{coaching_session_id}/goals",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     request_body = LinkParams,
     responses(
-        (status = 201, description = "Successfully linked goal to session", body = [entity::coaching_sessions_goals::Model]),
+        (status = 201, description = "Successfully linked goal to session", body = domain::coaching_sessions_goals::Model),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Coaching session or goal not found"),
         (status = 409, description = "Goal already linked to session"),
         (status = 422, description = "Unprocessable Entity"),
         (status = 503, description = "Service temporarily unavailable")
@@ -40,15 +45,22 @@ use log::*;
 )]
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    CoachingSessionContextAccess(session, relationship): CoachingSessionContextAccess,
     State(app_state): State<AppState>,
-    Path(coaching_session_id): Path<Id>,
     Json(params): Json<LinkParams>,
 ) -> Result<impl IntoResponse, Error> {
+    let coaching_session_id = session.id;
     debug!(
         "POST Link goal {} to session {}",
         params.goal_id, coaching_session_id
     );
+
+    let goal = GoalApi::find_by_id(app_state.db_conn_ref(), params.goal_id).await?;
+    if goal.coaching_relationship_id != relationship.id {
+        return Err(Error::validation(
+            "goal_id must name a goal of the session's relationship.",
+        ));
+    }
 
     let link = GoalApi::link_to_coaching_session(
         app_state.db_conn_ref(),
@@ -67,12 +79,13 @@ pub async fn create(
     path = "/coaching_sessions/{coaching_session_id}/goals/{goal_id}",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
-        ("goal_id" = Id, Path, description = "Goal id to unlink from this session"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
+        ("goal_id" = Uuid, Path, description = "Goal id to unlink from this session"),
     ),
     responses(
         (status = 200, description = "Successfully unlinked goal from session"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 404, description = "Link not found"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -82,7 +95,7 @@ pub async fn create(
 )]
 pub async fn delete(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    CoachingSessionAccess(_session): CoachingSessionAccess,
     State(app_state): State<AppState>,
     Path((coaching_session_id, goal_id)): Path<(Id, Id)>,
 ) -> Result<impl IntoResponse, Error> {
@@ -105,11 +118,12 @@ pub async fn delete(
     path = "/coaching_sessions/{coaching_session_id}/goals",
     params(
         ApiVersion,
-        ("coaching_session_id" = Id, Path, description = "Coaching session id"),
+        ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     responses(
-        (status = 200, description = "Successfully retrieved goals linked to session", body = [entity::goals::Model]),
+        (status = 200, description = "Successfully retrieved goals linked to session", body = [domain::goals::Model]),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -117,6 +131,7 @@ pub async fn delete(
     )
 )]
 pub async fn index(
+    CoachingSessionAccess(_session): CoachingSessionAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
@@ -141,13 +156,14 @@ pub async fn index(
     path = "/coaching_sessions/goals",
     params(
         ApiVersion,
-        ("coaching_relationship_id" = Option<Id>, Query, description = "Coaching relationship ID — fetch goals for all sessions in this relationship"),
+        ("coaching_relationship_id" = Option<Uuid>, Query, description = "Coaching relationship ID — fetch goals for all sessions in this relationship"),
         ("coaching_session_ids" = Option<String>, Query, description = "Comma-separated coaching session UUIDs"),
     ),
     responses(
         (status = 200, description = "Successfully retrieved goals grouped by session"),
         (status = 400, description = "Bad Request — exactly one filter required"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -155,6 +171,7 @@ pub async fn index(
     )
 )]
 pub async fn batch_index(
+    _access: CoachingSessionGoalBatchAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
@@ -193,3 +210,7 @@ pub async fn batch_index(
         serde_json::json!({ "session_goals": session_goals }),
     )))
 }
+
+#[cfg(test)]
+#[path = "goal_controller_sqlite_tests.rs"]
+mod sqlite_tests;

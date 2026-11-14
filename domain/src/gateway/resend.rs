@@ -1,12 +1,17 @@
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::time::Duration;
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use email_address::EmailAddress;
 use log::*;
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize, Serializer};
 use service::config::Config;
 
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
+use crate::gateway::ical::Method;
 
 /// Path appended to the configured base URL when sending emails.
 const SEND_EMAIL_PATH: &str = "/emails";
@@ -150,6 +155,16 @@ pub struct SendEmailRequest {
     pub subject: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub template: Option<TemplateRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<Attachment>>,
+}
+
+/// A base64-inline email attachment for the Resend payload.
+#[derive(Debug, Serialize, Eq, PartialEq)]
+pub struct Attachment {
+    pub filename: String,
+    pub content_type: String,
+    pub content: String,
 }
 
 /// Builder for constructing SendEmailRequest with fluent API
@@ -158,6 +173,7 @@ pub struct SendEmailRequestBuilder {
     to: Vec<EmailRecipient>,
     template_id: Option<String>,
     variables: HashMap<String, serde_json::Value>,
+    attachments: Vec<Attachment>,
 }
 
 /// Response from Resend's `POST /emails` endpoint.
@@ -179,6 +195,7 @@ impl SendEmailRequestBuilder {
             to: Vec::new(),
             template_id: None,
             variables: HashMap::new(),
+            attachments: Vec::new(),
         }
     }
 
@@ -228,11 +245,42 @@ impl SendEmailRequestBuilder {
         self
     }
 
+    /// Attach an .ics calendar invite (base64-inline). The content_type carries the iCal
+    /// METHOD so clients treat it as an invite/cancellation.
+    ///
+    /// Filenames are numbered from the second attachment on. An email may carry more than
+    /// one `.ics` (a series reschedule also cancels any standalone event a legacy member
+    /// left behind), and clients key attachments by name, so identically-named parts risk
+    /// being collapsed into one.
+    pub fn add_ics_attachment(mut self, ics_body: &str, method: &Method) -> Self {
+        let m = match method {
+            Method::Request => "REQUEST",
+            Method::Cancel => "CANCEL",
+        };
+        // Counts the calendar parts specifically, not every attachment, so the numbering
+        // stays correct if a send ever carries an attachment of another kind.
+        let calendar_parts = self
+            .attachments
+            .iter()
+            .filter(|attachment| attachment.filename.ends_with(".ics"))
+            .count();
+        let filename = match calendar_parts {
+            0 => "invite.ics".to_string(),
+            n => format!("invite-{}.ics", n + 1),
+        };
+        self.attachments.push(Attachment {
+            filename,
+            content_type: format!("text/calendar; method={m}; charset=UTF-8"),
+            content: STANDARD.encode(ics_body.as_bytes()),
+        });
+        self
+    }
+
     /// Build the SendEmailRequest with validation.
     pub async fn build(self) -> Result<SendEmailRequest, Error> {
         let from = self.from.ok_or_else(|| Error {
             source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Rejected(
                 "Sender email is required".to_string(),
             )),
         })?;
@@ -241,7 +289,7 @@ impl SendEmailRequestBuilder {
         if self.to.is_empty() {
             return Err(Error {
                 source: None,
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Rejected(
                     "At least one recipient is required".to_string(),
                 )),
             });
@@ -259,11 +307,18 @@ impl SendEmailRequestBuilder {
             None => None,
         };
 
+        let attachments = if self.attachments.is_empty() {
+            None
+        } else {
+            Some(self.attachments)
+        };
+
         Ok(SendEmailRequest {
             from,
             to: self.to,
             subject: None,
             template,
+            attachments,
         })
     }
 }
@@ -277,7 +332,7 @@ impl SendEmailRequest {
             warn!("Invalid email: {email}");
             return Err(Error {
                 source: None,
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(format!(
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Rejected(format!(
                     "Invalid email address: {email}"
                 ))),
             });
@@ -332,11 +387,26 @@ impl Client {
             );
             Ok(())
         } else {
+            let retry_after = retry_after_from(response.headers());
             let error_text = response.text().await.unwrap_or_default();
-            warn!("Failed to send email to {to_emails:?}: {status} - {error_text}");
+            // A rejection is usually payload versus template, and the template is the
+            // half not otherwise visible here.
+            let template_id = request
+                .template
+                .as_ref()
+                .map(|t| t.id.as_str())
+                .unwrap_or("none");
+            warn!(
+                "Failed to send email to {to_emails:?} using template {template_id}: \
+                 {status} - {error_text}"
+            );
             Err(Error {
                 source: None,
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(error_text)),
+                error_kind: DomainErrorKind::Internal(classify_failure(
+                    status,
+                    retry_after,
+                    error_text,
+                )),
             })
         }
     }
@@ -350,6 +420,35 @@ async fn build_client(config: &Config) -> Result<reqwest::Client, Error> {
         .use_rustls_tls()
         .default_headers(headers)
         .build()?)
+}
+
+/// Sorts a failed response by what the caller should do. Resend asks that 429 and 5xx be
+/// retried and the rest not, since the request itself is what they refused.
+fn classify_failure(
+    status: StatusCode,
+    retry_after: Option<Duration>,
+    body: String,
+) -> InternalErrorKind {
+    match status {
+        StatusCode::TOO_MANY_REQUESTS => InternalErrorKind::RateLimited { retry_after },
+        // Not from Resend itself, but an intermediary can emit either, and both mean
+        // "came at a bad time" rather than "this request is wrong".
+        StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_EARLY => InternalErrorKind::Unavailable(body),
+        s if s.is_server_error() => InternalErrorKind::Unavailable(body),
+        _ => InternalErrorKind::Rejected(body),
+    }
+}
+
+/// Reads `retry-after` seconds. The HTTP-date form is ignored rather than guessed at.
+fn retry_after_from(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
 }
 
 /// Build authentication headers for the Resend API.
@@ -613,6 +712,65 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_ics_attachment_request_serializes_base64_and_content_type() {
+        let request = SendEmailRequestBuilder::new()
+            .from("sender@example.com")
+            .to_with_name("recipient@example.com", "Test Recipient")
+            .template_id("t")
+            .add_ics_attachment("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", &Method::Request)
+            .build()
+            .await
+            .unwrap();
+
+        let actual: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+        assert_eq!(actual["attachments"][0]["filename"], "invite.ics");
+        assert_eq!(
+            actual["attachments"][0]["content_type"],
+            "text/calendar; method=REQUEST; charset=UTF-8"
+        );
+        let expected_content = STANDARD.encode("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n".as_bytes());
+        assert_eq!(actual["attachments"][0]["content"], expected_content);
+    }
+
+    #[tokio::test]
+    async fn test_ics_attachment_cancel_method_in_content_type() {
+        let request = SendEmailRequestBuilder::new()
+            .from("sender@example.com")
+            .to_with_name("recipient@example.com", "Test Recipient")
+            .template_id("t")
+            .add_ics_attachment("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", &Method::Cancel)
+            .build()
+            .await
+            .unwrap();
+
+        let actual: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+        assert_eq!(
+            actual["attachments"][0]["content_type"],
+            "text/calendar; method=CANCEL; charset=UTF-8"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_request_without_attachment_omits_key() {
+        let request = SendEmailRequestBuilder::new()
+            .from("sender@example.com")
+            .to_with_name("recipient@example.com", "Test Recipient")
+            .template_id("t")
+            .build()
+            .await
+            .unwrap();
+
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+        assert!(
+            json.get("attachments").is_none(),
+            "attachments must be omitted from JSON when none set, got: {json}"
+        );
+    }
+
     // ── Client::send_email HTTP behavior ───────────────────────────────
 
     /// Build a `Client` pointed at a mockito server, plus a minimal valid request.
@@ -673,12 +831,107 @@ mod tests {
         // it's the only diagnostic the caller gets for a rejected send.
         let err = result.unwrap_err();
         match err.error_kind {
-            DomainErrorKind::Internal(InternalErrorKind::Other(text)) => assert!(
+            DomainErrorKind::Internal(InternalErrorKind::Rejected(text)) => assert!(
                 text.contains("validation failed"),
                 "response body not propagated into error, got: {text}"
             ),
-            other => panic!("expected Internal(Other), got: {other:?}"),
+            other => panic!("expected Internal(Rejected), got: {other:?}"),
         }
+    }
+
+    /// End to end through a real response, which the unit tests skip: the status and the
+    /// `retry-after` header have to survive the trip out of reqwest, not just the match.
+    #[tokio::test]
+    async fn test_client_send_email_429_is_rate_limited_with_the_wait_resend_sent() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/emails")
+            .with_status(429)
+            .with_header("retry-after", "3")
+            .with_body(r#"{"message":"Too many requests"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let (client, request) = client_and_request(&server.url()).await;
+        let err = client.send_email(request).await.unwrap_err();
+
+        match err.error_kind {
+            DomainErrorKind::Internal(InternalErrorKind::RateLimited { retry_after }) => {
+                assert_eq!(
+                    retry_after,
+                    Some(Duration::from_secs(3)),
+                    "the wait Resend named must reach the caller, not be reinvented"
+                );
+            }
+            other => panic!("expected Internal(RateLimited), got: {other:?}"),
+        }
+    }
+
+    /// A 5xx is retryable where a 4xx is not, so the two must not collapse to one kind.
+    #[tokio::test]
+    async fn test_client_send_email_5xx_is_unavailable_not_rejected() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/emails")
+            .with_status(503)
+            .with_body(r#"{"message":"upstream down"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let (client, request) = client_and_request(&server.url()).await;
+        let err = client.send_email(request).await.unwrap_err();
+
+        assert!(
+            matches!(
+                err.error_kind,
+                DomainErrorKind::Internal(InternalErrorKind::Unavailable(_))
+            ),
+            "a 503 must stay retryable, got: {:?}",
+            err.error_kind
+        );
+    }
+
+    /// Resend asks that 429 and 5xx be retried and 4xx not. Every email in the app goes
+    /// through one send path, so this is the only place that decision is made.
+    #[test]
+    fn classify_failure_separates_retryable_from_refused() {
+        assert!(matches!(
+            classify_failure(StatusCode::TOO_MANY_REQUESTS, None, String::new()),
+            InternalErrorKind::RateLimited { .. }
+        ));
+        assert!(matches!(
+            classify_failure(StatusCode::INTERNAL_SERVER_ERROR, None, String::new()),
+            InternalErrorKind::Unavailable(_)
+        ));
+        // The 422 that a wrong template id produces: retrying sends the same payload to
+        // the same template, so it must not read as transient.
+        assert!(matches!(
+            classify_failure(StatusCode::UNPROCESSABLE_ENTITY, None, String::new()),
+            InternalErrorKind::Rejected(_)
+        ));
+        assert!(matches!(
+            classify_failure(StatusCode::UNAUTHORIZED, None, String::new()),
+            InternalErrorKind::Rejected(_)
+        ));
+    }
+
+    /// The wait Resend names is carried through, so a caller can honour it instead of
+    /// inventing a delay.
+    #[test]
+    fn classify_failure_carries_the_retry_after_resend_sent() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "7".parse().unwrap());
+        assert_eq!(retry_after_from(&headers), Some(Duration::from_secs(7)));
+
+        // An HTTP-date is ignored rather than guessed at.
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            "Wed, 21 Oct 2026 07:28:00 GMT".parse().unwrap(),
+        );
+        assert_eq!(retry_after_from(&headers), None);
+        assert_eq!(retry_after_from(&reqwest::header::HeaderMap::new()), None);
     }
 
     #[tokio::test]

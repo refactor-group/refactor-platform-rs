@@ -1,0 +1,17 @@
+# Synthetic case syn-dates, reworded around the same deadline phrases.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Alex Rivera
+[s1 00:05] Coachee: Alright, a bunch of little things to pin down.
+[s2 00:30] Coachee: In two weeks I'll have the security review finished.
+[s3 01:00] Coachee: Two weeks from this Wednesday, the pricing memo goes out. I'll send it.
+[s4 01:30] Coachee: By the end of the month I'll have the expense reports closed out.
+[s5 02:00] Coachee: By the end of the week I'll update the interview rubric.
+[s6 02:30] Coachee: This weekend I'll read that leadership book.
+[s7 03:00] Coachee: Monday I'll get the contract to Maria.
+[s8 03:30] Coachee: By next Friday I'll have the team offsite venue booked.
+[s9 04:00] Coachee: Soon I'll get in touch with the new VP.
+[s10 04:30] Coachee: The onboarding checklist, I'll fix it ASAP.
+[s11 05:00] Coachee: And at some point this year I'll get the mentoring program going.
+[s12 05:30] Coach: By EOD tomorrow I'll send you my notes on the pricing memo.

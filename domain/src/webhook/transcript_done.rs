@@ -3,13 +3,16 @@ use crate::transcription::{self as transcription_api, TranscriptionStatus};
 use entity::Id;
 use events::{DomainEvent, EventPublisher};
 use log::*;
-use meeting_ai::traits::transcription as transcription_trait;
+use meeting_ai::traits::{recording_bot, transcription as transcription_trait};
 use sea_orm::DatabaseConnection;
+use service::config::Config;
 use std::sync::Arc;
 
 pub async fn handle(
     db: Arc<DatabaseConnection>,
     transcription_provider: Option<Arc<dyn transcription_trait::Provider>>,
+    recording_bot_provider: Option<Arc<dyn recording_bot::Provider>>,
+    config: Config,
     event_publisher: EventPublisher,
     transcript_id: &str,
 ) -> Result<(), Error> {
@@ -40,6 +43,7 @@ pub async fn handle(
     }
 
     let transcription_id = transcription.id;
+    let meeting_recording_id = transcription.meeting_recording_id;
     let coaching_session_id: Id = transcription.coaching_session_id;
     let transcript_id = transcript_id.to_string();
 
@@ -47,6 +51,8 @@ pub async fn handle(
         let result = crate::transcription::handle_completion(
             &db,
             transcription_provider.as_deref(),
+            recording_bot_provider.as_deref(),
+            &config,
             &transcript_id,
         )
         .await;
@@ -57,7 +63,7 @@ pub async fn handle(
                 transcript_id, e
             );
             let _ = transcription_api::update_status(
-                &db,
+                db.as_ref(),
                 transcription_id,
                 TranscriptionStatus::Failed,
                 None,
@@ -65,6 +71,18 @@ pub async fn handle(
                 Some(e.to_string()),
             )
             .await;
+        }
+
+        // Recorded unconditionally (outside the success branch): Recall.ai bills for
+        // the transcription attempt regardless of whether completion succeeds.
+        if let Err(e) =
+            crate::cost::record_transcription_hours(&db, transcription_id, meeting_recording_id)
+                .await
+        {
+            warn!(
+                "cost: transcription hours failed for transcription {}: {:?}",
+                transcription_id, e
+            );
         }
 
         match crate::coaching_session::find_participant_ids(&db, coaching_session_id).await {
@@ -133,7 +151,15 @@ mod tests {
         );
 
         let publisher = EventPublisher::new();
-        let result = handle(Arc::clone(&db), None, publisher, "ext-td-test").await;
+        let result = handle(
+            Arc::clone(&db),
+            None,
+            None,
+            Config::default(),
+            publisher,
+            "ext-td-test",
+        )
+        .await;
 
         assert!(result.is_ok());
     }
@@ -149,7 +175,15 @@ mod tests {
         );
 
         let publisher = EventPublisher::new();
-        let result = handle(Arc::clone(&db), None, publisher, "nonexistent-id").await;
+        let result = handle(
+            Arc::clone(&db),
+            None,
+            None,
+            Config::default(),
+            publisher,
+            "nonexistent-id",
+        )
+        .await;
 
         assert!(result.is_ok());
     }

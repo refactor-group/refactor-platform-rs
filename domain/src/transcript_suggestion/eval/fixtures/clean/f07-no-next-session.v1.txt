@@ -1,0 +1,10 @@
+# F7 no next session scheduled, worded as the manual script.
+# session: Wednesday 2026-10-07
+# next_session: none
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:05] Coachee: Before our next session, I'll map out my stakeholders.
+[s2 00:12] Coach: By next time, I'll send you the stakeholder template.
+[s3 00:19] Coachee: I'll have the draft done before we meet again.
+[s4 00:27] Coach: I'll find you a template for the project chart
+[s5 00:32] Coach: and I'll get it to you by our next session.

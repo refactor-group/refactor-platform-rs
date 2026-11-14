@@ -38,3 +38,7 @@ pub(crate) async fn sse_handler(
 
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
+
+#[cfg(test)]
+#[path = "handler_sqlite_tests.rs"]
+mod sqlite_tests;

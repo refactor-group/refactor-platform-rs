@@ -1,40 +1,25 @@
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
+use crate::gateway::auth::{Authenticator, SecretAuth};
 use log::*;
 use serde_json::json;
 use service::config::Config;
 
-/// HTTP client for making requests to Tiptap. This client is configured with the necessary
-/// authentication headers to make authenticated requests to Tiptap.
+/// HTTP client for making requests to Tiptap. Per-document operations
+/// authenticate with the raw shared secret (`SecretAuth`).
 pub(crate) async fn client(config: &Config) -> Result<reqwest::Client, Error> {
-    let headers = build_auth_headers(config).await?;
-
-    Ok(reqwest::Client::builder()
-        .use_rustls_tls()
-        .default_headers(headers)
-        .build()?)
-}
-
-async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMap, Error> {
-    let auth_key = config.tiptap_auth_key().ok_or_else(|| {
+    let secret = config.tiptap_auth_key().ok_or_else(|| {
         warn!("Failed to get auth key from config");
         Error {
             source: None,
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
         }
     })?;
-    let mut headers = reqwest::header::HeaderMap::new();
-    let mut auth_value = reqwest::header::HeaderValue::from_str(&auth_key).map_err(|err| {
-        warn!("Failed to create auth header value: {err:?}");
-        Error {
-            source: Some(Box::new(err)),
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                "Failed to create auth header value".to_string(),
-            )),
-        }
-    })?;
-    auth_value.set_sensitive(true);
-    headers.insert(reqwest::header::AUTHORIZATION, auth_value);
-    Ok(headers)
+    let headers = SecretAuth::new(secret).headers()?;
+
+    Ok(reqwest::Client::builder()
+        .use_rustls_tls()
+        .default_headers(headers)
+        .build()?)
 }
 
 pub struct TiptapDocument {
@@ -110,5 +95,40 @@ impl TiptapDocument {
             "{}/api/documents/{}?format=json",
             self.base_url, document_name
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mockito::Server;
+    use service::config::Config;
+
+    fn test_config(url: &str) -> Config {
+        Config::from_args([
+            "test",
+            "--tiptap-auth-key=test-auth-key",
+            &format!("--tiptap-url={url}"),
+        ])
+    }
+
+    /// A 409 from Tiptap means the document already exists. The gateway treats
+    /// that as success so a retried hydration converges on the existing doc
+    /// rather than erroring. This is the idempotency primitive the deferred-doc
+    /// fix relies on: same name + already-created doc -> Ok.
+    #[tokio::test]
+    async fn create_treats_existing_document_409_as_success() {
+        let mut server = Server::new_async().await;
+        let _mock = server
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(409)
+            .create_async()
+            .await;
+
+        let tiptap = TiptapDocument::new(&test_config(&server.url()))
+            .await
+            .expect("client builds from test config");
+
+        assert!(tiptap.create("test-org.test-slug.doc-v0").await.is_ok());
     }
 }

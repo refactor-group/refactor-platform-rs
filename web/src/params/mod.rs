@@ -15,13 +15,39 @@ pub(crate) mod action;
 pub(crate) mod agreement;
 pub(crate) mod coaching_relationship;
 pub(crate) mod coaching_session;
+pub(crate) mod coaching_session_series;
 pub(crate) mod goal;
-pub(crate) mod jwt;
+pub(crate) mod search;
 pub(crate) mod sort;
+pub(crate) mod status;
+pub(crate) mod transcript_suggestion;
 pub(crate) mod user;
 pub(crate) mod validation;
 
+use domain::Id;
+use serde::{Deserialize, Deserializer};
+
 use self::sort::SortOrder;
+
+/// Distinguish an omitted field (`None`) from an explicit JSON null (`Some(None)`).
+pub(crate) fn deserialize_clearable<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Some(Option::<String>::deserialize(deserializer)?))
+}
+
+/// Parses a comma-separated list of UUIDs, the form list query params take (`?ids=a,b`).
+/// Blank entries are skipped; `None` when any entry is not a UUID.
+pub(crate) fn split_ids(raw: &str) -> Option<Vec<Id>> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| Id::parse_str(entry).ok())
+        .collect()
+}
 
 /// A trait for applying default sorting parameters when at least one sort parameter is provided.
 ///

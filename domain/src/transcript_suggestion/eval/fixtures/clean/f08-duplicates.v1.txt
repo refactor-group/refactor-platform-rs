@@ -1,0 +1,10 @@
+# F8 duplicates of existing actions, worded as the manual script.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+# existing a1: Send the Q4 hiring plan to Dana
+# existing a2: Update the onboarding doc
+[s1 00:05] Coachee: I'll get the Q4 hiring plan over to Dana.
+[s2 00:12] Coachee: Oh, and I really do need to finish updating the onboarding doc, I'll get it done this week.
+[s3 00:22] Coachee: I'll also write a separate onboarding checklist for interns.

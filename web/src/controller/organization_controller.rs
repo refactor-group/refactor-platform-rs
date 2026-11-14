@@ -1,6 +1,7 @@
 use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    organization_member_access::OrganizationMemberAccess, super_admin_access::SuperAdminAccess,
 };
 use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
@@ -21,10 +22,11 @@ use log::debug;
     path = "/organizations",
     params(
         ApiVersion,
-        ("user_id" = Option<String>, Query, description = "Filter by user_id")
+        ("user_id" = Option<String>, Query, description = "Filter by user_id"),
+        ("status" = Option<String>, Query, description = "active|archived|all (default active)")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved all Organizations", body = [organizations::Model]),
+        (status = 200, description = "Successfully retrieved all Organizations", body = [domain::organizations::Model]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -55,14 +57,15 @@ pub async fn index(
 /// GET a particular Organization specified by its id.
 #[utoipa::path(
     get,
-    path = "/organizations/{id}",
+    path = "/organizations/{organization_id}",
     params(
         ApiVersion,
-        ("id" = String, Path, description = "Organization id to retrieve")
+        ("organization_id" = Uuid, Path, description = "Organization id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a certain Organization by its id", body = [organizations::Model]),
+        (status = 200, description = "Successfully retrieved a certain Organization by its id", body = domain::organizations::Model),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Caller is not a member of the organization"),
         (status = 404, description = "Organization not found"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -74,7 +77,7 @@ pub async fn index(
 pub async fn read(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    Path(id): Path<Id>,
+    OrganizationMemberAccess(id): OrganizationMemberAccess,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET Organization by id: {id}");
 
@@ -90,9 +93,9 @@ pub async fn read(
     params(
         ApiVersion,
     ),
-    request_body = organizations::Model,
+    request_body = domain::organizations::Model,
     responses(
-        (status = 200, description = "Successfully created a new Organization", body = [organizations::Model]),
+        (status = 200, description = "Successfully created a new Organization", body = domain::organizations::Model),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -103,6 +106,7 @@ pub async fn read(
     )]
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
+    SuperAdminAccess { .. }: SuperAdminAccess,
     State(app_state): State<AppState>,
     Json(organization_model): Json<organizations::Model>,
 ) -> Result<impl IntoResponse, Error> {
@@ -111,7 +115,7 @@ pub async fn create(
     let organization: organizations::Model =
         OrganizationApi::create(app_state.db_conn_ref(), organization_model).await?;
 
-    debug!("Newly Created Organization: {:?}", &organization);
+    debug!("Newly Created Organization: {:?}", organization);
 
     Ok(Json(ApiResponse::new(
         StatusCode::CREATED.into(),
@@ -122,14 +126,14 @@ pub async fn create(
 /// UPDATE a particular Organization specified by its primary key.
 #[utoipa::path(
     put,
-    path = "/organizations/{id}",
+    path = "/organizations/{organization_id}",
     params(
         ApiVersion,
-        ("id" = i32, Path, description = "Organization id to update")
+        ("organization_id" = Uuid, Path, description = "Organization id to update")
     ),
-    request_body = organizations::Model,
+    request_body = domain::organizations::Model,
     responses(
-        (status = 200, description = "Successfully updated a certain Organization by its id", body = [organizations::Model]),
+        (status = 200, description = "Successfully updated a certain Organization by its id", body = domain::organizations::Model),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Organization not found"),
         (status = 405, description = "Method not allowed"),
@@ -141,6 +145,7 @@ pub async fn create(
 )]
 pub async fn update(
     CompareApiVersion(_v): CompareApiVersion,
+    SuperAdminAccess { .. }: SuperAdminAccess,
     State(app_state): State<AppState>,
     Path(id): Path<Id>,
     Json(organization_model): Json<organizations::Model>,
@@ -162,13 +167,13 @@ pub async fn update(
 /// DELETE an Organization specified by its primary key.
 #[utoipa::path(
     delete,
-    path = "/organizations/{id}",
+    path = "/organizations/{organization_id}",
     params(
         ApiVersion,
-        ("id" = i32, Path, description = "Organization id to delete")
+        ("organization_id" = Uuid, Path, description = "Organization id to delete")
     ),
     responses(
-        (status = 200, description = "Successfully deleted a certain Organization by its id", body = [i32]),
+        (status = 200, description = "Successfully deleted a certain Organization by its id", body = serde_json::Value),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Organization not found"),
         (status = 405, description = "Method not allowed"),
@@ -180,6 +185,7 @@ pub async fn update(
 )]
 pub async fn delete(
     CompareApiVersion(_v): CompareApiVersion,
+    SuperAdminAccess { .. }: SuperAdminAccess,
     State(app_state): State<AppState>,
     Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
@@ -188,3 +194,66 @@ pub async fn delete(
     OrganizationApi::delete_by_id(app_state.db_conn_ref(), id).await?;
     Ok(Json(json!({"id": id})))
 }
+
+/// ARCHIVE an Organization (idempotent).
+///
+/// Marks the organization archived; it drops out of default reads. SuperAdmin only.
+#[utoipa::path(
+    post,
+    path = "/organizations/{organization_id}/archive",
+    params(ApiVersion, ("organization_id" = Uuid, Path, description = "Organization id to archive")),
+    responses(
+        (status = 200, description = "Organization archived", body = domain::organizations::Model),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden (not a SuperAdmin)"),
+        (status = 404, description = "Organization not found"),
+        (status = 503, description = "Service temporarily unavailable")
+    ),
+    security(("cookie_auth" = []))
+)]
+pub async fn archive(
+    CompareApiVersion(_v): CompareApiVersion,
+    SuperAdminAccess { authenticated_user }: SuperAdminAccess,
+    State(app_state): State<AppState>,
+    Path(id): Path<Id>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("ARCHIVE Organization by id: {id}");
+
+    let organization =
+        OrganizationApi::archive(app_state.db_conn_ref(), id, authenticated_user.id).await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), organization)))
+}
+
+/// UNARCHIVE an Organization (idempotent).
+///
+/// Clears the archived marker; the organization reappears in default reads. SuperAdmin only.
+#[utoipa::path(
+    post,
+    path = "/organizations/{organization_id}/unarchive",
+    params(ApiVersion, ("organization_id" = Uuid, Path, description = "Organization id to unarchive")),
+    responses(
+        (status = 200, description = "Organization unarchived", body = domain::organizations::Model),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden (not a SuperAdmin)"),
+        (status = 404, description = "Organization not found"),
+        (status = 503, description = "Service temporarily unavailable")
+    ),
+    security(("cookie_auth" = []))
+)]
+pub async fn unarchive(
+    CompareApiVersion(_v): CompareApiVersion,
+    SuperAdminAccess { .. }: SuperAdminAccess,
+    State(app_state): State<AppState>,
+    Path(id): Path<Id>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("UNARCHIVE Organization by id: {id}");
+
+    let organization = OrganizationApi::unarchive(app_state.db_conn_ref(), id).await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), organization)))
+}
+
+#[cfg(test)]
+#[path = "organization_controller_sqlite_tests.rs"]
+mod sqlite_tests;

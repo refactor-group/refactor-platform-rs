@@ -77,11 +77,8 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Option<Model>
             })
         }
         Err(err) => {
-            error!("Note with id {id} not found and returned error {err}");
-            Err(Error {
-                source: None,
-                error_kind: EntityApiErrorKind::RecordNotFound,
-            })
+            error!("Note with id {id} lookup failed: {err}");
+            Err(err.into())
         }
     }
 }
@@ -112,9 +109,6 @@ pub async fn find_by(
 }
 
 #[cfg(test)]
-// We need to gate seaORM's mock feature behind conditional compilation because
-// the feature removes the Clone trait implementation from seaORM's DatabaseConnection.
-// see https://github.com/SeaQL/sea-orm/issues/830
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;

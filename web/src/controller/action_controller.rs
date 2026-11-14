@@ -1,9 +1,12 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use domain::action::ActionWithAssignees;
-use domain::{action as ActionApi, actions::Model, emails as EmailsApi, users, Id};
+use domain::{
+    action as ActionApi, actions::Model, coaching_relationship as CoachingRelationshipApi,
+    coaching_relationships, emails as EmailsApi, goal as GoalApi, users, Id,
+};
 use log::*;
 use sea_orm::DatabaseConnection;
 use serde::Deserialize;
@@ -13,9 +16,13 @@ use utoipa::ToSchema;
 
 use crate::controller::ApiResponse;
 use crate::extractors::{
-    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    action_access::ActionAccess,
+    authenticated_user::AuthenticatedUser,
+    coaching_session_access::{authorize_session, CoachingSessionQueryAccess},
+    compare_api_version::CompareApiVersion,
 };
 use crate::params::action::{IndexParams, SortField};
+use crate::params::status;
 use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
 
@@ -40,6 +47,47 @@ impl ActionRequest {
     }
 }
 
+/// Refuses assignees who are not the relationship's coach or coachee, an added assignee no
+/// longer in its organization, and a goal from another relationship, before anything is
+/// written. `previous` are the action's current assignees, which are not re-checked.
+async fn validate_links(
+    db: &DatabaseConnection,
+    relationship: &coaching_relationships::Model,
+    request: &ActionRequest,
+    previous: &[Id],
+) -> Result<(), Error> {
+    let assignees_in_relationship = request
+        .assignee_ids
+        .iter()
+        .flatten()
+        .all(|id| relationship.includes_user(*id));
+    if !assignees_in_relationship {
+        return Err(Error::validation(
+            "assignee_ids must name the coach or coachee of the action's relationship.",
+        ));
+    }
+
+    let added: Vec<Id> = request
+        .assignee_ids
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|id| !previous.contains(id))
+        .collect();
+    CoachingRelationshipApi::ensure_assignees_are_members(db, relationship, &added).await?;
+
+    let Some(goal_id) = request.action.goal_id else {
+        return Ok(());
+    };
+    let goal = GoalApi::find_by_id(db, goal_id).await?;
+    if goal.coaching_relationship_id != relationship.id {
+        return Err(Error::validation(
+            "goal_id must name a goal of the action's relationship.",
+        ));
+    }
+    Ok(())
+}
+
 /// POST create a new Action
 #[utoipa::path(
     post,
@@ -47,9 +95,12 @@ impl ActionRequest {
     params(ApiVersion),
     request_body = ActionRequest,
     responses(
-        (status = 201, description = "Successfully Created a New Action", body = [domain::action::ActionWithAssignees]),
+        (status = 201, description = "Successfully Created a New Action", body = domain::action::ActionWithAssignees),
+        (status = 409, description = "An assignee is no longer a member of the organization; `details.reason` is `assignee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status= 422, description = "Unprocessable Entity"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Coaching session not found"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -60,15 +111,21 @@ impl ActionRequest {
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
     State(app_state): State<AppState>,
     Json(request): Json<ActionRequest>,
-) -> Result<impl IntoResponse, Error> {
+) -> Result<Response, Error> {
     debug!("POST Create a New Action from: {:?}", request.action);
+
+    let relationship =
+        match authorize_session(&app_state, &user, request.action.coaching_session_id).await {
+            Ok((_, relationship)) => relationship,
+            Err(rejection) => return Ok(rejection.into_response()),
+        };
+    validate_links(app_state.db_conn_ref(), &relationship, &request, &[]).await?;
 
     let action = ActionApi::create_with_assignees(
         app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
         request.action,
         user.id,
         request.assignee_ids,
@@ -86,7 +143,7 @@ pub async fn create(
         .await;
     }
 
-    Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), action)))
+    Ok(Json(ApiResponse::new(StatusCode::CREATED.into(), action)).into_response())
 }
 
 /// GET a particular Action specified by its id.
@@ -95,11 +152,12 @@ pub async fn create(
     path = "/actions/{id}",
     params(
         ApiVersion,
-        ("id" = String, Path, description = "Action id to retrieve")
+        ("id" = Uuid, Path, description = "Action id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a specific Action by its id", body = [domain::action::ActionWithAssignees]),
+        (status = 200, description = "Successfully retrieved a specific Action by its id", body = domain::action::ActionWithAssignees),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 404, description = "Action not found"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -110,29 +168,18 @@ pub async fn create(
 )]
 pub async fn read(
     CompareApiVersion(_v): CompareApiVersion,
+    ActionAccess { action, .. }: ActionAccess,
     State(app_state): State<AppState>,
-    Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("GET Action by id: {id}");
+    debug!("GET Action by id: {}", action.id);
 
-    let action = ActionApi::find_by_id_with_assignees(app_state.db_conn_ref(), id).await?;
+    let assignee_ids = ActionApi::find_assignee_ids(app_state.db_conn_ref(), action.id).await?;
+    let action = ActionWithAssignees {
+        action,
+        assignee_ids,
+    };
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), action)))
-}
-
-/// Fetch the current assignee IDs for an action before an update.
-/// Returns `None` if the fetch fails (email notification will be skipped).
-async fn fetch_previous_assignee_ids(db: &DatabaseConnection, action_id: Id) -> Option<Vec<Id>> {
-    match ActionApi::find_assignee_ids(db, action_id).await {
-        Ok(ids) => Some(ids),
-        Err(e) => {
-            warn!(
-                "Failed to fetch previous assignees for action {action_id}, \
-                 skipping action assigned email: {e:?}"
-            );
-            None
-        }
-    }
 }
 
 /// Notify newly added assignees via email.
@@ -164,12 +211,16 @@ async fn notify_added_assignees(
     path = "/actions/{id}",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Id of action to update"),
+        ("id" = Uuid, Path, description = "Id of action to update"),
     ),
     request_body = ActionRequest,
     responses(
-        (status = 200, description = "Successfully Updated Action", body = [domain::action::ActionWithAssignees]),
+        (status = 200, description = "Successfully Updated Action", body = domain::action::ActionWithAssignees),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Action not found"),
+        (status = 409, description = "An added assignee is no longer a member of the organization; `details.reason` is `assignee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
+        (status = 422, description = "Unprocessable Entity"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -180,25 +231,32 @@ async fn notify_added_assignees(
 pub async fn update(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
+    ActionAccess {
+        action,
+        relationship,
+    }: ActionAccess,
     State(app_state): State<AppState>,
-    Path(id): Path<Id>,
     Json(request): Json<ActionRequest>,
 ) -> Result<impl IntoResponse, Error> {
+    let id = action.id;
     debug!("PUT Update Action with id: {id}");
 
-    let assignees_changed = request.have_assignees_changed();
-
-    // Capture current assignees BEFORE the update for diffing
-    let previous_assignee_ids = if assignees_changed {
-        fetch_previous_assignee_ids(app_state.db_conn_ref(), id).await
-    } else {
-        None
+    // Current assignees, read before the update: only those added are checked and notified.
+    let previous_assignee_ids = match request.have_assignees_changed() {
+        true => Some(ActionApi::find_assignee_ids(app_state.db_conn_ref(), id).await?),
+        false => None,
     };
+    validate_links(
+        app_state.db_conn_ref(),
+        &relationship,
+        &request,
+        previous_assignee_ids.as_deref().unwrap_or_default(),
+    )
+    .await?;
 
     let action = ActionApi::update_with_assignees(
         app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
         id,
         request.action,
         request.assignee_ids,
@@ -220,14 +278,17 @@ pub async fn update(
     path = "/actions/{id}/status",
     params(
         ApiVersion,
-        ("id" = Id, Path, description = "Id of action to update"),
-        ("value" = Option<String>, Query, description = "Status value to update"),
+        ("id" = Uuid, Path, description = "Id of action to update"),
+        ("value" = String, Query, description = "New status: not_started, in_progress, completed, on_hold or wont_do"),
     ),
-    request_body = actions::Model,
     responses(
-        (status = 200, description = "Successfully Updated Action", body = [actions::Model]),
+        (status = 200, description = "Successfully Updated Action", body = domain::actions::Model),
+        (status = 400, description = "Missing value"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Action not found"),
         (status = 405, description = "Method not allowed"),
+        (status = 422, description = "Unknown status value"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -237,14 +298,20 @@ pub async fn update(
 pub async fn update_status(
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
-    Query(status): Query<String>,
-    Path(id): Path<Id>,
+    ActionAccess { action, .. }: ActionAccess,
+    Query(params): Query<status::UpdateParams>,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
+    let id = action.id;
     debug!("PUT Update Action Status with id: {id}");
 
-    let action =
-        ActionApi::update_status(app_state.db_conn_ref(), id, status.as_str().into()).await?;
+    let action = ActionApi::update_status(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        id,
+        params.status()?,
+    )
+    .await?;
 
     debug!("Updated Action: {action:?}");
 
@@ -256,14 +323,15 @@ pub async fn update_status(
     path = "/actions",
     params(
         ApiVersion,
-        ("coaching_session_id" = Option<Id>, Query, description = "Filter by coaching_session_id"),
-        ("goal_id" = Option<Id>, Query, description = "Filter by goal_id"),
+        ("coaching_session_id" = Option<Uuid>, Query, description = "Filter by coaching_session_id"),
+        ("goal_id" = Option<Uuid>, Query, description = "Filter by goal_id"),
         ("sort_by" = Option<crate::params::action::SortField>, Query, description = "Sort by field. Valid values: 'due_by', 'created_at', 'updated_at'. Must be provided with sort_order.", example = "due_by"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc' (ascending), 'desc' (descending). Must be provided with sort_by.", example = "desc")
     ),
     responses(
         (status = 200, description = "Successfully retrieved all Actions", body = [domain::action::ActionWithAssignees]),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -272,10 +340,9 @@ pub async fn update_status(
     )
 )]
 pub async fn index(
+    CoachingSessionQueryAccess(session, _relationship): CoachingSessionQueryAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
     State(app_state): State<AppState>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
@@ -284,6 +351,7 @@ pub async fn index(
 
     // Apply default sorting parameters
     let mut params = params;
+    params.coaching_session_id = session.id;
     IndexParams::apply_sort_defaults(
         &mut params.sort_by,
         &mut params.sort_order,
@@ -303,11 +371,12 @@ pub async fn index(
     path = "/actions/{id}",
     params(
         ApiVersion,
-        ("id" = i32, Path, description = "Action id to delete")
+        ("id" = Uuid, Path, description = "Action id to delete")
     ),
     responses(
-        (status = 200, description = "Successfully deleted a certain Action by its id", body = [i32]),
+        (status = 200, description = "Successfully deleted a certain Action by its id", body = serde_json::Value),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 404, description = "Action not found"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -318,11 +387,21 @@ pub async fn index(
 )]
 pub async fn delete(
     CompareApiVersion(_v): CompareApiVersion,
+    ActionAccess { action, .. }: ActionAccess,
     State(app_state): State<AppState>,
-    Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
+    let id = action.id;
     debug!("DELETE Action by id: {id}");
 
-    ActionApi::delete_by_id(app_state.db_conn_ref(), id).await?;
+    ActionApi::delete_by_id(
+        app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
+        id,
+    )
+    .await?;
     Ok(Json(json!({"id": id})))
 }
+
+#[cfg(test)]
+#[path = "action_controller_sqlite_tests.rs"]
+mod sqlite_tests;

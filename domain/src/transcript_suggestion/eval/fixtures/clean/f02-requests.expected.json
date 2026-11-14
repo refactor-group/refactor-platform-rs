@@ -1,0 +1,5 @@
+[
+  {"segments": ["s1", "s2"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "accepted request; starting Monday is a start, not a deadline"},
+  {"segments": ["s3", "s4"], "assignees": ["coachee"], "due_dates": [null, "2026-10-21"], "duplicate_of": null, "note": "homework accepted with a short yes"},
+  {"segments": ["s8", "s9"], "assignees": ["coach"], "due_dates": ["2026-10-09"], "duplicate_of": null, "note": "coach introduces the coachee to Maria this week"}
+]

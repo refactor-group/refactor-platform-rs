@@ -4,17 +4,24 @@ pub use crate::roles::Role;
 use crate::user_invite_status::InviteStatus;
 use crate::Id;
 use axum_login::AuthUser;
+use chrono::NaiveTime;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use utoipa::ToSchema;
 
+fn default_timezone() -> String {
+    "UTC".to_string()
+}
+
 // TODO: We should find a way to centralize the users/coaches/coachees types
+#[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, ToSchema, Serialize, Deserialize)]
 #[schema(as = domain::users::Model)] // OpenAPI schema
 #[sea_orm(schema_name = "refactor_platform", table_name = "users")]
 pub struct Model {
     #[serde(skip_deserializing)]
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     pub id: Id,
     #[sea_orm(unique)]
     pub email: String,
@@ -25,16 +32,29 @@ pub struct Model {
     pub password: Option<String>,
     pub github_username: Option<String>,
     pub github_profile_url: Option<String>,
+    // Serde default mirrors the column's `DEFAULT 'UTC'` so it's optional on the wire.
     #[sea_orm(default = "UTC")]
+    #[serde(default = "default_timezone")]
     pub timezone: String,
     /// Per-coach default session duration in minutes. Validated `1..=480`
-    /// via `entity::duration::Duration` on every write. The migration's
-    /// `NOT NULL DEFAULT 60` provides the column default.
+    /// via `entity::duration::Duration`. Serde default mirrors the column's
+    /// `NOT NULL DEFAULT 60` so it's optional on the wire (not an invalid `0`).
+    #[serde(default = "crate::duration::Duration::default_minutes")]
     pub default_coaching_session_duration_minutes: i16,
-    #[sea_orm(default = "user")]
-    // This is a legacy field and will be removed in favor of roles
-    #[serde(skip_deserializing)]
-    pub role: Role,
+    /// Start of the working day, local wall-clock time in the user's `timezone`.
+    #[serde(
+        with = "crate::working_hours::hh_mm",
+        default = "crate::working_hours::default_start"
+    )]
+    #[schema(value_type = String, example = "08:00")]
+    pub working_hours_start: NaiveTime,
+    /// End of the working day, local wall-clock time in the user's `timezone`.
+    #[serde(
+        with = "crate::working_hours::hh_mm",
+        default = "crate::working_hours::default_end"
+    )]
+    #[schema(value_type = String, example = "17:30")]
+    pub working_hours_end: NaiveTime,
     /// Associated user roles (populated via find_with_related)
     /// This field is ignored by SeaORM for database operations.
     #[sea_orm(ignore)]
@@ -51,31 +71,67 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub updated_at: DateTimeWithTimeZone,
-}
-
-#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
-    #[sea_orm(has_many = "super::user_roles::Entity")]
-    UserRoles,
-}
-
-impl Related<super::organizations::Entity> for Entity {
-    fn to() -> RelationDef {
-        super::user_roles::Relation::Organizations.def()
-    }
-
-    fn via() -> Option<RelationDef> {
-        Some(super::user_roles::Relation::Users.def().rev())
-    }
-}
-
-impl Related<super::user_roles::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::UserRoles.def()
-    }
+    #[serde(skip)]
+    #[sea_orm(has_many, relation_enum = "UserRoles")]
+    pub user_roles: HasMany<super::user_roles::Entity>,
+    #[serde(skip)]
+    #[sea_orm(has_many, via = "user_roles::Users")]
+    pub organizations: HasMany<super::organizations::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}
+
+impl Model {
+    /// Whether this user holds the global SuperAdmin role: a `SuperAdmin` row with
+    /// no organization. An organization-scoped `SuperAdmin` row does not count.
+    ///
+    /// The single definition every authorization check uses, so that a decision
+    /// made per-row (`coaching_relationships::Model::grants_access_to`) and one made
+    /// corpus-wide (search's `Visibility`) can never disagree. Reads the preloaded
+    /// `roles`, so it is `false` for a user loaded without them.
+    pub fn is_super_admin(&self) -> bool {
+        self.roles
+            .iter()
+            .any(|r| r.role == Role::SuperAdmin && r.organization_id.is_none())
+    }
+
+    /// How this user is named to other humans: their chosen display name, else first and
+    /// last, else their email. Distinct from the bare `first_name` + `last_name` pairing
+    /// used where a formal name is wanted regardless of what the user chose to be called.
+    ///
+    /// Profile updates accept blank names, so every field here is treated as absent when
+    /// it is blank and the email backstops a user who cleared all of them.
+    pub fn preferred_name(&self) -> Cow<'_, str> {
+        let display = self
+            .display_name
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default();
+        if !display.is_empty() {
+            return Cow::Borrowed(display);
+        }
+
+        let full = format!("{} {}", self.first_name.trim(), self.last_name.trim());
+        match full.trim() {
+            "" => Cow::Borrowed(&self.email),
+            full => Cow::Owned(full.to_owned()),
+        }
+    }
+
+    /// The shortest name that still identifies this user, for places with only one line
+    /// to spend. Falls through the same blank-tolerant chain as [`Self::preferred_name`].
+    pub fn short_name(&self) -> &str {
+        [
+            self.first_name.as_str(),
+            self.display_name.as_deref().unwrap_or_default(),
+            self.last_name.as_str(),
+        ]
+        .into_iter()
+        .map(str::trim)
+        .find(|name| !name.is_empty())
+        .unwrap_or(&self.email)
+    }
+}
 
 impl AuthUser for Model {
     type Id = crate::Id;
@@ -110,12 +166,89 @@ mod tests {
             github_profile_url: None,
             timezone: "UTC".into(),
             default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
-            role: Role::default(),
+            working_hours_start: crate::working_hours::default_start(),
+            working_hours_end: crate::working_hours::default_end(),
             roles: vec![],
             invite_status: None,
             created_at: Utc::now().into(),
             updated_at: Utc::now().into(),
         }
+    }
+
+    fn role(user_id: Uuid, role: Role, organization_id: Option<Uuid>) -> crate::user_roles::Model {
+        crate::user_roles::Model {
+            id: Uuid::new_v4(),
+            role,
+            organization_id,
+            user_id,
+            created_at: Utc::now().into(),
+            updated_at: Utc::now().into(),
+        }
+    }
+
+    #[test]
+    fn is_super_admin_requires_the_global_super_admin_row() {
+        let id = Uuid::new_v4();
+        let mut user = test_user(id, None);
+        assert!(!user.is_super_admin());
+
+        user.roles = vec![
+            role(id, Role::SuperAdmin, Some(Uuid::new_v4())),
+            role(id, Role::Admin, None),
+        ];
+        assert!(!user.is_super_admin());
+
+        user.roles.push(role(id, Role::SuperAdmin, None));
+        assert!(user.is_super_admin());
+    }
+
+    #[test]
+    fn preferred_name_uses_display_name_when_set() {
+        let mut user = test_user(Uuid::new_v4(), None);
+        user.display_name = Some("Jim H.".into());
+        assert_eq!(user.preferred_name(), "Jim H.");
+    }
+
+    #[test]
+    fn preferred_name_falls_back_to_first_and_last() {
+        let user = test_user(Uuid::new_v4(), None);
+        assert_eq!(user.preferred_name(), "Test User");
+    }
+
+    #[test]
+    fn preferred_name_ignores_a_blank_display_name() {
+        let mut user = test_user(Uuid::new_v4(), None);
+        user.display_name = Some("   ".into());
+        assert_eq!(user.preferred_name(), "Test User");
+    }
+
+    #[test]
+    fn preferred_name_falls_back_to_email_when_every_name_is_blank() {
+        let mut user = test_user(Uuid::new_v4(), None);
+        user.first_name = "".into();
+        user.last_name = "".into();
+        assert_eq!(user.preferred_name(), "test@example.com");
+    }
+
+    #[test]
+    fn short_name_prefers_the_first_name() {
+        let mut user = test_user(Uuid::new_v4(), None);
+        user.display_name = Some("Jim H.".into());
+        assert_eq!(user.short_name(), "Test");
+    }
+
+    #[test]
+    fn short_name_falls_through_blank_fields() {
+        let mut user = test_user(Uuid::new_v4(), None);
+        user.first_name = "".into();
+        assert_eq!(user.short_name(), "User");
+
+        user.display_name = Some("Jim H.".into());
+        assert_eq!(user.short_name(), "Jim H.");
+
+        user.display_name = None;
+        user.last_name = " ".into();
+        assert_eq!(user.short_name(), "test@example.com");
     }
 
     #[test]
@@ -136,5 +269,38 @@ mod tests {
         let user_a = test_user(Uuid::new_v4(), None);
         let user_b = test_user(Uuid::new_v4(), None);
         assert_ne!(user_a.session_auth_hash(), user_b.session_auth_hash());
+    }
+
+    /// Magic-link invite path: payload omits duration AND timezone.
+    /// Both must default (60 / "UTC"), not 422.
+    #[test]
+    fn deserialize_defaults_duration_and_timezone_when_omitted() {
+        let model: Model = serde_json::from_value(serde_json::json!({
+            "email": "invite@example.com",
+            "first_name": "Inv",
+            "last_name": "Ite",
+            "display_name": "Inv Ite",
+        }))
+        .expect("invite payload without duration/timezone must deserialize");
+        assert_eq!(
+            model.default_coaching_session_duration_minutes,
+            crate::duration::Duration::default_minutes(),
+        );
+        assert_eq!(model.timezone, "UTC");
+    }
+
+    /// Explicit duration and timezone are still honored (defaults don't clobber).
+    #[test]
+    fn deserialize_honors_explicit_duration_and_timezone() {
+        let model: Model = serde_json::from_value(serde_json::json!({
+            "email": "coach@example.com",
+            "first_name": "Co",
+            "last_name": "Ach",
+            "timezone": "America/New_York",
+            "default_coaching_session_duration_minutes": 90,
+        }))
+        .expect("payload with duration must deserialize");
+        assert_eq!(model.default_coaching_session_duration_minutes, 90);
+        assert_eq!(model.timezone, "America/New_York");
     }
 }

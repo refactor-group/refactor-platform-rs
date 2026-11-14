@@ -32,7 +32,7 @@ When updating or seeding records in migrations, always use raw SQL queries inste
 ### Installing sea-orm-cli
 
 ```bash
-cargo install sea-orm-cli
+cargo install sea-orm-cli@2.0.3 --locked
 ```
 
 ### Environment Configuration

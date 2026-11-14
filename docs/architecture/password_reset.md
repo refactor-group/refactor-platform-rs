@@ -400,9 +400,9 @@ Both are 429; the body differs. The FE should handle 429 generically (show "you'
 | `POST /password-reset/request` | None — by design. Submitting any email is harmless because the token never goes to the requester. |
 | `POST /password-reset/validate` | Possession of a valid `PasswordReset` token (transmitted in JSON body). |
 | `POST /password-reset/complete` | Possession of a valid `PasswordReset` token. |
-| `PUT /users/:id/password` (pre-existing, distinct endpoint) | `authenticated_user.id == user_id` ([protect/users/passwords.rs:21](../../web/src/protect/users/passwords.rs#L21)) |
+| `PUT /users/:user_id/password` (pre-existing, distinct endpoint) | `authenticated_user.id == user_id` ([`UserSelfAccess`](../../web/src/extractors/user_self_access.rs#L28)) |
 
-The unauthenticated reset endpoints do **not** weaken the authenticated `PUT /users/:id/password` model — they are an additive credential-recovery channel, not a replacement.
+The unauthenticated reset endpoints do **not** weaken the authenticated `PUT /users/:user_id/password` model — they are an additive credential-recovery channel, not a replacement.
 
 ## Threat Model
 
@@ -421,7 +421,7 @@ The unauthenticated reset endpoints do **not** weaken the authenticated `PUT /us
 | Mallory tries to replay a previously-consumed reset link | Token is deleted atomically with the password update; subsequent attempts return `400 invalid_or_expired_token`. |
 | Mallory intercepts the email in transit | TLS protects SMTP transit. Out-of-scope at the application layer. |
 | Mallory has compromised Alice's email account | Out of scope: at this point Mallory controls account recovery for every service Alice uses. |
-| Authenticated user A tries to reset user B's password via the existing change-password endpoint | `protect::users::passwords::update_password` middleware enforces `authenticated_user.id == user_id`. Pre-existing, unchanged. |
+| Authenticated user A tries to reset user B's password via the existing change-password endpoint | The `UserSelfAccess` extractor enforces `authenticated_user.id == user_id`. Pre-existing, unchanged. |
 | Token leaks via HTTP `Referer` when the FE reset page loads a third-party resource | Path-segment format prevents query-string-style leakage. FE additionally sets `Referrer-Policy: same-origin` on token-bearing pages (tracked separately on the coordinator blackboard). |
 | Mallory holds a stolen session cookie for Alice's account; Alice resets her password to lock him out | After the reset, `users.password` holds a new argon2 hash. On Mallory's next authenticated request, `axum_login` recomputes `session_auth_hash()` against the current user record (new password bytes), compares to the session-stored hash (old password bytes), sees a mismatch, and returns 401. See [Session Invalidation on Password Change](#session-invalidation-on-password-change). |
 | Mallory spams `/password-reset/validate` with random tokens hoping to extract user data, DoS the DB, or amplify a future log-leak attack | Per-IP throttle on the `password-reset` route group applies to `/validate` identically to `/request` and `/complete` — `AUTH_ENDPOINT` policy (~10 req/min per IP, burst 10). With 256-bit token entropy, brute-force is computationally infeasible regardless; the throttle defends DB load. Wrong-length tokens are rejected with 400 at the HTTP boundary before any DB work — see [Input Validation at the HTTP Boundary](#input-validation-at-the-http-boundary). |

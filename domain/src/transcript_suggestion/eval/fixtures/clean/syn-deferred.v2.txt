@@ -1,0 +1,19 @@
+# Synthetic case syn-deferred, reworded.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:05] Coach: How was your week?
+[s2 00:20] Coachee: Pretty good. I'll track down a project chart template for you
+[s3 00:26] Coachee: and you'll have it from me by our next session.
+[s4 00:40] Coach: Great. After our call I'll send you the article feedback.
+[s5 01:00] Coachee: I'll write up the new process on the team wiki.
+[s6 01:05] Coach: By when?
+[s7 01:08] Coachee: Friday, let's say.
+[s8 01:30] Coachee: I'll phone the vendor about the renewal. Plus I'll draft the hiring plan.
+[s9 01:40] Coachee: That hiring plan by Monday.
+[s10 02:00] Coach: I'll check out that leadership course for you
+[s11 02:05] Coach: and get it to you that our next session.
+[s12 02:30] Coachee: I'll get the board slides ready.
+[s13 02:40] Coach: And I'll go over your draft by Thursday.
+[s14 03:00] Coach: Good session. Talk soon.

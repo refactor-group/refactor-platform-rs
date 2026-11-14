@@ -134,7 +134,7 @@ mod tests {
                     let idx = bind_index_for_column(&stmt.sql, column);
                     let binds = &stmt.values.as_ref().expect("update has binds").0;
                     return match &binds[idx] {
-                        Value::ChronoDateTimeWithTimeZone(opt) => opt.as_deref().copied(),
+                        Value::ChronoDateTimeWithTimeZone(opt) => *opt,
                         other => panic!("bind for {column:?} not a timestamp: {other:?}"),
                     };
                 }

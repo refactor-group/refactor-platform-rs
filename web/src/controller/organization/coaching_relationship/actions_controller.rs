@@ -65,8 +65,8 @@ fn check_assignee_visibility(
     path = "/organizations/{organization_id}/coaching_relationships/{relationship_id}/actions",
     params(
         ApiVersion,
-        ("organization_id" = String, Path, description = "Organization id"),
-        ("relationship_id" = String, Path, description = "Coaching relationship id"),
+        ("organization_id" = Uuid, Path, description = "Organization id"),
+        ("relationship_id" = Uuid, Path, description = "Coaching relationship id"),
     ),
     responses(
         (status = 200, description = "Successfully retrieved actions for the coaching relationship"),
@@ -119,7 +119,7 @@ pub async fn read(
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), actions)))
 }
 
-/// GET actions across all participant relationships, grouped by coachee user id.
+/// GET actions across all participant relationships, grouped by relationship id.
 ///
 /// Visibility narrows per-relationship by the caller's role (full for coach
 /// side, self-or-unassigned for coachee side).
@@ -128,7 +128,7 @@ pub async fn read(
     path = "/organizations/{organization_id}/coaching_relationships/actions",
     params(
         ApiVersion,
-        ("organization_id" = String, Path, description = "Organization id"),
+        ("organization_id" = Uuid, Path, description = "Organization id"),
     ),
     responses(
         (status = 200, description = "Successfully retrieved batch actions"),
@@ -171,7 +171,7 @@ pub async fn index(
         check_assignee_visibility(user.id, &coachee_visibility, assignee_scope.as_ref())?;
     }
 
-    let coachee_actions = ActionApi::find_by_user_relationships(
+    let relationship_actions = ActionApi::find_by_user_relationships(
         app_state.db_conn_ref(),
         &relationships,
         query_params,
@@ -180,9 +180,10 @@ pub async fn index(
     )
     .await?;
 
+    // Keys are relationship ids despite the field name.
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),
-        serde_json::json!({ "coachee_actions": coachee_actions }),
+        serde_json::json!({ "coachee_actions": relationship_actions }),
     )))
 }
 
@@ -331,3 +332,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "actions_controller_sqlite_tests.rs"]
+mod sqlite_tests;

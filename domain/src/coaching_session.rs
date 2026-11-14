@@ -1,16 +1,25 @@
 pub(crate) mod recurrence;
 
+use crate::coaching_relationship::{coachee_not_a_member, ensure_coachee_is_member};
 use crate::coaching_relationships;
+use crate::coaching_session_hydration::{
+    run_coaching_session_hydration_tasks, CoachingSessionHydrationContext,
+};
+use crate::coaching_session_image;
 use crate::coaching_sessions::Model;
-use crate::error::{DomainErrorKind, Error, InternalErrorKind};
+use crate::emails;
+use crate::error::{
+    reason, DomainErrorKind, EntityErrorKind, Error, ExternalErrorKind, InternalErrorKind,
+};
 use crate::events::{DomainEvent, EventPublisher};
 use crate::gateway::tiptap::TiptapDocument;
-use crate::provider::MeetingProperties;
+use crate::meeting_provider::MeetingProperties;
 use crate::Id;
-use chrono::{DurationRound, NaiveDateTime, TimeDelta};
+use chrono::{DurationRound, NaiveDateTime, TimeDelta, Utc};
 use entity_api::{
-    coaching_relationship, coaching_session, coaching_session_goal, coaching_sessions, mutate,
-    organization, query,
+    coaching_relationship, coaching_session,
+    coaching_session_pending_reschedule::{self, Schedule},
+    coaching_sessions, mutate, organization, query,
     query::{IntoQueryFilterMap, QuerySort},
 };
 use log::*;
@@ -18,9 +27,12 @@ use sea_orm::{DatabaseConnection, IntoActiveModel, TransactionTrait};
 use service::config::Config;
 
 pub use entity_api::coaching_session::{
-    find_by_id, find_by_user_with_includes, find_counts_by_month_for_user, find_participant_ids,
-    CountByMonth, EnrichedSession, IncludeOptions, SessionQueryOptions,
+    claim_due_reminders, find_by_id, find_by_ids_with_coaching_relationship, find_by_series_id,
+    find_by_user_with_includes, find_counts_by_month_for_user, find_nearest_by_user_with_includes,
+    find_next_session, find_participant_ids, release_reminder_claim, CountByMonth, DueReminder,
+    EnrichedSession, IncludeOptions, NearestWindow, SessionQueryOptions,
 };
+pub use entity_api::coaching_session_display_title::SessionWithDisplayTitle;
 
 use crate::duration::Duration;
 pub use recurrence::{expand_recurrence, Frequency, Recurrence, RecurrenceError};
@@ -78,11 +90,25 @@ pub async fn create(
         coaching_relationship::find_by_id(db, coaching_session_model.coaching_relationship_id)
             .await?;
     let organization = organization::find_by_id(db, coaching_relationship.organization_id).await?;
+    if organization.archived_at.is_some() {
+        return Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::OrganizationArchived,
+            )),
+        });
+    }
+    let member_ids = coaching_relationship::notify_member_ids(db, &coaching_relationship).await?;
+    ensure_coachee_is_member(&coaching_relationship, &member_ids)?;
     let coach_id = coaching_relationship.coach_id;
 
     coaching_session_model.date = SessionDate::new(coaching_session_model.date)?.into_inner();
 
-    let document_name = generate_document_name(&organization.slug, &coaching_relationship.slug);
+    let document_name = generate_document_name(
+        &organization.slug,
+        &coaching_relationship.slug,
+        Id::new_v4(),
+    );
     info!("Attempting to create Tiptap document with name: {document_name}");
     coaching_session_model.collab_document_name = Some(document_name.clone());
     coaching_session_model.hydrated_at = Some(chrono::Utc::now().into());
@@ -96,37 +122,37 @@ pub async fn create(
     // succeed or fail atomically. If the transaction fails, compensate by
     // deleting the Tiptap document we just created.
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
-    let result: Result<(Model, Vec<Id>), Error> = async {
+    let result: Result<(Model, Vec<DomainEvent>), Error> = async {
         let session =
             coaching_session::create(&txn, coaching_session_model, coach_id, requested_duration)
                 .await?;
 
-        let linked_goal_ids = coaching_session_goal::link_in_progress_goals_to_session(
-            &txn,
-            session.coaching_relationship_id,
-            session.id,
-        )
-        .await?;
-        debug!(
-            "Linked {} in-progress goal(s) to session {}",
-            linked_goal_ids.len(),
-            session.id
-        );
+        let ctx = CoachingSessionHydrationContext {
+            txn: &txn,
+            session: &session,
+            relationship: &coaching_relationship,
+            member_ids: &member_ids,
+        };
+        let events = run_coaching_session_hydration_tasks(&ctx).await?;
 
         txn.commit().await.map_err(entity_api::error::Error::from)?;
-        Ok((session, linked_goal_ids))
+        Ok((session, events))
     }
     .await;
 
     // Publish after commit so subscribers never refetch against goal links
     // that a rolled-back transaction never persisted.
     match result {
-        Ok((session, linked_goal_ids)) => {
-            publish_goals_linked(
-                event_publisher,
+        Ok((session, events)) => {
+            publish_events(event_publisher, events).await;
+            // Best-effort, after commit: a failed invite must not undo a created session.
+            emails::notify_session_scheduled(
+                db,
+                config,
+                &session,
                 &coaching_relationship,
-                session.id,
-                &linked_goal_ids,
+                &organization,
+                &member_ids,
             )
             .await;
             Ok(session)
@@ -143,26 +169,56 @@ pub async fn create(
 /// Bulk-creates a series of coaching sessions. Provider is intentionally not
 /// captured here — every row's `provider` stays NULL until [`ensure_hydrated`]
 /// fills it in on first read, using the coach's then-current OAuth connection.
+///
+/// Every materialized recurring session belongs to a parent
+/// `coaching_session_series` row (`series_id`); the [`crate::coaching_session_series`]
+/// orchestration module is the only call-site that should reach this helper
+/// directly.
 pub async fn bulk_create_recurring(
-    db: &DatabaseConnection,
+    db: &impl sea_orm::ConnectionTrait,
     coaching_relationship_id: Id,
     coach_id: Id,
+    series_id: Id,
     dates: Vec<NaiveDateTime>,
     requested_duration: Option<Duration>,
 ) -> Result<Vec<Model>, Error> {
-    let truncated = dates
-        .into_iter()
-        .map(|d| SessionDate::new(d).map(SessionDate::into_inner))
-        .collect::<Result<Vec<_>, _>>()?;
-
     Ok(coaching_session::bulk_create_recurring(
         db,
         coaching_relationship_id,
         coach_id,
-        truncated,
+        series_id,
+        truncated(dates)?,
         requested_duration,
     )
     .await?)
+}
+
+/// The original start of every occurrence a published series rule produces, truncated as
+/// [`bulk_create_recurring`] stores them, so they compare equal to `ical_recurrence_id`.
+pub(crate) fn series_slots(
+    start_at: NaiveDateTime,
+    recurrence: &Recurrence,
+    zone: chrono_tz::Tz,
+) -> Result<Vec<NaiveDateTime>, Error> {
+    truncated(recurrence::expand_published(start_at, recurrence, zone)?)
+}
+
+/// The slots of a rule about to be published, validated as a new rule and truncated as
+/// [`bulk_create_recurring`] stores them.
+pub(crate) fn publishable_slots(
+    start_at: NaiveDateTime,
+    recurrence: &Recurrence,
+    zone: chrono_tz::Tz,
+) -> Result<Vec<NaiveDateTime>, Error> {
+    truncated(expand_recurrence(start_at, recurrence, zone)?)
+}
+
+/// Session dates as they are stored: truncated to the minute.
+fn truncated(dates: Vec<NaiveDateTime>) -> Result<Vec<NaiveDateTime>, Error> {
+    dates
+        .into_iter()
+        .map(|d| SessionDate::new(d).map(SessionDate::into_inner))
+        .collect()
 }
 
 /// Runs deferred side-effects (Tiptap doc, meeting URL, in-progress-goal links)
@@ -202,11 +258,15 @@ pub async fn ensure_hydrated(
         coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
     let organization = organization::find_by_id(db, coaching_relationship.organization_id).await?;
 
-    let document_name = generate_document_name(&organization.slug, &coaching_relationship.slug);
+    // Derive the name from the immutable session id so a retried hydration
+    // (after a prior attempt failed post-create) reuses the same document
+    // instead of orphaning one and minting another.
+    let document_name =
+        generate_document_name(&organization.slug, &coaching_relationship.slug, session_id);
     let tiptap = TiptapDocument::new(config).await?;
 
     let coach_id = coaching_relationship.coach_id;
-    let result: Result<(Model, Vec<Id>), Error> = async {
+    let result: Result<(Model, Vec<DomainEvent>), Error> = async {
         tiptap.create(&document_name).await?;
         session.collab_document_name = Some(document_name.clone());
 
@@ -215,79 +275,42 @@ pub async fn ensure_hydrated(
             maybe_attach_meeting_url(db, config, &mut session, coach_id).await?;
         }
 
-        let linked_goal_ids = coaching_session_goal::link_in_progress_goals_to_session(
-            &txn,
-            session.coaching_relationship_id,
-            session.id,
-        )
-        .await?;
-
-        debug!(
-            "Linked {} in-progress goal(s) to session {}",
-            linked_goal_ids.len(),
-            session.id
-        );
+        let member_ids =
+            coaching_relationship::notify_member_ids(&txn, &coaching_relationship).await?;
+        let ctx = CoachingSessionHydrationContext {
+            txn: &txn,
+            session: &session,
+            relationship: &coaching_relationship,
+            member_ids: &member_ids,
+        };
+        let events = run_coaching_session_hydration_tasks(&ctx).await?;
 
         let updated = coaching_session::mark_hydrated(&txn, &session).await?;
         txn.commit().await.map_err(entity_api::error::Error::from)?;
-        Ok((updated, linked_goal_ids))
+        Ok((updated, events))
     }
     .await;
 
-    // Publish after commit so subscribers never refetch against goal links
-    // that a rolled-back transaction never persisted.
-    match result {
-        Ok((updated, linked_goal_ids)) => {
-            publish_goals_linked(
-                event_publisher,
-                &coaching_relationship,
-                updated.id,
-                &linked_goal_ids,
-            )
-            .await;
-            Ok(updated)
-        }
-        Err(e) => {
-            if let Err(cleanup_err) = tiptap.delete(&document_name).await {
-                warn!(
-                    "Failed to clean up Tiptap document '{document_name}' after hydration error: {cleanup_err}"
-                );
-            }
-            Err(e)
-        }
-    }
+    // No compensating delete on failure. The name is derived from the immutable
+    // session id, so a failed attempt leaves the session's own (empty) document
+    // for the next attempt to adopt via Tiptap's 409-as-success. Deleting here
+    // would be unsafe: the advisory lock is already released, so a concurrent
+    // attempt may have adopted and committed this same document.
+    //
+    // Publish after commit so subscribers never refetch against goal links that a
+    // rolled-back transaction never persisted.
+    let (updated, events) = result?;
+    publish_events(event_publisher, events).await;
+    Ok(updated)
 }
 
-/// Publishes a `CoachingSessionGoalCreated` event for each goal newly linked to
-/// a session during create/hydration, so connected clients refresh the session's
-/// goal list. Mirrors the manual link path's notification contract; a no-op when
-/// no new links were inserted.
-async fn publish_goals_linked(
-    event_publisher: &EventPublisher,
-    relationship: &coaching_relationships::Model,
-    coaching_session_id: Id,
-    goal_ids: &[Id],
-) {
-    if goal_ids.is_empty() {
-        return;
+/// Publishes each event produced by the hydration tasks after the transaction
+/// commits, so subscribers never refetch against writes a rolled-back txn never
+/// persisted. A no-op when no task produced events.
+async fn publish_events(event_publisher: &EventPublisher, events: Vec<DomainEvent>) {
+    for event in events {
+        event_publisher.publish(event).await;
     }
-
-    let notify_user_ids = vec![relationship.coach_id, relationship.coachee_id];
-    for goal_id in goal_ids {
-        event_publisher
-            .publish(DomainEvent::CoachingSessionGoalCreated {
-                coaching_relationship_id: relationship.id,
-                coaching_session_id,
-                goal_id: *goal_id,
-                notify_user_ids: notify_user_ids.clone(),
-            })
-            .await;
-    }
-
-    debug!(
-        "Published {} CoachingSessionGoalCreated event(s) for session {coaching_session_id}",
-        goal_ids.len()
-    );
 }
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
@@ -300,31 +323,182 @@ where
     Ok(coaching_sessions)
 }
 
+/// [`find_by`] plus a per-session `display_title`. Distinct from the stored
+/// `title` column (a user-set name, often null): `display_title` is the
+/// server-composed fallback `title -> first topic body -> first goal title`
+/// (null when none), so list surfaces render a consistent name without deriving it.
+pub async fn find_by_with_display_title<P>(
+    db: &DatabaseConnection,
+    params: P,
+) -> Result<Vec<SessionWithDisplayTitle>, Error>
+where
+    P: IntoQueryFilterMap + QuerySort<coaching_sessions::Column>,
+{
+    let coaching_sessions = find_by(db, params).await?;
+    let display_titles = entity_api::coaching_session_display_title::batch_load_display_titles(
+        db,
+        &coaching_sessions,
+    )
+    .await?;
+    Ok(coaching_sessions
+        .into_iter()
+        .map(|coaching_session| {
+            let display_title = display_titles.get(&coaching_session.id).cloned().flatten();
+            SessionWithDisplayTitle {
+                session: coaching_session,
+                display_title,
+            }
+        })
+        .collect())
+}
+
 pub async fn update(
     db: &DatabaseConnection,
     id: Id,
     params: impl mutate::IntoUpdateMap + std::fmt::Debug,
 ) -> Result<Model, Error> {
-    let update_map = params.into_update_map();
+    let mut update_map = params.into_update_map();
     // Validate `duration_minutes` if it appears in the patch. The
     // IntoUpdateMap pattern erased its type, so the entity_api boundary is
     // the right place to re-check (1..=480).
     coaching_session::validate_duration_in_update_map(&update_map, "duration_minutes")?;
+    coaching_session::normalize_title_in_update_map(&mut update_map);
+    coaching_session::validate_title_length_in_update_map(&update_map)?;
 
-    let coaching_session = coaching_session::find_by_id(db, id).await?;
+    // The edit, its SEQUENCE bump and its pending reschedule commit together: a bump that
+    // failed on its own would leave the row mutated behind a failed request, and the next
+    // invite would reuse a SEQUENCE the client has already seen. The row lock orders
+    // concurrent edits so each records the schedule the previous one left.
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    let existing = coaching_session::find_by_id_for_update(&txn, id).await?;
     debug!(
         "Domain update coaching_session id={id} relationship_id={} update_map={update_map:?}",
-        coaching_session.coaching_relationship_id
+        existing.coaching_relationship_id
     );
-    let active_model = coaching_session.into_active_model();
-    Ok(
-        mutate::update::<coaching_sessions::ActiveModel, coaching_sessions::Column>(
-            db,
-            active_model,
-            update_map,
-        )
-        .await?,
+    let old = existing.clone();
+    let active_model = existing.into_active_model();
+
+    // Moving a session sends the coachee a reschedule, so they must still be a member.
+    let proposed = mutate::preview::<coaching_sessions::ActiveModel, coaching_sessions::Column>(
+        active_model.clone(),
+        &update_map,
+    )?;
+    if emails::affects_schedule(&old, &proposed) {
+        let relationship =
+            coaching_relationship::find_by_id(&txn, old.coaching_relationship_id).await?;
+        let member_ids = coaching_relationship::notify_member_ids(&txn, &relationship).await?;
+        ensure_coachee_is_member(&relationship, &member_ids)?;
+    }
+
+    let updated = mutate::update::<coaching_sessions::ActiveModel, coaching_sessions::Column>(
+        &txn,
+        active_model,
+        update_map,
     )
+    .await?;
+    let calendar_relevant = emails::affects_invite(&old, &updated);
+    let updated = match calendar_relevant {
+        true => coaching_session::increment_ical_sequence(&txn, updated.id).await?,
+        false => updated,
+    };
+    if emails::affects_schedule(&old, &updated) {
+        coaching_session_pending_reschedule::record_change(
+            &txn,
+            id,
+            Schedule::from(&old),
+            Schedule::from(&updated),
+            Utc::now().naive_utc(),
+            coaching_session_pending_reschedule::LEASE,
+        )
+        .await?;
+    }
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+    Ok(updated)
+}
+
+/// The single place that records participants were told a session's schedule: stamps
+/// notice and settles its pending reschedule against `sent`. The sweep calls
+/// `mark_notice_given` directly. Best-effort: a failure is logged, and a failed stamp
+/// yields `None`.
+pub(crate) async fn record_notice(db: &DatabaseConnection, sent: &Model) -> Option<Model> {
+    record_announced(db, sent).await;
+    let id = sent.id;
+    coaching_session::mark_notice_given(db, id)
+        .await
+        .inspect_err(|e| {
+            warn!(
+                "Told the participants session {id} moved but could not record it, so they \
+                 may be reminded about a time they already have: {e:?}"
+            )
+        })
+        .ok()
+}
+
+/// Settles a session's pending reschedule once participants were told `sent`, keeping any
+/// change that landed during the send pending. Best-effort: a failure is logged.
+pub(crate) async fn record_announced(db: &DatabaseConnection, sent: &Model) {
+    let id = sent.id;
+    let _ = announce(db, sent).await.inspect_err(|e| {
+        warn!(
+            "Told the participants session {id}'s schedule but could not record it, so they \
+             may be told it again: {e:?}"
+        )
+    });
+}
+
+/// Locks the session as an edit does, so no edit lands between the read and the record.
+async fn announce(db: &DatabaseConnection, sent: &Model) -> Result<(), Error> {
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    let current = coaching_session::find_by_id_for_update(&txn, sent.id).await?;
+    coaching_session_pending_reschedule::announce(
+        &txn,
+        sent.id,
+        Schedule::from(sent),
+        Schedule::from(&current),
+        Utc::now().naive_utc(),
+    )
+    .await?;
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+    Ok(())
+}
+
+/// Best-effort SSE notify that a session's own row changed (a title edit). The DB write is the
+/// contract; a failed participant lookup must NOT fail the mutation, so log and continue
+/// (mirrors the topics notify helper).
+async fn publish_coaching_session_title_updated(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    coaching_session_id: Id,
+) {
+    let notify_user_ids = match coaching_session::find_participant_ids(db, coaching_session_id)
+        .await
+    {
+        Ok(ids) => ids,
+        Err(e) => {
+            error!("CoachingSessionTitleUpdated: failed to resolve participants for session {coaching_session_id}: {e:?}");
+            return;
+        }
+    };
+    event_publisher
+        .publish(DomainEvent::CoachingSessionTitleUpdated {
+            coaching_session_id,
+            notify_user_ids,
+        })
+        .await;
+}
+
+/// Updates only the session title (the participant-gated title endpoint) and emits a coarse
+/// `CoachingSessionTitleUpdated` to both participants. Scheduling-field edits go through
+/// [`update`], which intentionally emits no event.
+pub async fn update_title(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    id: Id,
+    params: impl mutate::IntoUpdateMap + std::fmt::Debug,
+) -> Result<Model, Error> {
+    let coaching_session = update(db, id, params).await?;
+    publish_coaching_session_title_updated(db, event_publisher, coaching_session.id).await;
+    Ok(coaching_session)
 }
 
 pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<(), Error> {
@@ -333,13 +507,124 @@ pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<
         "Domain delete coaching_session id={id} relationship_id={} tiptap_doc={:?}",
         coaching_session.coaching_relationship_id, coaching_session.collab_document_name,
     );
-    if let Some(document_name) = coaching_session.collab_document_name {
-        let tiptap = TiptapDocument::new(config).await?;
-        tiptap.delete(&document_name).await?;
+
+    // Read before the delete: the image rows' FK cascades, and `storage_key` is the only
+    // pointer to the bytes. Afterwards there is nothing left to find them by.
+    let image_keys = coaching_session_image::storage_keys_for_sessions(db, &[id]).await?;
+
+    // Bump the SEQUENCE and delete in one transaction, and take the number from the DB
+    // rather than from the model read above. An edit committing between that read and
+    // this delete would otherwise claim the same next SEQUENCE as the cancellation, and a
+    // calendar client that already applied the edit drops the equal-SEQUENCE cancellation
+    // as a duplicate, stranding a deleted session on both calendars. The bump takes the row
+    // lock, so a competing edit either lands first with a lower SEQUENCE or blocks and
+    // finds no row.
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    let cancelled = coaching_session::increment_ical_sequence(&txn, id).await?;
+    coaching_session::delete(&txn, id).await.map_err(|err| {
+        if err.is_foreign_key_violation() {
+            has_content(id)
+        } else {
+            err.into()
+        }
+    })?;
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+
+    // Best effort, and only after the rows are gone: a Tiptap or storage failure must not
+    // undo a delete the database has committed.
+    if let Some(document_name) = coaching_session.collab_document_name.as_deref() {
+        delete_notes_document(config, id, document_name).await;
+    }
+    coaching_session_image::destroy_objects(config, &image_keys).await;
+
+    // Announce only once the delete has committed.
+    emails::notify_session_cancelled(db, config, &cancelled).await;
+    Ok(())
+}
+
+/// A 409 refusing to delete a session that notes, actions or agreements still reference.
+fn has_content(coaching_session_id: Id) -> Error {
+    Error::conflict_because(
+        reason::SESSIONS_HAVE_CONTENT,
+        "This session has notes, actions or agreements, so it can't be deleted.",
+        serde_json::json!({ "coaching_session_id": coaching_session_id }),
+    )
+}
+
+/// Deletes a deleted session's Tiptap document, logging a failure rather than returning it.
+async fn delete_notes_document(config: &Config, coaching_session_id: Id, document_name: &str) {
+    let deleted = match TiptapDocument::new(config).await {
+        Ok(tiptap) => tiptap.delete(document_name).await,
+        Err(err) => Err(err),
+    };
+    if let Err(err) = deleted {
+        warn!(
+            "Tiptap cleanup failed for doc {document_name:?} after deleting session {coaching_session_id}: {err}"
+        );
+    }
+}
+
+/// Resend a session's invite to both participants, under a bumped SEQUENCE so calendars
+/// update the event they already hold. A member of a current series is refused: its
+/// invite is the series', so it is resent from there. A legacy member never had a series
+/// invite and goes out standalone. Refused when the coachee is no longer in the
+/// organization.
+pub async fn resend_invite(db: &DatabaseConnection, config: &Config, id: Id) -> Result<(), Error> {
+    let session = find_by_id(db, id).await?;
+    if session.date <= chrono::Utc::now().naive_utc() {
+        return Err(Error::conflict_because(
+            reason::NO_UPCOMING_SESSIONS,
+            "This session has already happened.",
+            serde_json::json!({}),
+        ));
+    }
+    if session.coaching_session_series_id.is_some() && session.ical_recurrence_id.is_some() {
+        return Err(Error::conflict_because(
+            reason::SERIES_MEMBER,
+            "This session's invite is part of its series.",
+            serde_json::json!({}),
+        ));
     }
 
-    coaching_session::delete(db, id).await?;
+    let relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
+    ensure_coachee_is_member(&relationship, &member_ids)?;
+
+    // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
+    let bumped = coaching_session::increment_ical_sequence(db, id).await?;
+    let parties = emails::InviteParties::load(db, &relationship).await?;
+    let delivered = emails::send_session_invite_resend(
+        db,
+        config,
+        &emails::Audience {
+            participants: &parties.participants(),
+            member_ids: &member_ids,
+        },
+        &bumped,
+        &parties.organization,
+    )
+    .await?;
+    ensure_coachee_reached(&delivered, &relationship)?;
+    record_announced(db, &bumped).await;
     Ok(())
+}
+
+/// A resend is only done once the coachee has it. Missing the coach is not a failure: the
+/// coach is the one asking. An `Audience` that leaves the coachee out of `member_ids` gets
+/// the not-a-member 409.
+pub(crate) fn ensure_coachee_reached(
+    delivered: &emails::Delivered,
+    relationship: &coaching_relationships::Model,
+) -> Result<(), Error> {
+    match delivered.coachee {
+        emails::Delivery::Sent => Ok(()),
+        emails::Delivery::NoLongerAMember => Err(coachee_not_a_member(relationship)),
+        emails::Delivery::Failed => Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+        }),
+    }
 }
 
 /// If a provider is specified on the session, attempt to attach a meeting URL. First checks
@@ -387,7 +672,7 @@ async fn maybe_attach_meeting_url(
 async fn find_reusable_meeting_url(
     db: &DatabaseConnection,
     coaching_relationship_id: Id,
-    provider: &crate::provider::Provider,
+    provider: &crate::meeting_provider::Provider,
 ) -> Result<Option<String>, Error> {
     if !provider.has_persistent_meeting_urls() {
         return Ok(None);
@@ -413,7 +698,7 @@ async fn create_meeting_url(
     db: &DatabaseConnection,
     config: &Config,
     coach_id: Id,
-    provider: &crate::provider::Provider,
+    provider: &crate::meeting_provider::Provider,
     start_time: &NaiveDateTime,
     external_account_id: Option<String>,
 ) -> Result<String, Error> {
@@ -421,7 +706,7 @@ async fn create_meeting_url(
         crate::oauth_connection::get_valid_access_token(db, config, coach_id, *provider).await?;
 
     match provider {
-        crate::provider::Provider::Google => {
+        crate::meeting_provider::Provider::Google => {
             let client = crate::gateway::google_meet::Client::new(
                 &access_token,
                 config.google_meet_api_url(),
@@ -435,7 +720,7 @@ async fn create_meeting_url(
 
             Ok(space.meeting_uri)
         }
-        crate::provider::Provider::Zoom => {
+        crate::meeting_provider::Provider::Zoom => {
             let external_account_id = external_account_id.ok_or_else(|| {
                 warn!("Zoom oauth connection for does not have an external_account_id");
                 Error {
@@ -460,24 +745,54 @@ async fn create_meeting_url(
     }
 }
 
-fn generate_document_name(organization_slug: &str, relationship_slug: &str) -> String {
-    format!(
-        "{}.{}.{}-v0",
-        organization_slug,
-        relationship_slug,
-        Id::new_v4()
-    )
+/// Formats a collab-document name as `{org}.{rel}.{unique_id}-v0`. The suffix is
+/// supplied by the caller, not minted here: the deferred path passes the stable
+/// session id so repeated hydration attempts converge on one document, while the
+/// eager create path passes a fresh id (its row id is not yet known pre-insert).
+fn generate_document_name(
+    organization_slug: &str,
+    relationship_slug: &str,
+    unique_id: Id,
+) -> String {
+    format!("{organization_slug}.{relationship_slug}.{unique_id}-v0")
 }
 
 #[cfg(test)]
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
-    use crate::test_support::recording_publisher;
-    use crate::{coaching_sessions, goals, oauth_connections, organizations, provider::Provider};
+    use crate::test_utils::mock::{
+        both_participants_are_members, members, membership_statements, recording_publisher,
+        user_with_email, Mailbox,
+    };
+    use crate::{
+        coaching_relationships, coaching_session_images, coaching_sessions, goals,
+        meeting_provider::Provider, oauth_connections, organizations,
+    };
     use mockito::Server;
     use sea_orm::{DatabaseBackend, MockDatabase};
     use service::config::Config;
+
+    fn test_user_with_email(email: &str) -> entity_api::users::Model {
+        entity_api::users::Model {
+            id: Id::new_v4(),
+            email: email.to_string(),
+            first_name: "Test".to_string(),
+            last_name: "Person".to_string(),
+            display_name: None,
+            password: None,
+            github_username: None,
+            github_profile_url: None,
+            timezone: "UTC".to_string(),
+            roles: vec![],
+            invite_status: None,
+            created_at: chrono::Utc::now().into(),
+            updated_at: chrono::Utc::now().into(),
+            default_coaching_session_duration_minutes: 60,
+            working_hours_start: crate::working_hours::default_start(),
+            working_hours_end: crate::working_hours::default_end(),
+        }
+    }
 
     fn test_organization() -> organizations::Model {
         let now = chrono::Utc::now();
@@ -488,6 +803,8 @@ mod tests {
             slug: "test-org".to_string(),
             created_at: now.into(),
             updated_at: now.into(),
+            archived_at: None,
+            archived_by: None,
         }
     }
 
@@ -512,14 +829,19 @@ mod tests {
         coaching_sessions::Model {
             id: Id::new_v4(),
             coaching_relationship_id: relationship_id,
+            coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: chrono::Local::now().naive_utc(),
             duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider,
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
+            notice_given_at: chrono::Utc::now().into(),
         }
     }
 
@@ -529,6 +851,282 @@ mod tests {
             "--tiptap-auth-key=test-auth-key",
             &format!("--tiptap-url={tiptap_url}"),
         ])
+    }
+
+    fn date_update(date: chrono::NaiveDateTime) -> mutate::UpdateMap {
+        let mut map = mutate::UpdateMap::new();
+        map.insert(
+            "date".into(),
+            Some(sea_orm::Value::ChronoDateTime(Some(date))),
+        );
+        map
+    }
+
+    /// Runs [`update`] against a mock stocked through the locked read, a move's membership
+    /// check, the UPDATE ... RETURNING, the SEQUENCE bump and a pending reschedule's two
+    /// writes, and returns the SQL it issued.
+    async fn statements_for_update(
+        relationship: &coaching_relationships::Model,
+        session: &coaching_sessions::Model,
+        updated: &coaching_sessions::Model,
+        params: mutate::UpdateMap,
+    ) -> Vec<String> {
+        let bumped = coaching_sessions::Model {
+            ical_sequence: session.ical_sequence + 1,
+            ..updated.clone()
+        };
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]]);
+        let db = match emails::affects_schedule(session, updated) {
+            true => db
+                .append_query_results(vec![vec![relationship.clone()]])
+                .append_query_results([both_participants_are_members(relationship)]),
+            false => db,
+        };
+        let db = db
+            .append_query_results(vec![vec![updated.clone()]])
+            .append_query_results(vec![vec![bumped]])
+            // record_change's upsert and undo check; unused by a title edit.
+            .append_exec_results(vec![exec_ok(), exec_ok()])
+            .into_connection();
+
+        let result = update(&db, session.id, TestParams(params)).await;
+        assert!(result.is_ok(), "the edit itself must succeed: {result:?}");
+
+        // Statements are only reachable through Debug, and its output escapes the quotes
+        // (the house pattern in entity_api).
+        db.into_transaction_log()
+            .iter()
+            .map(|txn| format!("{txn:?}"))
+            .collect()
+    }
+
+    fn exec_ok() -> sea_orm::MockExecResult {
+        sea_orm::MockExecResult {
+            last_insert_id: 0,
+            rows_affected: 1,
+        }
+    }
+
+    /// The notify path loads the participants, so this identifies it. The move's membership
+    /// check reads only user ids, which does not match.
+    const PARTICIPANTS_LOOKUP: &str = r#"\"users\".\"email\""#;
+
+    /// Whether a logged statement writes a pending reschedule.
+    fn records_a_pending_reschedule(sql: &str) -> bool {
+        sql.replace('\\', "")
+            .contains(r#"INSERT INTO "refactor_platform"."coaching_session_pending_reschedules""#)
+    }
+
+    /// Whether a logged statement drops a pending reschedule.
+    fn clears_a_pending_reschedule(sql: &str) -> bool {
+        sql.replace('\\', "")
+            .contains(r#"DELETE FROM "refactor_platform"."coaching_session_pending_reschedules""#)
+    }
+
+    /// The edit only records a change; the sweep does the telling.
+    #[tokio::test]
+    async fn update_never_reaches_the_notify_path() {
+        let relationship = test_coaching_relationship(Id::new_v4(), test_organization().id);
+        let mut session = test_session(relationship.id, None);
+        session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
+
+        let renamed = coaching_sessions::Model {
+            title: Some("Renamed".to_string()),
+            ..session.clone()
+        };
+        let title_sql = statements_for_update(
+            &relationship,
+            &session,
+            &renamed,
+            string_update("title", "Renamed"),
+        )
+        .await;
+        assert!(
+            !title_sql
+                .iter()
+                .any(|sql| sql.contains(PARTICIPANTS_LOOKUP)),
+            "a title edit must not reach the notify path: {title_sql:?}"
+        );
+        assert!(
+            !title_sql
+                .iter()
+                .any(|sql| records_a_pending_reschedule(sql)),
+            "a title edit must not record a pending reschedule: {title_sql:?}"
+        );
+
+        let moved = coaching_sessions::Model {
+            date: session.date + chrono::Duration::hours(1),
+            ..session.clone()
+        };
+        let moved_sql =
+            statements_for_update(&relationship, &session, &moved, date_update(moved.date)).await;
+        assert!(
+            !moved_sql
+                .iter()
+                .any(|sql| sql.contains(PARTICIPANTS_LOOKUP)),
+            "a moved start must not reach the notify path: {moved_sql:?}"
+        );
+        assert!(
+            moved_sql
+                .iter()
+                .any(|sql| records_a_pending_reschedule(sql)),
+            "a moved start must record a pending reschedule: {moved_sql:?}"
+        );
+    }
+
+    /// Runs [`resend_invite`] for an upcoming standalone session with Resend answering
+    /// `status`, and returns the SQL it issued.
+    async fn statements_for_resend(status: usize) -> Vec<String> {
+        let mut server = mockito::Server::new_async().await;
+        let _sends = server
+            .mock("POST", "/emails")
+            .with_status(status)
+            .with_body(r#"{"id":"sent"}"#)
+            .create_async()
+            .await;
+        let config = Config::from_args([
+            "test",
+            "--resend-api-key=test_key",
+            "--session-scheduled-email-template-id=session_template",
+            "--frontend-base-url=https://app.example.com",
+            &format!("--resend-base-url={}", server.url()),
+        ]);
+
+        let organization = test_organization();
+        let coach = test_user_with_email("coach@example.com");
+        let coachee = test_user_with_email("coachee@example.com");
+        let relationship = coaching_relationships::Model {
+            coachee_id: coachee.id,
+            ..test_coaching_relationship(coach.id, organization.id)
+        };
+        let mut session = test_session(relationship.id, None);
+        session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
+        let bumped = coaching_sessions::Model {
+            ical_sequence: session.ical_sequence + 1,
+            ..session.clone()
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![both_participants_are_members(&relationship)])
+            .append_query_results(vec![vec![bumped.clone()]])
+            .append_query_results(vec![vec![coach]])
+            .append_query_results(vec![vec![coachee]])
+            .append_query_results(vec![vec![organization]])
+            // The invite body's topics, goals and actions.
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            // the locked re-read before the clear
+            .append_query_results(vec![vec![bumped]])
+            .append_exec_results(vec![exec_ok()])
+            .into_connection();
+
+        let _ = resend_invite(&db, &config, session.id).await;
+
+        db.into_transaction_log()
+            .iter()
+            .map(|txn| format!("{txn:?}"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn session_resend_clears_the_pending_reschedule_once_delivered() {
+        let statements = statements_for_resend(200).await;
+        assert!(
+            statements
+                .iter()
+                .any(|sql| clears_a_pending_reschedule(sql)),
+            "a delivered resend told participants the schedule: {statements:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_resend_keeps_the_pending_reschedule_when_not_delivered() {
+        let statements = statements_for_resend(500).await;
+        assert!(
+            !statements
+                .iter()
+                .any(|sql| clears_a_pending_reschedule(sql)),
+            "an undelivered resend told nobody: {statements:?}"
+        );
+    }
+
+    /// Test-only IntoUpdateMap wrapper (the web layer's TitleUpdateParams implements this).
+    #[derive(Debug)]
+    struct TestParams(mutate::UpdateMap);
+    impl mutate::IntoUpdateMap for TestParams {
+        fn into_update_map(self) -> mutate::UpdateMap {
+            self.0
+        }
+    }
+
+    fn string_update(column: &str, value: &str) -> mutate::UpdateMap {
+        let mut map = mutate::UpdateMap::new();
+        map.insert(
+            column.into(),
+            Some(sea_orm::Value::String(Some(value.into()))),
+        );
+        map
+    }
+
+    /// Editing a title via [`update_title`] publishes exactly one coarse
+    /// `CoachingSessionTitleUpdated`, scoped to the relationship's coach + coachee.
+    #[tokio::test]
+    async fn update_title_publishes_title_updated_event() -> Result<(), Error> {
+        let org = test_organization();
+        let coach_id = Id::new_v4();
+        let relationship = test_coaching_relationship(coach_id, org.id);
+        let session = test_session(relationship.id, None);
+        let updated = coaching_sessions::Model {
+            title: Some("Renamed".to_string()),
+            ..session.clone()
+        };
+        let bumped = coaching_sessions::Model {
+            ical_sequence: 1,
+            ..updated.clone()
+        };
+
+        let (publisher, events) = recording_publisher();
+
+        // A title edit bumps SEQUENCE: find_by_id → UPDATE ... RETURNING →
+        // increment_ical_sequence (a single self-referential UPDATE ... RETURNING). Then
+        // the participant lookup (find_also_related) and the membership filter for the
+        // title-updated event.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![updated.clone()]])
+            .append_query_results(vec![vec![bumped.clone()]])
+            .append_query_results(vec![vec![(session.clone(), relationship.clone())]])
+            .append_query_results([both_participants_are_members(&relationship)])
+            .into_connection();
+
+        let result = update_title(
+            &db,
+            &publisher,
+            session.id,
+            TestParams(string_update("title", "Renamed")),
+        )
+        .await;
+        assert!(result.is_ok());
+
+        let recorded = events.lock().unwrap();
+        assert_eq!(recorded.len(), 1, "expected exactly one published event");
+        match &recorded[0] {
+            DomainEvent::CoachingSessionTitleUpdated {
+                coaching_session_id,
+                notify_user_ids,
+            } => {
+                assert_eq!(*coaching_session_id, session.id);
+                assert_eq!(notify_user_ids.len(), 2, "coach + coachee");
+                assert!(notify_user_ids.contains(&relationship.coach_id));
+                assert!(notify_user_ids.contains(&relationship.coachee_id));
+            }
+            other => panic!("expected CoachingSessionTitleUpdated, got {other:?}"),
+        }
+        Ok(())
     }
 
     /// Creating a session links the relationship's in-progress goals and
@@ -572,14 +1170,17 @@ mod tests {
             updated_at: now.into(),
         };
 
-        // Queries: relationship, organization, session INSERT, in-progress goals
-        // SELECT (one goal), join INSERT...RETURNING (one freshly-linked row).
+        // Queries: relationship, organization, coachee membership, session INSERT, in-progress
+        // goals SELECT (one goal), join INSERT...RETURNING (one freshly-linked row).
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![goal.clone()]])
             .append_query_results(vec![vec![link.clone()]])
+            // find_prior_session → None, so topics carry-over no-ops.
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
             .into_connection();
 
         let config = test_config(&server.url());
@@ -613,6 +1214,135 @@ mod tests {
         Ok(())
     }
 
+    /// Creating a session under an archived org fails with `OrganizationArchived`
+    /// before any Tiptap/meeting side effects run.
+    #[tokio::test]
+    async fn create_rejects_archived_organization() {
+        let now = chrono::Utc::now();
+        let org = organizations::Model {
+            archived_at: Some(now.into()),
+            archived_by: Some(Id::new_v4()),
+            ..test_organization()
+        };
+        let coach_id = Id::new_v4();
+        let relationship = test_coaching_relationship(coach_id, org.id);
+        let session = test_session(relationship.id, None);
+
+        // Only relationship + org are queried; guard returns before any insert.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org.clone()]])
+            .into_connection();
+
+        let config = test_config("http://unused.test");
+        let (publisher, _recorded) = recording_publisher();
+        let result = create(&db, &config, &publisher, session, Some(Duration::default())).await;
+
+        let err = result.expect_err("expected archived-org rejection");
+        assert!(matches!(
+            err.error_kind,
+            DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::OrganizationArchived
+            ))
+        ));
+    }
+
+    /// A prior session with a Deferred topic carries that topic forward at create
+    /// and publishes a `TopicsChanged` scoped to coach + coachee, alongside the
+    /// usual (here empty) goal events.
+    #[tokio::test]
+    async fn create_carries_over_prior_session_deferred_topics_and_publishes_topics_changed(
+    ) -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+        let _tiptap_mock = server
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let org = test_organization();
+        let coach_id = Id::new_v4();
+        let relationship = test_coaching_relationship(coach_id, org.id);
+        let session = test_session(relationship.id, None);
+
+        let now = chrono::Utc::now();
+        let prior = coaching_sessions::Model {
+            id: Id::new_v4(),
+            date: chrono::NaiveDate::from_ymd_opt(2025, 1, 1).unwrap().into(),
+            ..session.clone()
+        };
+        let deferred_topic = crate::coaching_session_topics::Model {
+            id: Id::new_v4(),
+            coaching_session_id: prior.id,
+            body: "Deferred topic".to_string(),
+            user_id: Id::new_v4(),
+            display_order: 0,
+            status: crate::topic_status::Status::Deferred,
+            moved_from_session_id: None,
+            undo_snapshot: None,
+            deleted_at: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let moved_topic = crate::coaching_session_topics::Model {
+            coaching_session_id: session.id,
+            status: crate::topic_status::Status::Open,
+            moved_from_session_id: Some(prior.id),
+            display_order: 0,
+            ..deferred_topic.clone()
+        };
+
+        // relationship → organization → coachee membership → session INSERT → in-progress
+        // goals SELECT (empty, no goal event) → find_prior_session (returns prior) →
+        // move_deferred_to_session source SELECT (one Deferred topic) → target SELECT
+        // (empty, for base) → UPDATE (the moved topic).
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![vec![prior.clone()]])
+            .append_query_results(vec![vec![deferred_topic.clone()]])
+            .append_query_results(vec![Vec::<crate::coaching_session_topics::Model>::new()])
+            .append_query_results(vec![vec![moved_topic.clone()]])
+            .into_connection();
+
+        let config = test_config(&server.url());
+        let (publisher, recorded) = recording_publisher();
+        create(
+            &db,
+            &config,
+            &publisher,
+            session.clone(),
+            Some(Duration::default()),
+        )
+        .await?;
+
+        let events = recorded.lock().unwrap();
+        // The move announces both sessions: this session (dest) then the prior (origin).
+        let topics_changed: Vec<Id> = events
+            .iter()
+            .filter_map(|e| match e {
+                DomainEvent::TopicsChanged {
+                    coaching_session_id,
+                    notify_user_ids,
+                } => {
+                    assert_eq!(notify_user_ids, &vec![coach_id, relationship.coachee_id]);
+                    Some(*coaching_session_id)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            topics_changed,
+            vec![session.id, prior.id],
+            "expected TopicsChanged for this session then the prior, got {events:?}"
+        );
+
+        Ok(())
+    }
+
     /// When no provider is set, the oauth credentials lookup is skipped entirely.
     #[tokio::test]
     async fn create_without_provider_skips_oauth_lookup() -> Result<(), Error> {
@@ -629,14 +1359,17 @@ mod tests {
         let relationship = test_coaching_relationship(coach_id, org.id);
         let session = test_session(relationship.id, None);
 
-        // Queries: relationship SELECT, organization SELECT, session INSERT,
-        // in-progress goals SELECT (for link_in_progress_goals_to_session).
+        // Queries: relationship SELECT, organization SELECT, coachee membership, session
+        // INSERT, in-progress goals SELECT (for link_in_progress_goals_to_session).
         // No oauth_connections query because provider is None.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![Vec::<goals::Model>::new()])
+            // find_prior_session → None, so topics carry-over no-ops.
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
             .into_connection();
 
         let config = test_config(&server.url());
@@ -650,6 +1383,183 @@ mod tests {
         .await?;
 
         assert!(result.meeting_url.is_none());
+        Ok(())
+    }
+
+    /// Create checks membership once and hands the answer to hydration and the invite.
+    #[tokio::test]
+    async fn m5_03_create_checks_membership_once() -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+        let _tiptap_mock = server
+            .mock("POST", mockito::Matcher::Any)
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let org = test_organization();
+        let relationship = test_coaching_relationship(Id::new_v4(), org.id);
+        let session = test_session(relationship.id, None);
+
+        // The create, then the invite's loads: both users.
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            .append_query_results(vec![vec![test_user_with_email("coach@example.com")]])
+            .append_query_results(vec![vec![test_user_with_email("coachee@example.com")]])
+            .into_connection();
+
+        create(
+            &db,
+            &test_config(&server.url()),
+            &EventPublisher::new(),
+            session,
+            Some(Duration::default()),
+        )
+        .await?;
+
+        let log = db.into_transaction_log();
+        assert_eq!(membership_statements(&log), 1, "{log:?}");
+        Ok(())
+    }
+
+    /// An in-progress goal of `relationship` and its link to `session`.
+    fn carried_goal(
+        relationship: &coaching_relationships::Model,
+        session: &coaching_sessions::Model,
+    ) -> (goals::Model, entity_api::coaching_sessions_goals::Model) {
+        let now = chrono::Utc::now();
+        let goal = goals::Model {
+            id: Id::new_v4(),
+            coaching_relationship_id: relationship.id,
+            created_in_session_id: None,
+            user_id: relationship.coachee_id,
+            title: Some("Carried-forward goal".to_string()),
+            body: None,
+            status: entity_api::status::Status::InProgress,
+            status_changed_at: None,
+            completed_at: None,
+            target_date: None,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let link = entity_api::coaching_sessions_goals::Model {
+            id: Id::new_v4(),
+            coaching_session_id: session.id,
+            goal_id: goal.id,
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        (goal, link)
+    }
+
+    /// The `notify_user_ids` of every published event.
+    fn notified(events: &[DomainEvent]) -> Vec<Vec<Id>> {
+        events
+            .iter()
+            .map(|event| match event {
+                DomainEvent::CoachingSessionGoalCreated {
+                    notify_user_ids, ..
+                }
+                | DomainEvent::TopicsChanged {
+                    notify_user_ids, ..
+                } => notify_user_ids.clone(),
+                other => panic!("unexpected event {other:?}"),
+            })
+            .collect()
+    }
+
+    /// M5-07: with the coach removed, create's events notify only the coachee.
+    #[tokio::test]
+    async fn m5_07_create_notifies_only_current_members() -> Result<(), Error> {
+        let mailbox = Mailbox::new().await;
+        let org = test_organization();
+        let (coach, coachee) = (
+            user_with_email("coach@example.com"),
+            user_with_email("coachee@example.com"),
+        );
+        let relationship = coaching_relationships::Model {
+            coach_id: coach.id,
+            coachee_id: coachee.id,
+            ..test_coaching_relationship(coach.id, org.id)
+        };
+        let session = coaching_sessions::Model {
+            date: chrono::Utc::now().naive_utc() + chrono::Duration::days(7),
+            ..test_session(relationship.id, None)
+        };
+        let (goal, link) = carried_goal(&relationship, &session);
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org.clone()]])
+            .append_query_results([members(&[coachee.id])])
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![goal]])
+            .append_query_results(vec![vec![link]])
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            // the invite: both users, then its content
+            .append_query_results(vec![vec![coach]])
+            .append_query_results(vec![vec![coachee.clone()]])
+            .append_query_results(vec![Vec::<crate::coaching_session_topics::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![Vec::<entity_api::actions::Model>::new()])
+            .into_connection();
+
+        let (publisher, recorded) = recording_publisher();
+        create(
+            &db,
+            &mailbox.config(),
+            &publisher,
+            session,
+            Some(Duration::default()),
+        )
+        .await?;
+
+        assert_eq!(
+            notified(&recorded.lock().unwrap()),
+            [vec![coachee.id]],
+            "the carried goal's event"
+        );
+        Ok(())
+    }
+
+    /// M5-11: lazy hydration notifies only the members it finds.
+    #[tokio::test]
+    async fn m5_11_ensure_hydrated_notifies_only_current_members() -> Result<(), Error> {
+        let mailbox = Mailbox::new().await;
+        let org = test_organization();
+        let relationship = test_coaching_relationship(Id::new_v4(), org.id);
+        let session = coaching_sessions::Model {
+            hydrated_at: None,
+            ..test_session(relationship.id, None)
+        };
+        let (goal, link) = carried_goal(&relationship, &session);
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // advisory lock, then the re-read under it
+            .append_exec_results(vec![exec_ok()])
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org]])
+            // no OAuth connection, so no meeting URL
+            .append_query_results(vec![Vec::<oauth_connections::Model>::new()])
+            .append_query_results([members(&[relationship.coachee_id])])
+            .append_query_results(vec![vec![goal]])
+            .append_query_results(vec![vec![link]])
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            .append_query_results(vec![vec![session.clone()]])
+            .into_connection();
+
+        let (publisher, recorded) = recording_publisher();
+        ensure_hydrated(&db, &mailbox.config(), &publisher, session).await?;
+
+        assert_eq!(
+            notified(&recorded.lock().unwrap()),
+            [vec![relationship.coachee_id]]
+        );
         Ok(())
     }
 
@@ -675,9 +1585,13 @@ mod tests {
         let existing_session_with_url = coaching_sessions::Model {
             id: Id::new_v4(),
             coaching_relationship_id: relationship.id,
+            coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: Some("old-doc".to_string()),
             date: chrono::NaiveDate::from_ymd_opt(2025, 1, 1).unwrap().into(),
             duration_minutes: crate::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: Some("https://meet.google.com/existing-url".to_string()),
             provider: Some(Provider::Google),
             created_at: chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z").unwrap(),
@@ -685,6 +1599,7 @@ mod tests {
             hydrated_at: Some(
                 chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z").unwrap(),
             ),
+            notice_given_at: chrono::Utc::now().into(),
         };
 
         // The session as the DB would return it after INSERT (with the reused meeting URL)
@@ -696,16 +1611,20 @@ mod tests {
         // Query sequence:
         // 1. relationship SELECT
         // 2. organization SELECT
-        // 3. find_meeting_url_by_relationship_and_provider → returns existing session
+        // 3. coachee membership
+        // 4. find_meeting_url_by_relationship_and_provider → returns existing session
         //    (no oauth lookup or Meet API call needed!)
-        // 4. session INSERT → returns saved_session with the reused meeting_url
-        // 5. in-progress goals SELECT
+        // 5. session INSERT → returns saved_session with the reused meeting_url
+        // 6. in-progress goals SELECT
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![existing_session_with_url]])
             .append_query_results(vec![vec![saved_session]])
             .append_query_results(vec![Vec::<goals::Model>::new()])
+            // find_prior_session → None, so topics carry-over no-ops.
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
             .into_connection();
 
         let config = test_config(&server.url());
@@ -742,7 +1661,7 @@ mod tests {
         let relationship = test_coaching_relationship(coach_id, org.id);
         let session = test_session(relationship.id, Some(Provider::Google));
 
-        // 6 queries: relationship, organization,
+        // 7 queries: relationship, organization, coachee membership,
         // find_meeting_url (empty = no reusable URL),
         // oauth_connection (empty = no credentials),
         // session INSERT, in-progress goals SELECT.
@@ -750,6 +1669,7 @@ mod tests {
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results::<coaching_sessions::Model, Vec<coaching_sessions::Model>, _>(
                 vec![vec![]],
             )
@@ -758,6 +1678,8 @@ mod tests {
             )
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![Vec::<goals::Model>::new()])
+            // find_prior_session → None, so topics carry-over no-ops.
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
             .into_connection();
 
         let config = test_config(&server.url());
@@ -774,8 +1696,12 @@ mod tests {
         Ok(())
     }
 
+    /// Covers the post-lock re-check branch: when the re-fetch under the lock
+    /// returns an already-hydrated row, hydration commits and returns without
+    /// touching Tiptap. Does not exercise lock contention itself (MockDatabase
+    /// has no advisory-lock semantics); true concurrency is an integration test.
     #[tokio::test]
-    async fn ensure_hydrated_short_circuits_after_lock_when_row_hydrated_concurrently(
+    async fn ensure_hydrated_short_circuits_when_refetch_under_lock_finds_row_hydrated(
     ) -> Result<(), Error> {
         let mut server = Server::new_async().await;
         let config = test_config(&server.url());
@@ -788,10 +1714,12 @@ mod tests {
 
         let input = coaching_sessions::Model {
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             ..test_session(Id::new_v4(), None)
         };
         let hydrated_row = coaching_sessions::Model {
             hydrated_at: Some(chrono::Utc::now().into()),
+            notice_given_at: chrono::Utc::now().into(),
             ..input.clone()
         };
 
@@ -812,8 +1740,12 @@ mod tests {
         Ok(())
     }
 
+    /// A post-create failure surfaces the error but must NOT delete the document.
+    /// The name is the session's permanent id-derived name, so the doc is left for
+    /// the next attempt to adopt (409-as-success). Deleting it would be unsafe: a
+    /// concurrent attempt may have already adopted and committed the same doc.
     #[tokio::test]
-    async fn ensure_hydrated_deletes_tiptap_doc_when_post_create_step_fails() {
+    async fn ensure_hydrated_keeps_tiptap_doc_when_post_create_step_fails() {
         let mut server = Server::new_async().await;
         let config = test_config(&server.url());
 
@@ -827,7 +1759,7 @@ mod tests {
         let delete_mock = server
             .mock("DELETE", doc_path)
             .with_status(204)
-            .expect(1)
+            .expect(0)
             .create_async()
             .await;
 
@@ -835,13 +1767,14 @@ mod tests {
         let relationship = test_coaching_relationship(Id::new_v4(), org.id);
         let input = coaching_sessions::Model {
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             ..test_session(relationship.id, None)
         };
         let refetched = input.clone();
 
         // Sequence: advisory_lock exec → re-fetch (not yet hydrated) → relationship
         // → organization → tiptap POST (200) → oauth_connection::find_by_user
-        // returns an error → cleanup DELETE fires.
+        // returns an error → error surfaced, NO cleanup DELETE.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_exec_results(vec![sea_orm::MockExecResult {
                 last_insert_id: 0,
@@ -904,6 +1837,7 @@ mod tests {
 
         let row_template = coaching_sessions::Model {
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             ..test_session(relationship_id, None)
         };
         let row1 = coaching_sessions::Model {
@@ -926,6 +1860,7 @@ mod tests {
         let inserted = bulk_create_recurring(
             &db,
             relationship_id,
+            Id::new_v4(),
             Id::new_v4(),
             dates,
             Some(Duration::default()),
@@ -954,11 +1889,29 @@ mod tests {
         let session = coaching_sessions::Model {
             collab_document_name: None,
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
             ..test_session(Id::new_v4(), None)
         };
 
+        let bumped = coaching_sessions::Model {
+            ical_sequence: session.ical_sequence + 1,
+            ..session.clone()
+        };
+
+        // find_by_id, the image-key read, BEGIN, the SEQUENCE bump
+        // (UPDATE ... RETURNING), DELETE, COMMIT.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![Vec::<coaching_session_images::Model>::new()])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_results(vec![vec![bumped.clone()]])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
             .append_exec_results(vec![sea_orm::MockExecResult {
                 last_insert_id: 0,
                 rows_affected: 1,
@@ -970,4 +1923,378 @@ mod tests {
         tiptap_mock.assert_async().await;
         Ok(())
     }
+
+    /// A cancellation must outrank the invite it supersedes, or a calendar client drops it
+    /// as a duplicate and the deleted session stays on both participants' calendars. The
+    /// bump therefore has to come from the DB inside the delete transaction, not from
+    /// `model.ical_sequence + 1` computed off a read taken before it: an edit committing in
+    /// that window would claim the same number. Asserting on SQL rather than on a returned
+    /// model, since MockDatabase echoes whatever the test appends.
+    #[tokio::test]
+    async fn delete_bumps_ical_sequence_in_sql_before_deleting() -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+        let config = test_config(&server.url());
+        let _tiptap = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .with_status(204)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let session = coaching_sessions::Model {
+            collab_document_name: None,
+            hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
+            ..test_session(Id::new_v4(), None)
+        };
+        let bumped = coaching_sessions::Model {
+            ical_sequence: session.ical_sequence + 1,
+            ..session.clone()
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![Vec::<coaching_session_images::Model>::new()])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_results(vec![vec![bumped]])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        delete(&db, &config, session.id).await?;
+
+        let sql: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .map(|stmt| stmt.sql.clone())
+            .collect();
+
+        let bump = sql
+            .iter()
+            .position(|q| q.contains(r#""ical_sequence" = "ical_sequence" + "#))
+            .unwrap_or_else(|| panic!("no self-referential SEQUENCE bump: {sql:?}"));
+        let del = sql
+            .iter()
+            .position(|q| q.contains("DELETE"))
+            .unwrap_or_else(|| panic!("no DELETE: {sql:?}"));
+        assert!(bump < del, "the bump must precede the delete: {sql:?}");
+        Ok(())
+    }
+
+    /// The image rows' FK cascades on the session delete, and `storage_key` is the only
+    /// pointer to the stored bytes. Reading the keys after the delete finds nothing, so
+    /// every object would be stranded in the bucket with no row and no way back.
+    #[tokio::test]
+    async fn delete_reads_the_image_storage_keys_before_deleting_the_session() -> Result<(), Error>
+    {
+        let mut server = Server::new_async().await;
+        let config = test_config(&server.url());
+        let _tiptap = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .with_status(204)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let session = coaching_sessions::Model {
+            collab_document_name: None,
+            hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
+            ..test_session(Id::new_v4(), None)
+        };
+        let bumped = coaching_sessions::Model {
+            ical_sequence: session.ical_sequence + 1,
+            ..session.clone()
+        };
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![Vec::<coaching_session_images::Model>::new()])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_query_results(vec![vec![bumped]])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .append_exec_results(vec![sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        delete(&db, &config, session.id).await?;
+
+        let sql: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .map(|stmt| stmt.sql.clone())
+            .collect();
+
+        let keys = sql
+            .iter()
+            .position(|q| q.contains("coaching_session_images"))
+            .unwrap_or_else(|| panic!("no read of the image storage keys: {sql:?}"));
+        let del = sql
+            .iter()
+            .position(|q| q.contains("DELETE"))
+            .unwrap_or_else(|| panic!("no DELETE: {sql:?}"));
+        assert!(
+            keys < del,
+            "the keys must be read before the cascade destroys them: {sql:?}"
+        );
+        Ok(())
+    }
+
+    /// An upcoming session holding a Tiptap document, and its bumped SEQUENCE.
+    fn session_with_document() -> (coaching_sessions::Model, coaching_sessions::Model) {
+        let session = coaching_sessions::Model {
+            collab_document_name: Some("org.rel.doc-v0".to_string()),
+            date: (chrono::Utc::now() + chrono::Duration::days(7)).naive_utc(),
+            ..test_session(Id::new_v4(), None)
+        };
+        let bumped = coaching_sessions::Model {
+            ical_sequence: session.ical_sequence + 1,
+            ..session.clone()
+        };
+        (session, bumped)
+    }
+
+    #[tokio::test]
+    async fn sd_04_a_refused_delete_never_loads_the_recipients() {
+        let server = Server::new_async().await;
+        let config = test_config(&server.url());
+
+        let (session, bumped) = session_with_document();
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([vec![session.clone()]])
+            .append_query_results([Vec::<coaching_session_images::Model>::new()])
+            .append_query_results([vec![bumped]])
+            .append_exec_errors([crate::test_utils::sqlite::foreign_key_violation().await])
+            .into_connection();
+
+        delete(&db, &config, session.id)
+            .await
+            .expect_err("the foreign key refuses the delete");
+
+        let sql: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .map(|stmt| stmt.sql.clone())
+            .collect();
+        assert!(
+            !sql.iter().any(|q| q.contains("coaching_relationships")),
+            "a refusal must not load the cancellation's recipients: {sql:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sd_05_a_failed_document_delete_does_not_fail_a_committed_delete() -> Result<(), Error>
+    {
+        let mut server = Server::new_async().await;
+        let config = test_config(&server.url());
+        let tiptap = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .with_status(500)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let (session, bumped) = session_with_document();
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([vec![session.clone()]])
+            .append_query_results([Vec::<coaching_session_images::Model>::new()])
+            .append_query_results([vec![bumped]])
+            .append_exec_results([sea_orm::MockExecResult {
+                last_insert_id: 0,
+                rows_affected: 1,
+            }])
+            .into_connection();
+
+        delete(&db, &config, session.id).await?;
+
+        tiptap.assert_async().await;
+        let sql: Vec<String> = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .map(|stmt| stmt.sql.clone())
+            .collect();
+        assert!(
+            sql.iter().any(|q| q.contains("DELETE")),
+            "the row delete ran: {sql:?}"
+        );
+        Ok(())
+    }
+
+    /// The deferred-doc formatter is a pure function of its inputs: identical
+    /// inputs yield an identical name and distinct ids never collide. The
+    /// id-bearing suffix carries no '.', so the collab-token scope split
+    /// (`{org}.{rel}.*`) still recovers the prefix intact.
+    #[test]
+    fn generate_document_name_is_pure_shaped_and_jwt_compatible() {
+        let id = Id::new_v4();
+        let name = generate_document_name("test-org", "test-slug", id);
+
+        assert_eq!(name, format!("test-org.test-slug.{id}-v0"));
+        assert_eq!(name, generate_document_name("test-org", "test-slug", id));
+        assert_ne!(
+            name,
+            generate_document_name("test-org", "test-slug", Id::new_v4())
+        );
+
+        let parts: Vec<&str> = name.rsplitn(2, '.').collect();
+        assert_eq!(parts[1], "test-org.test-slug");
+    }
+
+    /// Regression: two hydration attempts on the same still-unhydrated row must
+    /// target the SAME Tiptap document. The deferred path derives the doc name
+    /// from the immutable session id, so a first attempt that fails after
+    /// creating the doc cannot strand an orphan and mint a fresh random doc on
+    /// retry. Asserts the exact document URL is POSTed twice.
+    #[tokio::test]
+    async fn ensure_hydrated_reuses_same_doc_name_when_retried_after_failure() {
+        let mut server = Server::new_async().await;
+        let config = test_config(&server.url());
+
+        let org = test_organization();
+        let relationship = test_coaching_relationship(Id::new_v4(), org.id);
+        let session = coaching_sessions::Model {
+            collab_document_name: None,
+            hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
+            ..test_session(relationship.id, None)
+        };
+
+        let expected_doc = format!("test-org.test-slug.{}-v0", session.id);
+        let post_mock = server
+            .mock(
+                "POST",
+                mockito::Matcher::Exact(format!("/api/documents/{expected_doc}")),
+            )
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .expect(2)
+            .create_async()
+            .await;
+        // Cleanup DELETE fires after each failed attempt; count not constrained.
+        let _delete_mock = server
+            .mock("DELETE", mockito::Matcher::Any)
+            .with_status(204)
+            .create_async()
+            .await;
+
+        // Per attempt: lock exec -> refetch (unhydrated) -> relationship -> org
+        // -> POST 200 -> oauth lookup errors -> rollback + cleanup. Twice.
+        let mut builder = MockDatabase::new(DatabaseBackend::Postgres);
+        for _ in 0..2 {
+            builder = builder
+                .append_exec_results(vec![sea_orm::MockExecResult {
+                    last_insert_id: 0,
+                    rows_affected: 1,
+                }])
+                .append_query_results(vec![vec![session.clone()]])
+                .append_query_results(vec![vec![relationship.clone()]])
+                .append_query_results(vec![vec![org.clone()]])
+                .append_query_errors(vec![sea_orm::DbErr::Custom(
+                    "simulated oauth lookup failure".to_string(),
+                )]);
+        }
+        let db = builder.into_connection();
+
+        let first = ensure_hydrated(&db, &config, &EventPublisher::new(), session.clone()).await;
+        let second = ensure_hydrated(&db, &config, &EventPublisher::new(), session.clone()).await;
+
+        assert!(first.is_err(), "first attempt should surface the failure");
+        assert!(second.is_err(), "second attempt should surface the failure");
+        post_mock.assert_async().await;
+    }
+
+    fn coachee_delivery(coachee: emails::Delivery) -> emails::Delivered {
+        emails::Delivered {
+            coachee,
+            coach: emails::Delivery::Sent,
+        }
+    }
+
+    /// M7-06: a coachee the `Audience` skips as not a member gets the same 409 as the check.
+    #[test]
+    fn m7_06_a_coachee_skipped_as_not_a_member_is_the_resend_409() {
+        let relationship = test_coaching_relationship(Id::new_v4(), Id::new_v4());
+
+        let err = ensure_coachee_reached(
+            &coachee_delivery(emails::Delivery::NoLongerAMember),
+            &relationship,
+        )
+        .unwrap_err();
+
+        let DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Conflict {
+            details: Some(details),
+            ..
+        })) = err.error_kind
+        else {
+            panic!("expected a conflict, got {err:?}");
+        };
+        assert_eq!(details["reason"], "coachee_not_a_member");
+        assert_eq!(
+            details["organization_id"],
+            serde_json::json!(relationship.organization_id)
+        );
+        assert_eq!(
+            details["user_id"],
+            serde_json::json!(relationship.coachee_id)
+        );
+    }
+
+    /// M7-07: a failed send to the coachee is still a network error.
+    #[test]
+    fn m7_07_a_failed_send_to_the_coachee_is_a_network_error() {
+        let relationship = test_coaching_relationship(Id::new_v4(), Id::new_v4());
+
+        let err =
+            ensure_coachee_reached(&coachee_delivery(emails::Delivery::Failed), &relationship)
+                .unwrap_err();
+
+        assert!(
+            matches!(
+                err.error_kind,
+                DomainErrorKind::External(ExternalErrorKind::Network)
+            ),
+            "{err:?}"
+        );
+    }
 }
+
+#[cfg(test)]
+#[path = "coaching_session_sqlite_tests.rs"]
+mod sqlite_tests;
+
+#[cfg(test)]
+#[path = "coaching_session_delete_sqlite_tests.rs"]
+mod delete_sqlite_tests;
+
+#[cfg(test)]
+#[path = "coaching_session_pending_reschedule_sqlite_tests.rs"]
+mod pending_reschedule_sqlite_tests;
+
+#[cfg(test)]
+#[path = "coaching_session_update_sqlite_tests.rs"]
+mod update_sqlite_tests;
+
+#[cfg(test)]
+#[path = "coaching_session_lookup_sqlite_tests.rs"]
+mod lookup_sqlite_tests;

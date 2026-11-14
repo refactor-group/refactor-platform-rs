@@ -4,7 +4,14 @@
 
 **Code Implementation/Editing** → Read `.claude/coding-standards.md` FIRST
 **Pull Request Operations** → Read `.claude/pr-instructions.md` FIRST
+**Code Review** (any review of a diff, including `/code-review`) → Follow `REVIEW.md`, imported at the end of this file; for a security review also read `.github/security-review-instructions.txt`.
+- Review against `origin/main` after `git fetch origin`, never the local `main` branch, which is shared and often behind: a pull request is `gh pr diff <number>`, a branch is `git diff origin/main...<branch>`. Read the review rules from the base with `git show origin/main:<path>`, not from the working tree.
+- When you start `/code-review`, always pass a target: the pull request number, or `origin/main...<branch>`. Without one it reviews against the branch's upstream or the local `main`. On `main` with no pull request or branch named, there is nothing to review: ask which.
+- `/code-review` reports in its own list format, and REVIEW.md still governs what goes in it, as it does for CI's review. Start each finding's summary with its severity (`Important:`, `Nit:` or `Pre-existing:`), report at most three nits, and put REVIEW.md's count line ("1 important, 2 nits.") before the list. For a pull request, work out its risk tier from the changed paths using `docs/cicd/review-risk-tiers.md` and `.github/CODEOWNERS`; a description that declares a lower tier, or none, is an Important finding.
+- At level `high` or above, a local `/code-review` or `/security-review` ends with the page in `.claude/review-page.md`. `/code-review` runs as a background agent that doesn't build it, so the session that receives its findings builds the page from them.
+
 **Database Migrations** → Read the Database Migrations section below FIRST
+**Manual Testing** → Read `docs/test-plans/README.md` FIRST (which plan to run, what it needs)
 
 ## Rules
 - Project standards override global defaults on conflict
@@ -77,6 +84,7 @@ refactor-platform-rs/
 
 - **Build/Run**: `cargo build`, `cargo run`
 - **Testing**: `cargo test`
+  - **Suggested-action eval** (calls the real model, opt-in, about $2 per run): `cargo test -p domain suggestion_eval -- --ignored --nocapture`. Run it for any change to `actions_prompt.md`, the model, or suggestion verification or due-date code, and commit the updated `baseline.json` with the change. See `docs/test-plans/transcript_suggestions_eval.md`.
 - **Linting**: `cargo clippy`
 - **Formatting**: `cargo fmt`
 - **Database**: SeaORM with PostgreSQL
@@ -108,10 +116,10 @@ Nginx runs as a Docker container (`docker-compose.nginx-preview.yaml`) using Doc
 The entrypoint waits for PostgreSQL readiness, then idempotently creates the `refactor_platform` schema and sets `search_path`. This supports the PR preview migrator container which needs the schema to exist before running migrations.
 
 ### Manual Dispatch (Primary Deployment Method)
-PR preview environments are deployed **manually via workflow dispatch only** — there are no automatic deploy triggers on PR events. `dispatch-pr-preview.yml` takes three text inputs:
-- `backend_pr_number` — required (e.g. `289` or `PR#289`).
-- `backend_sha_override` — optional, override the PR branch HEAD with a specific SHA.
-- `frontend_ref` — optional, default `main`; accepts `main`, a branch name, a 7+ char SHA, or `PR#<num>`.
+PR preview environments are deployed **manually via workflow dispatch only** — there are no automatic deploy triggers on PR events. `dispatch-pr-preview.yml` takes these dispatch inputs:
+- `backend_ref` (required): accepts `PR#<num>`, `<num>`, a branch, a tag, a full SHA, or a short SHA (>=6 hex).
+- `frontend_ref` (required): same vocabulary as `backend_ref`.
+- `reset_db` (optional, default `false`): drops the per-PR Postgres volume and re-seeds.
 
 At dispatch time, the `validate` job resolves each input to a full SHA via the GitHub API (`gh pr view`, `gh api repos/.../commits/<ref>`), validates that the backend PR is OPEN, and passes `backend_sha` / `frontend_sha` / `pr_number` / `branch_name` to the reusable `ci-deploy-pr-preview.yml`. Nothing is written to `main` — the workflow is stateless with respect to the default branch. Cleanup still runs automatically when the PR is closed or merged.
 
@@ -125,6 +133,12 @@ Both the deploy workflow (`ci-deploy-pr-preview.yml`) and the cleanup workflow (
 The reusable workflow resolves secrets in this order:
 1. Secrets passed from the **caller repo** (via `secrets: inherit`)
 2. Secrets from the backend repo's **pr-preview environment**
-3. Hardcoded **fallback defaults** in the workflow (e.g., `|| '1.0.0-beta1'`)
+3. Hardcoded **fallback defaults** in the workflow (e.g., `|| '1.0.0'`)
 
 **Warning**: A stale secret at level 1 overrides levels 2-3. Always check caller repo secrets when debugging.
+
+## Review rules
+
+`REVIEW.md`, imported so a review agent that doesn't open files first still has it:
+
+@../REVIEW.md

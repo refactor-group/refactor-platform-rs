@@ -1,36 +1,44 @@
 use crate::controller::ApiResponse;
 use crate::error::WebErrorKind;
 use crate::extractors::coaching_relationship_access::CoachingRelationshipAccess;
+use crate::extractors::organization_admin_access::OrganizationAdminAccess;
 use crate::extractors::organization_member_access::OrganizationMemberAccess;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
 use crate::params::coaching_relationship::goal_progress::IndexParams as GoalProgressIndexParams;
 use crate::{AppState, Error};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use domain::coaching_relationship::CoachingRelationshipWithUserNames;
 use domain::{
     action as ActionApi, coaching_relationship as CoachingRelationshipApi, coaching_relationships,
-    goal_progress as GoalProgressApi, Id,
+    goal_progress as GoalProgressApi,
 };
 use service::config::ApiVersion;
 
 use log::*;
 
 /// CREATE a new CoachingRelationship.
+///
+/// Restricted to administrators of the organization named in the path. Idempotent:
+/// when a relationship already exists for this coach and coachee in the organization,
+/// that relationship is returned rather than a duplicate created.
 #[utoipa::path(
     post,
     path = "/organizations/{organization_id}/coaching_relationships",
     params(
         ApiVersion,
+        ("organization_id" = Uuid, Path, description = "Organization id"),
     ),
-    request_body = entity::coaching_relationships::Model,
+    request_body = domain::coaching_relationships::Model,
     responses(
-        (status = 200, description = "Successfully created a new Coaching Relationship", body = [coaching_relationships::Model]),
+        (status = 200, description = "The Coaching Relationship, newly created or the existing one for this coach and coachee. The envelope's status_code is 201 in both cases, so it does not distinguish a reuse from a create", body = domain::coaching_relationship::CoachingRelationshipWithUserNames),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Caller does not administer the organization"),
+        (status = 404, description = "Organization not found"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -41,21 +49,21 @@ use log::*;
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    OrganizationMemberAccess(organization_id): OrganizationMemberAccess,
+    OrganizationAdminAccess { organization, .. }: OrganizationAdminAccess,
     Json(coaching_relationship_model): Json<coaching_relationships::Model>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("CREATE new Coaching Relationship from: {coaching_relationship_model:?}");
 
     let coaching_relationship: CoachingRelationshipWithUserNames = CoachingRelationshipApi::create(
         app_state.db_conn_ref(),
-        organization_id,
+        organization.id,
         coaching_relationship_model,
     )
     .await?;
 
     debug!(
         "Newly created Coaching Relationship: {:?}",
-        &coaching_relationship
+        coaching_relationship
     );
 
     Ok(Json(ApiResponse::new(
@@ -65,16 +73,19 @@ pub async fn create(
 }
 
 /// GET a particular CoachingRelationship specified by the organization Id and relationship Id.
+///
+/// Restricted to participants of the relationship who still belong to its organization,
+/// matching what the list read returns for the same caller.
 #[utoipa::path(
     get,
     path = "/organizations/{organization_id}/coaching_relationships/{relationship_id}",
     params(
         ApiVersion,
-        ("organization_id" = Id, Path, description = "Organization id to retrieve the CoachingRelationship under"),
-        ("relationship_id" = String, Path, description = "CoachingRelationship id to retrieve")
+        ("organization_id" = Uuid, Path, description = "Organization id to retrieve the CoachingRelationship under"),
+        ("relationship_id" = Uuid, Path, description = "CoachingRelationship id to retrieve")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved a certain CoachingRelationship by its id", body = [coaching_relationships::Model]),
+        (status = 200, description = "Successfully retrieved a certain CoachingRelationship by its id", body = domain::coaching_relationship::CoachingRelationshipWithUserNames),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "CoachingRelationship not found"),
         (status = 405, description = "Method not allowed"),
@@ -86,12 +97,10 @@ pub async fn create(
 )]
 pub async fn read(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
     State(app_state): State<AppState>,
-    Path((_organization_id, relationship_id)): Path<(Id, Id)>,
+    CoachingRelationshipAccess(coaching_relationship): CoachingRelationshipAccess,
 ) -> Result<impl IntoResponse, Error> {
+    let relationship_id = coaching_relationship.id;
     debug!("GET CoachingRelationship by id: {relationship_id}");
 
     let relationship: Option<CoachingRelationshipWithUserNames> =
@@ -110,10 +119,10 @@ pub async fn read(
     path = "/organizations/{organization_id}/coaching_relationships",
     params(
         ApiVersion,
-        ("organization_id" = Id, Path, description = "Organization id to retrieve CoachingRelationships")
+        ("organization_id" = Uuid, Path, description = "Organization id to retrieve CoachingRelationships")
     ),
     responses(
-        (status = 200, description = "Successfully retrieved all CoachingRelationships", body = [coaching_relationships::Model]),
+        (status = 200, description = "Successfully retrieved all CoachingRelationships", body = [domain::coaching_relationship::CoachingRelationshipWithUserNames]),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -155,14 +164,14 @@ pub async fn index(
     path = "/organizations/{organization_id}/coaching_relationships/{relationship_id}/goal_progress",
     params(
         ApiVersion,
-        ("organization_id" = Id, Path, description = "Organization id"),
-        ("relationship_id" = Id, Path, description = "Coaching relationship id"),
+        ("organization_id" = Uuid, Path, description = "Organization id"),
+        ("relationship_id" = Uuid, Path, description = "Coaching relationship id"),
         ("status" = Option<domain::status::Status>, Query, description = "Filter by goal status (e.g., 'InProgress')"),
         ("sort_by" = Option<crate::params::coaching_relationship::goal_progress::SortField>, Query, description = "Sort by field. Valid values: 'updated_at', 'status_changed_at', 'created_at'.", example = "updated_at"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc', 'desc'.", example = "desc"),
         ("limit" = Option<u32>, Query, description = "Cap on the number of goals returned. Values above 100 are silently clamped. Omit for unbounded results.", example = 3),
         ("assignee" = Option<String>, Query, description = "Scope action counts / next-due to a specific assignee. Values: 'coach', 'coachee' (case-insensitive), or a user UUID. Omit for relationship-wide counts."),
-        ("coaching_session_id" = Option<Id>, Query, description = "Restrict to goals linked to this coaching session via the session↔goal join table."),
+        ("coaching_session_id" = Option<Uuid>, Query, description = "Restrict to goals linked to this coaching session via the session↔goal join table."),
     ),
     responses(
         (status = 200, description = "Successfully retrieved goal progress for the coaching relationship"),
@@ -217,3 +226,7 @@ pub async fn goal_progress(
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), progress)))
 }
+
+#[cfg(test)]
+#[path = "coaching_relationship_controller_sqlite_tests.rs"]
+mod sqlite_tests;

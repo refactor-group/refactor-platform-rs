@@ -1,0 +1,116 @@
+use entity::transcript_suggestion::{ActiveModel, Column, Entity, Model, Status};
+use entity::transcript_suggestion_target::Target;
+use entity::Id;
+use log::debug;
+use sea_orm::{
+    entity::prelude::*, ActiveValue::Set, ColumnTrait, ConnectionTrait, Order, QueryOrder,
+    QuerySelect,
+};
+
+use super::error::{EntityApiErrorKind, Error};
+
+/// Inserts suggestions in one statement, returned in input order; an empty batch is a no-op.
+pub async fn create_batch<C: ConnectionTrait>(
+    db: &C,
+    rows: Vec<ActiveModel>,
+) -> Result<Vec<Model>, Error> {
+    debug!("Inserting {} transcript suggestions", rows.len());
+
+    if rows.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let ids: Vec<Id> = rows
+        .iter()
+        .filter_map(|r| r.id.try_as_ref().copied())
+        .collect();
+    let mut inserted = Entity::insert_many(rows).exec_with_returning(db).await?;
+    // RETURNING order is not guaranteed, so restore input order by id.
+    inserted.sort_by_key(|m| ids.iter().position(|id| *id == m.id));
+    Ok(inserted)
+}
+
+/// The suggestion with `id`; a `RecordNotFound` error when there is none.
+pub async fn find_by_id<C: ConnectionTrait>(db: &C, id: Id) -> Result<Model, Error> {
+    Entity::find_by_id(id).one(db).await?.ok_or_else(|| Error {
+        source: None,
+        error_kind: EntityApiErrorKind::RecordNotFound,
+    })
+}
+
+/// Suggestions of a session, target and status, oldest first, at most `limit`.
+///
+/// A suggestion that already created an entity counts as accepted, so it is never listed as
+/// pending or dismissed even when its status says so.
+pub async fn find_by_session<C: ConnectionTrait>(
+    db: &C,
+    coaching_session_id: Id,
+    target: Target,
+    status: Status,
+    limit: u64,
+) -> Result<Vec<Model>, Error> {
+    let query = Entity::find()
+        .filter(Column::CoachingSessionId.eq(coaching_session_id))
+        .filter(Column::Target.eq(target))
+        .filter(Column::Status.eq(status));
+    let query = match status {
+        Status::Accepted => query,
+        Status::Pending | Status::Dismissed => query.filter(Column::CreatedEntityId.is_null()),
+    };
+
+    Ok(query
+        .order_by(Column::CreatedAt, Order::Asc)
+        .order_by(Column::Id, Order::Asc)
+        .limit(limit)
+        .all(db)
+        .await?)
+}
+
+/// Moves a suggestion `from` one status `to` another in one conditional UPDATE.
+///
+/// Returns `None` when the row is not in `from`, or when accepting a suggestion that already
+/// created an entity; both guard against a second entity. Restoring to pending clears who
+/// resolved it. Only accepting writes the created entity, so the link survives other moves.
+pub async fn transition<C: ConnectionTrait>(
+    db: &C,
+    id: Id,
+    from: Status,
+    to: Status,
+    actor: Id,
+    created_entity_id: Option<Id>,
+    now: DateTimeWithTimeZone,
+) -> Result<Option<Model>, Error> {
+    let resolution = match to {
+        Status::Pending => ActiveModel {
+            resolved_by: Set(None),
+            resolved_at: Set(None),
+            ..Default::default()
+        },
+        Status::Accepted => ActiveModel {
+            resolved_by: Set(Some(actor)),
+            resolved_at: Set(Some(now)),
+            created_entity_id: Set(created_entity_id),
+            ..Default::default()
+        },
+        Status::Dismissed => ActiveModel {
+            resolved_by: Set(Some(actor)),
+            resolved_at: Set(Some(now)),
+            ..Default::default()
+        },
+    };
+
+    let update = Entity::update_many()
+        .set(ActiveModel {
+            status: Set(to),
+            updated_at: Set(now),
+            ..resolution
+        })
+        .filter(Column::Id.eq(id))
+        .filter(Column::Status.eq(from));
+    let update = match to {
+        Status::Accepted => update.filter(Column::CreatedEntityId.is_null()),
+        Status::Pending | Status::Dismissed => update,
+    };
+
+    Ok(update.exec_with_returning(db).await?.into_iter().next())
+}

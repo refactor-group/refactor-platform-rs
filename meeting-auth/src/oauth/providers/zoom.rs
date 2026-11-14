@@ -1,5 +1,7 @@
 //! Zoom OAuth provider implementation.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use chrono::Utc;
 use secrecy::{ExposeSecret, SecretString};
@@ -108,7 +110,11 @@ impl Provider {
         client_secret: SecretString,
         redirect_uri: String,
     ) -> Result<Self, reqwest::Error> {
-        let http_client = reqwest::Client::builder().use_rustls_tls().build()?;
+        let http_client = reqwest::Client::builder()
+            .use_rustls_tls()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
+            .build()?;
         Ok(Self {
             client_id,
             client_secret,
@@ -277,9 +283,11 @@ impl crate::oauth::Provider for Provider {
     async fn revoke_token(&self, token: &str) -> Result<(), Error> {
         debug!("Revoking Zoom token");
 
+        // Unlike Google's, Zoom's revoke endpoint authenticates the client with HTTP Basic.
         let response = self
             .http_client
             .post(REVOKE_URL)
+            .basic_auth(&self.client_id, Some(self.client_secret.expose_secret()))
             .form(&[("token", token)])
             .send()
             .await

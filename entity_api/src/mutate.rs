@@ -1,7 +1,7 @@
 use crate::error::{EntityApiErrorKind, Error};
 use sea_orm::{
     ActiveModelBehavior, ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait,
-    IntoActiveModel, Value,
+    IntoActiveModel, TryIntoModel, Value,
 };
 use std::collections::HashMap;
 
@@ -36,12 +36,35 @@ where
     A::Entity: EntityTrait<Column = C>,
     <A::Entity as EntityTrait>::Model: IntoActiveModel<A>,
 {
+    apply::<A, C>(&mut active_model, &update_map);
+    Ok(active_model.update(db).await?)
+}
+
+/// The record as [`update`] would leave it, without writing anything.
+pub fn preview<A, C>(
+    mut active_model: A,
+    update_map: &UpdateMap,
+) -> Result<<A::Entity as EntityTrait>::Model, Error>
+where
+    A: ActiveModelTrait + TryIntoModel<<A::Entity as EntityTrait>::Model>,
+    C: ColumnTrait,
+    A::Entity: EntityTrait<Column = C>,
+{
+    apply::<A, C>(&mut active_model, update_map);
+    Ok(active_model.try_into_model()?)
+}
+
+fn apply<A, C>(active_model: &mut A, update_map: &UpdateMap)
+where
+    A: ActiveModelTrait,
+    C: ColumnTrait,
+    A::Entity: EntityTrait<Column = C>,
+{
     for column in C::iter() {
         if let Some(value) = update_map.get_value(&column.to_string()) {
             active_model.set(column, value.clone());
         }
     }
-    Ok(active_model.update(db).await?)
 }
 
 /// A map structure that holds column names and their corresponding values for updates.
@@ -85,7 +108,7 @@ impl UpdateMap {
                 error_kind: EntityApiErrorKind::Other("Key not found".to_string()),
             })
             .and_then(|v| match v {
-                Some(Value::String(Some(boxed_str))) => Ok((*boxed_str).clone()),
+                Some(Value::String(Some(s))) => Ok(s),
                 _ => Err(Error {
                     source: None,
                     error_kind: EntityApiErrorKind::Other("Value is not a string".to_string()),
@@ -104,7 +127,7 @@ impl UpdateMap {
                 error_kind: EntityApiErrorKind::Other("Key not found".to_string()),
             })
             .and_then(|v| match v {
-                Value::String(Some(boxed_str)) => Ok(&**boxed_str),
+                Value::String(Some(s)) => Ok(s),
                 _ => Err(Error {
                     source: None,
                     error_kind: EntityApiErrorKind::Other("Value is not a string".to_string()),

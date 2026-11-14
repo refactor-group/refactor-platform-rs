@@ -1,12 +1,12 @@
 pub(crate) mod goal;
-pub(crate) mod recurring;
 
 use chrono::{NaiveDate, NaiveDateTime};
-use domain::provider::Provider;
+use domain::meeting_provider::Provider;
 use sea_orm::{ActiveEnum, Order, Value};
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
+use super::deserialize_clearable;
 use super::sort::SortOrder;
 use super::WithSortDefaults;
 use domain::{
@@ -16,6 +16,7 @@ use domain::{
 /// Sortable fields for coaching sessions
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = "date")]
+#[schema(as = params::coaching_session::SortField)]
 pub(crate) enum SortField {
     #[serde(rename = "date")]
     Date,
@@ -39,21 +40,22 @@ impl IntoQueryFilterMap for IndexParams {
         let mut query_filter_map = QueryFilterMap::new();
         query_filter_map.insert(
             "coaching_relationship_id".to_string(),
-            Some(Value::Uuid(Some(Box::new(self.coaching_relationship_id)))),
+            Some(Value::Uuid(Some(self.coaching_relationship_id))),
         );
         query_filter_map.insert(
             "from_date".to_string(),
-            Some(Value::ChronoDate(Some(Box::new(self.from_date)))),
+            Some(Value::ChronoDate(Some(self.from_date))),
         );
         query_filter_map.insert(
             "to_date".to_string(),
-            Some(Value::ChronoDate(Some(Box::new(self.to_date)))),
+            Some(Value::ChronoDate(Some(self.to_date))),
         );
         query_filter_map
     }
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[schema(as = params::coaching_session::UpdateParams)]
 pub(crate) struct UpdateParams {
     pub(crate) date: NaiveDateTime,
     /// Session duration in minutes (1..=480). Validated in entity_api via
@@ -63,6 +65,18 @@ pub(crate) struct UpdateParams {
     pub(crate) duration_minutes: Option<i16>,
     pub(crate) meeting_url: Option<String>,
     pub(crate) provider: Option<Provider>,
+    /// Absent -> leave unchanged. Explicit null -> clear. Value -> set.
+    #[serde(default, deserialize_with = "deserialize_clearable")]
+    #[schema(value_type = Option<String>)]
+    pub(crate) title: Option<Option<String>>,
+}
+
+/// Insert the clearable `title` entry when present: a value sets it, an explicit
+/// null clears it to NULL, an absent field leaves the column untouched.
+fn insert_title_update(update_map: &mut UpdateMap, title: Option<Option<String>>) {
+    if let Some(title) = title {
+        update_map.insert("title".to_string(), Some(Value::String(title)));
+    }
 }
 
 impl IntoUpdateMap for UpdateParams {
@@ -70,7 +84,7 @@ impl IntoUpdateMap for UpdateParams {
         let mut update_map = UpdateMap::new();
         update_map.insert(
             "date".to_string(),
-            Some(Value::ChronoDateTime(Some(Box::new(self.date)))),
+            Some(Value::ChronoDateTime(Some(self.date))),
         );
         if let Some(duration_minutes) = self.duration_minutes {
             update_map.insert(
@@ -81,15 +95,34 @@ impl IntoUpdateMap for UpdateParams {
         if let Some(meeting_url) = self.meeting_url {
             update_map.insert(
                 "meeting_url".to_string(),
-                Some(Value::String(Some(Box::new(meeting_url)))),
+                Some(Value::String(Some(meeting_url))),
             );
         }
         if let Some(provider) = self.provider {
             update_map.insert(
                 "provider".to_string(),
-                Some(Value::String(Some(Box::new(provider.to_value())))),
+                Some(Value::String(Some(provider.to_value()))),
             );
         }
+        insert_title_update(&mut update_map, self.title);
+        update_map
+    }
+}
+
+/// Body for `PATCH /coaching_sessions/{id}/title`. Title-only so either participant can edit it,
+/// while scheduling fields (date, duration, meeting_url, provider) stay on the coach-only PUT.
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct TitleUpdateParams {
+    /// Absent -> leave unchanged. Explicit null -> clear. Value -> set.
+    #[serde(default, deserialize_with = "deserialize_clearable")]
+    #[schema(value_type = Option<String>)]
+    pub(crate) title: Option<Option<String>>,
+}
+
+impl IntoUpdateMap for TitleUpdateParams {
+    fn into_update_map(self) -> UpdateMap {
+        let mut update_map = UpdateMap::new();
+        insert_title_update(&mut update_map, self.title);
         update_map
     }
 }
@@ -99,6 +132,7 @@ impl IntoUpdateMap for UpdateParams {
 /// triggers the BE defaulting cascade — see
 /// `entity_api::coaching_session::resolve_duration`).
 #[derive(Debug, Deserialize, ToSchema)]
+#[schema(as = params::coaching_session::CreateParams)]
 pub(crate) struct CreateParams {
     pub(crate) coaching_relationship_id: Id,
     pub(crate) date: NaiveDateTime,
@@ -107,6 +141,8 @@ pub(crate) struct CreateParams {
     pub(crate) duration_minutes: Option<i16>,
     pub(crate) meeting_url: Option<String>,
     pub(crate) provider: Option<Provider>,
+    /// Optional human-authored title. Omit or null to leave unset.
+    pub(crate) title: Option<String>,
 }
 
 impl CreateParams {
@@ -121,14 +157,19 @@ impl CreateParams {
         coaching_sessions::Model {
             id: Id::nil(),
             coaching_relationship_id: self.coaching_relationship_id,
+            coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: self.date,
             duration_minutes: domain::duration::Duration::default_minutes(),
+            title: self.title,
             meeting_url: self.meeting_url,
             provider: self.provider,
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
+            notice_given_at: chrono::Utc::now().into(),
         }
     }
 }
@@ -153,3 +194,7 @@ impl QuerySort<coaching_sessions::Column> for IndexParams {
 impl WithSortDefaults for IndexParams {
     type SortField = SortField;
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;

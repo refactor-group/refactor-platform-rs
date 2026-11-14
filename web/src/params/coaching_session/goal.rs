@@ -3,6 +3,8 @@ use utoipa::{IntoParams, ToSchema};
 
 use domain::Id;
 
+use crate::params::split_ids;
+
 /// Request body for linking an existing goal to a coaching session.
 /// The `coaching_session_id` comes from the URL path parameter.
 #[derive(Debug, Deserialize, ToSchema)]
@@ -37,19 +39,9 @@ fn deserialize_comma_separated_ids<'de, D>(deserializer: D) -> Result<Vec<Id>, D
 where
     D: serde::Deserializer<'de>,
 {
-    use serde::Deserialize as _;
-
-    let s: Option<String> = Option::deserialize(deserializer)?;
-    match s {
-        None => Ok(Vec::new()),
-        Some(s) if s.is_empty() => Ok(Vec::new()),
-        Some(s) => s
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| Id::parse_str(s).map_err(serde::de::Error::custom))
-            .collect(),
-    }
+    Option::<String>::deserialize(deserializer)?
+        .map_or(Some(Vec::new()), |raw| split_ids(&raw))
+        .ok_or_else(|| serde::de::Error::custom("expected comma-separated UUIDs"))
 }
 
 #[cfg(test)]

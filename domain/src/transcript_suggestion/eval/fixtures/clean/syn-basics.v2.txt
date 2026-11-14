@@ -1,0 +1,25 @@
+# Synthetic case syn-basics, reworded.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Alex Rivera
+# existing a1: Update the team onboarding doc
+[s1 00:05] Coach: Nice to see you. You brought up the onboarding doc last time. Where did that land?
+[s2 00:12] Coachee: I made a start but didn't get very far. I'd still like to get it done.
+[s3 00:40] Coach: What stood in the way?
+[s4 00:46] Coachee: The reorg, mostly. My manager keeps shuffling priorities, and I never say anything.
+[s5 01:30] Coach: What might saying something look like this week?
+[s6 01:38] Coachee: Honestly, I should get a one-on-one on the calendar with my manager to talk priorities. I'll have that set up by Friday.
+[s7 02:10] Coach: Good. What do you want to walk away from that conversation with?
+[s8 02:15] Coachee: A ranked list. The top three, so I can turn down everything else.
+[s9 03:02] Coach: Let's look at delegation too. You mentioned Priya might take the vendor reviews.
+[s10 03:10] Coachee: Yeah. I could pass those to her. Possibly. She might not have the bandwidth.
+[s11 03:40] Coach: Sounds like that's one to explore, not decide today.
+[s12 04:20] Coachee: True. Oh, and the onboarding doc updates, I really do need to finish those. I'll get them done.
+[s13 05:01] Coach: By tomorrow I'll send you the article on saying no gracefully, along with the delegation worksheet.
+[s14 05:30] Coachee: That would be really helpful.
+[s15 06:10] Coach: Between now and next session, would you journal for five minutes a day about where your time goes?
+[s16 06:18] Coachee: Sure, I'll do that. Two weeks of journaling.
+[s17 07:00] Coach: And let's each think about whether the quarterly goal still makes sense. We'll come back to it next time.
+[s18 07:12] Coachee: Sounds good. I'll show up with a yes or a no on it, and you'll bring the goal framework.
+[s19 07:40] Coach: Great. Same time two weeks from now.

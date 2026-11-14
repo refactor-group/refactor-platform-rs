@@ -1,0 +1,14 @@
+# F1 plain commitments, reworded.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:05] Coachee: Priya's waiting on the revised budget, so I'll get it to her by Friday.
+[s2 00:15] Coachee: The new process should live on the team wiki, and I'll be the one to put it there.
+[s3 00:26] Coachee: I'm going to get time on my manager's calendar for a one-on-one.
+[s4 00:35] Coachee: The shared drive is a mess. I'm going to sort it out.
+[s5 00:44] Coachee: This week I'm aiming to wrap up the vendor comparison.
+[s6 00:53] Coachee: Starting now, I'm out of the office by six every evening. That's my commitment.
+[s7 01:02] Coachee: I'll ask HR about the headcount numbers and circle back with you.
+[s8 01:12] Coach: Once we hang up, I'll email you that feedback article.
+[s9 01:20] Coach: Let me dig up a project charter template for you.

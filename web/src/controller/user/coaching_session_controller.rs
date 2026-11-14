@@ -1,20 +1,19 @@
 use crate::controller::ApiResponse;
 use crate::error::WebErrorKind;
-use crate::extractors::{
-    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
-};
+use crate::extractors::{compare_api_version::CompareApiVersion, user_self_access::UserSelfAccess};
 use crate::params::user::coaching_session::{
-    CountsByMonthParams, GroupByParam, IncludeParam, IndexParams,
+    include_options, CountsByMonthParams, GroupByParam, IndexParams, NearestParams,
 };
 use crate::{AppState, Error};
 use std::str::FromStr;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono_tz::Tz;
-use domain::{coaching_session as CoachingSessionApi, Id, QuerySort};
+use domain::search::visibility_for;
+use domain::{coaching_session as CoachingSessionApi, QuerySort};
 use log::*;
 use serde::Serialize;
 use service::config::ApiVersion;
@@ -31,12 +30,13 @@ use utoipa::ToSchema;
     path = "/users/{user_id}/coaching_sessions",
     params(
         ApiVersion,
-        ("user_id" = Id, Path, description = "User ID to retrieve coaching sessions for"),
-        ("coaching_relationship_id" = Option<Id>, Query, description = "Filter sessions to only those in this coaching relationship"),
+        ("user_id" = Uuid, Path, description = "User ID to retrieve coaching sessions for"),
+        ("coaching_relationship_id" = Option<Uuid>, Query, description = "Filter sessions to only those in this coaching relationship"),
+        ("organization_id" = Option<Uuid>, Query, description = "Filter sessions to relationships in this organization. Omitted = unscoped."),
         ("from_date" = Option<chrono::NaiveDate>, Query, description = "Filter by from_date (inclusive). Evaluated in `tz` if supplied; otherwise UTC."),
         ("to_date" = Option<chrono::NaiveDate>, Query, description = "Filter by to_date (inclusive at calendar-day precision). Evaluated in `tz` if supplied; otherwise UTC."),
         ("tz" = Option<String>, Query, description = "Optional IANA timezone identifier (e.g. 'America/Los_Angeles'). Interprets `from_date`/`to_date` as local-day boundaries in that zone. Invalid value → 400 invalid_timezone."),
-        ("include" = Option<String>, Query, description = "Comma-separated list of related resources to include. Valid values: 'relationship', 'organization', 'goal', 'agreements'. Example: 'relationship,organization,goal'"),
+        ("include" = Option<String>, Query, description = "Comma-separated list of related resources to include. Valid values: 'relationship', 'organization', 'goal', 'agreements', 'topics', 'series'. Example: 'relationship,organization,goal'"),
         ("sort_by" = Option<crate::params::coaching_session::SortField>, Query, description = "Sort by field. Valid values: 'date', 'created_at', 'updated_at'. Must be provided with sort_order.", example = "date"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc' (ascending), 'desc' (descending). Must be provided with sort_by.", example = "desc")
     ),
@@ -54,12 +54,12 @@ use utoipa::ToSchema;
     )
 )]
 pub async fn index(
+    UserSelfAccess(user): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(user_id): Path<Id>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
+    let user_id = user.id;
     debug!("GET Coaching Sessions for User: {user_id}");
     debug!("Query Params: {params:?}");
 
@@ -80,29 +80,24 @@ pub async fn index(
         None => None,
     };
 
-    // Build include options from parameters
-    let includes = CoachingSessionApi::IncludeOptions {
-        relationship: params.include.contains(&IncludeParam::Relationship),
-        organization: params.include.contains(&IncludeParam::Organization),
-        goal: params.include.contains(&IncludeParam::Goal),
-        agreements: params.include.contains(&IncludeParam::Agreements),
-    };
+    let includes = include_options(&params.include);
     let sort_column = params.get_sort_column();
     let sort_order = params.get_sort_order();
 
     // Fetch sessions with optional includes and sorting at database level
     let enriched_sessions = CoachingSessionApi::find_by_user_with_includes(
         app_state.db_conn_ref(),
-        user_id,
+        &visibility_for(&user),
         CoachingSessionApi::SessionQueryOptions {
             coaching_relationship_id: params.coaching_relationship_id,
+            organization_id: params.organization_id,
             from_date: params.from_date,
             to_date: params.to_date,
             tz: tz_name,
             sort_column,
             sort_order,
-            includes,
         },
+        includes,
     )
     .await?;
 
@@ -118,6 +113,57 @@ pub async fn index(
     )))
 }
 
+/// GET the sessions nearest a point in time, for one or more coaching relationships.
+///
+/// Per relationship, returns up to `before` sessions strictly before `around` and up to
+/// `after` at or after it, however far apart. All relationships' sessions come back in one
+/// list, latest first (ties by `id`). A relationship the user is not part of contributes
+/// nothing.
+#[utoipa::path(
+    get,
+    path = "/users/{user_id}/coaching_sessions/nearest",
+    params(
+        ApiVersion,
+        ("user_id" = Uuid, Path, description = "User ID to retrieve coaching sessions for"),
+        ("coaching_relationship_ids" = Option<String>, Query, description = "Comma-separated ids of 1 to 50 coaching relationships whose sessions to return. Send this or `coaching_relationship_id`, not both."),
+        ("coaching_relationship_id" = Option<Uuid>, Query, description = "A single coaching relationship whose sessions to return. Send this or `coaching_relationship_ids`, not both."),
+        ("around" = String, Query, description = "Datetime the window is centered on: UTC with no offset (e.g. '2026-10-30T14:00:00') or RFC 3339 with one. A session exactly here counts as after."),
+        ("before" = u8, Query, description = "Most sessions to return before `around` per relationship, 0 to 10"),
+        ("after" = u8, Query, description = "Most sessions to return at or after `around` per relationship, 0 to 10"),
+        ("include" = Option<String>, Query, description = "Comma-separated list of related resources to include. Valid values: 'relationship', 'organization', 'goal', 'agreements', 'topics', 'series'.")
+    ),
+    responses(
+        (status = 200, description = "The window's sessions, latest first", body = [domain::coaching_session::EnrichedSession]),
+        (status = 400, description = "Bad Request (`invalid_nearest_window`, or an unknown include value)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 422, description = "Unprocessable include combination: `organization` requires `relationship`"),
+        (status = 503, description = "Service temporarily unavailable")
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn nearest(
+    UserSelfAccess(user): UserSelfAccess,
+    CompareApiVersion(_v): CompareApiVersion,
+    State(app_state): State<AppState>,
+    Query(params): Query<NearestParams>,
+) -> Result<impl IntoResponse, Error> {
+    let user_id = user.id;
+    debug!("GET nearest Coaching Sessions for User: {user_id}, params: {params:?}");
+
+    let sessions = CoachingSessionApi::find_nearest_by_user_with_includes(
+        app_state.db_conn_ref(),
+        &visibility_for(&user),
+        params.compile()?,
+        include_options(&params.include),
+    )
+    .await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), sessions)))
+}
+
 /// Payload returned under `ApiResponse::data` for the counts endpoint.
 #[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct CountsResponse {
@@ -128,19 +174,20 @@ pub(crate) struct CountsResponse {
 ///
 /// Aggregates by local calendar month in the caller-supplied IANA timezone
 /// (`?tz=`). Months with zero sessions are omitted; results are sorted
-/// ascending chronologically. Authentication is required; the protect
-/// middleware further restricts the caller to their own `user_id`.
+/// ascending chronologically. Authentication is required; `UserSelfAccess`
+/// restricts the caller to their own `user_id`.
 #[utoipa::path(
     get,
     path = "/users/{user_id}/coaching_sessions/counts",
     params(
         ApiVersion,
-        ("user_id" = Id, Path, description = "User ID to retrieve counts for"),
+        ("user_id" = Uuid, Path, description = "User ID to retrieve counts for"),
         ("from_date" = chrono::NaiveDate, Query, description = "Start of the range (inclusive)"),
         ("to_date" = chrono::NaiveDate, Query, description = "End of the range (inclusive at calendar-day precision)"),
         ("group_by" = crate::params::user::coaching_session::GroupByParam, Query, description = "Aggregation grouping. v1 accepts only 'month'."),
         ("tz" = String, Query, description = "IANA timezone identifier (e.g. 'America/Los_Angeles'). Invalid value → 400 invalid_timezone."),
-        ("coaching_relationship_id" = Option<Id>, Query, description = "Narrow to a single coaching relationship.")
+        ("coaching_relationship_id" = Option<Uuid>, Query, description = "Narrow to a single coaching relationship."),
+        ("organization_id" = Option<Uuid>, Query, description = "Narrow to relationships in this organization. Omitted = unscoped.")
     ),
     responses(
         (status = 200, description = "Monthly counts in the requested timezone", body = CountsResponse),
@@ -152,12 +199,12 @@ pub(crate) struct CountsResponse {
     security(("cookie_auth" = []))
 )]
 pub async fn counts(
+    UserSelfAccess(user): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(user_id): Path<Id>,
     Query(params): Query<CountsByMonthParams>,
 ) -> Result<impl IntoResponse, Error> {
+    let user_id = user.id;
     let params = params.with_user_id(user_id);
     debug!(
         "GET coaching session counts for user {user_id}, params: from={} to={} tz={} relationship={:?}",
@@ -179,11 +226,12 @@ pub async fn counts(
 
     let counts = CoachingSessionApi::find_counts_by_month_for_user(
         app_state.db_conn_ref(),
-        user_id,
+        &visibility_for(&user),
         params.from_date,
         params.to_date,
         tz.name(),
         params.coaching_relationship_id,
+        params.organization_id,
     )
     .await?;
 
@@ -193,3 +241,7 @@ pub async fn counts(
         CountsResponse { counts },
     )))
 }
+
+#[cfg(test)]
+#[path = "coaching_session_controller_sqlite_tests.rs"]
+mod sqlite_tests;

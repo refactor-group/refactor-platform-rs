@@ -1,0 +1,17 @@
+{
+  "name": "docs-collab-fixture-capture",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "One-off harness. Captures real Hocuspocus wire bytes for the docs-collab-server protocol tests.",
+  "scripts": {
+    "capture": "node capture.mjs"
+  },
+  "dependencies": {
+    "@hocuspocus/common": "2.15.3",
+    "@hocuspocus/provider": "2.15.3",
+    "lib0": "0.2.114",
+    "y-protocols": "1.0.6",
+    "yjs": "13.6.27"
+  }
+}

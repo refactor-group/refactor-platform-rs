@@ -1,0 +1,80 @@
+//! `SeaORM` Entity.
+
+use crate::topic_status::Status;
+use crate::Id;
+use sea_orm::entity::prelude::*;
+use sea_orm::FromJsonQueryResult;
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
+// The row's pre-mutation state, captured before any undoable op (defer or delete) so undo can
+// restore it faithfully. Server-only; never crosses the wire.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, FromJsonQueryResult)]
+pub struct TopicSnapshot {
+    pub coaching_session_id: Id,
+    pub body: String,
+    pub display_order: i32,
+    pub status: crate::topic_status::Status,
+    pub moved_from_session_id: Option<Id>,
+    pub deleted_at: Option<DateTimeWithTimeZone>,
+    pub updated_at: DateTimeWithTimeZone,
+}
+
+#[sea_orm::model]
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize, ToSchema)]
+#[schema(as = entity::coaching_session_topics::Model)]
+#[sea_orm(
+    schema_name = "refactor_platform",
+    table_name = "coaching_session_topics"
+)]
+pub struct Model {
+    #[serde(skip_deserializing)]
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: Id,
+    pub coaching_session_id: Id,
+    pub body: String,
+    #[serde(skip_deserializing)]
+    pub user_id: Id,
+    // Backend-internal ordering index. Never crosses the wire in either direction.
+    #[serde(skip)]
+    pub display_order: i32,
+    // Lifecycle status; NOT NULL, defaults to Open.
+    pub status: Status,
+    // Provenance for a moved topic: the session it was last moved out of. Server-set; null normally.
+    #[serde(skip_deserializing)]
+    pub moved_from_session_id: Option<Id>,
+    // Server-only undo buffer for a faithful undo; never crosses the wire.
+    #[sea_orm(column_type = "JsonBinary", nullable)]
+    #[serde(skip)]
+    pub undo_snapshot: Option<TopicSnapshot>,
+    // Soft-delete marker; null for live rows. Reads exclude non-null. Server-only.
+    #[sea_orm(nullable)]
+    #[serde(skip)]
+    pub deleted_at: Option<DateTimeWithTimeZone>,
+    #[serde(skip_deserializing)]
+    pub created_at: DateTimeWithTimeZone,
+    #[serde(skip_deserializing)]
+    pub updated_at: DateTimeWithTimeZone,
+    #[serde(skip)]
+    #[sea_orm(
+        belongs_to,
+        relation_enum = "CoachingSessions",
+        from = "coaching_session_id",
+        to = "id",
+        on_update = "Cascade",
+        on_delete = "Cascade"
+    )]
+    pub coaching_session: BelongsTo<super::coaching_sessions::Entity>,
+    #[serde(skip)]
+    #[sea_orm(
+        belongs_to,
+        relation_enum = "Users",
+        from = "user_id",
+        to = "id",
+        on_update = "Cascade",
+        on_delete = "Cascade"
+    )]
+    pub user: BelongsTo<super::users::Entity>,
+}
+
+impl ActiveModelBehavior for ActiveModel {}

@@ -3,13 +3,58 @@ pub(crate) mod coaching_relationship;
 pub(crate) mod coaching_session;
 pub(crate) mod goal;
 
-// Re-export user profile update params for backward compatibility
-use domain::{IntoUpdateMap, UpdateMap};
+use domain::error::Error;
+use domain::user::{self as UserApi, WorkingHoursPatch};
+use domain::{users, users::Role, Id, IntoUpdateMap, UpdateMap};
 use sea_orm::Value;
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
+use super::deserialize_clearable;
+
+/// Query parameters for an exact-match user lookup by email.
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
+pub struct LookupParams {
+    pub email: String,
+}
+
+/// Body for granting a user a role within an organization.
+///
+/// Unknown fields are rejected so a misspelled key fails loudly rather than
+/// silently granting the wrong role.
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AttachRoleParams {
+    pub role: Role,
+    /// Coach to assign in the same transaction as the membership.
+    pub coach_id: Option<Id>,
+}
+
+/// Body for changing the role a user holds within an organization.
+///
+/// Unknown fields are rejected so a client sending `coach_id` is refused rather
+/// than led to believe a coach was assigned; this endpoint changes a role only.
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateRoleParams {
+    pub role: Role,
+}
+
+/// Body for creating a new member of an organization.
+///
+/// The user fields are flattened so a client that sends only them still
+/// deserializes. serde rejects `deny_unknown_fields` alongside `flatten`, so
+/// unknown keys are ignored rather than refused here.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateMemberParams {
+    #[serde(flatten)]
+    pub user: users::Model,
+    /// Coach to assign in the same transaction as the new account.
+    pub coach_id: Option<Id>,
+}
+
+#[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[schema(as = params::user::UpdateParams)]
 pub struct UpdateParams {
     pub email: Option<String>,
     pub first_name: Option<String>,
@@ -21,46 +66,49 @@ pub struct UpdateParams {
     /// Validated in entity_api via the `Duration` newtype. `i16` matches
     /// both the storage type and the newtype's inner representation.
     pub default_coaching_session_duration_minutes: Option<i16>,
+    /// Start of the working day, local `"HH:MM"` on a 30-minute step; null is refused.
+    #[serde(default, deserialize_with = "deserialize_clearable")]
+    #[schema(value_type = Option<String>, example = "08:00")]
+    pub working_hours_start: Option<Option<String>>,
+    /// End of the working day, local `"HH:MM"` on a 30-minute step; null is refused.
+    #[serde(default, deserialize_with = "deserialize_clearable")]
+    #[schema(value_type = Option<String>, example = "17:30")]
+    pub working_hours_end: Option<Option<String>>,
 }
 
-impl IntoUpdateMap for UpdateParams {
-    fn into_update_map(self) -> UpdateMap {
+impl UpdateParams {
+    /// The profile fields; working hours are written only through [`UpdateUser`].
+    fn profile_update_map(self) -> UpdateMap {
         let mut update_map = UpdateMap::new();
         if let Some(email) = self.email {
-            update_map.insert(
-                "email".to_string(),
-                Some(Value::String(Some(Box::new(email)))),
-            );
+            update_map.insert("email".to_string(), Some(Value::String(Some(email))));
         }
         if let Some(first_name) = self.first_name {
             update_map.insert(
                 "first_name".to_string(),
-                Some(Value::String(Some(Box::new(first_name)))),
+                Some(Value::String(Some(first_name))),
             );
         }
         if let Some(last_name) = self.last_name {
             update_map.insert(
                 "last_name".to_string(),
-                Some(Value::String(Some(Box::new(last_name)))),
+                Some(Value::String(Some(last_name))),
             );
         }
         if let Some(display_name) = self.display_name {
             update_map.insert(
                 "display_name".to_string(),
-                Some(Value::String(Some(Box::new(display_name)))),
+                Some(Value::String(Some(display_name))),
             );
         }
         if let Some(github_profile_url) = self.github_profile_url {
             update_map.insert(
                 "github_profile_url".to_string(),
-                Some(Value::String(Some(Box::new(github_profile_url)))),
+                Some(Value::String(Some(github_profile_url))),
             );
         }
         if let Some(timezone) = self.timezone {
-            update_map.insert(
-                "timezone".to_string(),
-                Some(Value::String(Some(Box::new(timezone)))),
-            );
+            update_map.insert("timezone".to_string(), Some(Value::String(Some(timezone))));
         }
         if let Some(default_duration) = self.default_coaching_session_duration_minutes {
             update_map.insert(
@@ -68,6 +116,51 @@ impl IntoUpdateMap for UpdateParams {
                 Some(Value::SmallInt(Some(default_duration))),
             );
         }
+        update_map
+    }
+}
+
+/// A user update with its working hours already parsed into times.
+#[derive(Debug)]
+pub struct UpdateUser {
+    params: UpdateParams,
+    working_hours: WorkingHoursPatch,
+}
+
+/// A sent working-hours value; an explicit null is not `"HH:MM"`, so it is refused like one.
+fn sent(value: &Option<Option<String>>) -> Option<&str> {
+    value
+        .as_ref()
+        .map(|time| time.as_deref().unwrap_or_default())
+}
+
+impl TryFrom<UpdateParams> for UpdateUser {
+    type Error = Error;
+
+    fn try_from(params: UpdateParams) -> Result<Self, Self::Error> {
+        let working_hours = UserApi::parse_working_hours(
+            sent(&params.working_hours_start),
+            sent(&params.working_hours_end),
+        )?;
+        Ok(Self {
+            params,
+            working_hours,
+        })
+    }
+}
+
+impl IntoUpdateMap for UpdateUser {
+    fn into_update_map(self) -> UpdateMap {
+        let mut update_map = self.params.profile_update_map();
+        [
+            ("working_hours_start", self.working_hours.start),
+            ("working_hours_end", self.working_hours.end),
+        ]
+        .into_iter()
+        .filter_map(|(key, time)| time.map(|time| (key, time)))
+        .for_each(|(key, time)| {
+            update_map.insert(key.to_string(), Some(Value::ChronoTime(Some(time))));
+        });
         update_map
     }
 }
@@ -84,15 +177,15 @@ impl IntoUpdateMap for UpdatePasswordParams {
         let mut update_map = UpdateMap::new();
         update_map.insert(
             "password".to_string(),
-            Some(Value::String(Some(Box::new(self.new_password)))),
+            Some(Value::String(Some(self.new_password))),
         );
         update_map.insert(
             "confirm_password".to_string(),
-            Some(Value::String(Some(Box::new(self.confirm_password)))),
+            Some(Value::String(Some(self.confirm_password))),
         );
         update_map.insert(
             "current_password".to_string(),
-            Some(Value::String(Some(Box::new(self.current_password)))),
+            Some(Value::String(Some(self.current_password))),
         );
         update_map
     }
@@ -108,17 +201,14 @@ pub(crate) struct CompleteSetupParams {
 impl IntoUpdateMap for CompleteSetupParams {
     fn into_update_map(self) -> UpdateMap {
         let mut update_map = UpdateMap::new();
-        update_map.insert(
-            "token".to_string(),
-            Some(Value::String(Some(Box::new(self.token)))),
-        );
+        update_map.insert("token".to_string(), Some(Value::String(Some(self.token))));
         update_map.insert(
             "password".to_string(),
-            Some(Value::String(Some(Box::new(self.password)))),
+            Some(Value::String(Some(self.password))),
         );
         update_map.insert(
             "confirm_password".to_string(),
-            Some(Value::String(Some(Box::new(self.confirm_password)))),
+            Some(Value::String(Some(self.confirm_password))),
         );
         update_map
     }
@@ -139,18 +229,19 @@ pub(crate) struct PasswordResetCompleteParams {
 impl IntoUpdateMap for PasswordResetCompleteParams {
     fn into_update_map(self) -> UpdateMap {
         let mut update_map = UpdateMap::new();
-        update_map.insert(
-            "token".to_string(),
-            Some(Value::String(Some(Box::new(self.token)))),
-        );
+        update_map.insert("token".to_string(), Some(Value::String(Some(self.token))));
         update_map.insert(
             "password".to_string(),
-            Some(Value::String(Some(Box::new(self.password)))),
+            Some(Value::String(Some(self.password))),
         );
         update_map.insert(
             "confirm_password".to_string(),
-            Some(Value::String(Some(Box::new(self.confirm_password)))),
+            Some(Value::String(Some(self.confirm_password))),
         );
         update_map
     }
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;

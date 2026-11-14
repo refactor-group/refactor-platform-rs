@@ -1,0 +1,63 @@
+//! The goal status route through the router, sign-in and access check, against a mock
+//! database: an unknown status value is refused with nothing written.
+
+use std::sync::Arc;
+
+use axum::http::StatusCode;
+use axum::{routing::put, Router};
+use chrono::Utc;
+use domain::{goals, Id};
+use sea_orm::MockDatabase;
+
+use crate::controller::goal_controller::update_status;
+use crate::extractors::relationship_access_test_support::{
+    self as support, assert_refusal, Caller, Fixture,
+};
+use crate::AppState;
+
+fn status_routes() -> Router<AppState> {
+    Router::new().route("/goals/:id/status", put(update_status))
+}
+
+/// An in-progress goal in the shared relationship.
+fn goal(w: &Fixture) -> goals::Model {
+    let now = Utc::now();
+    goals::Model {
+        id: Id::new_v4(),
+        coaching_relationship_id: w.relationship.id,
+        created_in_session_id: None,
+        user_id: w.coach.id,
+        title: Some("Goal".to_string()),
+        body: None,
+        status: domain::status::Status::InProgress,
+        status_changed_at: None,
+        completed_at: None,
+        target_date: None,
+        created_at: now.into(),
+        updated_at: now.into(),
+    }
+}
+
+/// `caller` signed in, with the goal and its relationship queued for `GoalAccess`.
+fn reaching_goal(w: &Fixture, caller: Caller, goal: &goals::Model) -> MockDatabase {
+    w.signed_in(caller)
+        .append_query_results([vec![goal.clone()]])
+        .append_query_results([vec![w.relationship.clone()]])
+}
+
+#[tokio::test]
+async fn goal_04b_unknown_status_value_is_refused() {
+    let w = support::fixture();
+    let goal = goal(&w);
+    let db = Arc::new(reaching_goal(&w, Caller::Coach, &goal).into_connection());
+    let response = support::send(
+        status_routes(),
+        &db,
+        &w.coach.email,
+        "PUT",
+        &format!("/goals/{}/status?value=finished", goal.id),
+        None,
+    )
+    .await;
+    assert_refusal("GOAL-04b", &db, response, StatusCode::UNPROCESSABLE_ENTITY);
+}

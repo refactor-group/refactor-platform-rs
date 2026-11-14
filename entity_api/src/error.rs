@@ -2,11 +2,14 @@
 use std::error::Error as StdError;
 use std::fmt;
 
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 use sea_orm::error::DbErr;
+use sea_orm::SqlErr;
 
 use entity::duration::OutOfRange;
+use entity::working_hours::Invalid as InvalidWorkingHours;
+use entity::Id;
 
 /// Errors while executing operations related to entities.
 /// The intent is to categorize errors into two major types:
@@ -41,10 +44,50 @@ pub enum EntityApiErrorKind {
     CannotLinkCompletedGoal,
     // Attempt to link a goal that is already linked to the same coaching session.
     GoalAlreadyLinkedToSession,
+    // Organization still has coaching relationships; cannot be deleted.
+    OrganizationNotEmpty {
+        coaching_relationship_count: u64,
+        coaching_session_count: u64,
+        member_count: u64,
+    },
+    // Organization name (or its derived slug) collides with an existing org.
+    OrganizationNameTaken {
+        name: String,
+    },
+    // Mutation attempted under an archived organization (write-freeze).
+    OrganizationArchived,
+    // Organization name failed value validation (empty/whitespace or over-length).
+    OrganizationNameInvalid {
+        message: String,
+    },
     // Range-bounded entity construction failed (e.g. `Duration` outside
     // 1..=480). Maps to 422 in domain (distinct from `ValidationError`,
     // which is for 409 state conflicts like cap violations).
     OutOfRange(OutOfRange),
+    // Working hours off the 30-minute step or out of order. Maps to 422 like `OutOfRange`.
+    #[serde(serialize_with = "serialize_display")]
+    WorkingHours(InvalidWorkingHours),
+    // Reorder request whose id set is not a permutation of the session's current topics.
+    TopicReorderMismatch,
+    // User already holds a role in the target organization.
+    UserAlreadyInOrganization {
+        organization_id: Id,
+    },
+    // Removing this user would leave the organization with no admin.
+    LastOrganizationAdmin {
+        organization_id: Id,
+    },
+    // User belongs to more than one organization; global delete refused.
+    UserBelongsToMultipleOrganizations {
+        organization_count: u64,
+    },
+    // A text field exceeded its maximum length. Maps to 422 in domain (a
+    // value-validation failure, distinct from `ValidationError` → 409 state
+    // conflicts). `max`/`actual` are character counts, matching the column bound.
+    TitleTooLong {
+        max: usize,
+        actual: usize,
+    },
     // Other errors
     Other(String),
 }
@@ -55,6 +98,33 @@ impl From<OutOfRange> for Error {
             source: None,
             error_kind: EntityApiErrorKind::OutOfRange(err),
         }
+    }
+}
+
+/// Serializes a value through its `Display`, for payloads without a `Serialize` impl.
+fn serialize_display<T: fmt::Display, S: Serializer>(
+    value: &T,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(value)
+}
+
+impl From<InvalidWorkingHours> for Error {
+    fn from(err: InvalidWorkingHours) -> Self {
+        Error {
+            source: None,
+            error_kind: EntityApiErrorKind::WorkingHours(err),
+        }
+    }
+}
+
+impl Error {
+    /// Whether the database refused the statement for breaking a foreign key.
+    pub fn is_foreign_key_violation(&self) -> bool {
+        matches!(
+            self.source.as_ref().and_then(DbErr::sql_err),
+            Some(SqlErr::ForeignKeyConstraintViolation(_))
+        )
     }
 }
 

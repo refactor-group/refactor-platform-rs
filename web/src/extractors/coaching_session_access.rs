@@ -2,16 +2,17 @@ use std::collections::HashMap;
 
 use axum::{
     async_trait,
-    extract::{FromRef, FromRequestParts, Path},
+    extract::{FromRef, FromRequestParts, Path, Query},
     http::{request::Parts, StatusCode},
 };
 use domain::{coaching_session, Id};
+use serde::Deserialize;
 
 use crate::{
-    extractors::{authenticated_user::AuthenticatedUser, RejectionType},
+    extractors::{authenticated_user::AuthenticatedUser, lookup_rejection, RejectionType},
     AppState,
 };
-use domain::coaching_sessions;
+use domain::{coaching_relationships, coaching_sessions, users};
 use log::*;
 
 /// Extractor that verifies the authenticated user is a participant (coach or coachee)
@@ -22,6 +23,30 @@ use log::*;
 /// additional database query.
 pub(crate) struct CoachingSessionAccess(pub coaching_sessions::Model);
 
+/// [`CoachingSessionAccess`] that also yields the session's coaching relationship, which the
+/// access check loads anyway, for handlers that report what the relationship holds.
+pub(crate) struct CoachingSessionContextAccess(
+    pub coaching_sessions::Model,
+    pub coaching_relationships::Model,
+);
+
+/// Session access for the session named by the `coaching_session_id` query parameter.
+pub(crate) struct CoachingSessionQueryAccess(
+    pub coaching_sessions::Model,
+    pub coaching_relationships::Model,
+);
+
+/// Coach-only [`CoachingSessionContextAccess`]: the caller must coach the session's relationship.
+pub(crate) struct CoachingSessionCoachAccess(
+    pub coaching_sessions::Model,
+    pub coaching_relationships::Model,
+);
+
+#[derive(Deserialize)]
+struct SessionQueryParams {
+    coaching_session_id: Id,
+}
+
 #[async_trait]
 impl<S> FromRequestParts<S> for CoachingSessionAccess
 where
@@ -31,65 +56,136 @@ where
     type Rejection = RejectionType;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let state = AppState::from_ref(state);
-        let AuthenticatedUser(authenticated_user) =
-            AuthenticatedUser::from_request_parts(parts, &state).await?;
+        let (session, _) = authorize(parts, &AppState::from_ref(state)).await?;
+        Ok(CoachingSessionAccess(session))
+    }
+}
 
-        let Path(path_params) = Path::<HashMap<String, String>>::from_request_parts(parts, &state)
-            .await
-            .map_err(|_| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    "Invalid path parameters".to_string(),
-                )
-            })?;
+#[async_trait]
+impl<S> FromRequestParts<S> for CoachingSessionContextAccess
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = RejectionType;
 
-        let coaching_session_id: Id = path_params
-            .get("coaching_session_id")
-            .or_else(|| path_params.get("id"))
-            .ok_or_else(|| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    "Missing coaching_session_id in path".to_string(),
-                )
-            })?
-            .parse()
-            .map_err(|_| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    "Invalid coaching session id".to_string(),
-                )
-            })?;
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let (session, relationship) = authorize(parts, &AppState::from_ref(state)).await?;
+        Ok(CoachingSessionContextAccess(session, relationship))
+    }
+}
 
-        debug!("Checking coaching session access for coaching_session_id={coaching_session_id}");
+#[async_trait]
+impl<S> FromRequestParts<S> for CoachingSessionCoachAccess
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = RejectionType;
 
-        // Get the coaching session
-        let (coaching_session, coaching_relationship) =
-            match coaching_session::find_by_id_with_coaching_relationship(
-                state.db_conn_ref(),
-                coaching_session_id,
-            )
-            .await
-            {
-                Ok((coaching_session, coaching_relationship)) => {
-                    (coaching_session, coaching_relationship)
-                }
-                Err(e) => {
-                    error!(
-                        "Authorization error finding coaching session {coaching_session_id}: {e:?}"
-                    );
-                    return Err((StatusCode::NOT_FOUND, "NOT FOUND".to_string()));
-                }
-            };
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let (session, relationship) = authorize(parts, &AppState::from_ref(state)).await?;
+        let AuthenticatedUser(user) = AuthenticatedUser::from_request_parts(parts, state).await?;
+        let operation = format!("{} {}", parts.method, parts.uri.path());
 
-        if !(coaching_relationship.coach_id == authenticated_user.id
-            || coaching_relationship.coachee_id == authenticated_user.id)
-        {
-            return Err((StatusCode::UNAUTHORIZED, "UNAUTHORIZED".to_string()));
+        if relationship.coach_id != user.id {
+            warn!(
+                "{operation} auth denied (not coach): coaching_session_id={} relationship_id={} user_id={}",
+                session.id, relationship.id, user.id
+            );
+            return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
         }
 
-        Ok(CoachingSessionAccess(coaching_session))
+        debug!(
+            "{operation} auth passed: coaching_session_id={} relationship_id={} user_id={}",
+            session.id, relationship.id, user.id
+        );
+        Ok(CoachingSessionCoachAccess(session, relationship))
     }
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for CoachingSessionQueryAccess
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = RejectionType;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let state = AppState::from_ref(state);
+        let AuthenticatedUser(user) = AuthenticatedUser::from_request_parts(parts, &state).await?;
+
+        let Query(params) = Query::<SessionQueryParams>::from_request_parts(parts, &state)
+            .await
+            .map_err(|rejection| (rejection.status(), rejection.body_text()))?;
+
+        let (session, relationship) =
+            authorize_session(&state, &user, params.coaching_session_id).await?;
+        Ok(CoachingSessionQueryAccess(session, relationship))
+    }
+}
+
+/// Loads the session named in the path with its relationship, and admits the caller only if
+/// the relationship grants them access.
+async fn authorize(
+    parts: &mut Parts,
+    state: &AppState,
+) -> Result<(coaching_sessions::Model, coaching_relationships::Model), RejectionType> {
+    let AuthenticatedUser(authenticated_user) =
+        AuthenticatedUser::from_request_parts(parts, state).await?;
+
+    let Path(path_params) = Path::<HashMap<String, String>>::from_request_parts(parts, state)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "Invalid path parameters".to_string(),
+            )
+        })?;
+
+    let coaching_session_id: Id = path_params
+        .get("coaching_session_id")
+        .or_else(|| path_params.get("id"))
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "Missing coaching_session_id in path".to_string(),
+            )
+        })?
+        .parse()
+        .map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                "Invalid coaching session id".to_string(),
+            )
+        })?;
+
+    authorize_session(state, &authenticated_user, coaching_session_id).await
+}
+
+/// Loads the session and its relationship, and admits `user` only if the relationship
+/// grants them access.
+pub(crate) async fn authorize_session(
+    state: &AppState,
+    user: &users::Model,
+    coaching_session_id: Id,
+) -> Result<(coaching_sessions::Model, coaching_relationships::Model), RejectionType> {
+    debug!("Checking coaching session access for coaching_session_id={coaching_session_id}");
+
+    let (coaching_session, coaching_relationship) =
+        coaching_session::find_by_id_with_coaching_relationship(
+            state.db_conn_ref(),
+            coaching_session_id,
+        )
+        .await
+        .map_err(lookup_rejection)?;
+
+    if !coaching_relationship.grants_access_to(user) {
+        return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
+    }
+
+    Ok((coaching_session, coaching_relationship))
 }
 
 #[cfg(test)]
@@ -100,6 +196,7 @@ mod tests {
     use crate::middleware::auth::require_auth;
 
     use super::*;
+    use crate::extractors::relationship_access_test_support::{self as support, Caller};
     use axum::{body::Body, middleware::from_fn};
     use axum::{extract::Request, routing::get, Router};
     use axum_login::{
@@ -108,10 +205,10 @@ mod tests {
     };
     use chrono::Utc;
     use domain::user::Backend;
+    use domain::user_roles;
     use domain::users;
-    use domain::{coaching_relationships, user_roles};
     use password_auth::generate_hash;
-    use sea_orm::{DatabaseBackend, MockDatabase};
+    use sea_orm::{DatabaseBackend, DbErr, MockDatabase};
     use service::config::Config;
     use time::Duration;
     use tower::ServiceExt;
@@ -131,7 +228,8 @@ mod tests {
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: domain::duration::Duration::default_minutes(
             ),
-            role: users::Role::User,
+            working_hours_start: domain::working_hours::default_start(),
+            working_hours_end: domain::working_hours::default_end(),
             roles: vec![],
             invite_status: None,
             created_at: now.into(),
@@ -143,284 +241,6 @@ mod tests {
         CoachingSessionAccess(_coaching_session): CoachingSessionAccess,
     ) -> &'static str {
         "extracted_success"
-    }
-
-    #[tokio::test]
-    async fn test_coaching_session_extractor_success() {
-        // Create mock database with expected results
-        let session_id = Id::new_v4();
-        let relationship_id = Id::new_v4();
-        let now = Utc::now();
-        let test_user = create_test_user();
-
-        let test_role = user_roles::Model {
-            id: Id::new_v4(),
-            role: users::Role::User,
-            organization_id: Some(Id::new_v4()),
-            user_id: test_user.id,
-            created_at: now.into(),
-            updated_at: now.into(),
-        };
-
-        let test_session = coaching_sessions::Model {
-            id: session_id,
-            coaching_relationship_id: relationship_id,
-            collab_document_name: None,
-            date: chrono::Utc::now().naive_utc(),
-            duration_minutes: domain::duration::Duration::default_minutes(),
-            meeting_url: None,
-            provider: None,
-            created_at: now.into(),
-            updated_at: now.into(),
-            hydrated_at: Some(now.into()),
-        };
-
-        let db = Arc::new(
-            MockDatabase::new(DatabaseBackend::Postgres)
-                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-                .append_query_results(vec![vec![(
-                    test_session.clone(),
-                    coaching_relationships::Model {
-                        id: relationship_id,
-                        coach_id: Id::new_v4(),
-                        coachee_id: test_user.id,
-                        organization_id: Id::new_v4(),
-                        slug: "test".to_string(),
-                        created_at: now.into(),
-                        updated_at: now.into(),
-                    },
-                )]])
-                .into_connection(),
-        );
-
-        let app_state = AppState::new(
-            service::AppState::new(Config::default(), &db),
-            Arc::new(sse::Manager::default()),
-            domain::events::EventPublisher::default(),
-            None,
-            None,
-        );
-
-        // Set up session layer
-        let session_store = MemoryStore::default();
-        let session_layer = SessionManagerLayer::new(session_store)
-            .with_secure(false)
-            .with_expiry(Expiry::OnInactivity(Duration::days(1)))
-            .with_always_save(true);
-
-        let backend = Backend::new(&db);
-        let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
-
-        // Create app with login route and protected route
-        let app = Router::new()
-            .route(
-                "/login",
-                axum::routing::post(crate::controller::user_session_controller::login),
-            )
-            .merge(
-                Router::new()
-                    .route(
-                        "/coaching_sessions/:coaching_session_id",
-                        get(protected_route),
-                    )
-                    .route_layer(from_fn(require_auth)),
-            )
-            .layer(auth_layer)
-            .with_state(app_state);
-
-        // First, log in to create an authenticated session
-        let login_request = Request::builder()
-            .uri("/login")
-            .method("POST")
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from("email=test@example.com&password=password123"))
-            .unwrap();
-
-        let login_response = app.clone().oneshot(login_request).await.unwrap();
-
-        // Extract session cookie from login response
-        let cookie = login_response
-            .headers()
-            .get("set-cookie")
-            .and_then(|c| c.to_str().ok())
-            .expect("Login should return session cookie");
-
-        let protected_request = Request::builder()
-            .uri(format!("/coaching_sessions/{}", session_id).as_str())
-            .header("cookie", cookie)
-            .body(axum::body::Body::empty())
-            .unwrap();
-
-        let response = app.clone().oneshot(protected_request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn test_coaching_session_extractor_returns_401_when_user_is_unauthenticated() {
-        // Create mock database with expected results
-        let session_id = Id::new_v4();
-        let relationship_id = Id::new_v4();
-        let now = Utc::now();
-        let test_user = create_test_user();
-
-        let test_role = user_roles::Model {
-            id: Id::new_v4(),
-            role: users::Role::User,
-            organization_id: Some(Id::new_v4()),
-            user_id: test_user.id,
-            created_at: now.into(),
-            updated_at: now.into(),
-        };
-
-        let test_session = coaching_sessions::Model {
-            id: session_id,
-            coaching_relationship_id: relationship_id,
-            collab_document_name: None,
-            date: chrono::Utc::now().naive_utc(),
-            duration_minutes: domain::duration::Duration::default_minutes(),
-            meeting_url: None,
-            provider: None,
-            created_at: now.into(),
-            updated_at: now.into(),
-            hydrated_at: Some(now.into()),
-        };
-
-        let db = Arc::new(
-            MockDatabase::new(DatabaseBackend::Postgres)
-                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-                .append_query_results(vec![vec![test_session.clone()]])
-                .into_connection(),
-        );
-
-        let app_state = AppState::new(
-            service::AppState::new(Config::default(), &db),
-            Arc::new(sse::Manager::default()),
-            domain::events::EventPublisher::default(),
-            None,
-            None,
-        );
-
-        // Set up session layer
-        let session_store = MemoryStore::default();
-        let session_layer = SessionManagerLayer::new(session_store)
-            .with_secure(false)
-            .with_expiry(Expiry::OnInactivity(Duration::days(1)))
-            .with_always_save(true);
-
-        let backend = Backend::new(&db);
-        let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
-
-        // Create app with login route and protected route
-        let app = Router::new()
-            .route(
-                "/login",
-                axum::routing::post(crate::controller::user_session_controller::login),
-            )
-            .merge(
-                Router::new()
-                    .route(
-                        "/coaching_sessions/:coaching_session_id",
-                        get(protected_route),
-                    )
-                    .route_layer(from_fn(require_auth)),
-            )
-            .layer(auth_layer)
-            .with_state(app_state);
-
-        let protected_request = Request::builder()
-            .uri(format!("/coaching_sessions/{}", session_id).as_str())
-            .body(axum::body::Body::empty())
-            .unwrap();
-
-        let response = app.clone().oneshot(protected_request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn test_coaching_session_extractor_returns_404_when_session_does_not_exist() {
-        // Create mock database with expected results
-        let session_id = Id::new_v4();
-        let now = Utc::now();
-        let test_user = create_test_user();
-
-        let test_role = user_roles::Model {
-            id: Id::new_v4(),
-            role: users::Role::User,
-            organization_id: Some(Id::new_v4()),
-            user_id: test_user.id,
-            created_at: now.into(),
-            updated_at: now.into(),
-        };
-
-        let db = Arc::new(
-            MockDatabase::new(DatabaseBackend::Postgres)
-                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-                .into_connection(),
-        );
-
-        let app_state = AppState::new(
-            service::AppState::new(Config::default(), &db),
-            Arc::new(sse::Manager::default()),
-            domain::events::EventPublisher::default(),
-            None,
-            None,
-        );
-
-        // Set up session layer
-        let session_store = MemoryStore::default();
-        let session_layer = SessionManagerLayer::new(session_store)
-            .with_secure(false)
-            .with_expiry(Expiry::OnInactivity(Duration::days(1)))
-            .with_always_save(true);
-
-        let backend = Backend::new(&db);
-        let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
-
-        // Create app with login route and protected route
-        let app = Router::new()
-            .route(
-                "/login",
-                axum::routing::post(crate::controller::user_session_controller::login),
-            )
-            .merge(
-                Router::new()
-                    .route(
-                        "/coaching_sessions/:coaching_session_id",
-                        get(protected_route),
-                    )
-                    .route_layer(from_fn(require_auth)),
-            )
-            .layer(auth_layer)
-            .with_state(app_state);
-
-        // First, log in to create an authenticated session
-        let login_request = Request::builder()
-            .uri("/login")
-            .method("POST")
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from("email=test@example.com&password=password123"))
-            .unwrap();
-
-        let login_response = app.clone().oneshot(login_request).await.unwrap();
-
-        // Extract session cookie from login response
-        let cookie = login_response
-            .headers()
-            .get("set-cookie")
-            .and_then(|c| c.to_str().ok())
-            .expect("Login should return session cookie");
-
-        let protected_request = Request::builder()
-            .uri(format!("/coaching_sessions/{}", session_id).as_str())
-            .header("cookie", cookie)
-            .body(axum::body::Body::empty())
-            .unwrap();
-
-        let response = app.clone().oneshot(protected_request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -444,21 +264,29 @@ mod tests {
         let test_session = coaching_sessions::Model {
             id: session_id,
             coaching_relationship_id: relationship_id,
+            coaching_session_series_id: None,
+            ical_sequence: 0,
+            ical_recurrence_id: None,
             collab_document_name: None,
             date: chrono::Utc::now().naive_utc(),
             duration_minutes: domain::duration::Duration::default_minutes(),
+            title: None,
             meeting_url: None,
             provider: None,
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
+            notice_given_at: chrono::Utc::now().into(),
         };
 
         let db = Arc::new(
             MockDatabase::new(DatabaseBackend::Postgres)
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-                .append_query_results(vec![vec![test_session.clone()]])
+                .append_query_results(vec![vec![(
+                    test_session.clone(),
+                    None::<coaching_relationships::Model>,
+                )]])
                 .into_connection(),
         );
 
@@ -466,6 +294,7 @@ mod tests {
             service::AppState::new(Config::default(), &db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
+            None,
             None,
             None,
         );
@@ -524,217 +353,29 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
-    /// Regression test: the base CRUD routes use `:id` (not `:coaching_session_id`).
-    /// The extractor must fall back to the `id` key so GET /coaching_sessions/:id works.
     #[tokio::test]
-    async fn test_coaching_session_extractor_success_with_id_param() {
-        let session_id = Id::new_v4();
-        let relationship_id = Id::new_v4();
-        let now = Utc::now();
-        let test_user = create_test_user();
-
-        let test_role = user_roles::Model {
-            id: Id::new_v4(),
-            role: users::Role::User,
-            organization_id: Some(Id::new_v4()),
-            user_id: test_user.id,
-            created_at: now.into(),
-            updated_at: now.into(),
-        };
-
-        let test_session = coaching_sessions::Model {
-            id: session_id,
-            coaching_relationship_id: relationship_id,
-            collab_document_name: None,
-            date: chrono::Utc::now().naive_utc(),
-            duration_minutes: domain::duration::Duration::default_minutes(),
-            meeting_url: None,
-            provider: None,
-            hydrated_at: None,
-            created_at: now.into(),
-            updated_at: now.into(),
-        };
-
+    async fn a_failed_session_lookup_is_a_server_error() {
+        let w = support::fixture();
         let db = Arc::new(
-            MockDatabase::new(DatabaseBackend::Postgres)
-                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-                .append_query_results(vec![vec![(
-                    test_session.clone(),
-                    coaching_relationships::Model {
-                        id: relationship_id,
-                        coach_id: Id::new_v4(),
-                        coachee_id: test_user.id,
-                        organization_id: Id::new_v4(),
-                        slug: "test".to_string(),
-                        created_at: now.into(),
-                        updated_at: now.into(),
-                    },
-                )]])
+            w.signed_in(Caller::Coach)
+                .append_query_errors([DbErr::Custom("connection lost".to_string())])
                 .into_connection(),
         );
-
-        let app_state = AppState::new(
-            service::AppState::new(Config::default(), &db),
-            Arc::new(sse::Manager::default()),
-            domain::events::EventPublisher::default(),
-            None,
-            None,
+        let routes = Router::new().route(
+            "/coaching_sessions/:coaching_session_id",
+            get(protected_route),
         );
 
-        let session_store = MemoryStore::default();
-        let session_layer = SessionManagerLayer::new(session_store)
-            .with_secure(false)
-            .with_expiry(Expiry::OnInactivity(Duration::days(1)))
-            .with_always_save(true);
-
-        let backend = Backend::new(&db);
-        let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
-
-        // Route uses `:id` — mirrors the actual GET /coaching_sessions/:id route in router.rs.
-        let app = Router::new()
-            .route(
-                "/login",
-                axum::routing::post(crate::controller::user_session_controller::login),
-            )
-            .merge(
-                Router::new()
-                    .route("/coaching_sessions/:id", get(protected_route))
-                    .route_layer(from_fn(require_auth)),
-            )
-            .layer(auth_layer)
-            .with_state(app_state);
-
-        let login_request = Request::builder()
-            .uri("/login")
-            .method("POST")
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from("email=test@example.com&password=password123"))
-            .unwrap();
-
-        let login_response = app.clone().oneshot(login_request).await.unwrap();
-        let cookie = login_response
-            .headers()
-            .get("set-cookie")
-            .and_then(|c| c.to_str().ok())
-            .expect("Login should return session cookie");
-
-        let protected_request = Request::builder()
-            .uri(format!("/coaching_sessions/{}", session_id).as_str())
-            .header("cookie", cookie)
-            .body(axum::body::Body::empty())
-            .unwrap();
-
-        let response = app.clone().oneshot(protected_request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    /// Nested routes (e.g. /coaching_sessions/:coaching_session_id/meeting_recording) use
-    /// `:coaching_session_id`. Verify the extractor still works on those after the fallback change.
-    #[tokio::test]
-    async fn test_coaching_session_extractor_success_with_nested_route() {
-        let session_id = Id::new_v4();
-        let relationship_id = Id::new_v4();
-        let now = Utc::now();
-        let test_user = create_test_user();
-
-        let test_role = user_roles::Model {
-            id: Id::new_v4(),
-            role: users::Role::User,
-            organization_id: Some(Id::new_v4()),
-            user_id: test_user.id,
-            created_at: now.into(),
-            updated_at: now.into(),
-        };
-
-        let test_session = coaching_sessions::Model {
-            id: session_id,
-            coaching_relationship_id: relationship_id,
-            collab_document_name: None,
-            date: chrono::Utc::now().naive_utc(),
-            duration_minutes: domain::duration::Duration::default_minutes(),
-            meeting_url: None,
-            provider: None,
-            hydrated_at: None,
-            created_at: now.into(),
-            updated_at: now.into(),
-        };
-
-        let db = Arc::new(
-            MockDatabase::new(DatabaseBackend::Postgres)
-                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-                .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-                .append_query_results(vec![vec![(
-                    test_session.clone(),
-                    coaching_relationships::Model {
-                        id: relationship_id,
-                        coach_id: Id::new_v4(),
-                        coachee_id: test_user.id,
-                        organization_id: Id::new_v4(),
-                        slug: "test".to_string(),
-                        created_at: now.into(),
-                        updated_at: now.into(),
-                    },
-                )]])
-                .into_connection(),
-        );
-
-        let app_state = AppState::new(
-            service::AppState::new(Config::default(), &db),
-            Arc::new(sse::Manager::default()),
-            domain::events::EventPublisher::default(),
+        let response = support::send(
+            routes,
+            &db,
+            &w.coach.email,
+            "GET",
+            &format!("/coaching_sessions/{}", w.session.id),
             None,
-            None,
-        );
+        )
+        .await;
 
-        let session_store = MemoryStore::default();
-        let session_layer = SessionManagerLayer::new(session_store)
-            .with_secure(false)
-            .with_expiry(Expiry::OnInactivity(Duration::days(1)))
-            .with_always_save(true);
-
-        let backend = Backend::new(&db);
-        let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
-
-        // Route uses `:coaching_session_id` with an extra segment — mirrors nested routes
-        // like GET /coaching_sessions/:coaching_session_id/meeting_recording.
-        let app = Router::new()
-            .route(
-                "/login",
-                axum::routing::post(crate::controller::user_session_controller::login),
-            )
-            .merge(
-                Router::new()
-                    .route(
-                        "/coaching_sessions/:coaching_session_id/sub_resource",
-                        get(protected_route),
-                    )
-                    .route_layer(from_fn(require_auth)),
-            )
-            .layer(auth_layer)
-            .with_state(app_state);
-
-        let login_request = Request::builder()
-            .uri("/login")
-            .method("POST")
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from("email=test@example.com&password=password123"))
-            .unwrap();
-
-        let login_response = app.clone().oneshot(login_request).await.unwrap();
-        let cookie = login_response
-            .headers()
-            .get("set-cookie")
-            .and_then(|c| c.to_str().ok())
-            .expect("Login should return session cookie");
-
-        let protected_request = Request::builder()
-            .uri(format!("/coaching_sessions/{}/sub_resource", session_id).as_str())
-            .header("cookie", cookie)
-            .body(axum::body::Body::empty())
-            .unwrap();
-
-        let response = app.clone().oneshot(protected_request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

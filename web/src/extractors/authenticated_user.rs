@@ -53,7 +53,8 @@ mod tests {
             timezone: "UTC".to_string(),
             default_coaching_session_duration_minutes: domain::duration::Duration::default_minutes(
             ),
-            role: users::Role::User,
+            working_hours_start: domain::working_hours::default_start(),
+            working_hours_end: domain::working_hours::default_end(),
             roles: vec![],
             invite_status: None,
             created_at: Utc::now().into(),

@@ -1,16 +1,77 @@
+use crate::error::WebErrorKind;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    user_self_access::UserSelfAccess,
 };
 use crate::{controller::ApiResponse, params::user::*};
 use crate::{AppState, Error};
 use axum::{
-    extract::{Path, State},
+    extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
-use domain::{user as UserApi, Id};
+use domain::users::Role;
+use domain::{user as UserApi, user_lookup, user_role as UserRoleApi};
 use service::config::ApiVersion;
+
+/// INDEX the Users matching an exact email address.
+///
+/// Returns an array of zero or one results. An empty array is the only
+/// not-found signal, so a caller cannot distinguish an unknown email from one
+/// belonging to a user they are not allowed to see.
+#[utoipa::path(
+    get,
+    path = "/users",
+    params(
+        ApiVersion,
+        LookupParams,
+    ),
+    responses(
+        (status = 200, description = "Successfully retrieved the matching Users", body = [domain::user_role::UserLookupResult]),
+        (status = 400, description = "Missing or blank email"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Requester administers no organization"),
+        (status = 429, description = "Too many lookups from this requester"),
+        (status = 503, description = "Service temporarily unavailable"),
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn index(
+    CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(authenticated_user): AuthenticatedUser,
+    State(app_state): State<AppState>,
+    Query(params): Query<LookupParams>,
+) -> Result<impl IntoResponse, Error> {
+    if params.email.trim().is_empty() {
+        return Err(Error::Web(WebErrorKind::Input));
+    }
+
+    let administers_any_organization = authenticated_user.is_super_admin()
+        || authenticated_user
+            .roles
+            .iter()
+            .any(|role| role.role == Role::Admin && role.organization_id.is_some());
+
+    if !administers_any_organization {
+        return Err(Error::Web(WebErrorKind::Forbidden));
+    }
+
+    // After authorization so nobody can fill another requester's allowance, and
+    // before the lookup so a refusal does no work.
+    user_lookup::record_attempt_or_reject(app_state.db_conn_ref(), authenticated_user.id).await?;
+
+    let users = UserRoleApi::lookup_by_email_scoped(
+        app_state.db_conn_ref(),
+        &authenticated_user,
+        &params.email,
+    )
+    .await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), users)))
+}
 
 /// GET a User
 ///
@@ -19,11 +80,13 @@ use service::config::ApiVersion;
     path = "/users/{user_id}",
     params(
         ApiVersion,
-        ("user_id" = Id, Path, description = "User ID", example = "1234567890"),
+        ("user_id" = Uuid, Path, description = "User ID", example = "1234567890"),
     ),
     responses(
         (status = 200, description = "Successfully retrieved a User", body = domain::users::Model),
+        (status = 400, description = "Invalid user_id"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 503, description = "Service temporarily unavailable"),
     ),
     security(
@@ -31,11 +94,11 @@ use service::config::ApiVersion;
     )
 )]
 pub async fn read(
+    UserSelfAccess(user): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(user_id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
+    let user_id = user.id;
     let user = UserApi::find_by_id(app_state.db_conn_ref(), user_id).await?;
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), user)))
 }
@@ -44,14 +107,18 @@ pub async fn read(
 /// NOTE: that this is for updating the current user
 #[utoipa::path(
     put,
-    path = "/users",
+    path = "/users/{user_id}",
     params(
-        ApiVersion
+        ApiVersion,
+        ("user_id" = Uuid, Path, description = "User ID", example = "1234567890"),
     ),
     request_body = UpdateParams,
     responses(
         (status = 204, description = "Successfully updated a User", body = ()),
+        (status = 400, description = "Invalid user_id"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 422, description = "Invalid working hours. JSON `{status_code, error: \"validation_error\", message}`"),
         (status = 503, description = "Service temporarily unavailable"),
     ),
     security(
@@ -59,12 +126,26 @@ pub async fn read(
     )
 )]
 pub async fn update(
+    UserSelfAccess(user): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(user_id): Path<Id>,
     Json(params): Json<UpdateParams>,
 ) -> Result<impl IntoResponse, Error> {
-    UserApi::update(app_state.db_conn_ref(), user_id, params).await?;
+    let user_id = user.id;
+    UserApi::update(
+        app_state.db_conn_ref(),
+        user_id,
+        UpdateUser::try_from(params)?,
+    )
+    .await?;
     Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
 }
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+#[path = "user_update_tests.rs"]
+mod update_tests;
+
+#[cfg(test)]
+#[path = "user_controller_sqlite_tests.rs"]
+mod sqlite_tests;

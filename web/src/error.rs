@@ -6,11 +6,10 @@ use std::error::Error as StdError;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-
 use domain::error::{
     DomainErrorKind, EntityErrorKind, Error as DomainError, ExternalErrorKind, InternalErrorKind,
 };
-
+use domain::transcript_export::SpeakerRole;
 use log::*;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -34,7 +33,23 @@ pub enum WebErrorKind {
     /// timezone identifier. Payload carries the offending value for
     /// debuggability.
     InvalidTimezone(String),
+    /// Caller supplied a `speaker` query value outside the `coach` | `coachee` enum.
+    /// Payload carries the raw query string for debuggability.
+    InvalidSpeaker(String),
+    /// Boundary-validation 400 with a stable discriminator the FE can branch
+    /// on — the generalization of what `InvalidTimezone` hard-codes. `error`
+    /// is the machine-readable discriminator (e.g. `query_too_short`),
+    /// `message` the human-readable detail. `InvalidTimezone` and
+    /// `InvalidSpeaker` are candidates to fold into it.
+    InvalidParam {
+        error: &'static str,
+        message: String,
+    },
     Conflict,
+    /// Caller is authenticated but not permitted to act on this resource.
+    Forbidden,
+    /// Target resource does not exist, or the caller may not know that it does.
+    NotFound,
     Other,
 }
 
@@ -57,6 +72,14 @@ impl IntoResponse for Error {
 }
 
 impl Error {
+    /// A 422 refusal carrying `message`.
+    pub(crate) fn validation(message: impl Into<String>) -> Error {
+        Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Validation(message.into()),
+        })
+    }
+
     fn handle_domain_error(&self, domain_error: &DomainError) -> Response {
         match domain_error.error_kind {
             DomainErrorKind::Internal(ref internal_error_kind) => {
@@ -84,16 +107,11 @@ impl Error {
             InternalErrorKind::Entity(ref entity_error_kind) => {
                 self.handle_entity_error(entity_error_kind)
             }
-            InternalErrorKind::Config => {
-                warn!(
-                    "InternalErrorKind::Config: Responding with 500 Internal Server Error. Error: {self:?}"
-                );
-                (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
-            }
-            InternalErrorKind::Other(_description) => {
-                warn!(
-                    "InternalErrorKind::Other: Responding with 500 Internal Server Error. Error:: {self:?}"
-                );
+            // Everything else is the platform's problem, not the caller's. The kinds are
+            // distinct so the domain can decide whether to retry, which says nothing
+            // about what to return here.
+            kind => {
+                warn!("{kind:?}: Responding with 500 Internal Server Error. Error: {self:?}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL SERVER ERROR").into_response()
             }
         }
@@ -110,6 +128,10 @@ impl Error {
                     "EntityErrorKind::Unauthenticated: Responding with 401 Unauthorized. Error: {self:?}"
                 );
                 (StatusCode::UNAUTHORIZED, "UNAUTHORIZED").into_response()
+            }
+            EntityErrorKind::Forbidden => {
+                warn!("EntityErrorKind::Forbidden: Responding with 403 Forbidden. Error: {self:?}");
+                (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
             }
             EntityErrorKind::DbTransaction => {
                 warn!(
@@ -160,6 +182,74 @@ impl Error {
                 });
                 (StatusCode::CONFLICT, Json(body)).into_response()
             }
+            EntityErrorKind::OrganizationNotEmpty {
+                coaching_relationship_count,
+                coaching_session_count,
+                member_count,
+            } => {
+                warn!("EntityErrorKind::OrganizationNotEmpty: Responding with 409 Conflict. Error: {self:?}");
+                let body = serde_json::json!({
+                    "status_code": 409,
+                    "error": "organization_not_empty",
+                    "message": "This organization still has coaching relationships and cannot be deleted.",
+                    "details": {
+                        "coaching_relationship_count": coaching_relationship_count,
+                        "coaching_session_count": coaching_session_count,
+                        "member_count": member_count,
+                    },
+                });
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
+            EntityErrorKind::OrganizationNameTaken { name } => {
+                warn!("EntityErrorKind::OrganizationNameTaken: Responding with 409 Conflict. Error: {self:?}");
+                let body = serde_json::json!({
+                    "status_code": 409,
+                    "error": "organization_name_taken",
+                    "message": "An organization with that name already exists.",
+                    "details": { "name": name },
+                });
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
+            EntityErrorKind::UserAlreadyInOrganization { organization_id } => {
+                warn!("EntityErrorKind::UserAlreadyInOrganization: Responding with 409 Conflict. Error: {self:?}");
+                let body = serde_json::json!({
+                    "status_code": 409,
+                    "error": "user_already_in_organization",
+                    "message": "This user is already a member of this organization.",
+                    "details": { "organization_id": organization_id },
+                });
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
+            EntityErrorKind::LastOrganizationAdmin { organization_id } => {
+                warn!("EntityErrorKind::LastOrganizationAdmin: Responding with 409 Conflict. Error: {self:?}");
+                let body = serde_json::json!({
+                    "status_code": 409,
+                    "error": "last_organization_admin",
+                    "message": "This user is the only admin of this organization. Grant another member the Admin role first.",
+                    "details": { "organization_id": organization_id },
+                });
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
+            EntityErrorKind::UserBelongsToMultipleOrganizations { .. } => {
+                warn!("EntityErrorKind::UserBelongsToMultipleOrganizations: Responding with 409 Conflict. Error: {self:?}");
+                // The count stays out of the response: an org admin has no right to know
+                // how many other organizations a member belongs to.
+                let body = serde_json::json!({
+                    "status_code": 409,
+                    "error": "user_belongs_to_multiple_organizations",
+                    "message": "This user belongs to other organizations. Remove them from this organization instead of deleting their account.",
+                });
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
+            EntityErrorKind::OrganizationArchived => {
+                warn!("EntityErrorKind::OrganizationArchived: Responding with 409 Conflict. Error: {self:?}");
+                let body = serde_json::json!({
+                    "status_code": 409,
+                    "error": "organization_archived",
+                    "message": "This organization is archived and cannot accept new changes.",
+                });
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
             EntityErrorKind::InvalidOrExpiredToken => {
                 warn!(
                     "EntityErrorKind::InvalidOrExpiredToken: Responding with 400 Bad Request. Error: {self:?}"
@@ -181,6 +271,61 @@ impl Error {
                     "message": "Too many password reset requests. Please wait before trying again.",
                 });
                 (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response()
+            }
+            EntityErrorKind::UserLookupRateLimited => {
+                warn!(
+                    "EntityErrorKind::UserLookupRateLimited: Responding with 429 Too Many Requests. Error: {self:?}"
+                );
+                let body = serde_json::json!({
+                    "status_code": 429,
+                    "error": "user_lookup_rate_limited",
+                    "message": "Too many user lookups. Please wait before trying again.",
+                });
+                (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response()
+            }
+            EntityErrorKind::TranscriptionNotFound => {
+                warn!(
+                    "EntityErrorKind::TranscriptionNotFound: Responding with 404 Not Found. Error: {self:?}"
+                );
+                let body = serde_json::json!({
+                    "status_code": 404,
+                    "error": "transcription_not_found",
+                    "message": "No transcription with that id belongs to this coaching session.",
+                });
+                (StatusCode::NOT_FOUND, Json(body)).into_response()
+            }
+            EntityErrorKind::TranscriptionNotCompleted => {
+                warn!(
+                    "EntityErrorKind::TranscriptionNotCompleted: Responding with 409 Conflict. Error: {self:?}"
+                );
+                let body = serde_json::json!({
+                    "status_code": 409,
+                    "error": "transcription_not_completed",
+                    "message": "The transcript is not available for download until transcription has completed.",
+                });
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
+            EntityErrorKind::SpeakerNotIdentified { role, labels } => {
+                warn!(
+                    "EntityErrorKind::SpeakerNotIdentified: Responding with 422 Unprocessable Entity. Error: {self:?}"
+                );
+                let role = match role {
+                    SpeakerRole::Coach => "coach",
+                    SpeakerRole::Coachee => "coachee",
+                };
+                let labels = if labels.is_empty() {
+                    "(no speakers)".to_string()
+                } else {
+                    labels.join(", ")
+                };
+                let body = serde_json::json!({
+                    "status_code": 422,
+                    "error": "speaker_not_identified",
+                    "message": format!(
+                        "Could not identify the {role} among the transcript speakers: {labels}."
+                    ),
+                });
+                (StatusCode::UNPROCESSABLE_ENTITY, Json(body)).into_response()
             }
             EntityErrorKind::ServiceUnavailable => {
                 warn!(
@@ -259,6 +404,36 @@ impl Error {
                 });
                 (StatusCode::BAD_REQUEST, Json(body)).into_response()
             }
+            WebErrorKind::InvalidSpeaker(value) => {
+                warn!(
+                    "WebErrorKind::InvalidSpeaker: Responding with 400 Bad Request. Error: {self:?}"
+                );
+                let body = serde_json::json!({
+                    "status_code": 400,
+                    "error": "invalid_speaker",
+                    "message": format!("'{value}' is not a valid speaker. Expected one of: coach, coachee."),
+                });
+                (StatusCode::BAD_REQUEST, Json(body)).into_response()
+            }
+            WebErrorKind::InvalidParam { error, message } => {
+                warn!(
+                    "WebErrorKind::InvalidParam: Responding with 400 Bad Request. Error: {self:?}"
+                );
+                let body = serde_json::json!({
+                    "status_code": 400,
+                    "error": error,
+                    "message": message,
+                });
+                (StatusCode::BAD_REQUEST, Json(body)).into_response()
+            }
+            WebErrorKind::Forbidden => {
+                warn!("WebErrorKind::Forbidden: Responding with 403 Forbidden. Error: {self:?}");
+                (StatusCode::FORBIDDEN, "FORBIDDEN").into_response()
+            }
+            WebErrorKind::NotFound => {
+                warn!("WebErrorKind::NotFound: Responding with 404 Not Found. Error: {self:?}");
+                (StatusCode::NOT_FOUND, "NOT FOUND").into_response()
+            }
             WebErrorKind::Conflict => {
                 warn!("WebErrorKind::Conflict: Responding with 409 Conflict. Error: {self:?}");
                 (StatusCode::CONFLICT, "CONFLICT").into_response()
@@ -282,19 +457,18 @@ where
     }
 }
 
-/// Converts a `domain::Error` into an HTTP `Response` using the standard error mapping.
-///
-/// This is intended for middleware (e.g., protect middleware) that handles errors
-/// manually rather than propagating them with `?`. It routes through `web::Error`'s
-/// `IntoResponse` impl so that all error-to-status-code mapping stays in one place.
-pub(crate) fn domain_error_into_response(err: DomainError) -> Response {
-    Error::Domain(err).into_response()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::body::to_bytes;
+    use domain::Id;
+
+    async fn json_body(response: Response) -> serde_json::Value {
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body collects");
+        serde_json::from_slice(&bytes).expect("body is JSON")
+    }
 
     // Locks down the wire shape callers parse against. Changing `error` or
     // dropping `status_code`/`message` here is a breaking change to the
@@ -316,6 +490,243 @@ mod tests {
         assert!(
             message.contains("Not/A/Timezone"),
             "message should quote the offending value, got: {message}"
+        );
+    }
+
+    // The four 409 shapes below are parsed by callers to branch on the specific
+    // conflict. Changing `error`, `status_code` or the `details` keys is a
+    // breaking change to that contract.
+    #[tokio::test]
+    async fn user_already_in_organization_produces_structured_409_with_the_organization() {
+        let organization_id = Id::new_v4();
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::UserAlreadyInOrganization { organization_id },
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let body = json_body(response).await;
+        assert_eq!(body["status_code"], 409);
+        assert_eq!(body["error"], "user_already_in_organization");
+        assert_eq!(
+            body["details"]["organization_id"],
+            organization_id.to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn last_organization_admin_produces_structured_409_with_the_organization() {
+        let organization_id = Id::new_v4();
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::LastOrganizationAdmin { organization_id },
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let body = json_body(response).await;
+        assert_eq!(body["status_code"], 409);
+        assert_eq!(body["error"], "last_organization_admin");
+        assert_eq!(
+            body["details"]["organization_id"],
+            organization_id.to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn user_belongs_to_multiple_organizations_produces_409_without_disclosing_the_count() {
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::UserBelongsToMultipleOrganizations {
+                    organization_count: 3,
+                },
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let body = json_body(response).await;
+        assert_eq!(body["status_code"], 409);
+        assert_eq!(body["error"], "user_belongs_to_multiple_organizations");
+        // Deliberately withheld: an org admin has no right to learn how many
+        // other organizations a member belongs to, only that they belong to some.
+        assert!(
+            body.get("details").is_none(),
+            "the organization count must not be disclosed, got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn organization_not_empty_produces_structured_409_with_details() {
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::OrganizationNotEmpty {
+                    coaching_relationship_count: 3,
+                    coaching_session_count: 12,
+                    member_count: 4,
+                },
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body_bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body collects");
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).expect("body is JSON");
+        assert_eq!(body["status_code"], 409);
+        assert_eq!(body["error"], "organization_not_empty");
+        assert_eq!(body["details"]["coaching_relationship_count"], 3);
+        assert_eq!(body["details"]["coaching_session_count"], 12);
+        assert_eq!(body["details"]["member_count"], 4);
+    }
+
+    #[tokio::test]
+    async fn organization_name_taken_produces_structured_409_with_name() {
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::OrganizationNameTaken {
+                    name: "Acme".to_string(),
+                },
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body_bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body collects");
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).expect("body is JSON");
+        assert_eq!(body["status_code"], 409);
+        assert_eq!(body["error"], "organization_name_taken");
+        assert_eq!(body["details"]["name"], "Acme");
+    }
+
+    #[tokio::test]
+    async fn organization_archived_produces_structured_409() {
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::OrganizationArchived,
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body_bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body collects");
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).expect("body is JSON");
+        assert_eq!(body["status_code"], 409);
+        assert_eq!(body["error"], "organization_archived");
+    }
+
+    #[tokio::test]
+    async fn transcription_not_found_produces_structured_404() {
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::TranscriptionNotFound,
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let body = json_body(response).await;
+        assert_eq!(body["status_code"], 404);
+        assert_eq!(body["error"], "transcription_not_found");
+        assert!(!body["message"]
+            .as_str()
+            .expect("message is a string")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn transcription_not_completed_produces_structured_409() {
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::TranscriptionNotCompleted,
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let body = json_body(response).await;
+        assert_eq!(body["status_code"], 409);
+        assert_eq!(body["error"], "transcription_not_completed");
+        assert!(!body["message"]
+            .as_str()
+            .expect("message is a string")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn speaker_not_identified_produces_structured_422_naming_role_and_labels() {
+        let err = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::SpeakerNotIdentified {
+                    role: SpeakerRole::Coachee,
+                    labels: vec!["Jim H".to_string(), "Guest".to_string()],
+                },
+            )),
+        });
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let body = json_body(response).await;
+        assert_eq!(body["status_code"], 422);
+        assert_eq!(body["error"], "speaker_not_identified");
+        let message = body["message"].as_str().expect("message is a string");
+        assert!(message.contains("coachee"), "got: {message}");
+        assert!(message.contains("Jim H"), "got: {message}");
+        assert!(message.contains("Guest"), "got: {message}");
+        assert!(!message.contains("Coachee"), "got: {message}");
+    }
+
+    #[tokio::test]
+    async fn invalid_speaker_produces_structured_400_listing_the_enum() {
+        let err = Error::Web(WebErrorKind::InvalidSpeaker("bob".to_string()));
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body = json_body(response).await;
+        assert_eq!(body["status_code"], 400);
+        assert_eq!(body["error"], "invalid_speaker");
+        let message = body["message"].as_str().expect("message is a string");
+        assert!(message.contains("bob"), "got: {message}");
+        assert!(message.contains("coach"), "got: {message}");
+        assert!(message.contains("coachee"), "got: {message}");
+    }
+
+    // Locks the authn/authz status-code split: an authorization failure
+    // (`Forbidden`) must map to 403, distinct from `Unauthenticated` → 401.
+    // The frontend branches on this to decide whether to re-authenticate.
+    #[test]
+    fn forbidden_maps_to_403_and_unauthenticated_to_401() {
+        let forbidden = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::Forbidden,
+            )),
+        });
+        assert_eq!(forbidden.into_response().status(), StatusCode::FORBIDDEN);
+
+        let unauthenticated = Error::Domain(DomainError {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::Unauthenticated,
+            )),
+        });
+        assert_eq!(
+            unauthenticated.into_response().status(),
+            StatusCode::UNAUTHORIZED
         );
     }
 }

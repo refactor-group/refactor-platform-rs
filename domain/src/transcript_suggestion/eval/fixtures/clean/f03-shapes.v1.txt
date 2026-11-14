@@ -1,0 +1,17 @@
+# F3 shapes of a commitment, worded as the manual script.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:05] Coach: Let's both think about what psychological safety looks like on your team before next time.
+[s2 00:14] Coachee: Yes, let's.
+[s3 00:20] Coach: We'll each bring one example of a hard conversation that went well.
+[s4 00:31] Coach: For the offsite, you'll draft the agenda and I'll bring the facilitation guide.
+[s5 00:42] Coachee: If the reorg is announced this week, I'll talk to HR about my role.
+[s6 00:53] Coachee: Every morning I'll write down my top three priorities, for the next two weeks.
+[s7 01:05] Coachee: For the board deck, I'll draft the outline, get Lena's feedback, and then send it to the CFO by October 30th.
+[s8 01:20] Coachee: And I'll ask Priya to take over the vendor reviews.
+[s9 01:29] Coach: So Casey, you're going to share the retro notes with the team by Friday, right?
+[s10 01:36] Coachee: Right.
+[s11 01:42] Coachee: I'll try to say no to at least one meeting request this week.
+[s12 01:52] Coachee: Should I just email the recruiter tonight about the backlog? Yeah, I'll do that.

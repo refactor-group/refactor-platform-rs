@@ -1,0 +1,11 @@
+# F9 speech quirks, worded as the manual script.
+# session: Wednesday 2026-10-07
+# next_session: Wednesday 2026-10-21 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:05] Coachee: So I'll, um, I'll, uh, send the
+[s1b 00:09] Coachee: the escalation summary to the leadership channel by Friday.
+[s2 00:16] Coach: And I'll look up a couple of, sorry, go ahead.
+[s3 00:20] Coachee: No, you go.
+[s4 00:23] Coach: A couple of facilitation guides for you.
+[s5 00:30] Coachee: I'll ping Dana about the on-call thing.

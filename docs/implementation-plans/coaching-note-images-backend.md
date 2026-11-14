@@ -1,0 +1,165 @@
+# Coaching Note Images — Backend Plan
+
+Frontend issue: [refactor-platform-fe#144](https://github.com/refactor-group/refactor-platform-fe/issues/144).
+Frontend plan: `refactor-platform-fe/docs/plans/images-in-coaching-notes-fe.md`.
+Branch: `144-coaching-note-images`.
+
+## Context
+
+Coaches need to paste screenshots into Coaching Notes to stop maintaining a parallel Google Doc.
+The platform has **no object storage and no file upload of any kind** today, so this is the first
+binary asset pipeline. It is built generically — a trait, a config block, a key convention — so org
+logos and profile pictures reuse it later rather than growing a second one.
+
+## The constraint that shapes everything
+
+Note content is a Yjs CRDT persisted as one opaque `BYTEA` blob per session in
+`refactor_platform.collab_documents`. Consequences:
+
+1. **No base64 in the document.** It would be re-broadcast on every join and re-persisted on every
+   debounce, and the editor is gated on that sync (`SYNC_TIMEOUT_MS = 10_000` on the frontend).
+2. **Anything written into an image node is permanent and un-greppable** — it cannot contain an
+   expiring signature or a hostname we might change. The frontend therefore stores an **image id**
+   and resolves the URL at render time, which is why the read endpoint is image-scoped.
+3. **The backend never learns when an image is removed from a note**, because that edit happens
+   inside opaque CRDT bytes. See "Accepted gaps".
+
+## Decisions
+
+| | |
+|---|---|
+| **Storage** | Local filesystem in local dev; **DO Spaces** in PR previews and production, selected by `OBJECT_STORE_BACKEND`. |
+| **Abstraction** | A small in-house `ObjectStore` trait in `domain/src/gateway/object_storage.rs`, **not** the `object_store` crate. It brings its own HTTP stack, which conflicts with the repo's hard `.use_rustls_tls()` rule (features are unioned across the workspace). `rusty-s3` is sans-IO — it signs, we send with our own rustls client — so the TLS rule stays enforceable. |
+| **Serving** | `GET /coaching_session_images/:image_id` → **302** to a presigned Spaces GET when the backend can sign; **stream the bytes** when it can't (local backend). |
+| **Upload** | Browser → backend `multipart`, so the server can sniff magic bytes and enforce the cap for real. |
+| **Limits** | 10 MB. png/jpeg/webp/gif by magic bytes. SVG rejected. |
+
+## Why the read endpoint omits `CompareApiVersion`
+
+An `<img>` tag cannot send the `X-Version` header. Every other endpoint takes that extractor; this
+one deliberately does not, and the handler carries a comment saying so.
+
+## Why cookie auth works on an `<img>` (an invariant)
+
+The session cookie is `SameSite=Lax` and host-only (`web/src/lib.rs:142-144`). An `<img>` is a
+subresource, so a genuinely cross-site load would arrive unauthenticated. It doesn't: production
+serves both apps from one origin (`nginx/conf.d/refactor-platform.conf` routes `/api/` → backend,
+`/` → Next.js on `myrefactor.com`); PR previews use the same path routing; locally `:3000` and
+`:4000` are the same *site* (SameSite ignores ports).
+
+**Moving the API to a different registrable domain breaks every note image with no client-side fix.**
+
+## Rejection is a value, not an error variant
+
+`DomainErrorKind::Validation(String)` maps to 422 in `web/src/error.rs`, and there is no 413/415
+mapping. The frontend distinguishes "too large" from "unsupported type", and the standards forbid
+adding error variants. So `domain::coaching_session_image::inspect_image` returns
+`Result<InspectedImage, ImageRejection>` where `ImageRejection` is a plain domain **value type** —
+the same shape as `entity::duration::OutOfRange`, which the standards name as the sanctioned
+pattern. The controller matches it to a status code.
+
+## Endpoints
+
+```
+POST /coaching_sessions/{coaching_session_id}/images
+  CompareApiVersion, CoachingSessionAccess, AuthenticatedUser, Multipart
+  multipart/form-data, part "file"
+  201 { status_code, data: { id, coaching_session_id, mime_type, byte_size, width, height, created_at } }
+  400 no file part · 403/404 no access · 413 oversize · 415 unsupported/SVG · 503 storage unconfigured
+
+GET /coaching_session_images/{image_id}
+  CoachingSessionImageAccess only — deliberately NO CompareApiVersion
+  302 → presigned GET, or 200 with the bytes when the backend cannot sign
+  Cache-Control: private, max-age=600   (MUST be < the presign TTL)
+  Vary: Cookie
+```
+
+## Phases
+
+| Phase | Scope | Status |
+|---|---|---|
+| **B1** | Config fields + `ObjectStore` trait, local + Spaces impls, wired onto `AppState` | **done** (`0b15fb8b`) |
+| **B2** | Migration, entity, entity_api, domain (validation + create/find) | **done** |
+| **B3** | Extractor, controller, router registration, `DefaultBodyLimit`, utoipa | **done** |
+| **B4** | Deploy workflows, compose, preview nginx body-size fix, `docs/setup.md` | **done** |
+
+## Local backend notes (from B1)
+
+- `LocalObjectStore` writes a `<key>.content-type` sidecar beside each object so reads return the
+  stored type faithfully instead of re-sniffing.
+- Its key guard is two-layered: a lexical check rejecting absolute keys and non-`Normal` components,
+  then a canonicalization check that the deepest existing ancestor still resolves inside the root —
+  which catches a symlink escaping the tree, something a lexical check cannot see.
+- Local filesystem I/O failures use the existing `Internal(InternalErrorKind::Other)`; neither
+  `Config` nor `External(Network)` describes a failed disk write honestly. No new error variants
+  were added.
+- `Bucket::new` needs a `url::Url`; we use `reqwest::Url`, a re-export of the same crate, rather
+  than adding a `url` dependency.
+
+## Storage key convention
+
+`coaching-sessions/{session_id}/images/{object_id}.{ext}` — session-prefixed so a future
+session-delete can drop a whole prefix, and so logos can sit under a sibling prefix in the same
+bucket.
+
+`{object_id}` is generated per object and is **not** the image row's id. The row id appears in
+image URLs; if it also named the object, one URL would reveal the storage path of the object
+behind it. The row's `storage_key` column is the only link between the two.
+
+## Manual verification
+
+`docs/test-plans/coaching_session_images_manual_testing.md` covers the API end to end, including
+the cases no mock reaches: a real bucket, a real cookie on a subresource request, the
+presign-vs-cache-lifetime inequality, revoked-participant access, and a 503 when storage is
+unconfigured.
+
+**A note on the allowlist test.** `infer` has no signature for SVG, so the SVG rejection test
+is satisfied by the sniff returning nothing and never reaches `ALLOWED_MIME_TYPES`. The
+allowlist is guarded separately by a BMP case, which asserts the bytes are sniffable first so
+it cannot silently go vacuous. Both tests are needed; neither replaces the other.
+
+## Notes from the B3 review
+
+- **Create returns HTTP 200 with `status_code: 201` in the envelope**, matching every other create
+  in this codebase (`Json(ApiResponse::new(...))` does not set the response line). The *error*
+  paths — 400/413/415/503 — and the read path's 302/200 are real HTTP statuses. The manual test
+  plan says so explicitly, because `curl -i` showing `HTTP/1.1 200 OK` on a successful upload looks
+  like a bug and is not.
+- **Cache lifetime is derived, not duplicated:** `cache_max_age(ttl) = ttl / 3 * 2`, applied to both
+  the 302 and the streaming branch from one place so they cannot drift. A test pins
+  `max_age < coaching_session_image_presign_ttl_seconds()` as an inequality against the config accessor, with no
+  literals. A configured TTL of 0 yields max-age 0, which is equal rather than strictly less; that
+  is a degenerate config (a zero-second signature is already expired, and `max-age=0` means do not
+  reuse), so it is left alone deliberately.
+- **Omitting `CompareApiVersion` on `read` is pinned by six tests**, not one: the test helper never
+  sends `x-version`, so adding that extractor back fails the whole read-path suite. Verified by
+  mutation.
+
+## Deployment surface (from the B4 review)
+
+`.env*` is gitignored and **nothing** in the repo supplies production env. Both deploy workflows
+build an env file from GitHub secrets and vars and ship it to the host, so that is the only surface
+that matters:
+
+- `deploy_to_do.yml` hardcodes `OBJECT_STORE_BACKEND=spaces`. Deliberate: an unset value is
+  stripped by `Config::sanitize_empty_env` (whose doc comment names the cause — compose expands
+  `KEY: ${KEY}` to `""`), clap then applies `default_value = "local"`, and note images land in the
+  container filesystem where a redeploy destroys them. Silent, delayed data loss. Do not make it a
+  `vars` entry.
+- `ci-deploy-pr-preview.yml` uses `vars.OBJECT_STORE_BACKEND || 'spaces'`, so `local` is
+  unreachable from either path.
+- The two numeric settings are passed blank rather than `'UNUSED'`, matching the existing
+  session-reminder precedent: `'UNUSED'` fails `u64` parsing and crashes startup.
+
+## Accepted gaps
+
+- **Orphaned objects.** Removing an image from a note is invisible to the backend. v1 deletes
+  nothing. Any future reaper **must** keep undo working (deleting a node must never delete bytes) —
+  give it a grace period. The only correct reference check is loading the Y.Doc and walking it for
+  `imageId` attrs, which is Node-side work.
+- **Pre-existing, separate issue:** `collab_documents` has no foreign key to `coaching_sessions`,
+  so deleting a session already orphans its note blob.
+- **`router_tests.rs` does not pin note-image registration.** The B3 handoff asserted it would fail
+  until the handlers were added to the utoipa `paths(...)`; the implementer checked and it did not —
+  that test only walks the role and transcript paths. The handlers *are* registered, but nothing
+  guards it. A follow-up assertion would close the gap.

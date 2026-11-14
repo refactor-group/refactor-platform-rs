@@ -10,7 +10,7 @@ use crate::{AppState, Error};
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Redirect};
 
-use domain::provider::Provider;
+use domain::meeting_provider::Provider;
 use domain::{oauth_connection, Id};
 use serde::Deserialize;
 
@@ -31,6 +31,7 @@ pub struct OAuthCallback {
     get,
     path = "/oauth/{provider}/callback",
     params(
+        ("provider" = Provider, Path, description = "OAuth provider (e.g. google)"),
         ("code" = String, Query, description = "Authorization code from Provider"),
         ("state" = Option<String>, Query, description = "CSRF state token"),
     ),

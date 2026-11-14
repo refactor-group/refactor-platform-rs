@@ -1,14 +1,16 @@
 use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    user_actions_access::UserActionsAccess,
 };
 use crate::params::user::action::{AssigneeFilter, IndexParams, Scope};
 use crate::{AppState, Error};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use domain::{action as ActionApi, Id, QuerySort};
+use domain::search::visibility_for;
+use domain::{action as ActionApi, QuerySort};
 use service::config::ApiVersion;
 
 use log::*;
@@ -23,11 +25,11 @@ use log::*;
     path = "/users/{user_id}/actions",
     params(
         ApiVersion,
-        ("user_id" = Id, Path, description = "User ID to retrieve actions for"),
+        ("user_id" = Uuid, Path, description = "User ID to retrieve actions for"),
         ("scope" = Option<String>, Query, description = "Scope: 'sessions' (default) or 'assigned'"),
-        ("coaching_session_id" = Option<Id>, Query, description = "Filter by coaching session"),
-        ("coaching_relationship_id" = Option<Id>, Query, description = "Filter by coaching relationship"),
-        ("goal_id" = Option<Id>, Query, description = "Filter by goal"),
+        ("coaching_session_id" = Option<Uuid>, Query, description = "Filter by coaching session"),
+        ("coaching_relationship_id" = Option<Uuid>, Query, description = "Filter by coaching relationship"),
+        ("goal_id" = Option<Uuid>, Query, description = "Filter by goal"),
         ("assignee_filter" = Option<String>, Query, description = "Filter: 'all' (default), 'assigned', or 'unassigned'"),
         ("status" = Option<String>, Query, description = "Filter by action status"),
         ("sort_by" = Option<String>, Query, description = "Sort by: 'due_by', 'created_at', 'updated_at'"),
@@ -46,10 +48,10 @@ use log::*;
     )
 )]
 pub async fn index(
+    UserActionsAccess(user_id): UserActionsAccess,
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(user_id): Path<Id>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET Actions for User: {user_id}");
@@ -81,9 +83,19 @@ pub async fn index(
         sort_order,
     };
 
-    let actions = ActionApi::find_by_user(app_state.db_conn_ref(), user_id, query_params).await?;
+    let actions = ActionApi::find_by_user(
+        app_state.db_conn_ref(),
+        &visibility_for(&user),
+        user_id,
+        query_params,
+    )
+    .await?;
 
     debug!("Found {} actions for user {user_id}", actions.len());
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), actions)))
 }
+
+#[cfg(test)]
+#[path = "action_controller_sqlite_tests.rs"]
+mod sqlite_tests;

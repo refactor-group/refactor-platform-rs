@@ -11,6 +11,7 @@ use serde::Deserialize;
 use service::config::Config;
 
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
+use crate::gateway::auth::{Authenticator, SecretAuth};
 
 // Admin endpoints need bounded budgets so a dead upstream can't hold an
 // Axum worker. `tiptap.rs` intentionally sets none; this gateway differs.
@@ -79,6 +80,50 @@ impl Client {
         })
     }
 
+    /// Export one document's raw Yjs v1 binary update (`?format=yjs`). This is the
+    /// exact byte shape `collab_documents.state` stores. Returns None on 404.
+    pub(crate) async fn export_document(&self, name: &str) -> Result<Option<Vec<u8>>, Error> {
+        let url = format!("{}/api/documents/{name}", self.base_url);
+
+        let response = self
+            .client
+            .get(&url)
+            .query(&[("format", "yjs")])
+            .send()
+            .await
+            .map_err(|e| {
+                warn!("Failed to export TipTap document (name={name}): {e:?}");
+                Error {
+                    source: Some(Box::new(e)),
+                    error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+                }
+            })?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            warn!("TipTap export of {name} returned {status}: {body}");
+            return Err(Error {
+                source: None,
+                error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+            });
+        }
+
+        let bytes = response.bytes().await.map_err(|e| {
+            warn!("Failed to read TipTap export body for {name}: {e:?}");
+            Error {
+                source: Some(Box::new(e)),
+                error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+            }
+        })?;
+
+        Ok(Some(bytes.to_vec()))
+    }
+
     /// Fetch every TipTap document via offset pagination.
     ///
     /// Offset pagination is racy under concurrent writes — acceptable for
@@ -128,7 +173,16 @@ pub(crate) struct Document {
 pub(crate) type DocumentsPage = Vec<Document>;
 
 fn build_client(config: &Config) -> Result<reqwest::Client, Error> {
-    let headers = build_auth_headers(config)?;
+    // Per-document operations authenticate with the raw shared secret, exactly
+    // like tiptap.rs create/delete (proven in production).
+    let secret = config.tiptap_auth_key().ok_or_else(|| {
+        warn!("TipTap auth key missing from config (metrics gateway init)");
+        Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+        }
+    })?;
+    let headers = SecretAuth::new(secret).headers()?;
 
     Ok(reqwest::Client::builder()
         .use_rustls_tls()
@@ -136,35 +190,6 @@ fn build_client(config: &Config) -> Result<reqwest::Client, Error> {
         .timeout(REQUEST_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT)
         .build()?)
-}
-
-// TipTap auth is the raw secret value, NOT `Bearer <secret>`. Matches
-// `tiptap.rs::build_auth_headers`; do not copy mailersend's Bearer pattern.
-fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMap, Error> {
-    let auth_key = config.tiptap_auth_key().ok_or_else(|| {
-        warn!("TipTap auth key missing from config (metrics gateway init)");
-        Error {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-        }
-    })?;
-
-    let mut headers = reqwest::header::HeaderMap::new();
-
-    let mut auth_value = reqwest::header::HeaderValue::from_str(&auth_key).map_err(|err| {
-        warn!("Failed to build TipTap auth header value: {err:?}");
-        Error {
-            source: Some(Box::new(err)),
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                "Failed to create TipTap auth header value".to_string(),
-            )),
-        }
-    })?;
-
-    auth_value.set_sensitive(true);
-    headers.insert(reqwest::header::AUTHORIZATION, auth_value);
-
-    Ok(headers)
 }
 
 #[cfg(test)]
@@ -278,5 +303,46 @@ mod tests {
             err.error_kind,
             DomainErrorKind::External(ExternalErrorKind::Network),
         ));
+    }
+
+    #[tokio::test]
+    async fn export_document_returns_raw_bytes() -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+        let body = vec![1u8, 2, 3, 4, 255];
+
+        let _mock = server
+            .mock("GET", "/api/documents/doc-1")
+            .match_query(mockito::Matcher::UrlEncoded("format".into(), "yjs".into()))
+            .with_status(200)
+            .with_header("content-type", "application/octet-stream")
+            .with_body(body.clone())
+            .create_async()
+            .await;
+
+        let config = test_config(&server.url());
+        let client = Client::new(&config)?;
+
+        let exported = client.export_document("doc-1").await?;
+        assert_eq!(exported, Some(body));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn export_document_returns_none_on_404() -> Result<(), Error> {
+        let mut server = Server::new_async().await;
+
+        let _mock = server
+            .mock("GET", "/api/documents/doc-1")
+            .match_query(mockito::Matcher::UrlEncoded("format".into(), "yjs".into()))
+            .with_status(404)
+            .with_body("not found")
+            .create_async()
+            .await;
+
+        let config = test_config(&server.url());
+        let client = Client::new(&config)?;
+
+        assert_eq!(client.export_document("doc-1").await?, None);
+        Ok(())
     }
 }

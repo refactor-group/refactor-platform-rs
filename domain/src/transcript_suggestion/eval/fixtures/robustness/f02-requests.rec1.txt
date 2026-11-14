@@ -1,0 +1,17 @@
+# Real transcript of a f02-requests recording (rec1), transcription errors kept; names changed.
+# session: Monday 2026-10-12
+# next_session: Tuesday 2026-10-13 10:00
+# coach: Jim Hodapp
+# coachee: Casey Morgan
+[s1 00:23] Coach: Hey, Casey,
+[s2 00:26] Coach: could you block on your calendar each feedback
+[s3 00:43] Coachee: Yes, I'll do that. Starting Monday.
+[s4 00:50] Coach: for next time? Try giving feedback in the day of each interview.
+[s5 00:59] Coachee: Okay?
+[s6 01:07] Coach: Would you be willing to mentor the two new team leads this month?
+[s7 01:15] Coachee: I don't think I can take that on right now, honestly.
+[s8 01:25] Coach: That's fair.
+[s9 01:30] Coachee: Could you introduce me to Maria in finance,
+[s10 01:37] Coach: Sure, I can do that this week.
+[s11 01:47] Coach: It might help to keep a decision log.
+[s12 01:54] Coachee: maybe?
