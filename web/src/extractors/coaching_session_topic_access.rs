@@ -17,8 +17,8 @@ use crate::{
 /// `:topic_id` topic belongs to that session.
 ///
 /// Composes `CoachingSessionAccess` (participant + session check), then loads the topic
-/// and confirms it belongs to the path session. A refusal or missing record is 404 so a topic
-/// in an inaccessible session is never revealed. On success, yields the topic model.
+/// and confirms it belongs to the path session. A non-participant gets 403; a topic missing from
+/// the path session is 404, so a topic in another session is never revealed. On success, yields the topic model.
 pub(crate) struct CoachingSessionTopicAccess(pub coaching_session_topics::Model);
 
 #[async_trait]
@@ -54,7 +54,7 @@ where
 /// Authorizes a topic delete. Composes `CoachingSessionTopicAccess` (participant + topic belongs
 /// to the path session), then allows the caller only if they are the topic's author OR the coach
 /// of the session's relationship. So a coach may delete any topic in the session (including a
-/// coachee's), while a coachee may delete only their own. A refusal or missing record is 404.
+/// coachee's), while a coachee may delete only their own. Any other participant gets 404.
 pub(crate) struct CoachingSessionTopicDeleteAccess(pub coaching_session_topics::Model);
 
 #[async_trait]
@@ -97,8 +97,8 @@ where
 
 /// Authorizes an undo. Composes CoachingSessionAccess (participant + path session), loads the
 /// topic INCLUDING soft-deleted, and confirms it belongs to the path session. Undoing a delete
-/// (the topic is soft-deleted) additionally requires the caller to be the author. A refusal or
-/// missing record is 404 so an inaccessible topic is never revealed.
+/// (the topic is soft-deleted) additionally requires the caller to be the author. A non-participant
+/// gets 403; a topic missing from the path session, or another author's deleted topic, is 404.
 ///
 /// Note: the session-match check is against the topic's CURRENT session. After a defer-move the
 /// topic lives in the destination session, so undo must be called under the destination session's
