@@ -11,8 +11,10 @@ Related: PR #395.
 A sweep runs every `SESSION_REMINDER_POLL_MINUTES` (default 15), starting immediately at
 process start rather than one interval later. Each tick:
 
-1. Selects sessions starting in `(now, now + lead]`, more than `lead` after the
-   participants were last told the time, whose coachee has no current claim.
+1. Selects sessions starting in `(now, now + lead]`, more than `lead` after the coachee
+   was last told the time, whose coachee has no current claim. When the coachee was last
+   told is the later of their own row in `coaching_session_notices` and the session's
+   `notice_given_at` (kept until the phase 1c cleanup drops it).
 2. Claims them by upserting into `coaching_session_reminders`, keyed
    `(coaching_session_id, user_id)`, storing the session's `date` in `sent_for_start`.
 3. Emails the coachee for each claimed pair, then reports `processed N item(s)`.
@@ -129,8 +131,9 @@ After H1, move the session's `date` forward by 15 minutes (keeping it inside the
 
 ### H5. Notice already given suppresses the reminder
 
-Notice is `date - notice_given_at`: how long before the session the participants were last
-told its time. Set at booking, restamped on every reschedule, and on nothing else.
+Notice is how long before the session the coachee was last told its time: `date` minus the
+later of the coachee's notice row and the session's `notice_given_at`. Both are set at
+booking, restamped on every reschedule whose email reached the coachee, and on nothing else.
 
 Create a session starting 20 minutes from now, with a 1 hour lead.
 
@@ -150,16 +153,23 @@ reminded about, because that email is a month stale by the time the session come
 Check the predicate without waiting on a tick:
 
 ```sql
-SELECT date > (notice_given_at AT TIME ZONE 'UTC') + INTERVAL '24 hours' AS would_remind
-FROM refactor_platform.coaching_sessions WHERE id = '<session id>';
+SELECT cs.date > (GREATEST(cs.notice_given_at, n.notice_given_at) AT TIME ZONE 'UTC')
+                 + INTERVAL '24 hours' AS would_remind
+FROM refactor_platform.coaching_sessions cs
+JOIN refactor_platform.coaching_relationships cr ON cr.id = cs.coaching_relationship_id
+LEFT JOIN refactor_platform.coaching_session_notices n
+  ON n.coaching_session_id = cs.id AND n.user_id = cr.coachee_id
+WHERE cs.id = '<session id>';
 ```
+
+(`GREATEST` ignores a null, so a session with no notice row falls back to the column.)
 
 ### H5a. Only a schedule change restamps the notice
 
 The one guarantee with no automated coverage at the database level, so worth doing by hand.
 
-Take a session booked well in advance and note its `notice_given_at`. Then, checking the
-column after each:
+Take a session booked well in advance and note its `notice_given_at` and both participants'
+notice rows (`coaching_session_notices`). Then, checking all three after each:
 
 - **Edit the title** -> unchanged.
 - **Change the meeting URL** -> unchanged.
@@ -168,7 +178,7 @@ column after each:
 - **Move the start, or change the duration** -> restamped to now, but only once the
   reschedule email has actually gone out. Point the backend at the failing mock
   (`touch /tmp/resend_fail`) and move a session: the start changes, no email is sent, and
-  `notice_given_at` must be **unchanged**. Otherwise the coachee gets neither that email
+  `notice_given_at` and both notice rows must be **unchanged**. Otherwise the coachee gets neither that email
   nor the reminder it would have suppressed.
 
 A restamp on any of the first three would silently eat the notice the coachee already had
@@ -189,6 +199,22 @@ FROM refactor_platform.coaching_sessions;
 Reschedules that happened before the migration are not recorded, so those sessions are
 treated as though their booking was the last word. That errs toward reminding rather than
 toward silence, which is the right direction to be wrong in.
+
+### H5c. Only the coachee's own notice counts
+
+The sweep reminds the coachee, so it measures the coachee's notice, not whoever was told
+last. Take a session 26 hours out with a 24 hour lead and both notice rows and the column
+stamped well in the past (set them with psql), so it would be reminded.
+
+- Set **the coach's** notice row to now -> **still reminded**. The coach being told says
+  nothing about the coachee.
+- Set **the coachee's** notice row to now, leaving the column old -> **not reminded**. This
+  is the row the sweep reads; the column alone would have reminded.
+- Delete the coachee's notice row, with the column old -> **reminded**; with the column set
+  to now -> **not reminded**. A session written between the 1a and 1b deploys has no rows,
+  and the column covers it until 1c.
+
+Check each with the H5 query, or wait for a tick.
 
 ### H6. The first sweep runs at startup, not one interval later
 
