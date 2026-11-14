@@ -37,7 +37,7 @@ This backend holds private coaching notes, transcripts, and goals. In order of c
 
 ## Summary
 
-Open with a count: "2 important, 1 nit." When there is nothing to fix, say "Nothing to fix." and stop. Then one line on what this review did not verify, such as behavior against a live Postgres.
+Open with a count: "2 important, 1 nit." When there is nothing to fix, say "Nothing to fix." and stop. Don't add a note on what the review didn't run or check, such as tests, builds, or behavior against a live Postgres or the frontend, and don't call the description's test results the author's: CI builds and tests every PR in an earlier stage.
 
 ## Rounds
 
