@@ -11,7 +11,7 @@ use entity::transcript_suggestion::Status as SuggestionStatus;
 use entity::{
     actions, actions_users, agreements, coaching_relationships, coaching_session_images,
     coaching_session_series, coaching_session_topics, coaching_session_views, coaching_sessions,
-    coaching_sessions_goals, goals, meeting_recording, notes, oauth_connections, organizations,
+    coaching_sessions_goals, goals, meeting_recording, oauth_connections, organizations,
     transcript_analysis, transcript_segment, transcript_suggestion, user_roles, users, Id,
 };
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
@@ -108,15 +108,8 @@ pub async fn session_ical_sequence(db: &DatabaseConnection, session_id: Id) -> O
         .map(|session| session.ical_sequence)
 }
 
-/// Ids of the session's notes, agreements and actions.
+/// Ids of the session's agreements and actions.
 pub async fn session_content(db: &DatabaseConnection, session_id: Id) -> BTreeSet<Id> {
-    let notes = notes::Entity::find()
-        .filter(notes::Column::CoachingSessionId.eq(session_id))
-        .all(db)
-        .await
-        .expect("the notes read")
-        .into_iter()
-        .map(|note| note.id);
     let agreements = agreements::Entity::find()
         .filter(agreements::Column::CoachingSessionId.eq(session_id))
         .all(db)
@@ -131,7 +124,7 @@ pub async fn session_content(db: &DatabaseConnection, session_id: Id) -> BTreeSe
         .expect("the actions read")
         .into_iter()
         .map(|action| action.id);
-    notes.chain(agreements).chain(actions).collect()
+    agreements.chain(actions).collect()
 }
 
 /// The action's assignees, or `None` when there is no such action.
@@ -265,15 +258,6 @@ pub async fn suggestion_outcome(
         .expect("the suggestion reads")
         .map(|suggestion| (suggestion.status, suggestion.created_entity_id))
         .expect("the suggestion exists")
-}
-
-/// The note's body, or `None` once it is deleted.
-pub async fn note_body(db: &DatabaseConnection, note_id: Id) -> Option<Option<String>> {
-    notes::Entity::find_by_id(note_id)
-        .one(db)
-        .await
-        .expect("the note reads")
-        .map(|note| note.body)
 }
 
 /// The agreement's body, or `None` once it is deleted.

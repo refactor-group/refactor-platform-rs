@@ -15,9 +15,9 @@ use tower_http::services::ServeDir;
 use crate::controller::{
     action_controller, agreement_controller, coaching_session, coaching_session_controller,
     coaching_session_series_controller, goal_controller, jwt_controller, magic_link_controller,
-    note_controller, oauth_controller, organization, organization_controller,
-    password_reset_controller, search_controller, tiptap_metrics_controller, user, user_controller,
-    user_session_controller, webhook_controller,
+    oauth_controller, organization, organization_controller, password_reset_controller,
+    search_controller, tiptap_metrics_controller, user, user_controller, user_session_controller,
+    webhook_controller,
 };
 use crate::sse;
 
@@ -91,10 +91,6 @@ use utoipa_rapidoc::RapiDoc;
             health_check_controller::health_check,
             magic_link_controller::validate,
             magic_link_controller::complete_setup,
-            note_controller::create,
-            note_controller::update,
-            note_controller::index,
-            note_controller::read,
             oauth_callback_controller::callback,
             oauth_controller::authorize,
             oauth_controller::index,
@@ -216,7 +212,6 @@ use utoipa_rapidoc::RapiDoc;
                 domain::transcript_suggestion::review::SourceSegment,
                 domain::transcript_suggestion::review::UndatedReason,
                 domain::jwts::Jwt,
-                domain::notes::Model,
                 domain::organizations::Model,
                 domain::meeting_provider::Provider,
                 domain::search::Results,
@@ -282,7 +277,6 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(agreement_routes(app_state.clone()))
         .merge(health_routes())
         .merge(organization_routes(app_state.clone()))
-        .merge(note_routes(app_state.clone()))
         .merge(organization_coaching_relationship_routes(app_state.clone()))
         .merge(organization_user_routes(app_state.clone()))
         .merge(goal_routes(app_state.clone()))
@@ -441,16 +435,6 @@ pub fn tiptap_metrics_routes(app_state: AppState) -> Router {
 
 fn health_routes() -> Router {
     Router::new().route("/health", get(health_check_controller::health_check))
-}
-
-fn note_routes(app_state: AppState) -> Router {
-    Router::new()
-        .route("/notes", post(note_controller::create))
-        .route("/notes/:id", put(note_controller::update))
-        .route("/notes", get(note_controller::index))
-        .route("/notes/:id", get(note_controller::read))
-        .route_layer(from_fn(require_auth))
-        .with_state(app_state)
 }
 
 fn organization_coaching_relationship_routes(app_state: AppState) -> Router {

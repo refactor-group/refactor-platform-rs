@@ -9,7 +9,7 @@ Rows record what the code does today, plus the rules tightened by the relationsh
 authorization security PR (`fix/relationship-scoped-authorization`), which lands before the
 rs#399 baseline is frozen. Rows it changes or adds are marked `[tightened]`; their
 `Enforced at` cells point at the new checks. Row ids are stable; never renumber them.
-Phase 4 adds colleague rows; there are none yet. Phase 1 adds the `SCHED` rows (4.16): what
+Phase 4 adds colleague rows; there are none yet. Phase 1 adds the `SCHED` rows (4.15): what
 each schedule change records, with no change to who may make it.
 
 Rows marked `[membership]` change in phase M (org membership consistency), which also lands
@@ -38,7 +38,7 @@ not participants can list an org's relationships but get 403 reading one or its 
 
 Rules the security PR adds:
 
-- Notes, agreements and actions, read or written by id or created for a session: the caller
+- Agreements and actions, read or written by id or created for a session: the caller
   must be a participant of that session's relationship and still a member of its
   organization (`grants_access_to`). Unknown id: 404. Otherwise: 403.
 - Action assignees must be the relationship's coach or coachee. Anyone else: 422, nothing
@@ -88,7 +88,7 @@ Rows the scenarios need. Put the word `kumquat` in every body and session title 
 | `R2` | Relationship OTHER_COACH to COACHEE, O1 |
 | `R3` | Relationship COACH to REMOVED, O1 |
 | `S1`, `S2`, `S3` | One future session in R1, R2, R3 respectively |
-| `S4`, `S5` | A future session with no notes, actions or agreements, in R1 and R3. Created only for the delete rows (SES-21 to SES-23, SES-36), so no list row includes them |
+| `S4`, `S5` | A future session with no actions or agreements, in R1 and R3. Created only for the delete rows (SES-21 to SES-23, SES-36), so no list row includes them |
 | `SR1` | Series in R1 created by COACH (its sessions are `SR1-*`) |
 | `SR3` | Series in R3 created by COACH before REMOVED is removed (its sessions are `SR3-*`); after phase M a series can't be created for a removed coachee |
 | `A1` | Action in S1 assigned to COACH |
@@ -100,7 +100,6 @@ Rows the scenarios need. Put the word `kumquat` in every body and session title 
 | `A7` | Action in S3, unassigned |
 | `G1` | Goal in R1 created by COACH, linked to S1 |
 | `G2` | Goal in R2 created by OTHER_COACH, linked to S2 |
-| `N1` | Note in S1 |
 | `AG1` | Agreement in S1 |
 | `T1` | Topic in S1 authored by COACH |
 | `T2` | Topic in S1 authored by COACHEE |
@@ -145,7 +144,7 @@ done
 
 # Then export the fixture ids, e.g.
 # O1=... O2=... R1=... R2=... R3=... S1=... S2=... S3=... SR1=... SR3=...
-# A1=... A2=... A3=... A4=... A5=... A6=... A7=... G1=... G2=... N1=... AG1=...
+# A1=... A2=... A3=... A4=... A5=... A6=... A7=... G1=... G2=... AG1=...
 # T1=... T2=... IMG1=... TR1=... SG1=... SG2=...
 # COACH_ID=... COACHEE_ID=... MEMBER_ID=... REMOVED_ID=... SUPER_ID=...
 
@@ -238,7 +237,7 @@ How to read the tables:
 | SES-34 | PUT /coaching_sessions/S3 changing `date` or `duration_minutes` | COACH | 409 `coachee_not_a_member`, S3 unchanged | `domain/src/coaching_session.rs:390` | [membership] Other edits succeed (SES-18) |
 | SES-35 | POST /coaching_sessions/S3/resend_invite | COACH | 409 `coachee_not_a_member`, no email | `domain/src/coaching_session.rs:592` | [membership] |
 | SES-36 | DELETE /coaching_sessions/S5 | COACH | 200 (204) | `web/src/extractors/coaching_session_access.rs:91` | [membership] Deleting stays allowed. Sends MAIL-03 to both COACH and REMOVED |
-| SES-37 | DELETE /coaching_sessions/S1 | COACH | 409 `sessions_have_content`, `details: {reason, coaching_session_id}`; S1, its content and its notes document untouched, no email | `domain/src/coaching_session.rs:525` | S1 holds N1, AG1 and A1 to A3 |
+| SES-37 | DELETE /coaching_sessions/S1 | COACH | 409 `sessions_have_content`, `details: {reason, coaching_session_id}`; S1, its content and its notes document untouched, no email | `domain/src/coaching_session.rs:525` | S1 holds AG1 and A1 to A3 |
 | SES-38 | POST /coaching_sessions `{coaching_relationship_id: R1}` | COACH after removal from O1 | 403, nothing written, no email | `web/src/controller/coaching_session_controller.rs:187`; `web/src/extractors/coaching_relationship_access.rs:140` | [tightened] Restore the role afterwards |
 | SES-39 | POST /coaching_sessions `{coaching_relationship_id: unknown}` | COACH | 404, nothing written, no email | `web/src/extractors/coaching_relationship_access.rs:137` | |
 | SES-40 | GET /coaching_sessions/{unknown}, POST /coaching_sessions/{unknown}/resend_invite | COACH | 404, no email | `web/src/extractors/coaching_session_access.rs:182` | |
@@ -276,23 +275,7 @@ How to read the tables:
 | SER-22 | GET /coaching_session_series/{unknown}; POST its `/resend_invite`, `/reschedule` | COACH | 404, no email | `web/src/extractors/coaching_session_series_access.rs:102` | |
 | SER-23 | any /coaching_session_series route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 
-### 4.4 Notes (`NOTE`)
-
-| ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
-|---|---|---|---|---|---|
-| NOTE-01 | GET /notes?coaching_session_id=S1 | COACH, COACHEE | 200, N1 | `web/src/extractors/coaching_session_access.rs:184` | [rows] |
-| NOTE-02 | GET /notes?coaching_session_id=S1 | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:184` | |
-| NOTE-03 | GET /notes?coaching_session_id=S3 | REMOVED | 403 | `web/src/extractors/coaching_session_access.rs:184` | |
-| NOTE-04 | GET /notes/N1 | COACH, COACHEE | 200, N1 | `web/src/extractors/note_access.rs:45` | [tightened] |
-| NOTE-05 | POST /notes `{coaching_session_id: S1}` | COACH, COACHEE | 200 (201), new note | `web/src/controller/note_controller.rs:48` | [tightened] |
-| NOTE-06 | PUT /notes/N1 | COACH, COACHEE | 200, N1 updated | `web/src/extractors/note_access.rs:45` | [tightened] |
-| NOTE-07 | GET /notes/N1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403 | `web/src/extractors/note_access.rs:45` | [tightened] Unknown note: 404 |
-| NOTE-08 | POST /notes `{coaching_session_id: S1}` | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, nothing written | `web/src/controller/note_controller.rs:48` | [tightened] Unknown session: 404 |
-| NOTE-09 | PUT /notes/N1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, N1 unchanged | `web/src/extractors/note_access.rs:45` | [tightened] |
-| NOTE-10 | GET, PUT a note in S3; POST `{coaching_session_id: S3}` | REMOVED | 403 | `web/src/extractors/note_access.rs:45`; `web/src/controller/note_controller.rs:48` | [tightened] |
-| NOTE-11 | any /notes route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
-
-### 4.5 Agreements (`AGR`)
+### 4.4 Agreements (`AGR`)
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
@@ -309,7 +292,7 @@ How to read the tables:
 | AGR-11 | GET, PUT, DELETE an agreement in S3; POST `{coaching_session_id: S3}` | REMOVED | 403 | `web/src/extractors/agreement_access.rs:44`; `web/src/controller/agreement_controller.rs:51` | [tightened] |
 | AGR-12 | any /agreements route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 
-### 4.6 Actions (`ACT`)
+### 4.5 Actions (`ACT`)
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
@@ -358,7 +341,7 @@ How to read the tables:
 | ACT-42 | any actions route (`/actions`, `/users/{id}/actions`, the organization action lists) | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 | ACT-43 | GET /users/{SUPER_ID}/actions (scope=sessions) | SUPER, once they also coach OUTSIDER in a new O2 relationship R5 whose session holds one action each for SUPER, OUTSIDER and nobody | 200, all three | `web/src/extractors/user_actions_access.rs:36`; `web/src/controller/user/action_controller.rs:88`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in. `scope=assigned`: SUPER's action |
 
-### 4.7 Goals (`GOAL`)
+### 4.6 Goals (`GOAL`)
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
@@ -398,7 +381,7 @@ How to read the tables:
 | GOAL-34 | GET /users/{REMOVED_ID}/goals, REMOVED having created a goal in R3 | REMOVED | 200, empty list | `web/src/extractors/user_self_access.rs:28`; `entity_api/src/goal.rs:38`; `entity_api/src/coaching_relationship.rs:426` | [membership] self list leaves out goals in R3 |
 | GOAL-35 | GET /users/{SUPER_ID}/goals | SUPER, once they also coach OUTSIDER in a new O2 relationship R5, SUPER having created a goal in R5 | 200, that goal | `web/src/extractors/user_self_access.rs:28`; `web/src/controller/user/goal_controller.rs:56`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in |
 
-### 4.8 Topics (`TOP`)
+### 4.7 Topics (`TOP`)
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
@@ -422,7 +405,7 @@ How to read the tables:
 | TOP-21 | POST /coaching_sessions/S1/topics/T1/undo | non-participants | 403 | `web/src/extractors/coaching_session_topic_access.rs:121`, `:131` | Topic not in S1: 404 |
 | TOP-22 | any topic route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 
-### 4.9 Transcripts, recordings and images (`TRN`)
+### 4.8 Transcripts, recordings and images (`TRN`)
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
@@ -456,7 +439,7 @@ How to read the tables:
 | TRN-28 | POST /coaching_sessions/S3/transcript_suggestions/SG3/accept | COACH | 409 `assignee_not_a_member`, no action written, no email | `domain/src/transcript_suggestion/review.rs:339` | [membership] |
 | TRN-29 | any transcription, suggestion, recording or image route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 
-### 4.10 Meeting links and OAuth-dependent flows (`MEET`)
+### 4.9 Meeting links and OAuth-dependent flows (`MEET`)
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
@@ -467,7 +450,7 @@ How to read the tables:
 | MEET-05 | GET /oauth/connections, GET/DELETE /oauth/connections/{provider} | any authenticated caller | 200, caller's own connections | `web/src/router.rs:802`, `:804` (auth only) | Self scoped, no relationship data. Listed so MEET-01 has its prerequisite |
 | MEET-06 | GET /oauth/{provider}/authorize, GET /oauth/connections, GET/DELETE /oauth/connections/{provider} | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | The provider's callback takes no session |
 
-### 4.11 Search (`SRCH`)
+### 4.10 Search (`SRCH`)
 
 All rows: `GET /search?q=kumquat&types=actions`. Rows are scoped by
 `entity/src/coaching_relationships.rs:124` (`visible_to`: participant AND member of the
@@ -487,7 +470,7 @@ relationship's org) via `entity_api/src/search/visibility.rs:18`; SuperAdmins sk
 | SRCH-10 | GET /search?q=kumquat (all types) | COACHEE | 200, R1 and R2 hits of every type (S1 S2, G1 G2, A1 to A5, AG1, T1 T2, SG1 SG2) | `entity_api/src/search/visibility.rs:36` | [rows] notes are not searched. Automated: SQL-shape mock and visible-relationship SQLite only; check hits by hand. |
 | SRCH-11 | GET /search?q=kumquat&types=actions | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 
-### 4.12 Collaboration token (`JWT`)
+### 4.11 Collaboration token (`JWT`)
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
@@ -496,7 +479,7 @@ relationship's org) via `entity_api/src/search/visibility.rs:18`; SuperAdmins sk
 | JWT-03 | GET /jwt/generate_collab_token?coaching_session_id=S3 | REMOVED | 403 | `web/src/extractors/coaching_session_access.rs:184` | |
 | JWT-04 | GET /jwt/generate_collab_token?coaching_session_id=S1 | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 
-### 4.13 Users (`USR`)
+### 4.12 Users (`USR`)
 
 Rows here cover user routes that return relationship data and are not covered above
 (`REL-13`, `REL-14`, `REL-17`, `SES-27` to `SES-32`, `SES-43`, `ACT-18` to `ACT-26`,
@@ -515,7 +498,7 @@ Rows here cover user routes that return relationship data and are not covered ab
 | USR-09 | GET /users?email={REMOVED email} after ORG-04 | ADMIN | 200, REMOVED; ADMIN may also attach them (ORG-03) | `domain/src/user_role.rs:279`, `:297`; `entity_api/src/user_role_change.rs:58` | [rows] Without O1 role history: empty list |
 | USR-10 | GET /users?email={any fixture email} | SUPER | 200, that user | `domain/src/user_role.rs:279` | [rows] |
 
-### 4.14 Organizations (`ORG`)
+### 4.13 Organizations (`ORG`)
 
 Organization membership changes decide `grants_access_to`; these rows create or end it.
 
@@ -561,7 +544,7 @@ Organization membership changes decide `grants_access_to`; these rows create or 
 | ORG-38 | GET /organizations/O1 | OUTSIDER, REMOVED; OUTSIDER holding `SuperAdmin` scoped to O2 | 403 | `web/src/extractors/organization_member_access.rs:91`; `entity/src/users.rs:95` | Not a member of O1 |
 | ORG-39 | GET /organizations/{unknown} | SUPER, OUTSIDER | 404 | `web/src/extractors/organization_member_access.rs:59` | The existence check runs before the membership check, as on every route with this extractor (REL-19) |
 
-### 4.15 Real-time events (`SSE`)
+### 4.14 Real-time events (`SSE`)
 
 `GET /sse` opens a stream for the caller; events go to the user ids each publisher computes.
 Check with two browsers or `curl -N -b /tmp/<jar>.jar -H "$VER" $BASE/sse`.
@@ -576,7 +559,7 @@ Check with two browsers or `curl -N -b /tmp/<jar>.jar -H "$VER" $BASE/sse`.
 | SSE-06 | POST /webhooks/recall_ai (recording or transcript update for S1) | streams of COACH, COACHEE | both get the recording/transcription event | `entity_api/src/coaching_session.rs:655` | [rows] webhook is signature-authenticated, no user |
 | SSE-07 | GET /sse | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 
-### 4.16 Who scheduled and per-person notice (`SCHED`)
+### 4.15 Who scheduled and per-person notice (`SCHED`)
 
 Phase 1 records, on every schedule change, who made it, whose account made the meeting link,
 and when each participant (not the session as a whole) was last told its start. Nothing a
@@ -763,17 +746,6 @@ a frozen `domain` test, or by hand with the reason.
 | SER-21 | by hand: the series delete takes Postgres advisory locks |
 | SER-22 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::an_unknown_series_is_not_found` |
 | SER-23 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_series` |
-| NOTE-01 | `web/src/controller/note_controller_sqlite_tests.rs::participants_list_the_sessions_notes` |
-| NOTE-02 | `web/src/controller/note_controller_sqlite_tests.rs::non_participants_cannot_list_the_sessions_notes` |
-| NOTE-03 | `web/src/controller/note_controller_sqlite_tests.rs::a_removed_coachee_cannot_list_their_sessions_notes` |
-| NOTE-04 | `web/src/controller/note_controller_sqlite_tests.rs::participants_read_the_note` |
-| NOTE-05 | `web/src/controller/note_controller_sqlite_tests.rs::participants_create_a_note_in_the_session` |
-| NOTE-06 | `web/src/controller/note_controller_sqlite_tests.rs::participants_update_the_note` |
-| NOTE-07 | `web/src/controller/note_controller_sqlite_tests.rs::non_participants_cannot_read_the_note` |
-| NOTE-08 | `web/src/controller/note_controller_sqlite_tests.rs::non_participants_cannot_create_a_note_in_the_session` |
-| NOTE-09 | `web/src/controller/note_controller_sqlite_tests.rs::non_participants_cannot_update_the_note` |
-| NOTE-10 | `web/src/controller/note_controller_sqlite_tests.rs::a_removed_coachee_cannot_reach_their_sessions_notes` |
-| NOTE-11 | `web/src/controller/note_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_notes` |
 | AGR-01 | `web/src/controller/agreement_controller_sqlite_tests.rs::participants_list_the_sessions_agreements` |
 | AGR-02 | `web/src/controller/agreement_controller_sqlite_tests.rs::non_participants_cannot_list_the_sessions_agreements` |
 | AGR-03 | `web/src/controller/agreement_controller_sqlite_tests.rs::a_removed_coachee_cannot_list_their_sessions_agreements` |

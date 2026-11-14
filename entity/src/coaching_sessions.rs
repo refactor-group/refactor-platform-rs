@@ -81,9 +81,6 @@ pub struct Model {
     )]
     pub coaching_session_series: BelongsTo<Option<super::coaching_session_series::Entity>>,
     #[serde(skip)]
-    #[sea_orm(has_many, relation_enum = "Notes")]
-    pub notes: HasMany<super::notes::Entity>,
-    #[serde(skip)]
     #[sea_orm(has_many, relation_enum = "CoachingSessionTopics")]
     pub coaching_session_topics: HasMany<super::coaching_session_topics::Entity>,
     #[serde(skip)]

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use chrono::{NaiveDate, TimeDelta, Utc};
 use entity::{
-    coaching_relationships, coaching_session_series as series_entity, coaching_sessions, notes,
+    agreements, coaching_relationships, coaching_session_series as series_entity, coaching_sessions,
 };
 use entity_api::coaching_session::Landing;
 use entity_api::coaching_session_pending_reschedule::{self, Schedule};
@@ -17,7 +17,7 @@ use super::*;
 use crate::test_utils::sqlite::fixture::move_series_into_the_past;
 use crate::test_utils::sqlite::{
     database, mirror_migration_defaults, seed_action, seed_agreement, seed_coaching_session,
-    seed_membership, seed_note, seed_organization, seed_topic, seed_user, within_time_limit,
+    seed_membership, seed_organization, seed_topic, seed_user, within_time_limit,
 };
 
 fn monday() -> NaiveDateTime {
@@ -132,7 +132,7 @@ async fn move_to_slot_moves_only_the_target_and_keeps_what_hangs_off_it() {
         let seeded = seed_series(&db).await;
         let target = opened(&db, seed_series_session(&db, &seeded, monday()).await).await;
         let bystander = seed_series_session(&db, &seeded, monday() + TimeDelta::weeks(1)).await;
-        let note_id = seed_note(&db, target.id, seeded.user_id, "Prep").await;
+        let agreement_id = seed_agreement(&db, target.id, seeded.user_id, "Agreed").await;
         let new_series = series_entity::ActiveModel {
             id: Set(Id::new_v4()),
             coaching_relationship_id: Set(seeded.relationship_id),
@@ -172,11 +172,11 @@ async fn move_to_slot_moves_only_the_target_and_keeps_what_hangs_off_it() {
         assert_eq!(moved.meeting_url, target.meeting_url);
         assert_eq!(moved.collab_document_name, target.collab_document_name);
         assert_eq!(
-            notes::Entity::find_by_id(note_id)
+            agreements::Entity::find_by_id(agreement_id)
                 .one(&db)
                 .await
-                .expect("the note reads")
-                .map(|note| note.coaching_session_id),
+                .expect("the agreement reads")
+                .map(|agreement| agreement.coaching_session_id),
             Some(target.id),
         );
 
@@ -262,7 +262,6 @@ async fn find_ids_with_content_flags_each_kind_of_content_and_nothing_else() {
         let db = database().await;
         let seeded = seed_series(&db).await;
         let week = |n| monday() + TimeDelta::weeks(n);
-        let with_note = seed_series_session(&db, &seeded, week(0)).await.id;
         let with_action = seed_series_session(&db, &seeded, week(1)).await.id;
         let with_agreement = seed_series_session(&db, &seeded, week(2)).await.id;
         let with_topic = seed_series_session(&db, &seeded, week(3)).await.id;
@@ -273,17 +272,15 @@ async fn find_ids_with_content_flags_each_kind_of_content_and_nothing_else() {
             .await
             .id;
 
-        seed_note(&db, with_note, seeded.user_id, "Prep").await;
         seed_action(&db, with_action, seeded.user_id, "Follow up").await;
         seed_agreement(&db, with_agreement, seeded.user_id, "Agreed").await;
         seed_topic(&db, with_topic, seeded.user_id, "Agenda", 0, false).await;
         seed_topic(&db, with_deleted_topic, seeded.user_id, "Agenda", 0, true).await;
-        seed_note(&db, not_asked_about, seeded.user_id, "Prep").await;
+        seed_action(&db, not_asked_about, seeded.user_id, "Follow up").await;
 
         let flagged = entity_api::coaching_session::find_ids_with_content(
             &db,
             &[
-                with_note,
                 with_action,
                 with_agreement,
                 with_topic,
@@ -297,15 +294,9 @@ async fn find_ids_with_content_flags_each_kind_of_content_and_nothing_else() {
 
         assert_eq!(
             flagged,
-            [
-                with_note,
-                with_action,
-                with_agreement,
-                with_topic,
-                with_shared_notes
-            ]
-            .into_iter()
-            .collect()
+            [with_action, with_agreement, with_topic, with_shared_notes]
+                .into_iter()
+                .collect()
         );
     })
     .await;

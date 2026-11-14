@@ -28,7 +28,6 @@ pub mod links;
 pub mod magic_link_tokens;
 pub mod meeting_provider;
 pub mod meeting_recording;
-pub mod notes;
 pub mod oauth_connections;
 pub mod organizations;
 pub mod password_reset_attempts;

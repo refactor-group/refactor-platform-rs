@@ -15,10 +15,10 @@ pub use entity_api::{
     actions, agreements, coachees, coaches, coaching_relationships, coaching_session_images,
     coaching_session_notices, coaching_session_pending_reschedules, coaching_session_topics,
     coaching_session_views, coaching_sessions, coaching_sessions_goals, cost_metric, cost_unit,
-    duration, goals, jwts, magic_link_tokens, meeting_provider, notes, oauth_connections,
-    organizations, password_reset_attempts, pipeline_provider, query::QuerySort, status,
-    token_purpose, topic_status, transcript_suggestion_target, user_lookup_attempts,
-    user_role_changes, user_roles, users, working_hours, Id,
+    duration, goals, jwts, magic_link_tokens, meeting_provider, oauth_connections, organizations,
+    password_reset_attempts, pipeline_provider, query::QuerySort, status, token_purpose,
+    topic_status, transcript_suggestion_target, user_lookup_attempts, user_role_changes,
+    user_roles, users, working_hours, Id,
 };
 
 pub mod action;
@@ -41,7 +41,6 @@ pub mod jobs;
 pub mod jwt;
 pub mod magic_link_token;
 pub mod meeting_recording;
-pub mod note;
 
 pub mod oauth_connection;
 pub mod oauth_token_storage;

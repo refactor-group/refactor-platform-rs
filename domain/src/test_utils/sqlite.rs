@@ -17,7 +17,7 @@ use entity::{
     coaching_session_notices, coaching_session_pending_reschedules, coaching_session_reminders,
     coaching_session_series, coaching_session_topics, coaching_session_views, coaching_sessions,
     coaching_sessions_goals, cost_pricing_config, goals, magic_link_tokens, meeting_recording,
-    notes, oauth_connections, organizations, password_reset_attempts, platform_cost_metrics,
+    oauth_connections, organizations, password_reset_attempts, platform_cost_metrics,
     transcript_analysis, transcript_participant, transcript_segment, transcript_suggestion,
     transcription, user_lookup_attempts, user_role_changes, user_roles, users, Id,
 };
@@ -92,7 +92,6 @@ pub async fn database() -> DatabaseConnection {
         .register(goals::Entity)
         .register(magic_link_tokens::Entity)
         .register(meeting_recording::Entity)
-        .register(notes::Entity)
         .register(oauth_connections::Entity)
         .register(organizations::Entity)
         .register(password_reset_attempts::Entity)
@@ -376,23 +375,6 @@ pub async fn seed_coaching_session(db: &DatabaseConnection) -> (Id, Id) {
     (session.id, user_id)
 }
 
-/// Inserts a note reading `body` on `session_id` and returns its id.
-pub async fn seed_note(db: &DatabaseConnection, session_id: Id, user_id: Id, body: &str) -> Id {
-    let now = Utc::now();
-    notes::ActiveModel {
-        id: Set(Id::new_v4()),
-        coaching_session_id: Set(session_id),
-        body: Set(Some(body.to_string())),
-        user_id: Set(user_id),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-    }
-    .insert(db)
-    .await
-    .expect("the note is seeded")
-    .id
-}
-
 /// Inserts an unassigned action reading `body` on `session_id` and returns its id.
 pub async fn seed_action(db: &DatabaseConnection, session_id: Id, user_id: Id, body: &str) -> Id {
     let now = Utc::now();
@@ -471,11 +453,11 @@ pub async fn seed_topic(
 pub(crate) async fn foreign_key_violation() -> DbErr {
     let db = database().await;
     let (session_id, user_id) = seed_coaching_session(&db).await;
-    seed_note(&db, session_id, user_id, "Prep").await;
+    seed_agreement(&db, session_id, user_id, "Agreed").await;
     coaching_sessions::Entity::delete_by_id(session_id)
         .exec(&db)
         .await
-        .expect_err("the note's foreign key refuses the delete")
+        .expect_err("the agreement's foreign key refuses the delete")
 }
 
 /// Ids of a seeded completed transcription and the rows around it.

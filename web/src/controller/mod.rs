@@ -8,7 +8,6 @@ pub(crate) mod goal_controller;
 pub(crate) mod health_check_controller;
 pub(crate) mod jwt_controller;
 pub(crate) mod magic_link_controller;
-pub(crate) mod note_controller;
 pub(crate) mod oauth_callback_controller;
 pub(crate) mod oauth_controller;
 pub(crate) mod organization;
