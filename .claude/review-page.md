@@ -18,9 +18,10 @@ when it would be empty; never add others.
    of security findings, or "No security findings."
 3. **Scope.** A bold `Scope:` label, then one or two sentences: the diff reviewed (whole, or
    since which sha), how many files, and which finders ran.
-4. **Findings.** One card per finding: its severity tag (`important` or `nit` for a code
-   review, `high` or `medium` for a security review), file and line, what is wrong, and the
-   fix. With no findings, the single line "None."
+4. **Findings.** One card per finding: its severity tag (`important`, `nit` or
+   `pre-existing` for a code review, `high` or `medium` for a security review), file and
+   line, what is wrong, and the fix. A `pre-existing` finding doesn't count in the Verdict.
+   With no findings, the single line "None."
 5. **Checked and sound.** One item per thing the review checked and found sound: a short bold
    name, then one or two sentences. This replaces a "Checked:" list, so the page doesn't say
    it twice.
