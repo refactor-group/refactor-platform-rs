@@ -20,6 +20,7 @@ use log::*;
     ),
     responses(
         (status = 200, description = "Successfully retrieved organizations for user", body = [domain::organizations::Model]),
+        (status = 400, description = "Invalid user_id"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "User not found"),

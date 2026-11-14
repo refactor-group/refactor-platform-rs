@@ -26,6 +26,7 @@ use log::*;
     ),
     responses(
         (status = 200, description = "Successfully retrieved goals for user", body = [domain::goals::Model]),
+        (status = 400, description = "Invalid user_id"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "User not found"),
