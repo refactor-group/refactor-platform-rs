@@ -1,11 +1,13 @@
 ---
 description: Security review of a pull request or branch, the same review the CI Security Review job runs
-argument-hint: "<PR number | branch> (default: the current branch)"
+argument-hint: "[low|medium|high|xhigh|max] <PR number | branch> (default: medium, the current branch)"
 model: claude-opus-5-5
 ---
 
-Run the security review of `$ARGUMENTS` that the CI Security Review job
-(`.github/workflows/claude-review.yml`) runs on a pull request, following the same procedure.
+Run the security review that the CI Security Review job (`.github/workflows/claude-review.yml`)
+runs on a pull request, following the same procedure, for `$ARGUMENTS`. The first argument
+may be a level (`low`, `medium`, `high`, `xhigh`, `max`; default `medium`). The review is the
+same at every level; at `high` and above it also ends with the page in `.claude/review-page.md`.
 
 **Set up, like CI does.**
 - The base is `origin/main`. Run `git fetch origin` first.
@@ -25,8 +27,11 @@ Run the security review of `$ARGUMENTS` that the CI Security Review job
     one.
 
 **Review.** Follow `.github/security-review-procedure.md` step by step, with `pr-head` meaning
-that worktree. Do not edit files, do not run project code, and post nothing to GitHub.
+that worktree. Do not edit repository files, do not run project code, and post nothing to
+GitHub.
 
 **Report in this conversation** what CI would post: each confirmed finding as its inline
 comment would read, with its file and line relative to the repository root, then the summary
-line. Then remove the worktree with `git worktree remove <scratch>/pr-head`.
+line. At level `high` and above, then build and publish the review page as
+`.claude/review-page.md` says. Finally remove the worktree with
+`git worktree remove <scratch>/pr-head`.
