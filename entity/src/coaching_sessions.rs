@@ -48,6 +48,12 @@ pub struct Model {
     /// gets neither the email nor the reminder.
     #[serde(skip_deserializing)]
     pub notice_given_at: DateTimeWithTimeZone,
+    /// Who last created or rescheduled the session. `None` only on rows written before it was recorded.
+    #[serde(skip)]
+    pub scheduled_by_user_id: Option<Id>,
+    /// Whose account made `meeting_url`; `None` when there is no link.
+    #[serde(skip)]
+    pub meeting_url_created_by_user_id: Option<Id>,
     #[serde(skip)]
     #[sea_orm(has_many, relation_enum = "Actions")]
     pub actions: HasMany<super::actions::Entity>,

@@ -108,6 +108,8 @@ fn world() -> World {
         updated_at: now.into(),
         hydrated_at: Some(now.into()),
         notice_given_at: now.into(),
+        scheduled_by_user_id: None,
+        meeting_url_created_by_user_id: None,
     };
     World {
         organization_id,

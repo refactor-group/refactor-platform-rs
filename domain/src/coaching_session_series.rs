@@ -1107,6 +1107,8 @@ mod tests {
                     updated_at: now.into(),
                     hydrated_at: None,
                     notice_given_at: now.into(),
+                    scheduled_by_user_id: None,
+                    meeting_url_created_by_user_id: None,
                 }
             })
             .collect()
@@ -1337,6 +1339,8 @@ mod tests {
             updated_at: now.into(),
             hydrated_at: None,
             notice_given_at: chrono::Utc::now().into(),
+            scheduled_by_user_id: None,
+            meeting_url_created_by_user_id: None,
         };
 
         let expected_sessions = vec![
@@ -1480,6 +1484,8 @@ mod tests {
             updated_at: now.into(),
             hydrated_at: None,
             notice_given_at: chrono::Utc::now().into(),
+            scheduled_by_user_id: None,
+            meeting_url_created_by_user_id: None,
         };
 
         // Two future sessions, neither hydrated, neither carrying a Tiptap doc.
@@ -1624,6 +1630,8 @@ mod tests {
             updated_at: now.into(),
             hydrated_at: None,
             notice_given_at: chrono::Utc::now().into(),
+            scheduled_by_user_id: None,
+            meeting_url_created_by_user_id: None,
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -1709,6 +1717,8 @@ mod tests {
             updated_at: now.into(),
             hydrated_at: None,
             notice_given_at: chrono::Utc::now().into(),
+            scheduled_by_user_id: None,
+            meeting_url_created_by_user_id: None,
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -1794,6 +1804,8 @@ mod tests {
             updated_at: now.into(),
             hydrated_at: None,
             notice_given_at: chrono::Utc::now().into(),
+            scheduled_by_user_id: None,
+            meeting_url_created_by_user_id: None,
         };
 
         let future_sessions = vec![
@@ -1885,6 +1897,8 @@ mod tests {
             updated_at: now.into(),
             hydrated_at: None,
             notice_given_at: chrono::Utc::now().into(),
+            scheduled_by_user_id: None,
+            meeting_url_created_by_user_id: None,
         };
 
         let relationship = member_relationship(relationship_id);
@@ -1975,6 +1989,8 @@ mod tests {
             updated_at: now.into(),
             hydrated_at: None,
             notice_given_at: chrono::Utc::now().into(),
+            scheduled_by_user_id: None,
+            meeting_url_created_by_user_id: None,
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -2070,6 +2086,8 @@ mod tests {
                 updated_at: now.into(),
                 hydrated_at: None,
                 notice_given_at: now.into(),
+                scheduled_by_user_id: None,
+                meeting_url_created_by_user_id: None,
             })
             .collect();
         (series, rule, sessions)

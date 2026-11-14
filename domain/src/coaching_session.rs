@@ -842,6 +842,8 @@ mod tests {
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
             notice_given_at: chrono::Utc::now().into(),
+            scheduled_by_user_id: None,
+            meeting_url_created_by_user_id: None,
         }
     }
 
@@ -1600,6 +1602,8 @@ mod tests {
                 chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z").unwrap(),
             ),
             notice_given_at: chrono::Utc::now().into(),
+            scheduled_by_user_id: None,
+            meeting_url_created_by_user_id: None,
         };
 
         // The session as the DB would return it after INSERT (with the reused meeting URL)
@@ -2286,6 +2290,10 @@ mod sqlite_tests;
 #[cfg(test)]
 #[path = "coaching_session_delete_sqlite_tests.rs"]
 mod delete_sqlite_tests;
+
+#[cfg(test)]
+#[path = "coaching_session_notice_sqlite_tests.rs"]
+mod notice_sqlite_tests;
 
 #[cfg(test)]
 #[path = "coaching_session_pending_reschedule_sqlite_tests.rs"]
