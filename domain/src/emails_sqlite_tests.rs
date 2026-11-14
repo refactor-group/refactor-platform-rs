@@ -598,6 +598,7 @@ async fn session_create_with_the_coach_holding_no_role_reaches_only_the_coachee(
             &sending(&server),
             &EventPublisher::new(),
             session,
+            seeded.coach.id,
             None,
         )
         .await

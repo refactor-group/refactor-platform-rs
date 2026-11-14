@@ -596,6 +596,7 @@ async fn seed_recurring_series(
         db,
         relationship_id,
         coach_id,
+        coach_id,
         series.id,
         dates,
         Some(duration),

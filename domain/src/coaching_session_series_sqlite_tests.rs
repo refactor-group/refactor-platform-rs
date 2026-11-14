@@ -1,14 +1,18 @@
-//! What a "this and following" reschedule writes to a moved session, and which leftover
-//! sessions it treats as holding content, against a real SQL engine.
+//! What a "this and following" reschedule writes to a moved session, which leftover
+//! sessions it treats as holding content, and who series writes record as each session's
+//! scheduler, against a real SQL engine.
 
 use chrono::{NaiveDate, TimeDelta, Utc};
-use entity::{coaching_session_series as series_entity, coaching_sessions, notes};
+use entity::{
+    coaching_relationships, coaching_session_series as series_entity, coaching_sessions, notes,
+};
 use sea_orm::{ActiveModelTrait, ActiveValue::Unchanged, DatabaseConnection, EntityTrait, Set};
 
 use super::*;
+use crate::test_utils::sqlite::fixture::move_series_into_the_past;
 use crate::test_utils::sqlite::{
-    database, seed_action, seed_agreement, seed_coaching_session, seed_note, seed_topic,
-    within_time_limit,
+    database, mirror_migration_defaults, seed_action, seed_agreement, seed_coaching_session,
+    seed_membership, seed_note, seed_organization, seed_topic, seed_user, within_time_limit,
 };
 use entity_api::coaching_session::Landing;
 use entity_api::coaching_session_pending_reschedule::{self, Schedule};
@@ -150,6 +154,7 @@ async fn move_to_slot_moves_only_the_target_and_keeps_what_hangs_off_it() {
                 date: slot,
                 duration: Duration::from_minutes_unchecked(45),
             },
+            seeded.user_id,
         )
         .await
         .expect("the move succeeds");
@@ -196,6 +201,7 @@ async fn move_to_slot_keeps_a_date_of_its_own_while_taking_the_slot() {
                 date: own_date,
                 duration: Duration::from_minutes_unchecked(90),
             },
+            seeded.user_id,
         )
         .await
         .expect("the move succeeds");
@@ -427,6 +433,157 @@ async fn a_following_reschedule_that_failed_records_nothing() {
                 session.notice_given_at
             );
         }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn move_to_slot_records_who_moved_the_session() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed_series(&db).await;
+        let target = seed_series_session(&db, &seeded, monday()).await;
+        let bystander = seed_series_session(&db, &seeded, monday() + TimeDelta::weeks(1)).await;
+        let mover = seed_user(&db).await;
+        let slot = monday() + TimeDelta::hours(1);
+
+        entity_api::coaching_session::move_to_slot(
+            &db,
+            target.id,
+            Landing {
+                series_id: seeded.series_id,
+                slot,
+                date: slot,
+                duration: Duration::from_minutes_unchecked(60),
+            },
+            mover,
+        )
+        .await
+        .expect("the move succeeds");
+
+        assert_eq!(
+            reread(&db, target.id).await.scheduled_by_user_id,
+            Some(mover)
+        );
+        assert_eq!(reread(&db, bystander.id).await, bystander);
+    })
+    .await;
+}
+
+/// A relationship whose coach and coachee both hold a role, in a database with the
+/// migrations' defaults; returns it and its coach.
+async fn scheduling_relationship(db: &DatabaseConnection) -> (Id, Id) {
+    mirror_migration_defaults(db).await;
+    let (coach_id, coachee_id) = (seed_user(db).await, seed_user(db).await);
+    let organization_id = seed_organization(db).await;
+    for user_id in [coach_id, coachee_id] {
+        seed_membership(db, user_id, organization_id).await;
+    }
+    let now = Utc::now();
+    let relationship_id = Id::new_v4();
+    coaching_relationships::ActiveModel {
+        id: Set(relationship_id),
+        organization_id: Set(organization_id),
+        coach_id: Set(coach_id),
+        coachee_id: Set(coachee_id),
+        slug: Set(format!("relationship-{relationship_id}")),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the relationship is seeded");
+    (relationship_id, coach_id)
+}
+
+fn weekly(count: u32) -> Recurrence {
+    Recurrence {
+        frequency: Frequency::Weekly,
+        interval: 1,
+        by_weekdays: None,
+        count: Some(count),
+        until: None,
+    }
+}
+
+fn days_ahead(days: i64) -> NaiveDateTime {
+    (Utc::now() + TimeDelta::days(days))
+        .naive_utc()
+        .date()
+        .and_hms_opt(15, 0, 0)
+        .expect("a valid time")
+}
+
+async fn schedulers(db: &DatabaseConnection, series_id: Id) -> Vec<Option<Id>> {
+    entity_api::coaching_session::find_by_series_id(db, series_id)
+        .await
+        .expect("the sessions read")
+        .into_iter()
+        .map(|session| session.scheduled_by_user_id)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_created_series_records_the_acting_user_on_every_session() {
+    within_time_limit(async {
+        let db = database().await;
+        let (relationship_id, coach_id) = scheduling_relationship(&db).await;
+
+        let (series, _) = create_with_sessions(
+            &db,
+            &Config::default(),
+            relationship_id,
+            coach_id,
+            days_ahead(7),
+            weekly(3),
+            None,
+        )
+        .await
+        .expect("the series is created");
+
+        assert_eq!(schedulers(&db, series.id).await, vec![Some(coach_id); 3]);
+    })
+    .await;
+}
+
+/// The coach created the series; someone else rescheduling it is recorded on every session
+/// the reschedule materializes, and the past sessions keep the coach.
+#[tokio::test]
+async fn a_rescheduled_series_records_the_acting_user_on_the_sessions_it_creates() {
+    within_time_limit(async {
+        let db = database().await;
+        let (relationship_id, coach_id) = scheduling_relationship(&db).await;
+        let (series, _) = create_with_sessions(
+            &db,
+            &Config::default(),
+            relationship_id,
+            coach_id,
+            days_ahead(7),
+            weekly(2),
+            None,
+        )
+        .await
+        .expect("the series is created");
+        // Upcoming sessions take Postgres advisory locks; past ones are kept.
+        move_series_into_the_past(&db, series.id).await;
+        let acting_user = seed_user(&db).await;
+
+        let rescheduled = reschedule(
+            &db,
+            &Config::default(),
+            series.id,
+            acting_user,
+            days_ahead(14),
+            weekly(3),
+            None,
+        )
+        .await
+        .expect("the series is rescheduled");
+
+        assert_eq!(rescheduled.sessions.len(), 3);
+        let mut expected = vec![Some(coach_id); 2];
+        expected.extend([Some(acting_user); 3]);
+        assert_eq!(schedulers(&db, series.id).await, expected);
     })
     .await;
 }

@@ -147,6 +147,8 @@ pub async fn create(
         updated_at: Set(now.into()),
         hydrated_at: Set(coaching_session_model.hydrated_at),
         notice_given_at: Set(now.into()),
+        scheduled_by_user_id: Set(coaching_session_model.scheduled_by_user_id),
+        meeting_url_created_by_user_id: Set(coaching_session_model.meeting_url_created_by_user_id),
         ..Default::default()
     };
 
@@ -163,11 +165,12 @@ pub async fn create(
 /// happens on first read.
 ///
 /// `requested_duration` resolves once via the cascade and applies to every
-/// materialized session.
+/// materialized session. `scheduled_by` is recorded as every session's scheduler.
 pub async fn bulk_create_recurring(
     db: &impl ConnectionTrait,
     coaching_relationship_id: Id,
     coach_id: Id,
+    scheduled_by: Id,
     series_id: Id,
     dates: Vec<chrono::NaiveDateTime>,
     requested_duration: Option<Duration>,
@@ -201,6 +204,7 @@ pub async fn bulk_create_recurring(
             provider: Set(None),
             hydrated_at: Set(None),
             notice_given_at: Set(now.into()),
+            scheduled_by_user_id: Set(Some(scheduled_by)),
             created_at: Set(now.into()),
             updated_at: Set(now.into()),
             ..Default::default()
@@ -291,11 +295,12 @@ pub struct Landing {
 /// Moves a series session onto `landing`, keeping the row and everything hung off it.
 /// `ical_recurrence_id` follows the slot, since the move republishes the occurrence under
 /// the rule that produced it. `ical_sequence` advances as a column expression, so a
-/// concurrent edit cannot land on the same value.
+/// concurrent edit cannot land on the same value. `scheduled_by` becomes its scheduler.
 pub async fn move_to_slot(
     db: &impl ConnectionTrait,
     id: Id,
     landing: Landing,
+    scheduled_by: Id,
 ) -> Result<Model, Error> {
     Entity::update_many()
         .col_expr(
@@ -309,6 +314,7 @@ pub async fn move_to_slot(
             Expr::value(landing.duration.minutes()),
         )
         .col_expr(Column::IcalSequence, Expr::col(Column::IcalSequence).add(1))
+        .col_expr(Column::ScheduledByUserId, Expr::value(scheduled_by))
         .col_expr(
             Column::UpdatedAt,
             Expr::value::<DateTimeWithTimeZone>(chrono::Utc::now().into()),
@@ -751,7 +757,7 @@ pub async fn mark_hydrated(txn: &impl ConnectionTrait, target: &Model) -> Result
         hydrated_at: Set(Some(now.into())),
         notice_given_at: Unchanged(target.notice_given_at),
         scheduled_by_user_id: Unchanged(target.scheduled_by_user_id),
-        meeting_url_created_by_user_id: Unchanged(target.meeting_url_created_by_user_id),
+        meeting_url_created_by_user_id: Set(target.meeting_url_created_by_user_id),
     };
     Ok(active_model.update(txn).await?.try_into_model()?)
 }
@@ -2060,6 +2066,7 @@ mod tests {
             &db,
             relationship_id,
             Id::new_v4(),
+            Id::new_v4(),
             series_id,
             dates,
             Some(Duration::default()),
@@ -2129,6 +2136,7 @@ mod tests {
             &db,
             relationship_id,
             Id::new_v4(),
+            Id::new_v4(),
             series_id,
             dates.clone(),
             Some(Duration::default()),
@@ -2180,9 +2188,16 @@ mod tests {
     async fn bulk_create_recurring_returns_empty_for_no_dates() -> Result<(), Error> {
         // No mock query expected — the function short-circuits before touching the DB.
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-        let result =
-            bulk_create_recurring(&db, Id::new_v4(), Id::new_v4(), Id::new_v4(), vec![], None)
-                .await?;
+        let result = bulk_create_recurring(
+            &db,
+            Id::new_v4(),
+            Id::new_v4(),
+            Id::new_v4(),
+            Id::new_v4(),
+            vec![],
+            None,
+        )
+        .await?;
         assert!(result.is_empty());
         Ok(())
     }

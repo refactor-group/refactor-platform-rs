@@ -133,6 +133,7 @@ pub async fn create_with_sessions(
         &txn,
         coaching_relationship_id,
         coach_id,
+        acting_user_id,
         series.id,
         dates,
         Some(resolved_duration),
@@ -291,6 +292,7 @@ pub async fn reschedule(
     let new_sessions = coaching_session::bulk_create_recurring(
         &txn,
         updated_series.coaching_relationship_id,
+        coach_id,
         coach_id,
         updated_series.id,
         new_dates,
@@ -710,6 +712,7 @@ pub async fn reschedule_following(
                     date: landing.date,
                     duration: landing.duration,
                 },
+                coach_id,
             )
         })
         .try_collect()
@@ -717,6 +720,7 @@ pub async fn reschedule_following(
     let created = coaching_session::bulk_create_recurring(
         &txn,
         existing.coaching_relationship_id,
+        coach_id,
         coach_id,
         target.id,
         plan.extras.clone(),
@@ -2412,6 +2416,124 @@ mod tests {
         assert!(
             !statements.iter().any(|s| s.sql.contains("DELETE")),
             "a split that keeps every session deletes nothing"
+        );
+        Ok(())
+    }
+
+    /// SQLite cannot take the advisory locks, so the scheduler is checked in the writes: the
+    /// moves and the new session carry the acting user, and the session left behind on the
+    /// old series is not written.
+    #[tokio::test]
+    async fn reschedule_following_records_the_acting_user_on_moved_and_created_sessions(
+    ) -> Result<(), Error> {
+        let (series, _, sessions) = following_fixture(3);
+        let anchor = sessions[1].clone();
+        let new_start = anchor.date + chrono::Duration::hours(1);
+        let acting_user = Id::new_v4();
+        let now = chrono::Utc::now();
+        let new_series = Model {
+            id: Id::new_v4(),
+            ical_sequence: 0,
+            created_at: now.into(),
+            updated_at: now.into(),
+            ..series.clone()
+        };
+        let landed = |session: &coaching_sessions::Model, slot| coaching_sessions::Model {
+            id: session.id,
+            coaching_session_series_id: Some(new_series.id),
+            date: slot,
+            ical_recurrence_id: Some(slot),
+            scheduled_by_user_id: Some(acting_user),
+            ..session.clone()
+        };
+        let week = |n| new_start + chrono::Duration::weeks(n);
+        let moved_rows = [landed(&sessions[1], week(0)), landed(&sessions[2], week(1))];
+        let created_row = coaching_sessions::Model {
+            id: Id::new_v4(),
+            ..landed(&sessions[2], week(2))
+        };
+        let published: Vec<_> = moved_rows.iter().chain([&created_row]).cloned().collect();
+
+        let relationship = member_relationship(series.coaching_relationship_id);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![coach_row("UTC")]])
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![sessions.clone()])
+            .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
+            // the series, locked
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![sessions.clone()])
+            // the relationship, then its coachee's membership
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![both_participants_are_members(&relationship)])
+            // update_rule on the old series, then the new series' insert
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![vec![new_series.clone()]])
+            // move_to_slot × 2, then the extra slot's insert
+            .append_query_results(vec![vec![moved_rows[0].clone()]])
+            .append_query_results(vec![vec![moved_rows[1].clone()]])
+            .append_query_results(vec![vec![created_row.clone()]])
+            // published sequences: the new series, the old one, then the re-read
+            .append_query_results(vec![published.clone()])
+            .append_query_results(vec![vec![sessions[0].clone()]])
+            .append_query_results(vec![published.clone()])
+            .into_connection();
+
+        reschedule_following(
+            &db,
+            &test_config(),
+            series.id,
+            acting_user,
+            FollowingReschedule {
+                coaching_session_id: anchor.id,
+                start_at: new_start,
+                duration: None,
+                recurrence: Some(weekly_rule_count(3)),
+            },
+        )
+        .await?;
+
+        let log = db.into_transaction_log();
+        let session_writes: Vec<String> = log
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .filter(|s| {
+                s.sql
+                    .starts_with(r#"UPDATE "refactor_platform"."coaching_sessions""#)
+                    || s.sql
+                        .starts_with(r#"INSERT INTO "refactor_platform"."coaching_sessions""#)
+            })
+            .map(|s| format!("{} {:?}", s.sql, s.values))
+            .collect();
+        let schedules = |write: &String| {
+            write.contains(r#""scheduled_by_user_id""#) && write.contains(&acting_user.to_string())
+        };
+        let writes_of = |id: Id| -> Vec<&String> {
+            session_writes
+                .iter()
+                .filter(|write| write.contains(&id.to_string()))
+                .collect()
+        };
+        for moved in &sessions[1..] {
+            let moves = writes_of(moved.id);
+            assert_eq!(moves.len(), 1, "{session_writes:?}");
+            assert!(
+                schedules(moves[0]),
+                "the move records the acting user: {moves:?}"
+            );
+        }
+        let inserts: Vec<&String> = session_writes
+            .iter()
+            .filter(|write| write.starts_with("INSERT"))
+            .collect();
+        assert_eq!(inserts.len(), 1, "{session_writes:?}");
+        assert!(
+            schedules(inserts[0]),
+            "the new session records the acting user"
+        );
+        assert!(
+            writes_of(sessions[0].id).is_empty(),
+            "the session left behind keeps its scheduler: {session_writes:?}"
         );
         Ok(())
     }

@@ -1,18 +1,22 @@
 //! Which sessions the nearest window, the prior/next lookups and a user's own session
-//! lists select, against a real SQL engine.
+//! lists select, and who a created session records as its scheduler and link creator,
+//! against a real SQL engine.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{NaiveDate, Utc};
+use entity::meeting_provider::Provider;
 use entity::{coaching_relationships, coaching_sessions};
-use sea_orm::{ActiveModelTrait, DatabaseConnection, Set};
+use mockito::{Matcher, Mock, Server, ServerGuard};
+use sea_orm::{ActiveModelTrait, ActiveValue::Unchanged, DatabaseConnection, EntityTrait, Set};
 
 use super::*;
 use crate::coaching_relationship::Membership;
 use crate::coaching_relationships::Visibility;
+use crate::test_utils::sqlite::fixture::set_google_meeting_url;
 use crate::test_utils::sqlite::{
-    database, organization_of, seed_lapsed_membership, seed_membership, seed_organization,
-    seed_user, within_time_limit, LapsedMembership,
+    database, mirror_migration_defaults, organization_of, seed_lapsed_membership, seed_membership,
+    seed_organization, seed_user, within_time_limit, LapsedMembership,
 };
 
 /// 2026-10-30 14:00 UTC, the window's center in every test.
@@ -29,6 +33,7 @@ fn days_from_around(days: i64) -> NaiveDateTime {
 
 struct Relationship {
     id: Id,
+    organization_id: Id,
     coach_id: Id,
     coachee_id: Id,
 }
@@ -41,10 +46,11 @@ async fn seed_relationship(db: &DatabaseConnection) -> Relationship {
 /// A relationship with a new coachee, coached by `coach_id`.
 async fn seed_relationship_coached_by(db: &DatabaseConnection, coach_id: Id) -> Relationship {
     let (id, coachee_id) = (Id::new_v4(), seed_user(db).await);
+    let organization_id = seed_organization(db).await;
     let now = Utc::now();
     coaching_relationships::ActiveModel {
         id: Set(id),
-        organization_id: Set(seed_organization(db).await),
+        organization_id: Set(organization_id),
         coach_id: Set(coach_id),
         coachee_id: Set(coachee_id),
         slug: Set(format!("relationship-{id}")),
@@ -56,6 +62,7 @@ async fn seed_relationship_coached_by(db: &DatabaseConnection, coach_id: Id) -> 
     .expect("the relationship is seeded");
     Relationship {
         id,
+        organization_id,
         coach_id,
         coachee_id,
     }
@@ -563,4 +570,202 @@ async fn a_super_admin_or_a_member_of_both_orgs_sees_every_own_session() -> Resu
         Ok::<(), Error>(())
     })
     .await
+}
+
+/// A database with the migrations' defaults, and a relationship whose coach and coachee
+/// both hold a role in its organization.
+async fn scheduling_database() -> (DatabaseConnection, Relationship) {
+    let db = database().await;
+    mirror_migration_defaults(&db).await;
+    let rel = seed_relationship(&db).await;
+    for user_id in [rel.coach_id, rel.coachee_id] {
+        seed_membership(&db, user_id, rel.organization_id).await;
+    }
+    (db, rel)
+}
+
+/// A Tiptap stand-in that accepts every new document, and the config that points at it.
+async fn documents() -> (ServerGuard, Mock, Config) {
+    let mut server = Server::new_async().await;
+    let mock = server
+        .mock("POST", Matcher::Regex("^/api/documents/".to_string()))
+        .with_status(200)
+        .create_async()
+        .await;
+    let config = Config::from_args([
+        "test",
+        "--tiptap-auth-key=test-auth-key",
+        &format!("--tiptap-url={}", server.url()),
+    ]);
+    (server, mock, config)
+}
+
+/// A new session on `rel` as a create request carries it.
+fn new_session(rel: &Relationship, provider: Option<Provider>) -> coaching_sessions::Model {
+    let now = Utc::now();
+    coaching_sessions::Model {
+        id: Id::nil(),
+        coaching_relationship_id: rel.id,
+        coaching_session_series_id: None,
+        ical_sequence: 0,
+        ical_recurrence_id: None,
+        collab_document_name: None,
+        date: days_from_around(1),
+        duration_minutes: 60,
+        title: None,
+        meeting_url: None,
+        provider,
+        created_at: now.into(),
+        updated_at: now.into(),
+        hydrated_at: None,
+        notice_given_at: now.into(),
+        scheduled_by_user_id: None,
+        meeting_url_created_by_user_id: None,
+    }
+}
+
+async fn create_as(
+    db: &DatabaseConnection,
+    config: &Config,
+    session: coaching_sessions::Model,
+    acting_user_id: Id,
+) -> coaching_sessions::Model {
+    let created = create(
+        db,
+        config,
+        &EventPublisher::new(),
+        session,
+        acting_user_id,
+        None,
+    )
+    .await
+    .expect("the session is created");
+    stored(db, created.id).await
+}
+
+async fn stored(db: &DatabaseConnection, id: Id) -> coaching_sessions::Model {
+    coaching_sessions::Entity::find_by_id(id)
+        .one(db)
+        .await
+        .expect("the session reads")
+        .expect("the session exists")
+}
+
+/// The scheduler is whoever made the request, never the coach by default nor a value the
+/// caller put on the model.
+#[tokio::test]
+async fn create_records_the_acting_user_as_scheduler() {
+    within_time_limit(async {
+        let (db, rel) = scheduling_database().await;
+        let (_server, _documents, config) = documents().await;
+        let acting_user = seed_user(&db).await;
+        let session = coaching_sessions::Model {
+            scheduled_by_user_id: Some(seed_user(&db).await),
+            ..new_session(&rel, None)
+        };
+
+        let created = create_as(&db, &config, session, acting_user).await;
+
+        assert_eq!(created.scheduled_by_user_id, Some(acting_user));
+    })
+    .await;
+}
+
+/// A link reused from an earlier session came from the coach's account.
+#[tokio::test]
+async fn create_reusing_a_meeting_link_records_the_coach_as_its_creator() {
+    within_time_limit(async {
+        let (db, rel) = scheduling_database().await;
+        let (_server, _documents, config) = documents().await;
+        let earlier = seed_session(&db, rel.id, days_from_around(-7)).await;
+        set_google_meeting_url(&db, earlier, "https://meet.google.com/abc-defg-hij").await;
+
+        let created = create_as(
+            &db,
+            &config,
+            new_session(&rel, Some(Provider::Google)),
+            rel.coachee_id,
+        )
+        .await;
+
+        assert_eq!(
+            created.meeting_url.as_deref(),
+            Some("https://meet.google.com/abc-defg-hij")
+        );
+        assert_eq!(created.meeting_url_created_by_user_id, Some(rel.coach_id));
+    })
+    .await;
+}
+
+/// No provider, no link, so no link creator, whatever the caller put on the model.
+#[tokio::test]
+async fn create_without_a_provider_records_no_link_creator() {
+    within_time_limit(async {
+        let (db, rel) = scheduling_database().await;
+        let (_server, _documents, config) = documents().await;
+        let session = coaching_sessions::Model {
+            meeting_url_created_by_user_id: Some(rel.coach_id),
+            ..new_session(&rel, None)
+        };
+
+        let created = create_as(&db, &config, session, rel.coach_id).await;
+
+        assert_eq!(created.meeting_url, None);
+        assert_eq!(created.meeting_url_created_by_user_id, None);
+    })
+    .await;
+}
+
+/// A link the request carries was set by hand, by whoever made the request.
+#[tokio::test]
+async fn create_with_a_pasted_meeting_link_records_the_acting_user_as_its_creator() {
+    within_time_limit(async {
+        let (db, rel) = scheduling_database().await;
+        let (_server, _documents, config) = documents().await;
+        let session = coaching_sessions::Model {
+            meeting_url: Some("https://meet.example/pasted".to_string()),
+            ..new_session(&rel, None)
+        };
+
+        let created = create_as(&db, &config, session, rel.coachee_id).await;
+
+        assert_eq!(created.meeting_url_created_by_user_id, Some(rel.coachee_id));
+    })
+    .await;
+}
+
+/// Hydration stores the link's creator beside the link, and leaves the scheduler alone.
+#[tokio::test]
+async fn mark_hydrated_stores_the_link_creator_and_keeps_the_scheduler() {
+    within_time_limit(async {
+        let db = database().await;
+        let rel = seed_relationship(&db).await;
+        let scheduler = seed_user(&db).await;
+        let id = seed_session(&db, rel.id, days_from_around(1)).await;
+        coaching_sessions::ActiveModel {
+            id: Unchanged(id),
+            scheduled_by_user_id: Set(Some(scheduler)),
+            ..Default::default()
+        }
+        .update(&db)
+        .await
+        .expect("the scheduler is seeded");
+        let target = coaching_sessions::Model {
+            meeting_url: Some("https://meet.google.com/abc-defg-hij".to_string()),
+            provider: Some(Provider::Google),
+            meeting_url_created_by_user_id: Some(rel.coach_id),
+            scheduled_by_user_id: Some(seed_user(&db).await),
+            ..stored(&db, id).await
+        };
+
+        coaching_session::mark_hydrated(&db, &target)
+            .await
+            .expect("the session hydrates");
+
+        let hydrated = stored(&db, id).await;
+        assert_eq!(hydrated.meeting_url, target.meeting_url);
+        assert_eq!(hydrated.meeting_url_created_by_user_id, Some(rel.coach_id));
+        assert_eq!(hydrated.scheduled_by_user_id, Some(scheduler));
+    })
+    .await;
 }
