@@ -17,7 +17,6 @@ pub(crate) mod coaching_relationship;
 pub(crate) mod coaching_session;
 pub(crate) mod coaching_session_series;
 pub(crate) mod goal;
-pub(crate) mod jwt;
 pub(crate) mod search;
 pub(crate) mod sort;
 pub(crate) mod status;

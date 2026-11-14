@@ -2,13 +2,14 @@ use std::collections::HashMap;
 
 use axum::{
     async_trait,
-    extract::{FromRef, FromRequestParts, Path},
+    extract::{FromRef, FromRequestParts, Path, Query},
     http::{request::Parts, StatusCode},
 };
 use domain::{coaching_relationship as CoachingRelationshipApi, coaching_relationships, users, Id};
+use serde::Deserialize;
 
 use crate::{
-    extractors::{authenticated_user::AuthenticatedUser, RejectionType},
+    extractors::{authenticated_user::AuthenticatedUser, lookup_rejection, RejectionType},
     AppState,
 };
 use log::*;
@@ -66,10 +67,7 @@ where
         let relationship =
             CoachingRelationshipApi::find_by_id(state.db_conn_ref(), relationship_id)
                 .await
-                .map_err(|e| {
-                    error!("Error finding coaching relationship {relationship_id}: {e:?}");
-                    (StatusCode::NOT_FOUND, "NOT FOUND".to_string())
-                })?;
+                .map_err(|e| lookup_rejection(e.into()))?;
 
         // The organization segment addresses the relationship, so a mismatch is a
         // request for something that does not exist at that address. 404 rather than
@@ -89,6 +87,42 @@ where
     }
 }
 
+/// Relationship access for the relationship named by the `coaching_relationship_id` query
+/// parameter. A missing or invalid parameter is a 400.
+pub(crate) struct CoachingRelationshipQueryAccess(pub coaching_relationships::Model);
+
+#[derive(Debug, Deserialize)]
+struct RelationshipIdQuery {
+    coaching_relationship_id: Id,
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for CoachingRelationshipQueryAccess
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = RejectionType;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let state = AppState::from_ref(state);
+        let AuthenticatedUser(user) = AuthenticatedUser::from_request_parts(parts, &state).await?;
+
+        let Query(params) = Query::<RelationshipIdQuery>::from_request_parts(parts, &state)
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    "Missing or invalid coaching_relationship_id query parameter".to_string(),
+                )
+            })?;
+
+        authorize_relationship(&state, &user, params.coaching_relationship_id)
+            .await
+            .map(CoachingRelationshipQueryAccess)
+    }
+}
+
 /// Loads the relationship and admits `user` only if it grants them access.
 pub(crate) async fn authorize_relationship(
     state: &AppState,
@@ -100,10 +134,7 @@ pub(crate) async fn authorize_relationship(
     let relationship =
         CoachingRelationshipApi::find_by_id(state.db_conn_ref(), coaching_relationship_id)
             .await
-            .map_err(|e| {
-                error!("Error finding coaching relationship {coaching_relationship_id}: {e:?}");
-                (StatusCode::NOT_FOUND, "NOT FOUND".to_string())
-            })?;
+            .map_err(|e| lookup_rejection(e.into()))?;
 
     if !relationship.grants_access_to(user) {
         return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
@@ -125,4 +156,94 @@ pub(crate) async fn authorize_relationship_coach(
     }
 
     Ok(relationship)
+}
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::{extract::State, response::Response, routing::get, Router};
+    use sea_orm::{DbErr, MockDatabase};
+
+    use super::*;
+    use crate::extractors::relationship_access_test_support::{self as support, Caller};
+
+    async fn read_relationship(
+        CoachingRelationshipAccess(_relationship): CoachingRelationshipAccess,
+    ) -> &'static str {
+        "extracted_success"
+    }
+
+    async fn authorize_path_relationship(
+        State(state): State<AppState>,
+        AuthenticatedUser(user): AuthenticatedUser,
+        Path(relationship_id): Path<Id>,
+    ) -> Result<&'static str, RejectionType> {
+        authorize_relationship(&state, &user, relationship_id).await?;
+        Ok("authorized")
+    }
+
+    fn routes() -> Router<AppState> {
+        Router::new()
+            .route(
+                "/organizations/:organization_id/coaching_relationships/:relationship_id",
+                get(read_relationship),
+            )
+            .route(
+                "/coaching_relationships/:relationship_id",
+                get(authorize_path_relationship),
+            )
+    }
+
+    /// Signs the coach in over `db`, then sends `GET uri`.
+    async fn coach_gets(db: MockDatabase, w: &support::Fixture, uri: &str) -> Response {
+        let db = Arc::new(db.into_connection());
+        support::send(routes(), &db, &w.coach.email, "GET", uri, None).await
+    }
+
+    fn failing_lookup(w: &support::Fixture) -> MockDatabase {
+        w.signed_in(Caller::Coach)
+            .append_query_errors([DbErr::Custom("connection lost".to_string())])
+    }
+
+    #[tokio::test]
+    async fn a_failed_relationship_lookup_is_a_server_error() {
+        let w = support::fixture();
+        let uri = format!(
+            "/organizations/{}/coaching_relationships/{}",
+            w.organization_id, w.relationship.id
+        );
+
+        let response = coach_gets(failing_lookup(&w), &w, &uri).await;
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_relationship_is_not_found() {
+        let w = support::fixture();
+        let db = w
+            .signed_in(Caller::Coach)
+            .append_query_results([Vec::<coaching_relationships::Model>::new()]);
+        let uri = format!(
+            "/organizations/{}/coaching_relationships/{}",
+            w.organization_id,
+            Id::new_v4()
+        );
+
+        let response = coach_gets(db, &w, &uri).await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_failed_relationship_authorization_lookup_is_a_server_error() {
+        let w = support::fixture();
+        let uri = format!("/coaching_relationships/{}", w.relationship.id);
+
+        let response = coach_gets(failing_lookup(&w), &w, &uri).await;
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
 }

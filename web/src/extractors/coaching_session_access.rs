@@ -2,13 +2,14 @@ use std::collections::HashMap;
 
 use axum::{
     async_trait,
-    extract::{FromRef, FromRequestParts, Path},
+    extract::{FromRef, FromRequestParts, Path, Query},
     http::{request::Parts, StatusCode},
 };
 use domain::{coaching_session, Id};
+use serde::Deserialize;
 
 use crate::{
-    extractors::{authenticated_user::AuthenticatedUser, RejectionType},
+    extractors::{authenticated_user::AuthenticatedUser, lookup_rejection, RejectionType},
     AppState,
 };
 use domain::{coaching_relationships, coaching_sessions, users};
@@ -28,6 +29,23 @@ pub(crate) struct CoachingSessionContextAccess(
     pub coaching_sessions::Model,
     pub coaching_relationships::Model,
 );
+
+/// Session access for the session named by the `coaching_session_id` query parameter.
+pub(crate) struct CoachingSessionQueryAccess(
+    pub coaching_sessions::Model,
+    pub coaching_relationships::Model,
+);
+
+/// Coach-only [`CoachingSessionContextAccess`]: the caller must coach the session's relationship.
+pub(crate) struct CoachingSessionCoachAccess(
+    pub coaching_sessions::Model,
+    pub coaching_relationships::Model,
+);
+
+#[derive(Deserialize)]
+struct SessionQueryParams {
+    coaching_session_id: Id,
+}
 
 #[async_trait]
 impl<S> FromRequestParts<S> for CoachingSessionAccess
@@ -54,6 +72,57 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let (session, relationship) = authorize(parts, &AppState::from_ref(state)).await?;
         Ok(CoachingSessionContextAccess(session, relationship))
+    }
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for CoachingSessionCoachAccess
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = RejectionType;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let (session, relationship) = authorize(parts, &AppState::from_ref(state)).await?;
+        let AuthenticatedUser(user) = AuthenticatedUser::from_request_parts(parts, state).await?;
+        let operation = format!("{} {}", parts.method, parts.uri.path());
+
+        if relationship.coach_id != user.id {
+            warn!(
+                "{operation} auth denied (not coach): coaching_session_id={} relationship_id={} user_id={}",
+                session.id, relationship.id, user.id
+            );
+            return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
+        }
+
+        debug!(
+            "{operation} auth passed: coaching_session_id={} relationship_id={} user_id={}",
+            session.id, relationship.id, user.id
+        );
+        Ok(CoachingSessionCoachAccess(session, relationship))
+    }
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for CoachingSessionQueryAccess
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = RejectionType;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let state = AppState::from_ref(state);
+        let AuthenticatedUser(user) = AuthenticatedUser::from_request_parts(parts, &state).await?;
+
+        let Query(params) = Query::<SessionQueryParams>::from_request_parts(parts, &state)
+            .await
+            .map_err(|rejection| (rejection.status(), rejection.body_text()))?;
+
+        let (session, relationship) =
+            authorize_session(&state, &user, params.coaching_session_id).await?;
+        Ok(CoachingSessionQueryAccess(session, relationship))
     }
 }
 
@@ -110,10 +179,7 @@ pub(crate) async fn authorize_session(
             coaching_session_id,
         )
         .await
-        .map_err(|e| {
-            error!("Authorization error finding coaching session {coaching_session_id}: {e:?}");
-            (StatusCode::NOT_FOUND, "NOT FOUND".to_string())
-        })?;
+        .map_err(lookup_rejection)?;
 
     if !coaching_relationship.grants_access_to(user) {
         return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
@@ -130,6 +196,7 @@ mod tests {
     use crate::middleware::auth::require_auth;
 
     use super::*;
+    use crate::extractors::relationship_access_test_support::{self as support, Caller};
     use axum::{body::Body, middleware::from_fn};
     use axum::{extract::Request, routing::get, Router};
     use axum_login::{
@@ -141,7 +208,7 @@ mod tests {
     use domain::user_roles;
     use domain::users;
     use password_auth::generate_hash;
-    use sea_orm::{DatabaseBackend, MockDatabase};
+    use sea_orm::{DatabaseBackend, DbErr, MockDatabase};
     use service::config::Config;
     use time::Duration;
     use tower::ServiceExt;
@@ -216,7 +283,10 @@ mod tests {
             MockDatabase::new(DatabaseBackend::Postgres)
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
                 .append_query_results([vec![(test_user.clone(), test_role.clone())]])
-                .append_query_results(vec![vec![test_session.clone()]])
+                .append_query_results(vec![vec![(
+                    test_session.clone(),
+                    None::<coaching_relationships::Model>,
+                )]])
                 .into_connection(),
         );
 
@@ -281,5 +351,31 @@ mod tests {
 
         let response = app.clone().oneshot(protected_request).await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_failed_session_lookup_is_a_server_error() {
+        let w = support::fixture();
+        let db = Arc::new(
+            w.signed_in(Caller::Coach)
+                .append_query_errors([DbErr::Custom("connection lost".to_string())])
+                .into_connection(),
+        );
+        let routes = Router::new().route(
+            "/coaching_sessions/:coaching_session_id",
+            get(protected_route),
+        );
+
+        let response = support::send(
+            routes,
+            &db,
+            &w.coach.email,
+            "GET",
+            &format!("/coaching_sessions/{}", w.session.id),
+            None,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

@@ -7,7 +7,8 @@ use domain::{coaching_session, coaching_session_image, coaching_session_images};
 
 use crate::{
     extractors::{
-        authenticated_user::AuthenticatedUser, not_found, parse_path_id_from_parts, RejectionType,
+        authenticated_user::AuthenticatedUser, lookup_rejection, parse_path_id_from_parts,
+        RejectionType,
     },
     AppState,
 };
@@ -40,7 +41,7 @@ where
 
         let image = coaching_session_image::find_by_id(app_state.db_conn_ref(), image_id)
             .await
-            .map_err(|_| not_found())?;
+            .map_err(|e| lookup_rejection(e.into()))?;
 
         // The image itself carries no authorization; its session's relationship does.
         let (_session, coaching_relationship) =
@@ -49,12 +50,51 @@ where
                 image.coaching_session_id,
             )
             .await
-            .map_err(|_| not_found())?;
+            .map_err(lookup_rejection)?;
 
         if !coaching_relationship.grants_access_to(&authenticated_user) {
             return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
         }
 
         Ok(CoachingSessionImageAccess(image))
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::{routing::get, Router};
+    use sea_orm::DbErr;
+
+    use super::*;
+    use crate::extractors::relationship_access_test_support::{self as support, Caller};
+
+    async fn protected_route(_access: CoachingSessionImageAccess) -> &'static str {
+        "extracted_success"
+    }
+
+    #[tokio::test]
+    async fn a_failed_image_lookup_is_a_server_error() {
+        let w = support::fixture();
+        let db = Arc::new(
+            w.signed_in(Caller::Coach)
+                .append_query_errors([DbErr::Custom("connection lost".to_string())])
+                .into_connection(),
+        );
+        let routes = Router::new().route("/images/:image_id", get(protected_route));
+
+        let response = support::send(
+            routes,
+            &db,
+            &w.coach.email,
+            "GET",
+            &format!("/images/{}", domain::Id::new_v4()),
+            None,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

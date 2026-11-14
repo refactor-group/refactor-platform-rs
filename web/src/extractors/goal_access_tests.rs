@@ -1,25 +1,22 @@
-//! The goal status route through the router, sign-in and its `protect` layer, against a mock
+//! The goal status route through the router, sign-in and access check, against a mock
 //! database: an unknown status value is refused with nothing written.
 
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use axum::{middleware::from_fn_with_state, routing::put, Router};
+use axum::{routing::put, Router};
 use chrono::Utc;
 use domain::{goals, Id};
-use sea_orm::{DatabaseConnection, MockDatabase};
+use sea_orm::MockDatabase;
 
-use super::by_id;
 use crate::controller::goal_controller::update_status;
 use crate::extractors::relationship_access_test_support::{
     self as support, assert_refusal, Caller, Fixture,
 };
 use crate::AppState;
 
-fn status_routes(db: &Arc<DatabaseConnection>) -> Router<AppState> {
-    Router::new()
-        .route("/goals/:id/status", put(update_status))
-        .route_layer(from_fn_with_state(support::app_state(db), by_id))
+fn status_routes() -> Router<AppState> {
+    Router::new().route("/goals/:id/status", put(update_status))
 }
 
 /// An in-progress goal in the shared relationship.
@@ -41,7 +38,7 @@ fn goal(w: &Fixture) -> goals::Model {
     }
 }
 
-/// `caller` signed in, with the goal and its relationship queued for `by_id`.
+/// `caller` signed in, with the goal and its relationship queued for `GoalAccess`.
 fn reaching_goal(w: &Fixture, caller: Caller, goal: &goals::Model) -> MockDatabase {
     w.signed_in(caller)
         .append_query_results([vec![goal.clone()]])
@@ -54,7 +51,7 @@ async fn goal_04b_unknown_status_value_is_refused() {
     let goal = goal(&w);
     let db = Arc::new(reaching_goal(&w, Caller::Coach, &goal).into_connection());
     let response = support::send(
-        status_routes(&db),
+        status_routes(),
         &db,
         &w.coach.email,
         "PUT",

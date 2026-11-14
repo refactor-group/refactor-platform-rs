@@ -679,6 +679,25 @@ pub async fn find_by_id_with_coaching_relationship(
     })
 }
 
+/// The sessions among `ids`, each with its coaching relationship, in one query. Unknown ids
+/// are left out.
+pub async fn find_by_ids_with_coaching_relationship(
+    db: &DatabaseConnection,
+    ids: &[Id],
+) -> Result<Vec<(Model, coaching_relationships::Model)>, Error> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(Entity::find()
+        .filter(Column::Id.is_in(ids.iter().copied()))
+        .find_also_related(coaching_relationships::Entity)
+        .all(db)
+        .await?
+        .into_iter()
+        .filter_map(|(session, relationship)| relationship.map(|r| (session, r)))
+        .collect())
+}
+
 pub async fn delete(db: &impl ConnectionTrait, coaching_session_id: Id) -> Result<(), Error> {
     Entity::delete_by_id(coaching_session_id).exec(db).await?;
     Ok(())

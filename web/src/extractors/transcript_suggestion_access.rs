@@ -7,8 +7,8 @@ use domain::transcript_suggestion;
 
 use crate::{
     extractors::{
-        coaching_session_access::CoachingSessionAccess, not_found, parse_path_id_from_parts,
-        RejectionType,
+        coaching_session_access::CoachingSessionAccess, lookup_rejection, not_found,
+        parse_path_id_from_parts, RejectionType,
     },
     AppState,
 };
@@ -17,8 +17,8 @@ use crate::{
 /// `:suggestion_id` suggestion belongs to that session.
 ///
 /// Composes `CoachingSessionAccess`, then loads the suggestion and confirms it belongs to the
-/// path session. Any failure collapses to 404 so a suggestion in an inaccessible session is
-/// never revealed. On success, yields the suggestion.
+/// path session. A refusal or missing record is 404 so a suggestion in an inaccessible session
+/// is never revealed. On success, yields the suggestion.
 pub(crate) struct TranscriptSuggestionAccess {
     pub suggestion: transcript_suggestion::Model,
 }
@@ -37,7 +37,14 @@ where
         let CoachingSessionAccess(session) =
             CoachingSessionAccess::from_request_parts(parts, state)
                 .await
-                .map_err(|_| not_found())?;
+                .map_err(|rejection| {
+                    // A refusal hides the session; a server error passes through.
+                    if rejection.0.is_server_error() {
+                        rejection
+                    } else {
+                        not_found()
+                    }
+                })?;
 
         let suggestion_id = parse_path_id_from_parts(parts, "suggestion_id")
             .await
@@ -45,12 +52,75 @@ where
 
         let suggestion = transcript_suggestion::find_by_id(app_state.db_conn_ref(), suggestion_id)
             .await
-            .map_err(|_| not_found())?;
+            .map_err(|e| lookup_rejection(e.into()))?;
 
         if suggestion.coaching_session_id != session.id {
             return Err(not_found());
         }
 
         Ok(TranscriptSuggestionAccess { suggestion })
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "mock")]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::{http::StatusCode, response::Response, routing::get, Router};
+    use sea_orm::{DbErr, MockDatabase};
+
+    use super::*;
+    use crate::extractors::relationship_access_test_support::{self as support, Caller};
+
+    async fn protected_route(_access: TranscriptSuggestionAccess) -> &'static str {
+        "extracted_success"
+    }
+
+    /// Signs the coach in over `db`, then reads a suggestion in the fixture session.
+    async fn coach_reads_a_suggestion(db: MockDatabase, w: &support::Fixture) -> Response {
+        let db = Arc::new(db.into_connection());
+        let routes = Router::new().route(
+            "/coaching_sessions/:coaching_session_id/transcript_suggestions/:suggestion_id",
+            get(protected_route),
+        );
+        support::send(
+            routes,
+            &db,
+            &w.coach.email,
+            "GET",
+            &format!(
+                "/coaching_sessions/{}/transcript_suggestions/{}",
+                w.session.id,
+                domain::Id::new_v4()
+            ),
+            None,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_failed_session_lookup_is_a_server_error() {
+        let w = support::fixture();
+        let db = w
+            .signed_in(Caller::Coach)
+            .append_query_errors([DbErr::Custom("connection lost".to_string())]);
+
+        let response = coach_reads_a_suggestion(db, &w).await;
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn a_failed_suggestion_lookup_is_a_server_error() {
+        let w = support::fixture();
+        let db = w
+            .signed_in(Caller::Coach)
+            .append_query_results([vec![(w.session.clone(), w.relationship.clone())]])
+            .append_query_errors([DbErr::Custom("connection lost".to_string())]);
+
+        let response = coach_reads_a_suggestion(db, &w).await;
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

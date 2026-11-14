@@ -27,10 +27,10 @@ use sea_orm::{DatabaseConnection, IntoActiveModel, TransactionTrait};
 use service::config::Config;
 
 pub use entity_api::coaching_session::{
-    claim_due_reminders, find_by_id, find_by_series_id, find_by_user_with_includes,
-    find_counts_by_month_for_user, find_nearest_by_user_with_includes, find_next_session,
-    find_participant_ids, release_reminder_claim, CountByMonth, DueReminder, EnrichedSession,
-    IncludeOptions, NearestWindow, SessionQueryOptions,
+    claim_due_reminders, find_by_id, find_by_ids_with_coaching_relationship, find_by_series_id,
+    find_by_user_with_includes, find_counts_by_month_for_user, find_nearest_by_user_with_includes,
+    find_next_session, find_participant_ids, release_reminder_claim, CountByMonth, DueReminder,
+    EnrichedSession, IncludeOptions, NearestWindow, SessionQueryOptions,
 };
 pub use entity_api::coaching_session_display_title::SessionWithDisplayTitle;
 
@@ -2294,3 +2294,7 @@ mod pending_reschedule_sqlite_tests;
 #[cfg(test)]
 #[path = "coaching_session_update_sqlite_tests.rs"]
 mod update_sqlite_tests;
+
+#[cfg(test)]
+#[path = "coaching_session_lookup_sqlite_tests.rs"]
+mod lookup_sqlite_tests;

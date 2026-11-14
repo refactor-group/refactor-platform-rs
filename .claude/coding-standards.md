@@ -246,7 +246,7 @@ pub async fn find_by_id(db: &DatabaseConnection, id: Id) -> Result<Model, Error>
 }
 ```
 
-5. **Use `domain_error_into_response()` in protect middleware** (defined in `web/src/error.rs`) to convert domain errors into HTTP responses. This routes through `web::Error`'s `IntoResponse` impl so that all error-to-status-code mapping stays in one place.
+5. **Use `lookup_rejection()` in access extractors** (defined in `web/src/extractors/mod.rs`) to turn a failed lookup into a rejection. It takes the status from `web::Error`'s `IntoResponse` mapping so that all error-to-status-code mapping stays in one place.
 
 ### Function Argument Limits
 

@@ -16,8 +16,10 @@ use utoipa::ToSchema;
 
 use crate::controller::ApiResponse;
 use crate::extractors::{
-    action_access::ActionAccess, authenticated_user::AuthenticatedUser,
-    coaching_session_access::authorize_session, compare_api_version::CompareApiVersion,
+    action_access::ActionAccess,
+    authenticated_user::AuthenticatedUser,
+    coaching_session_access::{authorize_session, CoachingSessionQueryAccess},
+    compare_api_version::CompareApiVersion,
 };
 use crate::params::action::{IndexParams, SortField};
 use crate::params::status;
@@ -329,6 +331,7 @@ pub async fn update_status(
     responses(
         (status = 200, description = "Successfully retrieved all Actions", body = [domain::action::ActionWithAssignees]),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -337,10 +340,9 @@ pub async fn update_status(
     )
 )]
 pub async fn index(
+    CoachingSessionQueryAccess(session, _relationship): CoachingSessionQueryAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
     State(app_state): State<AppState>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
@@ -349,6 +351,7 @@ pub async fn index(
 
     // Apply default sorting parameters
     let mut params = params;
+    params.coaching_session_id = session.id;
     IndexParams::apply_sort_defaults(
         &mut params.sort_by,
         &mut params.sort_order,

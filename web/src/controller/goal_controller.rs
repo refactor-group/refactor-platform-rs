@@ -1,20 +1,22 @@
 use crate::controller::ApiResponse;
 use crate::extractors::{
-    authenticated_user::AuthenticatedUser, coaching_relationship_access::authorize_relationship,
+    authenticated_user::AuthenticatedUser,
+    coaching_relationship_access::{authorize_relationship, CoachingRelationshipQueryAccess},
     compare_api_version::CompareApiVersion,
+    goal_access::GoalAccess,
 };
 use crate::params::goal::{IndexParams, SortField};
 use crate::params::status;
 use crate::params::WithSortDefaults;
 use crate::{AppState, Error};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use domain::coaching_session as CoachingSessionApi;
 use domain::goal as GoalApi;
 use domain::goal_progress as GoalProgressApi;
-use domain::{goals::Model, Id};
+use domain::goals::Model;
 use serde_json::json;
 use service::config::ApiVersion;
 
@@ -31,6 +33,7 @@ use log::*;
     responses(
         (status = 200, description = "Successfully retrieved sessions linked to goal", body = [domain::coaching_sessions_goals::Model]),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -38,11 +41,12 @@ use log::*;
     )
 )]
 pub async fn coaching_sessions_by_goal(
+    GoalAccess { goal }: GoalAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
+    let id = goal.id;
     debug!("GET sessions linked to goal {id}");
 
     let links = GoalApi::find_coaching_sessions_by_goal_id(app_state.db_conn_ref(), id).await?;
@@ -116,6 +120,7 @@ pub async fn create(
     responses(
         (status = 200, description = "Successfully retrieved a specific Goal by its id", body = domain::goals::Model),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 404, description = "Goal not found"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -125,13 +130,10 @@ pub async fn create(
     )
 )]
 pub async fn read(
+    GoalAccess { goal }: GoalAccess,
     CompareApiVersion(_v): CompareApiVersion,
-    State(app_state): State<AppState>,
-    Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("GET Goal by id: {id}");
-
-    let goal = GoalApi::find_by_id(app_state.db_conn_ref(), id).await?;
+    debug!("GET Goal by id: {}", goal.id);
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), goal)))
 }
@@ -147,6 +149,7 @@ pub async fn read(
     responses(
         (status = 200, description = "Successfully Updated Goal", body = domain::goals::Model),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -155,12 +158,13 @@ pub async fn read(
     )
 )]
 pub async fn update(
+    GoalAccess { goal }: GoalAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(id): Path<Id>,
     Json(goal_model): Json<Model>,
 ) -> Result<impl IntoResponse, Error> {
+    let id = goal.id;
     debug!("PUT Update Goal with id: {id}");
 
     let goal = GoalApi::update(
@@ -199,12 +203,13 @@ pub async fn update(
     )
 )]
 pub async fn update_status(
+    GoalAccess { goal }: GoalAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     Query(params): Query<status::UpdateParams>,
-    Path(id): Path<Id>,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
+    let id = goal.id;
     debug!("PUT Update Goal Status with id: {id}");
 
     let goal = GoalApi::update_status(
@@ -231,6 +236,7 @@ pub async fn update_status(
     responses(
         (status = 200, description = "Successfully Deleted Goal"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 404, description = "Goal not found"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
@@ -240,11 +246,12 @@ pub async fn update_status(
     )
 )]
 pub async fn delete(
+    GoalAccess { goal }: GoalAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
+    let id = goal.id;
     debug!("DELETE Goal by id: {id}");
 
     GoalApi::delete(
@@ -271,6 +278,7 @@ pub async fn delete(
         (status = 200, description = "Successfully retrieved all Goals", body = [domain::goals::Model]),
         (status = 400, description = "Invalid query parameter value"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -279,6 +287,7 @@ pub async fn delete(
     )
 )]
 pub async fn index(
+    CoachingRelationshipQueryAccess(relationship): CoachingRelationshipQueryAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
@@ -289,6 +298,7 @@ pub async fn index(
 
     // Apply default sorting parameters
     let mut params = params;
+    params.coaching_relationship_id = relationship.id;
     IndexParams::apply_sort_defaults(
         &mut params.sort_by,
         &mut params.sort_order,
@@ -313,6 +323,7 @@ pub async fn index(
     responses(
         (status = 200, description = "Successfully retrieved goal progress metrics"),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 404, description = "Goal not found"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -321,11 +332,12 @@ pub async fn index(
     )
 )]
 pub async fn progress(
+    GoalAccess { goal }: GoalAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(id): Path<Id>,
 ) -> Result<impl IntoResponse, Error> {
+    let id = goal.id;
     debug!("GET Goal progress metrics for id: {id}");
 
     let metrics = GoalProgressApi::progress_metrics(app_state.db_conn_ref(), id).await?;

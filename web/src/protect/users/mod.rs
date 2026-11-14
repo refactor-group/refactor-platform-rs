@@ -8,7 +8,6 @@ use axum::{
 use domain::Id;
 use log::*;
 
-pub(crate) mod actions;
 pub(crate) mod coaching_sessions;
 pub(crate) mod goals;
 pub(crate) mod organizations;

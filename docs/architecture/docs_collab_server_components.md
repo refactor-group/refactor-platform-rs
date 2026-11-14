@@ -42,7 +42,7 @@ flowchart TB
     subgraph APPWEB["web"]
       approuter["router.rs"]
       jwtCtrl["controller/jwt_controller<br/>GET /jwt/generate_collab_token"]
-      protect["protect/jwt<br/>authz guard"]
+      protect["extractors/coaching_session_access<br/>CoachingSessionQueryAccess"]
     end
     subgraph APPDOM["domain"]
       djwt["jwt::generate_collab_token<br/>HS256 sign · sub=docName · allowedDocumentNames"]
@@ -109,7 +109,7 @@ flowchart TB
 ## The three cross-component contracts
 
 1. **Token mint (FE → app backend).** `useCollaborationToken` calls
-   `GET /jwt/generate_collab_token`; `jwt_controller` (behind the `protect/jwt` guard)
+   `GET /jwt/generate_collab_token`; `jwt_controller` (behind the `CoachingSessionQueryAccess` extractor)
    delegates to `domain::jwt::generate_collab_token`, which HS256-signs a JWT whose
    `sub` is the document name and whose `allowedDocumentNames` claim scopes it to
    `{org}.{rel}.*`. The token is handed to the provider unchanged.

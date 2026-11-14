@@ -1,7 +1,9 @@
 use crate::controller::ApiResponse;
 use crate::extractors::{
-    agreement_access::AgreementAccess, authenticated_user::AuthenticatedUser,
-    coaching_session_access::authorize_session, compare_api_version::CompareApiVersion,
+    agreement_access::AgreementAccess,
+    authenticated_user::AuthenticatedUser,
+    coaching_session_access::{authorize_session, CoachingSessionQueryAccess},
+    compare_api_version::CompareApiVersion,
 };
 use crate::params::agreement::{IndexParams, SortField};
 use crate::params::WithSortDefaults;
@@ -148,6 +150,7 @@ pub async fn update(
     responses(
         (status = 200, description = "Successfully retrieved all Agreements", body = [domain::agreements::Model]),
         (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
         (status = 405, description = "Method not allowed"),
         (status = 503, description = "Service temporarily unavailable")
     ),
@@ -156,18 +159,18 @@ pub async fn update(
     )
 )]
 pub async fn index(
+    Query(params): Query<IndexParams>,
+    CoachingSessionQueryAccess(session, _relationship): CoachingSessionQueryAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
-    // TODO: create a new Extractor to authorize the user to access
-    // the data requested
     State(app_state): State<AppState>,
-    Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET all Agreements");
     debug!("Filter Params: {params:?}");
 
     // Apply default sorting parameters
     let mut params = params;
+    params.coaching_session_id = session.id;
     IndexParams::apply_sort_defaults(&mut params.sort_by, &mut params.sort_order, SortField::Body);
 
     let agreements = AgreementApi::find_by(app_state.db_conn_ref(), params).await?;

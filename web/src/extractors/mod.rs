@@ -3,10 +3,12 @@ pub(crate) mod agreement_access;
 pub(crate) mod authenticated_user;
 pub(crate) mod coaching_relationship_access;
 pub(crate) mod coaching_session_access;
+pub(crate) mod coaching_session_goal_access;
 pub(crate) mod coaching_session_image_access;
 pub(crate) mod coaching_session_series_access;
 pub(crate) mod coaching_session_topic_access;
 pub(crate) mod compare_api_version;
+pub(crate) mod goal_access;
 pub(crate) mod note_access;
 pub(crate) mod organization_admin_access;
 pub(crate) mod organization_member_access;
@@ -15,6 +17,7 @@ pub(crate) mod search_access;
 pub(crate) mod super_admin_access;
 pub(crate) mod svix_signature;
 pub(crate) mod transcript_suggestion_access;
+pub(crate) mod user_actions_access;
 
 #[cfg(test)]
 #[cfg(feature = "mock")]
@@ -27,9 +30,13 @@ mod session_renewal_tests;
 use axum::{
     extract::{FromRequestParts, Path},
     http::{request::Parts, StatusCode},
+    response::IntoResponse,
 };
+use domain::error::Error as DomainError;
 use domain::Id;
 use std::collections::HashMap;
+
+use crate::Error;
 
 type RejectionType = (StatusCode, String);
 
@@ -66,4 +73,13 @@ pub(crate) async fn parse_path_id_from_parts(
 /// The uniform 404 rejection: an inaccessible resource looks identical to a missing one.
 pub(crate) fn not_found() -> RejectionType {
     (StatusCode::NOT_FOUND, "NOT FOUND".to_string())
+}
+
+/// A failed lookup, answered with the status the app gives that error anywhere else.
+pub(crate) fn lookup_rejection(err: DomainError) -> RejectionType {
+    let status = Error::Domain(err).into_response().status();
+    (
+        status,
+        status.canonical_reason().unwrap_or_default().to_uppercase(),
+    )
 }

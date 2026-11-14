@@ -12,7 +12,7 @@ use axum::{
 };
 use chrono::Utc;
 use domain::{actions, Id};
-use sea_orm::{DatabaseConnection, MockDatabase};
+use sea_orm::{DatabaseConnection, DbErr, MockDatabase};
 
 use crate::controller::action_controller::{create, delete, read, update, update_status};
 use crate::extractors::relationship_access_test_support::{
@@ -105,6 +105,22 @@ async fn act_30b_unknown_status_value_is_refused() {
         &format!("/actions/{}/status?value=finished", w.action.id),
         None,
         StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_failed_action_lookup_is_a_server_error() {
+    let w = fixture();
+    assert_refused(
+        "failed action lookup",
+        w.signed_in(Caller::Coach)
+            .append_query_errors([DbErr::Custom("connection lost".to_string())]),
+        &w.coach.email,
+        "GET",
+        &format!("/actions/{}", w.action.id),
+        None,
+        StatusCode::SERVICE_UNAVAILABLE,
     )
     .await;
 }
