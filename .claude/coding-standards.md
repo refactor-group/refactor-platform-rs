@@ -355,8 +355,6 @@ When adding a resource, copy the shape of the closest exemplar for each layer, t
 - **Extractor**: `web/src/extractors/goal_access.rs`. Parses the path id, loads the resource, authorizes against its relationship, and returns it.
 - **Controller**: `update` in `web/src/controller/goal_controller.rs`. Takes the extractor, calls one domain function, maps the result.
 
-Older slices predate these patterns; don't copy their shape.
-
 Reuse rules:
 
 - Before adding a helper, type, extractor, or error variant, search the workspace for one that does the job.
