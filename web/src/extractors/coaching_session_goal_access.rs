@@ -64,7 +64,7 @@ async fn authorize_sessions(
         coaching_session_ids,
     )
     .await
-    .map_err(lookup_rejection)?
+    .map_err(|e| lookup_rejection(e.into()))?
     .into_iter()
     .map(|(session, relationship)| (session.id, relationship))
     .collect();

@@ -27,10 +27,10 @@ use sea_orm::{DatabaseConnection, IntoActiveModel, TransactionTrait};
 use service::config::Config;
 
 pub use entity_api::coaching_session::{
-    claim_due_reminders, find_by_id, find_by_series_id, find_by_user_with_includes,
-    find_counts_by_month_for_user, find_nearest_by_user_with_includes, find_next_session,
-    find_participant_ids, release_reminder_claim, CountByMonth, DueReminder, EnrichedSession,
-    IncludeOptions, NearestWindow, SessionQueryOptions,
+    claim_due_reminders, find_by_id, find_by_ids_with_coaching_relationship, find_by_series_id,
+    find_by_user_with_includes, find_counts_by_month_for_user, find_nearest_by_user_with_includes,
+    find_next_session, find_participant_ids, release_reminder_claim, CountByMonth, DueReminder,
+    EnrichedSession, IncludeOptions, NearestWindow, SessionQueryOptions,
 };
 pub use entity_api::coaching_session_display_title::SessionWithDisplayTitle;
 
@@ -55,14 +55,6 @@ pub async fn find_by_id_with_coaching_relationship(
     id: Id,
 ) -> Result<(Model, coaching_relationships::Model), Error> {
     Ok(coaching_session::find_by_id_with_coaching_relationship(db, id).await?)
-}
-
-/// Wraps the entity_api batch loader, as [`find_by_id_with_coaching_relationship`] does.
-pub async fn find_by_ids_with_coaching_relationship(
-    db: &DatabaseConnection,
-    ids: &[Id],
-) -> Result<Vec<(Model, coaching_relationships::Model)>, Error> {
-    Ok(coaching_session::find_by_ids_with_coaching_relationship(db, ids).await?)
 }
 
 #[derive(Debug, Clone)]
