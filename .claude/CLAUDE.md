@@ -4,7 +4,7 @@
 
 **Code Implementation/Editing** → Read `.claude/coding-standards.md` FIRST
 **Pull Request Operations** → Read `.claude/pr-instructions.md` FIRST
-**Code Review** (any review of a diff, including `/code-review`) → Read `REVIEW.md` FIRST; for a security review also read `.github/security-review-instructions.txt`. A local `/code-review` or `/security-review` at level `high` or above also builds the page in `.claude/review-page.md`
+**Code Review** (any review of a diff, including `/code-review`) → Read `REVIEW.md` FIRST; for a security review also read `.github/security-review-instructions.txt`. A local `/code-review` or `/security-review` at level `high` or above also builds the page in `.claude/review-page.md`. Every local review runs `git fetch origin` first and reviews against `origin/main`, never the local `main` branch, which is shared and often behind: a pull request is `gh pr diff <number>`, a branch is `git diff origin/main...<branch>`. Read `REVIEW.md` and the other review rules from the base with `git show origin/main:<path>`, not from the working tree. With no pull request number or branch given while on `main`, there is nothing to review: ask for one
 **Database Migrations** → Read the Database Migrations section below FIRST
 **Manual Testing** → Read `docs/test-plans/README.md` FIRST (which plan to run, what it needs)
 
