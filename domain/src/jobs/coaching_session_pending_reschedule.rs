@@ -17,10 +17,9 @@
 //! Without Resend or the rescheduled template the sweep still runs, dropping due rows
 //! unsent, since a pending row suppresses the session's reminder.
 //!
-//! A delivered send stamps notice with `coaching_session::mark_notice_given` alone, leaving
-//! the row to `coaching_session_pending_reschedule::complete`, which keeps it when a newer change landed
-//! mid-send. Each participant whose copy went out has their own notice restamped, even when
-//! the coachee's failed and the send is retried.
+//! A delivered send leaves the row to `coaching_session_pending_reschedule::complete`, which
+//! keeps it when a newer change landed mid-send. Each participant whose copy went out has
+//! their own notice restamped, even when the coachee's failed and the send is retried.
 //!
 //! See [`crate::jobs`] for why this is a sweep rather than an enqueued job.
 
@@ -127,9 +126,6 @@ impl Sweep {
         {
             Ok(RescheduleOutcome::Sent(delivered)) if delivered.coachee == Delivery::Sent => {
                 let handled = settle(db, claimed, current).await;
-                if let Err(e) = coaching_session::mark_notice_given(db, id).await {
-                    warn!("[coaching-session-pending-reschedule] could not record notice for session {id}: {e:?}");
-                }
                 record_participant_notice(db, &session, &delivered).await;
                 handled
             }

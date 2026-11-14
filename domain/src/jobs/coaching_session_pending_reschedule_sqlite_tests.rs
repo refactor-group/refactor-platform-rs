@@ -48,8 +48,15 @@ async fn reschedule(db: &DatabaseConnection, id: Id, start: NaiveDateTime) {
     row.update(db).await.expect("the session moves");
 }
 
-async fn notice_given_at(db: &DatabaseConnection, id: Id) -> DateTime<FixedOffset> {
-    session(db, id).await.notice_given_at
+/// When the session's coachee was last told its start, if ever.
+async fn coachee_notice(db: &DatabaseConnection, id: Id) -> Option<DateTime<FixedOffset>> {
+    let relationship =
+        coaching_relationships::Entity::find_by_id(session(db, id).await.coaching_relationship_id)
+            .one(db)
+            .await
+            .expect("the relationship reads")
+            .expect("the relationship exists");
+    notices(db, id).await.get(&relationship.coachee_id).copied()
 }
 
 async fn pending(
@@ -71,6 +78,7 @@ fn schedule(date: NaiveDateTime) -> Schedule {
 /// A session a week out whose participant is not in its organization; returns its id
 /// and start.
 async fn upcoming_session_without_members(db: &DatabaseConnection) -> (Id, NaiveDateTime, Id) {
+    mirror_migration_defaults(db).await;
     let (id, user_id) = seed_coaching_session(db).await;
     let start = (Utc::now() + TimeDelta::days(7))
         .naive_utc()
@@ -128,7 +136,7 @@ async fn a_due_change_is_emailed_and_settled() {
             .await;
         let db = database().await;
         let (id, _) = moved_session(&db, settled()).await;
-        let before = notice_given_at(&db, id).await;
+        let before = coachee_notice(&db, id).await;
         let ctx = context(db, sending(&server));
 
         let outcome = Sweep::from_config(&ctx.config)
@@ -139,7 +147,7 @@ async fn a_due_change_is_emailed_and_settled() {
         resend.assert_async().await;
         assert_eq!((outcome.processed, outcome.attempted), (1, 1));
         assert_eq!(pending(&ctx.db, id).await, None);
-        assert!(notice_given_at(&ctx.db, id).await > before);
+        assert!(coachee_notice(&ctx.db, id).await > before);
     })
     .await;
 }
@@ -158,7 +166,7 @@ async fn a_coachee_no_longer_in_the_organization_is_not_emailed() {
         let db = database().await;
         let (id, start, _) = upcoming_session_without_members(&db).await;
         move_and_record(&db, id, start, settled()).await;
-        let before = notice_given_at(&db, id).await;
+        let before = coachee_notice(&db, id).await;
         let ctx = context(db, sending(&server));
 
         let outcome = Sweep::from_config(&ctx.config)
@@ -169,7 +177,7 @@ async fn a_coachee_no_longer_in_the_organization_is_not_emailed() {
         resend.assert_async().await;
         assert_eq!((outcome.processed, outcome.attempted), (1, 1));
         assert_eq!(pending(&ctx.db, id).await, None);
-        assert_eq!(notice_given_at(&ctx.db, id).await, before);
+        assert_eq!(coachee_notice(&ctx.db, id).await, before);
     })
     .await;
 }
@@ -221,7 +229,7 @@ async fn a_failed_send_is_retried_then_given_up() {
             .await;
         let db = database().await;
         let (id, _) = moved_session(&db, settled()).await;
-        let before = notice_given_at(&db, id).await;
+        let before = coachee_notice(&db, id).await;
         let ctx = context(db, sending(&server));
         let sweep = Sweep::from_config(&ctx.config);
 
@@ -231,7 +239,7 @@ async fn a_failed_send_is_retried_then_given_up() {
         let row = pending(&ctx.db, id).await.expect("the change is retried");
         assert_eq!(row.attempts, 1);
         assert_eq!(row.claim_id, None);
-        assert_eq!(notice_given_at(&ctx.db, id).await, before);
+        assert_eq!(coachee_notice(&ctx.db, id).await, before);
 
         for _ in 1..coaching_session_pending_reschedule::MAX_ATTEMPTS {
             sweep.run(&ctx).await.expect("the tick runs");
@@ -273,7 +281,7 @@ async fn drain_mode_drops_due_changes_without_sending() {
     within_time_limit(async {
         let db = database().await;
         let (id, _) = moved_session(&db, settled()).await;
-        let before = notice_given_at(&db, id).await;
+        let before = coachee_notice(&db, id).await;
         let ctx = context(db, Config::from_args(["test"]));
         let sweep = Sweep::from_config(&ctx.config);
         assert_eq!(sweep.mode, Mode::Drain);
@@ -281,7 +289,7 @@ async fn drain_mode_drops_due_changes_without_sending() {
         sweep.run(&ctx).await.expect("the tick runs");
 
         assert_eq!(pending(&ctx.db, id).await, None);
-        assert_eq!(notice_given_at(&ctx.db, id).await, before);
+        assert_eq!(coachee_notice(&ctx.db, id).await, before);
     })
     .await;
 }
@@ -364,7 +372,7 @@ async fn moved_session_between_two(db: &DatabaseConnection, members: Members) ->
         duration_minutes: Set(60),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
-        notice_given_at: Set(now.into()),
+        scheduled_by_user_id: Set(coach_id),
         ..Default::default()
     }
     .insert(db)
@@ -408,7 +416,7 @@ async fn a_change_told_to_both_restamps_each_participants_notice() {
         let _resend = resend_answering(&mut server, 200).await;
         let db = database().await;
         let (id, coach_id, coachee_id) = moved_session_between_two(&db, Members::Both).await;
-        let (before, column) = (notices(&db, id).await, notice_given_at(&db, id).await);
+        let before = notices(&db, id).await;
         let ctx = context(db, sending(&server));
 
         Sweep::from_config(&ctx.config)
@@ -419,7 +427,6 @@ async fn a_change_told_to_both_restamps_each_participants_notice() {
         let after = notices(&ctx.db, id).await;
         assert!(after[&coach_id] > before[&coach_id]);
         assert!(after[&coachee_id] > before[&coachee_id]);
-        assert!(notice_given_at(&ctx.db, id).await > column);
     })
     .await;
 }
@@ -453,7 +460,7 @@ async fn a_coachee_no_longer_in_the_organization_leaves_only_the_coach_told() {
         let _resend = resend_answering(&mut server, 200).await;
         let db = database().await;
         let (id, coach_id, coachee_id) = moved_session_between_two(&db, Members::CoachOnly).await;
-        let (before, column) = (notices(&db, id).await, notice_given_at(&db, id).await);
+        let before = notices(&db, id).await;
         let ctx = context(db, sending(&server));
 
         Sweep::from_config(&ctx.config)
@@ -464,7 +471,6 @@ async fn a_coachee_no_longer_in_the_organization_leaves_only_the_coach_told() {
         let after = notices(&ctx.db, id).await;
         assert!(after[&coach_id] > before[&coach_id]);
         assert_eq!(after[&coachee_id], before[&coachee_id]);
-        assert_eq!(notice_given_at(&ctx.db, id).await, column);
     })
     .await;
 }
@@ -476,7 +482,7 @@ async fn a_change_told_to_nobody_restamps_no_notice() {
         let _resend = resend_answering(&mut server, 500).await;
         let db = database().await;
         let (id, _, _) = moved_session_between_two(&db, Members::Both).await;
-        let (before, column) = (notices(&db, id).await, notice_given_at(&db, id).await);
+        let before = notices(&db, id).await;
         let ctx = context(db, sending(&server));
 
         Sweep::from_config(&ctx.config)
@@ -485,7 +491,6 @@ async fn a_change_told_to_nobody_restamps_no_notice() {
             .expect("the tick runs");
 
         assert_eq!(notices(&ctx.db, id).await, before);
-        assert_eq!(notice_given_at(&ctx.db, id).await, column);
     })
     .await;
 }

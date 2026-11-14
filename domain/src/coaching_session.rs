@@ -23,6 +23,7 @@ use entity_api::{
     query::{IntoQueryFilterMap, QuerySort},
 };
 use log::*;
+use sea_orm::prelude::DateTimeWithTimeZone;
 use sea_orm::{ConnectionTrait, DatabaseConnection, IntoActiveModel, TransactionTrait};
 use service::config::Config;
 
@@ -106,7 +107,7 @@ pub async fn create(
     let coach_id = coaching_relationship.coach_id;
 
     coaching_session_model.date = SessionDate::new(coaching_session_model.date)?.into_inner();
-    coaching_session_model.scheduled_by_user_id = Some(acting_user_id);
+    coaching_session_model.scheduled_by_user_id = acting_user_id;
     // A link the request carries was set by hand; one attached below comes from the coach.
     coaching_session_model.meeting_url_created_by_user_id = coaching_session_model
         .meeting_url
@@ -132,10 +133,17 @@ pub async fn create(
     // deleting the Tiptap document we just created.
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
     let result: Result<(Model, Vec<DomainEvent>), Error> = async {
+        let now = Utc::now().into();
         let session =
             coaching_session::create(&txn, coaching_session_model, coach_id, requested_duration)
                 .await?;
-        stamp_inserted_notice(&txn, &coaching_relationship, std::slice::from_ref(&session)).await?;
+        stamp_inserted_notice(
+            &txn,
+            &coaching_relationship,
+            std::slice::from_ref(&session),
+            now,
+        )
+        .await?;
 
         let ctx = CoachingSessionHydrationContext {
             txn: &txn,
@@ -205,17 +213,15 @@ pub async fn bulk_create_recurring(
     .await?)
 }
 
-/// Stamps both participants' notice on just-inserted `sessions`, each at the time its insert
-/// recorded on the session.
+/// Stamps both participants' notice on just-inserted `sessions`, all at `at`, the time taken
+/// for their insert.
 pub(crate) async fn stamp_inserted_notice(
     db: &impl ConnectionTrait,
     relationship: &coaching_relationships::Model,
     sessions: &[Model],
+    at: DateTimeWithTimeZone,
 ) -> Result<(), Error> {
-    let notices: Vec<_> = sessions
-        .iter()
-        .map(|session| (session.id, session.notice_given_at))
-        .collect();
+    let notices: Vec<_> = sessions.iter().map(|session| (session.id, at)).collect();
     Ok(coaching_session_notice::stamp_many(
         db,
         &notices,
@@ -453,10 +459,7 @@ async fn apply_update(
         let member_ids = coaching_relationship::notify_member_ids(&txn, &relationship).await?;
         ensure_coachee_is_member(&relationship, &member_ids)?;
         if let Some(scheduler) = acting_user {
-            update_map.insert(
-                "scheduled_by_user_id".to_string(),
-                Some(Some(scheduler).into()),
-            );
+            update_map.insert("scheduled_by_user_id".to_string(), Some(scheduler.into()));
         }
     }
     if let Some(setter) = acting_user.filter(|_| proposed.meeting_url != old.meeting_url) {
@@ -491,24 +494,6 @@ async fn apply_update(
     }
     txn.commit().await.map_err(entity_api::error::Error::from)?;
     Ok(updated)
-}
-
-/// The single place that records participants were told a session's schedule: stamps
-/// notice and settles its pending reschedule against `sent`. The sweep calls
-/// `mark_notice_given` directly. Best-effort: a failure is logged, and a failed stamp
-/// yields `None`.
-pub(crate) async fn record_notice(db: &DatabaseConnection, sent: &Model) -> Option<Model> {
-    record_announced(db, sent).await;
-    let id = sent.id;
-    coaching_session::mark_notice_given(db, id)
-        .await
-        .inspect_err(|e| {
-            warn!(
-                "Told the participants session {id} moved but could not record it, so they \
-                 may be reminded about a time they already have: {e:?}"
-            )
-        })
-        .ok()
 }
 
 /// Settles a session's pending reschedule once participants were told `sent`, keeping any
@@ -922,8 +907,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: Some(now.into()),
-            notice_given_at: chrono::Utc::now().into(),
-            scheduled_by_user_id: None,
+            scheduled_by_user_id: Id::nil(),
             meeting_url_created_by_user_id: None,
         }
     }
@@ -1685,7 +1669,7 @@ mod tests {
         let relationship = test_coaching_relationship(coach_id, org.id);
         let session = coaching_sessions::Model {
             hydrated_at: None,
-            scheduled_by_user_id: Some(Id::new_v4()),
+            scheduled_by_user_id: Id::new_v4(),
             ..test_session(relationship.id, None)
         };
         let url = "https://meet.google.com/existing-url".to_string();
@@ -1805,8 +1789,7 @@ mod tests {
             hydrated_at: Some(
                 chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z").unwrap(),
             ),
-            notice_given_at: chrono::Utc::now().into(),
-            scheduled_by_user_id: None,
+            scheduled_by_user_id: Id::nil(),
             meeting_url_created_by_user_id: None,
         };
 
@@ -1928,12 +1911,10 @@ mod tests {
 
         let input = coaching_sessions::Model {
             hydrated_at: None,
-            notice_given_at: chrono::Utc::now().into(),
             ..test_session(Id::new_v4(), None)
         };
         let hydrated_row = coaching_sessions::Model {
             hydrated_at: Some(chrono::Utc::now().into()),
-            notice_given_at: chrono::Utc::now().into(),
             ..input.clone()
         };
 
@@ -1981,7 +1962,6 @@ mod tests {
         let relationship = test_coaching_relationship(Id::new_v4(), org.id);
         let input = coaching_sessions::Model {
             hydrated_at: None,
-            notice_given_at: chrono::Utc::now().into(),
             ..test_session(relationship.id, None)
         };
         let refetched = input.clone();
@@ -2051,7 +2031,6 @@ mod tests {
 
         let row_template = coaching_sessions::Model {
             hydrated_at: None,
-            notice_given_at: chrono::Utc::now().into(),
             ..test_session(relationship_id, None)
         };
         let row1 = coaching_sessions::Model {
@@ -2104,7 +2083,6 @@ mod tests {
         let session = coaching_sessions::Model {
             collab_document_name: None,
             hydrated_at: None,
-            notice_given_at: chrono::Utc::now().into(),
             ..test_session(Id::new_v4(), None)
         };
 
@@ -2159,7 +2137,6 @@ mod tests {
         let session = coaching_sessions::Model {
             collab_document_name: None,
             hydrated_at: None,
-            notice_given_at: chrono::Utc::now().into(),
             ..test_session(Id::new_v4(), None)
         };
         let bumped = coaching_sessions::Model {
@@ -2224,7 +2201,6 @@ mod tests {
         let session = coaching_sessions::Model {
             collab_document_name: None,
             hydrated_at: None,
-            notice_given_at: chrono::Utc::now().into(),
             ..test_session(Id::new_v4(), None)
         };
         let bumped = coaching_sessions::Model {
@@ -2391,7 +2367,6 @@ mod tests {
         let session = coaching_sessions::Model {
             collab_document_name: None,
             hydrated_at: None,
-            notice_given_at: chrono::Utc::now().into(),
             ..test_session(relationship.id, None)
         };
 

@@ -125,8 +125,7 @@ async fn seed_session(
         created_at: Set(at.into()),
         updated_at: Set(at.into()),
         hydrated_at: Set(None),
-        notice_given_at: Set(at.into()),
-        scheduled_by_user_id: Set(None),
+        scheduled_by_user_id: Set(Id::nil()),
         meeting_url_created_by_user_id: Set(None),
     }
     .insert(db)

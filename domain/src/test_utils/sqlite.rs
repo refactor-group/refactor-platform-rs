@@ -121,7 +121,6 @@ const MIGRATION_DEFAULTS: &[(Option<&str>, &str, &str)] = &[
     (None, "id", "randomblob(16)"),
     (Some("coaching_session_series"), "ical_sequence", "0"),
     (Some("coaching_sessions"), "ical_sequence", "0"),
-    (Some("coaching_sessions"), "notice_given_at", NOW),
     (Some("coaching_session_topics"), "status", "'open'"),
     (Some("users"), "timezone", "'UTC'"),
     (
@@ -364,8 +363,7 @@ pub async fn seed_coaching_session(db: &DatabaseConnection) -> (Id, Id) {
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         hydrated_at: Set(None),
-        notice_given_at: Set(now.into()),
-        scheduled_by_user_id: Set(None),
+        scheduled_by_user_id: Set(user_id),
         meeting_url_created_by_user_id: Set(None),
     }
     .insert(db)
@@ -641,8 +639,7 @@ pub async fn seed_lapsed_membership(
             created_at: Set(now.into()),
             updated_at: Set(now.into()),
             hydrated_at: Set(None),
-            notice_given_at: Set(now.into()),
-            scheduled_by_user_id: Set(None),
+            scheduled_by_user_id: Set(coach_id),
             meeting_url_created_by_user_id: Set(None),
         }
         .insert(db)

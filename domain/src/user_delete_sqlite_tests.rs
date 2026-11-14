@@ -84,8 +84,7 @@ async fn seed_session(db: &DatabaseConnection, coaching_relationship_id: Id) -> 
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         hydrated_at: Set(None),
-        notice_given_at: Set(now.into()),
-        scheduled_by_user_id: Set(None),
+        scheduled_by_user_id: Set(Id::nil()),
         meeting_url_created_by_user_id: Set(None),
     }
     .insert(db)

@@ -249,6 +249,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
     // jim@refactorgroup.com coaches james.hodapp@gmail.com (Refactor Group)
     coaching_sessions::ActiveModel {
         coaching_relationship_id: Set(jimrg_james_coaching_relationship.id.clone().unwrap()),
+        scheduled_by_user_id: Set(jimrg_james_coaching_relationship.coach_id.clone().unwrap()),
         date: Set(now.naive_local()),
         collab_document_name: Set(None),
         created_at: Set(now.into()),
@@ -261,6 +262,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
 
     coaching_sessions::ActiveModel {
         coaching_relationship_id: Set(jimrg_james_coaching_relationship.id.clone().unwrap()),
+        scheduled_by_user_id: Set(jimrg_james_coaching_relationship.coach_id.clone().unwrap()),
         date: Set(now.naive_local().checked_sub_days(Days::new(7)).unwrap()),
         collab_document_name: Set(None),
         created_at: Set(now.into()),
@@ -274,6 +276,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
     // Caleb is coach
     coaching_sessions::ActiveModel {
         coaching_relationship_id: Set(caleb_jim_coaching_relationship.id.clone().unwrap()),
+        scheduled_by_user_id: Set(caleb_jim_coaching_relationship.coach_id.clone().unwrap()),
         date: Set(now.naive_local()),
         collab_document_name: Set(None),
         created_at: Set(now.into()),
@@ -286,6 +289,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
 
     coaching_sessions::ActiveModel {
         coaching_relationship_id: Set(caleb_jim_coaching_relationship.id.clone().unwrap()),
+        scheduled_by_user_id: Set(caleb_jim_coaching_relationship.coach_id.clone().unwrap()),
         date: Set(now.naive_local()),
         collab_document_name: Set(None),
         created_at: Set(now.into()),
@@ -299,6 +303,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
     // Caleb coaches Dinah
     coaching_sessions::ActiveModel {
         coaching_relationship_id: Set(caleb_dinah_coaching_relationship.id.clone().unwrap()),
+        scheduled_by_user_id: Set(caleb_dinah_coaching_relationship.coach_id.clone().unwrap()),
         date: Set(now.naive_local()),
         collab_document_name: Set(None),
         created_at: Set(now.into()),
@@ -311,6 +316,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
 
     coaching_sessions::ActiveModel {
         coaching_relationship_id: Set(caleb_dinah_coaching_relationship.id.clone().unwrap()),
+        scheduled_by_user_id: Set(caleb_dinah_coaching_relationship.coach_id.clone().unwrap()),
         date: Set(now.naive_local().checked_add_days(Days::new(7)).unwrap()),
         collab_document_name: Set(None),
         created_at: Set(now.into()),
@@ -324,6 +330,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
     // Jim is coach
     coaching_sessions::ActiveModel {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
+        scheduled_by_user_id: Set(jim_caleb_coaching_relationship.coach_id.clone().unwrap()),
         date: Set(now.naive_local()),
         collab_document_name: Set(None),
         created_at: Set(now.into()),
@@ -336,6 +343,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
 
     coaching_sessions::ActiveModel {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
+        scheduled_by_user_id: Set(jim_caleb_coaching_relationship.coach_id.clone().unwrap()),
         date: Set(now.naive_local().checked_add_days(Days::new(7)).unwrap()),
         collab_document_name: Set(None),
         created_at: Set(now.into()),
@@ -348,6 +356,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
 
     coaching_sessions::ActiveModel {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
+        scheduled_by_user_id: Set(jim_caleb_coaching_relationship.coach_id.clone().unwrap()),
         date: Set(now.naive_local().checked_add_days(Days::new(14)).unwrap()),
         collab_document_name: Set(None),
         created_at: Set(now.into()),
@@ -360,6 +369,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
 
     coaching_sessions::ActiveModel {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
+        scheduled_by_user_id: Set(jim_caleb_coaching_relationship.coach_id.clone().unwrap()),
         date: Set(now.naive_local().checked_add_days(Days::new(21)).unwrap()),
         collab_document_name: Set(None),
         created_at: Set(now.into()),
@@ -372,6 +382,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
 
     coaching_sessions::ActiveModel {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
+        scheduled_by_user_id: Set(jim_caleb_coaching_relationship.coach_id.clone().unwrap()),
         date: Set(now.naive_local().checked_sub_days(Days::new(7)).unwrap()),
         collab_document_name: Set(None),
         created_at: Set(now.into()),
@@ -384,6 +395,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
 
     coaching_sessions::ActiveModel {
         coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
+        scheduled_by_user_id: Set(jim_caleb_coaching_relationship.coach_id.clone().unwrap()),
         date: Set(now.naive_local().checked_sub_days(Days::new(14)).unwrap()),
         collab_document_name: Set(None),
         created_at: Set(now.into()),
@@ -397,6 +409,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
     // Jim coaches Other User (Acme): one past and one upcoming 1-off.
     coaching_sessions::ActiveModel {
         coaching_relationship_id: Set(jim_other_coaching_relationship.id.clone().unwrap()),
+        scheduled_by_user_id: Set(jim_other_coaching_relationship.coach_id.clone().unwrap()),
         date: Set(now.naive_local().checked_sub_days(Days::new(3)).unwrap()),
         collab_document_name: Set(None),
         created_at: Set(now.into()),
@@ -409,6 +422,7 @@ pub async fn seed_database(db: &DatabaseConnection) {
 
     coaching_sessions::ActiveModel {
         coaching_relationship_id: Set(jim_other_coaching_relationship.id.clone().unwrap()),
+        scheduled_by_user_id: Set(jim_other_coaching_relationship.coach_id.clone().unwrap()),
         date: Set(now.naive_local().checked_add_days(Days::new(5)).unwrap()),
         collab_document_name: Set(None),
         created_at: Set(now.into()),

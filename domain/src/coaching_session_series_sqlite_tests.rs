@@ -93,8 +93,7 @@ async fn seed_series_session_with_id(
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         hydrated_at: Set(Some(now.into())),
-        notice_given_at: Set(now.into()),
-        scheduled_by_user_id: Set(None),
+        scheduled_by_user_id: Set(Id::nil()),
         meeting_url_created_by_user_id: Set(None),
     }
     .insert(db)
@@ -340,6 +339,7 @@ async fn find_by_series_id_breaks_date_ties_by_id() {
 
 /// Two moved series sessions, each with a pending reschedule from an hour earlier.
 async fn moved_with_pending_reschedules(db: &DatabaseConnection) -> Vec<coaching_sessions::Model> {
+    mirror_migration_defaults(db).await;
     let seeded = seed_series(db).await;
     let mut moved = Vec::new();
     for week in 0..2 {
@@ -396,6 +396,7 @@ async fn a_following_reschedule_skipping_the_coachee_settles_without_stamping_no
     within_time_limit(async {
         let db = database().await;
         let moved = moved_with_pending_reschedules(&db).await;
+        let before = all_notices(&db, &moved).await;
 
         let relationship = relationship_of(&db, &moved[0]).await;
         let returned = record_following_notice(
@@ -409,12 +410,12 @@ async fn a_following_reschedule_skipping_the_coachee_settles_without_stamping_no
         assert_eq!(returned, moved);
         for session in &moved {
             assert!(!pending(&db, session.id).await, "the move settles");
-            assert_eq!(
-                reread(&db, session.id).await.notice_given_at,
-                session.notice_given_at,
-                "nobody was told, so notice is not stamped"
-            );
         }
+        assert_eq!(
+            all_notices(&db, &moved).await,
+            before,
+            "nobody was told, so notice is not stamped"
+        );
     })
     .await;
 }
@@ -425,6 +426,7 @@ async fn a_following_reschedule_that_told_the_coachee_settles_and_stamps_notice(
     within_time_limit(async {
         let db = database().await;
         let moved = moved_with_pending_reschedules(&db).await;
+        let before = all_notices(&db, &moved).await;
 
         let relationship = relationship_of(&db, &moved[0]).await;
         let returned = record_following_notice(
@@ -435,9 +437,13 @@ async fn a_following_reschedule_that_told_the_coachee_settles_and_stamps_notice(
         )
         .await;
 
-        for (session, returned) in moved.iter().zip(&returned) {
+        assert_eq!(returned, moved);
+        let after = all_notices(&db, &moved).await;
+        for ((session, before), after) in moved.iter().zip(&before).zip(&after) {
             assert!(!pending(&db, session.id).await, "the move settles");
-            assert!(returned.notice_given_at > session.notice_given_at);
+            for user_id in [relationship.coach_id, relationship.coachee_id] {
+                assert!(after.get(&user_id) > before.get(&user_id));
+            }
         }
     })
     .await;
@@ -449,6 +455,7 @@ async fn a_following_reschedule_that_failed_records_nothing() {
     within_time_limit(async {
         let db = database().await;
         let moved = moved_with_pending_reschedules(&db).await;
+        let before = all_notices(&db, &moved).await;
 
         let relationship = relationship_of(&db, &moved[0]).await;
         record_following_notice(
@@ -461,11 +468,8 @@ async fn a_following_reschedule_that_failed_records_nothing() {
 
         for session in &moved {
             assert!(pending(&db, session.id).await, "the move stays pending");
-            assert_eq!(
-                reread(&db, session.id).await.notice_given_at,
-                session.notice_given_at
-            );
         }
+        assert_eq!(all_notices(&db, &moved).await, before);
     })
     .await;
 }
@@ -494,10 +498,7 @@ async fn move_to_slot_records_who_moved_the_session() {
         .await
         .expect("the move succeeds");
 
-        assert_eq!(
-            reread(&db, target.id).await.scheduled_by_user_id,
-            Some(mover)
-        );
+        assert_eq!(reread(&db, target.id).await.scheduled_by_user_id, mover);
         assert_eq!(reread(&db, bystander.id).await, bystander);
     })
     .await;
@@ -511,7 +512,7 @@ async fn move_to_slot_without_a_scheduler_keeps_the_one_recorded() {
         let scheduler = seed_user(&db).await;
         let target = coaching_sessions::ActiveModel {
             id: Unchanged(seed_series_session(&db, &seeded, monday()).await.id),
-            scheduled_by_user_id: Set(Some(scheduler)),
+            scheduled_by_user_id: Set(scheduler),
             ..Default::default()
         }
         .update(&db)
@@ -536,7 +537,7 @@ async fn move_to_slot_without_a_scheduler_keeps_the_one_recorded() {
         let moved = reread(&db, target.id).await;
         assert_eq!(moved.date, slot);
         assert_eq!(moved.ical_recurrence_id, Some(slot));
-        assert_eq!(moved.scheduled_by_user_id, Some(scheduler));
+        assert_eq!(moved.scheduled_by_user_id, scheduler);
     })
     .await;
 }
@@ -585,7 +586,7 @@ fn days_ahead(days: i64) -> NaiveDateTime {
         .expect("a valid time")
 }
 
-async fn schedulers(db: &DatabaseConnection, series_id: Id) -> Vec<Option<Id>> {
+async fn schedulers(db: &DatabaseConnection, series_id: Id) -> Vec<Id> {
     entity_api::coaching_session::find_by_series_id(db, series_id)
         .await
         .expect("the sessions read")
@@ -612,7 +613,7 @@ async fn a_created_series_records_the_acting_user_on_every_session() {
         .await
         .expect("the series is created");
 
-        assert_eq!(schedulers(&db, series.id).await, vec![Some(coach_id); 3]);
+        assert_eq!(schedulers(&db, series.id).await, vec![coach_id; 3]);
     })
     .await;
 }
@@ -652,8 +653,8 @@ async fn a_rescheduled_series_records_the_acting_user_on_the_sessions_it_creates
         .expect("the series is rescheduled");
 
         assert_eq!(rescheduled.sessions.len(), 3);
-        let mut expected = vec![Some(coach_id); 2];
-        expected.extend([Some(acting_user); 3]);
+        let mut expected = vec![coach_id; 2];
+        expected.extend([acting_user; 3]);
         assert_eq!(schedulers(&db, series.id).await, expected);
     })
     .await;
@@ -668,10 +669,21 @@ async fn notices(db: &DatabaseConnection, session_id: Id) -> BTreeMap<Id, DateTi
         .collect()
 }
 
-/// Every created session holds a notice row for the coach and the coachee, each at the
-/// session's own notice.
+/// Each session's notice rows, in `sessions` order.
+async fn all_notices(
+    db: &DatabaseConnection,
+    sessions: &[coaching_sessions::Model],
+) -> Vec<BTreeMap<Id, DateTimeWithTimeZone>> {
+    stream::iter(sessions)
+        .then(|session| notices(db, session.id))
+        .collect()
+        .await
+}
+
+/// Every created session holds a notice row for the coach and the coachee, all at one time
+/// taken for the insert.
 #[tokio::test]
-async fn a_created_series_stamps_both_participants_notice_on_every_session() {
+async fn a_created_series_stamps_both_participants_notice_at_one_time() {
     within_time_limit(async {
         let db = database().await;
         let (relationship_id, coach_id) = scheduling_relationship(&db).await;
@@ -690,15 +702,10 @@ async fn a_created_series_stamps_both_participants_notice_on_every_session() {
 
         let coachee_id = relationship_of(&db, &sessions[0]).await.coachee_id;
         assert_eq!(sessions.len(), 3);
-        for session in &sessions {
-            let stored = reread(&db, session.id).await;
-            assert_eq!(
-                notices(&db, session.id).await,
-                BTreeMap::from([
-                    (coach_id, stored.notice_given_at),
-                    (coachee_id, stored.notice_given_at),
-                ])
-            );
+        let stamped = all_notices(&db, &sessions).await;
+        let at = stamped[0][&coach_id];
+        for notices in stamped {
+            assert_eq!(notices, BTreeMap::from([(coach_id, at), (coachee_id, at)]));
         }
     })
     .await;

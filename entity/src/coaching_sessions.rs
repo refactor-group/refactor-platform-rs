@@ -41,16 +41,10 @@ pub struct Model {
     #[serde(skip_deserializing)]
     #[schema(value_type = String, format = DateTime)] // Applies to OpenAPI schema
     pub hydrated_at: Option<DateTimeWithTimeZone>,
-    /// When the participants were last told this start: at booking, then on every
-    /// reschedule whose email actually went out. The reminder sweep measures notice from
-    /// here, so a session moved to less than the lead away is not reminded about. An
-    /// undelivered reschedule leaves it alone, since the alternative is a coachee who
-    /// gets neither the email nor the reminder.
-    #[serde(skip_deserializing)]
-    pub notice_given_at: DateTimeWithTimeZone,
-    /// Who last created or rescheduled the session. `None` only on rows written before it was recorded.
+    /// Who last created or rescheduled the session. Never read from a request; `create`
+    /// sets it to the acting user.
     #[serde(skip)]
-    pub scheduled_by_user_id: Option<Id>,
+    pub scheduled_by_user_id: Id,
     /// Whose account made `meeting_url`; `None` when there is no link.
     #[serde(skip)]
     pub meeting_url_created_by_user_id: Option<Id>,
