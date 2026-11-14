@@ -31,9 +31,9 @@ access, different fields).
 
 ## Phases
 
-Each phase is its own PR; phase 1 is two (migration and backfill, then code). Order: S, 0, M,
-0b, 0c, 0d, 1, 2, 3, 4, 4b, E, 5, 6. Phases S and 0 can run in parallel. Done: S (#476), 0 (#480),
-M (#481), 0b (#492), 0c (#495).
+Each phase is its own PR; phase 1 is three (migration and backfill, then code, then cleanup).
+Order: S, 0, M, 0b, 0c, 0d, 1, 2, 3, 4, 4b, E, 5, 6. Phases S and 0 can run in parallel. Done:
+S (#476), 0 (#480), M (#481), 0b (#492), 0c (#495), 0d (#496).
 
 **S. Relationship authorization fixes.** Its own security PR, ahead of the colleague work, so
 the phase 0b baseline records the corrected behavior. Notes, agreements, actions, goals and
@@ -116,16 +116,21 @@ onto extractors: "is this my own user" on the `/users/{user_id}` routes becomes
 
 **1. Record who scheduled each session** (no visible change).
 
-- `scheduled_by_user_id` on `coaching_sessions`, set on create and reschedule; base for
-  coachee-requested sessions. Null for existing sessions (either participant could create one
-  and nothing recorded who); when null, the .ics timezone and meeting account fall back to the
-  coach, as today.
-- Record who created each meeting link (#419), backfilled only where provable.
-- Per-person notice: replace `coaching_sessions.notice_given_at` with a record per (session,
-  participant), stamped when that person's email goes out, backfilled from the column. The
-  reminder sweep compares each recipient against their own stamp.
-- Deploy order: migration plus backfill first, while old code reads the old column; then the
-  reading code. Both migrations have working down migrations.
+- `scheduled_by_user_id` on `coaching_sessions` (named like the series'
+  `created_by_user_id`), set on create and reschedule; base for coachee-requested sessions.
+  Backfilled with the coach: until now only the coach could create or reschedule a session.
+- `meeting_url_created_by_user_id` on `coaching_sessions`: whose account made the meeting
+  link (#419). Backfilled with the coach where `meeting_url` is set, since every link so far
+  came from the coach's account or was set by the coach; null with no link.
+- Per-person notice: a new `coaching_session_notices` table, one row per (session,
+  participant) with that person's `notice_given_at`, stamped when their email goes out and
+  backfilled for both participants from the column. The reminder sweep compares each
+  recipient against their own stamp.
+- Three PRs, deployed in order. 1a: migrations and backfill only, while the running code
+  still writes and reads the old column. 1b: the code that writes and reads the new data,
+  deployed right after 1a (traffic is low enough that rows written between the two deploys
+  are not worth a catch-up). 1c: a cleanup migration that fills any `scheduled_by_user_id`
+  still null with the coach, makes it NOT NULL, and drops `coaching_sessions.notice_given_at`. Every migration has a working down migration.
 
 **2. Add `kind`** (no visible change). Postgres enum, default `coaching`, owned by `refactor`.
 `has_authority(user_id)` on the Model. `kind` in the OpenAPI schema. Down migration.
