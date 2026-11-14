@@ -345,6 +345,19 @@ txn.commit().await?;  // Rolls back automatically if we never reach here
 - **service/**: Orchestration layer, complex operations spanning multiple entities
 - **web/**: HTTP handlers, request/response types, routing
 
+### Exemplar Slices and Reuse
+
+When adding a resource, copy the shape of the closest existing slice, then look for what already exists before writing anything new.
+
+- **Passthrough slice** (no business rules): `note`. `entity_api/src/note.rs` holds the queries, `domain/src/note.rs` is a one-line `pub use`, `web/src/controller/note_controller.rs` is the thin handler, `web/src/extractors/note_access.rs` is the authorization extractor.
+- **Orchestration slice** (transaction, side effects, events): `goal`. `domain/src/goal.rs` begins a transaction, writes, commits, then publishes a `DomainEvent`; `web/src/controller/goal_controller.rs` and `web/src/extractors/goal_access.rs` stay thin.
+
+Reuse rules:
+
+- Before adding a helper, type, extractor, or error variant, search the workspace for one that does the job.
+- Logic that differs from existing logic only by a type, a field, or a function name becomes one function; reach for a generic or trait next, and a macro last.
+- Prefer the smaller form when it is no harder to read: no wrappers that only forward a call, no one-use bindings, no clones a borrow would avoid.
+
 ### Type Re-Export Boundary
 
 Entity types — whether table Models (e.g., `coaching_sessions::Model`) or non-table value types that constrain column values (e.g., `Provider`, `Id`, `Duration`) — are declared once in the `entity` crate and re-exported up through each layer at the `lib.rs` level. The web layer accesses them via `domain::<module>::<Type>` and **must never reach across into `entity_api` or `entity` directly**.
@@ -469,6 +482,8 @@ When reviewing or writing code, ensure:
 - [ ] Imports are organized (std, external, internal)
 - [ ] Naming follows Rust conventions
 - [ ] Functional/combinator style preferred over procedural loops where it reads clearly
+- [ ] New code follows the closest exemplar slice (see Exemplar Slices and Reuse) and reuses existing helpers, types, extractors, and error variants
+- [ ] No logic repeated across the diff or against existing code where one shared function would serve
 - [ ] Comments are compact but useful (explain *why*, one short line, not absent)
 - [ ] Error handling uses `Result` and `?` operator appropriately
 - [ ] No `.unwrap()` or `.expect()` in production code paths

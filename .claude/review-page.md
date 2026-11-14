@@ -14,11 +14,11 @@ when it would be empty; never add others.
 1. **Header.** One small line: `<owner>/<repo> #<number> · <short sha> · <code|security> review,
    level <level>` (a branch name in place of the number for a branch). Then the pull
    request's title as the page title.
-2. **Verdict.** The review's verdict line: "2 important, 1 nit.", "Nothing to fix.", a count
+2. **Verdict.** The review's verdict line: "2 important, 1 design, 1 nit.", "Nothing to fix.", a count
    of security findings, or "No security findings."
 3. **Scope.** A bold `Scope:` label, then one or two sentences: the diff reviewed (whole, or
    since which sha), how many files, and which finders ran.
-4. **Findings.** One card per finding: its severity tag (`important`, `nit` or
+4. **Findings.** One card per finding: its severity tag (`important`, `design`, `nit` or
    `pre-existing` for a code review, `high` or `medium` for a security review), file and
    line, what is wrong, and the fix. A `pre-existing` finding doesn't count in the Verdict.
    With no findings, the single line "None."
