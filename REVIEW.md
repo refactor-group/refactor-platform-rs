@@ -27,7 +27,7 @@ This backend holds private coaching notes, transcripts, and goals. In order of c
 
 Past failure, judge whether the new code belongs. A `Design` finding needs no failing scenario; it needs a pointer to existing code at `file:line` that the change should have followed or reused. No pointer, no finding.
 
-1. **Fit.** Find the closest existing slice (exemplars are listed in `.claude/coding-standards.md`) and compare layout, naming, error routing, and test style. A new pattern where an existing one serves is a finding; name the existing one.
+1. **Fit.** Find the closest exemplar for each layer the change touches (listed in `.claude/coding-standards.md`) and compare layout, naming, error routing, and test style. A new pattern where an existing one serves is a finding; name the existing one.
 2. **Reuse.** Before accepting a new helper, type, extractor, or error variant, search the workspace for one that already does the job. Name it.
 3. **Repetition.** Logic that appears twice in the diff, or once in the diff and once elsewhere, differing only by a type, a field, or a function name. Suggest the smallest shared form: a function first, then a generic or trait, a macro last. Flag a class once and list every instance.
 4. **Shape.** Prefer expressions to statements. A `for` loop feeding a `mut` accumulator, a `let mut` that a combinator, `let-else`, or `matches!` would remove, or an `if let` ladder that `?` would flatten. The chain must still read like a sentence; when it does not, the loop stands and is not a finding.
