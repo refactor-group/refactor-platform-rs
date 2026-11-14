@@ -2,10 +2,13 @@
 //! sessions it treats as holding content, and who series writes record as each session's
 //! scheduler, against a real SQL engine.
 
+use std::collections::BTreeMap;
+
 use chrono::{NaiveDate, TimeDelta, Utc};
 use entity::{
     coaching_relationships, coaching_session_series as series_entity, coaching_sessions, notes,
 };
+use sea_orm::prelude::DateTimeWithTimeZone;
 use sea_orm::{ActiveModelTrait, ActiveValue::Unchanged, DatabaseConnection, EntityTrait, Set};
 
 use super::*;
@@ -369,6 +372,25 @@ async fn moved_with_pending_reschedules(db: &DatabaseConnection) -> Vec<coaching
     moved
 }
 
+async fn relationship_of(
+    db: &DatabaseConnection,
+    session: &coaching_sessions::Model,
+) -> coaching_relationships::Model {
+    coaching_relationships::Entity::find_by_id(session.coaching_relationship_id)
+        .one(db)
+        .await
+        .expect("the relationship reads")
+        .expect("the relationship exists")
+}
+
+/// A send that did `delivery` for both participants.
+fn told_both(delivery: emails::Delivery) -> emails::Delivered {
+    emails::Delivered {
+        coachee: delivery,
+        coach: delivery,
+    }
+}
+
 async fn pending(db: &DatabaseConnection, id: Id) -> bool {
     coaching_session_pending_reschedule::find(db, id)
         .await
@@ -384,8 +406,14 @@ async fn a_following_reschedule_skipping_the_coachee_settles_without_stamping_no
         let db = database().await;
         let moved = moved_with_pending_reschedules(&db).await;
 
-        let returned =
-            record_following_notice(&db, emails::Delivery::NoLongerAMember, moved.clone()).await;
+        let relationship = relationship_of(&db, &moved[0]).await;
+        let returned = record_following_notice(
+            &db,
+            &relationship,
+            told_both(emails::Delivery::NoLongerAMember),
+            moved.clone(),
+        )
+        .await;
 
         assert_eq!(returned, moved);
         for session in &moved {
@@ -407,7 +435,14 @@ async fn a_following_reschedule_that_told_the_coachee_settles_and_stamps_notice(
         let db = database().await;
         let moved = moved_with_pending_reschedules(&db).await;
 
-        let returned = record_following_notice(&db, emails::Delivery::Sent, moved.clone()).await;
+        let relationship = relationship_of(&db, &moved[0]).await;
+        let returned = record_following_notice(
+            &db,
+            &relationship,
+            told_both(emails::Delivery::Sent),
+            moved.clone(),
+        )
+        .await;
 
         for (session, returned) in moved.iter().zip(&returned) {
             assert!(!pending(&db, session.id).await, "the move settles");
@@ -424,7 +459,14 @@ async fn a_following_reschedule_that_failed_records_nothing() {
         let db = database().await;
         let moved = moved_with_pending_reschedules(&db).await;
 
-        record_following_notice(&db, emails::Delivery::Failed, moved.clone()).await;
+        let relationship = relationship_of(&db, &moved[0]).await;
+        record_following_notice(
+            &db,
+            &relationship,
+            told_both(emails::Delivery::Failed),
+            moved.clone(),
+        )
+        .await;
 
         for session in &moved {
             assert!(pending(&db, session.id).await, "the move stays pending");
@@ -584,6 +626,112 @@ async fn a_rescheduled_series_records_the_acting_user_on_the_sessions_it_creates
         let mut expected = vec![Some(coach_id); 2];
         expected.extend([Some(acting_user); 3]);
         assert_eq!(schedulers(&db, series.id).await, expected);
+    })
+    .await;
+}
+
+async fn notices(db: &DatabaseConnection, session_id: Id) -> BTreeMap<Id, DateTimeWithTimeZone> {
+    entity_api::coaching_session_notice::find_by_coaching_session(db, session_id)
+        .await
+        .expect("the notices read")
+        .into_iter()
+        .map(|row| (row.user_id, row.notice_given_at))
+        .collect()
+}
+
+/// Every created session holds a notice row for the coach and the coachee, each at the
+/// session's own notice.
+#[tokio::test]
+async fn a_created_series_stamps_both_participants_notice_on_every_session() {
+    within_time_limit(async {
+        let db = database().await;
+        let (relationship_id, coach_id) = scheduling_relationship(&db).await;
+
+        let (_, sessions) = create_with_sessions(
+            &db,
+            &Config::default(),
+            relationship_id,
+            coach_id,
+            days_ahead(7),
+            weekly(3),
+            None,
+        )
+        .await
+        .expect("the series is created");
+
+        let coachee_id = relationship_of(&db, &sessions[0]).await.coachee_id;
+        assert_eq!(sessions.len(), 3);
+        for session in &sessions {
+            let stored = reread(&db, session.id).await;
+            assert_eq!(
+                notices(&db, session.id).await,
+                BTreeMap::from([
+                    (coach_id, stored.notice_given_at),
+                    (coachee_id, stored.notice_given_at),
+                ])
+            );
+        }
+    })
+    .await;
+}
+
+/// A "this and following" email restamps the moved sessions' notice of each participant it
+/// reached, and nobody else's.
+#[tokio::test]
+async fn a_following_reschedule_restamps_only_the_participants_it_reached() {
+    within_time_limit(async {
+        for (coachee, coach) in [
+            (emails::Delivery::Sent, emails::Delivery::Failed),
+            (emails::Delivery::Failed, emails::Delivery::Sent),
+            (emails::Delivery::NoLongerAMember, emails::Delivery::Sent),
+            (emails::Delivery::Sent, emails::Delivery::NoLongerAMember),
+        ] {
+            let db = database().await;
+            let (relationship_id, coach_id) = scheduling_relationship(&db).await;
+            let (_, moved) = create_with_sessions(
+                &db,
+                &Config::default(),
+                relationship_id,
+                coach_id,
+                days_ahead(7),
+                weekly(2),
+                None,
+            )
+            .await
+            .expect("the series is created");
+            let relationship = relationship_of(&db, &moved[0]).await;
+            let before: Vec<_> = stream::iter(&moved)
+                .then(|session| notices(&db, session.id))
+                .collect()
+                .await;
+
+            record_following_notice(
+                &db,
+                &relationship,
+                emails::Delivered { coachee, coach },
+                moved.clone(),
+            )
+            .await;
+
+            for (session, before) in moved.iter().zip(&before) {
+                let after = notices(&db, session.id).await;
+                for (user_id, delivery) in [
+                    (relationship.coachee_id, coachee),
+                    (relationship.coach_id, coach),
+                ] {
+                    match delivery {
+                        emails::Delivery::Sent => assert!(
+                            after[&user_id] > before[&user_id],
+                            "{coachee:?}/{coach:?}: a participant told is restamped"
+                        ),
+                        _ => assert_eq!(
+                            after[&user_id], before[&user_id],
+                            "{coachee:?}/{coach:?}: a participant not told keeps their notice"
+                        ),
+                    }
+                }
+            }
+        }
     })
     .await;
 }

@@ -1,6 +1,6 @@
 //! When each participant was last told a session's start.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use chrono::Utc;
 use entity::coaching_session_notices::{ActiveModel, Column, Entity};
@@ -20,21 +20,39 @@ pub async fn stamp(
     user_ids: &[Id],
     at: DateTimeWithTimeZone,
 ) -> Result<(), Error> {
+    stamp_many(db, &[(coaching_session_id, at)], user_ids).await
+}
+
+/// [`stamp`] for many sessions in one statement, each `(session, at)` at its own time.
+pub async fn stamp_many(
+    db: &impl ConnectionTrait,
+    notices: &[(Id, DateTimeWithTimeZone)],
+    user_ids: &[Id],
+) -> Result<(), Error> {
     // Postgres rejects an upsert that touches one row twice, as a self-coaching pair would.
-    let unique_user_ids: BTreeSet<Id> = user_ids.iter().copied().collect();
-    if unique_user_ids.is_empty() {
+    let unique: BTreeMap<(Id, Id), DateTimeWithTimeZone> = notices
+        .iter()
+        .flat_map(|&(session_id, at)| {
+            user_ids
+                .iter()
+                .map(move |&user_id| ((session_id, user_id), at))
+        })
+        .collect();
+    if unique.is_empty() {
         return Ok(());
     }
 
     let now: DateTimeWithTimeZone = Utc::now().into();
-    let rows = unique_user_ids.into_iter().map(|user_id| ActiveModel {
-        id: Set(Id::new_v4()),
-        coaching_session_id: Set(coaching_session_id),
-        user_id: Set(user_id),
-        notice_given_at: Set(at),
-        created_at: Set(now),
-        updated_at: Set(now),
-    });
+    let rows = unique
+        .into_iter()
+        .map(|((coaching_session_id, user_id), at)| ActiveModel {
+            id: Set(Id::new_v4()),
+            coaching_session_id: Set(coaching_session_id),
+            user_id: Set(user_id),
+            notice_given_at: Set(at),
+            created_at: Set(now),
+            updated_at: Set(now),
+        });
 
     Entity::insert_many(rows)
         .on_conflict(

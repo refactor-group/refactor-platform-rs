@@ -437,11 +437,14 @@ struct ClaimedPair {
 ///
 /// A session with a pending reschedule is skipped until participants are told its time.
 ///
-/// Notice is `date - notice_given_at`: how long before the session the participants were
-/// last told its time, at booking and again on every reschedule. A session starting less
-/// than a lead after that is skipped, because the email that told them just said what a
-/// reminder would. Moving it further out restamps nothing, so the original notice stands;
-/// moving it to a time more than a lead away earns a reminder for the new start.
+/// Notice is `date` minus when the coachee, the reminder's recipient, was last told its
+/// time, at booking and again on every reschedule that reached them. It is the later of
+/// their own row in `coaching_session_notices` and the session's `notice_given_at`, since
+/// sessions written before the rows existed have only the column. The row is joined on its
+/// unique key, so it adds no rows to the upsert. A session starting less than a lead after
+/// that is skipped, because the email that told them just said what a reminder would.
+/// Moving it further out restamps nothing, so the original notice stands; moving it to a
+/// time more than a lead away earns a reminder for the new start.
 ///
 /// The membership test only ever removes people. Removal leaves relationships and
 /// sessions in place, so without it a former member is mailed session details forever. A
@@ -476,13 +479,16 @@ pub async fn claim_due_reminders(
                LEFT JOIN refactor_platform.coaching_session_reminders csr
                  ON csr.coaching_session_id = cs.id
                 AND csr.user_id = cr.coachee_id
+               LEFT JOIN refactor_platform.coaching_session_notices n
+                 ON n.coaching_session_id = cs.id
+                AND n.user_id = cr.coachee_id
                WHERE cs.date > $1
                  AND cs.date <= $2
                  -- Notice already given: skip a session starting less than a lead after
-                 -- the participants were last told its time, since the email that told
-                 -- them said the same thing a reminder would. `$2 - $1` is the lead, so
-                 -- this cannot drift from the window above.
-                 AND cs.date > (cs.notice_given_at AT TIME ZONE 'UTC')
+                 -- the coachee was last told its time, since the email that told them
+                 -- said the same thing a reminder would. `GREATEST` ignores a missing
+                 -- row. `$2 - $1` is the lead, so this cannot drift from the window above.
+                 AND cs.date > (GREATEST(cs.notice_given_at, n.notice_given_at) AT TIME ZONE 'UTC')
                                + ($2::timestamp - $1::timestamp)
                  AND csr.sent_for_start IS DISTINCT FROM cs.date
                  -- A reminder must not announce a time participants haven't been told.
@@ -1797,9 +1803,23 @@ mod tests {
         let sql = format!("{:?}", db.into_transaction_log()[0]);
 
         assert!(
-            sql.contains("cs.date > (cs.notice_given_at AT TIME ZONE 'UTC')"),
-            "notice must be measured from when the participants were last told the time, \
-             not from when the session was booked: a reschedule resets it, got: {sql}"
+            sql.contains(
+                "cs.date > (GREATEST(cs.notice_given_at, n.notice_given_at) AT TIME ZONE 'UTC')"
+            ),
+            "notice must be measured from when the coachee was last told the time, by their \
+             own row or the session's column, not from when the session was booked: a \
+             reschedule resets it, got: {sql}"
+        );
+        let (_, join) = sql
+            .split_once("LEFT JOIN refactor_platform.coaching_session_notices n")
+            .expect("the coachee's notice row is joined");
+        let (join, _) = join
+            .split_once("WHERE")
+            .expect("the join ends at the filter");
+        assert!(
+            join.contains("n.coaching_session_id = cs.id")
+                && join.contains("n.user_id = cr.coachee_id"),
+            "the notice must be the reminder recipient's own, keyed to the coachee, got: {join}"
         );
         assert!(
             sql.contains("($2::timestamp - $1::timestamp)"),

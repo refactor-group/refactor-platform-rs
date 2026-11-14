@@ -6,6 +6,7 @@
 //! typed [`SeriesRule`] struct, never with `serde_json::Value` directly.
 
 use crate::coaching_relationship::{self, ensure_coachee_is_member};
+use crate::coaching_relationships;
 use crate::coaching_session;
 use crate::coaching_session_image;
 use crate::coaching_sessions;
@@ -139,6 +140,7 @@ pub async fn create_with_sessions(
         Some(resolved_duration),
     )
     .await?;
+    coaching_session::stamp_inserted_notice(&txn, &relationship, &sessions).await?;
 
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
@@ -299,6 +301,7 @@ pub async fn reschedule(
         Some(resolved_duration),
     )
     .await?;
+    coaching_session::stamp_inserted_notice(&txn, &relationship, &new_sessions).await?;
 
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
@@ -727,6 +730,7 @@ pub async fn reschedule_following(
         Some(plan.duration()),
     )
     .await?;
+    coaching_session::stamp_inserted_notice(&txn, &relationship, &created).await?;
     entity_api::coaching_session::bulk_delete_by_ids(&txn, &leftover_ids).await?;
 
     let previous_overrides = plan.previous_overrides(&existing_rule);
@@ -774,7 +778,7 @@ pub async fn reschedule_following(
     )
     .await;
 
-    let moved = record_following_notice(db, told, moved).await;
+    let moved = record_following_notice(db, &relationship, told, moved).await;
 
     Ok(Rescheduled {
         series: target,
@@ -784,15 +788,19 @@ pub async fn reschedule_following(
 }
 
 /// Records what a "this and following" email did for the moved sessions, returning them as
-/// the response carries them. Created sessions were stamped on insert. Moved ones are
-/// stamped once the email reached the coachee; a coachee no longer in the organization is
-/// owed nothing, so their pending reschedules settle unstamped.
+/// the response carries them. Created sessions were stamped on insert. Each participant the
+/// email reached has their own notice restamped on the moved ones; the session's notice is
+/// stamped once it reached the coachee. A coachee no longer in the organization is owed
+/// nothing, so their pending reschedules settle unstamped.
 async fn record_following_notice(
     db: &DatabaseConnection,
-    told: emails::Delivery,
+    relationship: &coaching_relationships::Model,
+    told: emails::Delivered,
     moved: Vec<coaching_sessions::Model>,
 ) -> Vec<coaching_sessions::Model> {
-    match told {
+    let moved_ids: Vec<Id> = moved.iter().map(|session| session.id).collect();
+    coaching_session::record_delivered_notice(db, relationship, &told, &moved_ids).await;
+    match told.coachee {
         emails::Delivery::Sent => {
             stream::iter(moved)
                 .then(|session| async move {
@@ -1233,8 +1241,8 @@ mod tests {
         )
         .append_query_results(vec![moved.clone()])
         .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
-        // record_notice × 2
-        .append_exec_results(vec![exec_ok(), exec_ok()])
+        // the participants' notice stamp, then record_notice × 2
+        .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
         .append_query_results(vec![vec![moved[0].clone()]])
         .append_query_results(vec![vec![moved[0].clone()]])
         .append_query_results(vec![vec![moved[1].clone()]])
@@ -2635,8 +2643,9 @@ mod tests {
             .append_query_results(vec![vec![organization]])
             .append_query_results(vec![moved.clone()])
             .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
-            // record_notice × 2: the locked re-read and its clear, then mark_notice_given
-            .append_exec_results(vec![exec_ok(), exec_ok()])
+            // the participants' notice stamp, then record_notice × 2: the locked re-read and
+            // its clear, then mark_notice_given
+            .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
             .append_query_results(vec![vec![moved[0].clone()]])
             .append_query_results(vec![vec![stamped[0].clone()]])
             .append_query_results(vec![vec![moved[1].clone()]])

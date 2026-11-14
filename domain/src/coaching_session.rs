@@ -17,13 +17,13 @@ use crate::meeting_provider::MeetingProperties;
 use crate::Id;
 use chrono::{DurationRound, NaiveDateTime, TimeDelta, Utc};
 use entity_api::{
-    coaching_relationship, coaching_session,
+    coaching_relationship, coaching_session, coaching_session_notice,
     coaching_session_pending_reschedule::{self, Schedule},
     coaching_sessions, mutate, organization, query,
     query::{IntoQueryFilterMap, QuerySort},
 };
 use log::*;
-use sea_orm::{DatabaseConnection, IntoActiveModel, TransactionTrait};
+use sea_orm::{ConnectionTrait, DatabaseConnection, IntoActiveModel, TransactionTrait};
 use service::config::Config;
 
 pub use entity_api::coaching_session::{
@@ -135,6 +135,7 @@ pub async fn create(
         let session =
             coaching_session::create(&txn, coaching_session_model, coach_id, requested_duration)
                 .await?;
+        stamp_inserted_notice(&txn, &coaching_relationship, std::slice::from_ref(&session)).await?;
 
         let ctx = CoachingSessionHydrationContext {
             txn: &txn,
@@ -202,6 +203,45 @@ pub async fn bulk_create_recurring(
         requested_duration,
     )
     .await?)
+}
+
+/// Stamps both participants' notice on just-inserted `sessions`, each at the time its insert
+/// recorded on the session.
+pub(crate) async fn stamp_inserted_notice(
+    db: &impl ConnectionTrait,
+    relationship: &coaching_relationships::Model,
+    sessions: &[Model],
+) -> Result<(), Error> {
+    let notices: Vec<_> = sessions
+        .iter()
+        .map(|session| (session.id, session.notice_given_at))
+        .collect();
+    Ok(coaching_session_notice::stamp_many(
+        db,
+        &notices,
+        &[relationship.coach_id, relationship.coachee_id],
+    )
+    .await?)
+}
+
+/// Stamps, as of now, the notice of each participant `delivered` reached on `session_ids`.
+/// Best-effort: a failure is logged.
+pub(crate) async fn record_delivered_notice(
+    db: &DatabaseConnection,
+    relationship: &coaching_relationships::Model,
+    delivered: &emails::Delivered,
+    session_ids: &[Id],
+) {
+    let at = Utc::now().into();
+    let notices: Vec<_> = session_ids.iter().map(|&id| (id, at)).collect();
+    let _ = coaching_session_notice::stamp_many(db, &notices, &delivered.reached(relationship))
+        .await
+        .inspect_err(|e| {
+            warn!(
+                "Told participants sessions {session_ids:?} moved but could not record whom, so \
+                 they may be reminded about a time they already have: {e:?}"
+            )
+        });
 }
 
 /// The original start of every occurrence a published series rule produces, truncated as
@@ -1215,6 +1255,8 @@ mod tests {
         // Queries: relationship, organization, coachee membership, session INSERT, in-progress
         // goals SELECT (one goal), join INSERT...RETURNING (one freshly-linked row).
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // the notice stamp
+            .append_exec_results([exec_ok()])
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
             .append_query_results([both_participants_are_members(&relationship)])
@@ -1348,6 +1390,8 @@ mod tests {
         // move_deferred_to_session source SELECT (one Deferred topic) → target SELECT
         // (empty, for base) → UPDATE (the moved topic).
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // the notice stamp
+            .append_exec_results([exec_ok()])
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
             .append_query_results([both_participants_are_members(&relationship)])
@@ -1415,6 +1459,8 @@ mod tests {
         // INSERT, in-progress goals SELECT (for link_in_progress_goals_to_session).
         // No oauth_connections query because provider is None.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // the notice stamp
+            .append_exec_results([exec_ok()])
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
             .append_query_results([both_participants_are_members(&relationship)])
@@ -1455,6 +1501,8 @@ mod tests {
 
         // The create, then the invite's loads: both users.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // the notice stamp
+            .append_exec_results([exec_ok()])
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
             .append_query_results([both_participants_are_members(&relationship)])
@@ -1547,6 +1595,8 @@ mod tests {
         let (goal, link) = carried_goal(&relationship, &session);
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // the notice stamp
+            .append_exec_results([exec_ok()])
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
             .append_query_results([members(&[coachee.id])])
@@ -1774,6 +1824,8 @@ mod tests {
         // 5. session INSERT → returns saved_session with the reused meeting_url
         // 6. in-progress goals SELECT
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // the notice stamp
+            .append_exec_results([exec_ok()])
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
             .append_query_results([both_participants_are_members(&relationship)])
@@ -1825,6 +1877,8 @@ mod tests {
         // session INSERT, in-progress goals SELECT.
         // No Google Meet API call should occur.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // the notice stamp
+            .append_exec_results([exec_ok()])
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
             .append_query_results([both_participants_are_members(&relationship)])

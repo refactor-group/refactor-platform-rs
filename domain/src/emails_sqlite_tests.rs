@@ -485,7 +485,8 @@ async fn send_members_only(
                         member_ids: &member_ids,
                     },
                 )
-                .await,
+                .await
+                .coachee,
             );
         }
     }

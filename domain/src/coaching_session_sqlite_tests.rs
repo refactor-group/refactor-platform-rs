@@ -671,6 +671,33 @@ async fn create_records_the_acting_user_as_scheduler() {
     .await;
 }
 
+/// Both participants' notice rows are stamped at the notice the insert recorded.
+#[tokio::test]
+async fn create_stamps_both_participants_notice_at_the_sessions_own() {
+    within_time_limit(async {
+        let (db, rel) = scheduling_database().await;
+        let (_server, _documents, config) = documents().await;
+
+        let created = create_as(&db, &config, new_session(&rel, None), rel.coach_id).await;
+
+        let notices: BTreeMap<Id, _> =
+            entity_api::coaching_session_notice::find_by_coaching_session(&db, created.id)
+                .await
+                .expect("the notices read")
+                .into_iter()
+                .map(|row| (row.user_id, row.notice_given_at))
+                .collect();
+        assert_eq!(
+            notices,
+            BTreeMap::from([
+                (rel.coach_id, created.notice_given_at),
+                (rel.coachee_id, created.notice_given_at),
+            ])
+        );
+    })
+    .await;
+}
+
 /// A link reused from an earlier session came from the coach's account.
 #[tokio::test]
 async fn create_reusing_a_meeting_link_records_the_coach_as_its_creator() {
