@@ -295,14 +295,15 @@ pub struct Landing {
 /// Moves a series session onto `landing`, keeping the row and everything hung off it.
 /// `ical_recurrence_id` follows the slot, since the move republishes the occurrence under
 /// the rule that produced it. `ical_sequence` advances as a column expression, so a
-/// concurrent edit cannot land on the same value. `scheduled_by` becomes its scheduler.
+/// concurrent edit cannot land on the same value. `scheduled_by`, when given, becomes its
+/// scheduler; `None` keeps the one it has.
 pub async fn move_to_slot(
     db: &impl ConnectionTrait,
     id: Id,
     landing: Landing,
-    scheduled_by: Id,
+    scheduled_by: Option<Id>,
 ) -> Result<Model, Error> {
-    Entity::update_many()
+    let update = Entity::update_many()
         .col_expr(
             Column::CoachingSessionSeriesId,
             Expr::value(landing.series_id),
@@ -314,12 +315,16 @@ pub async fn move_to_slot(
             Expr::value(landing.duration.minutes()),
         )
         .col_expr(Column::IcalSequence, Expr::col(Column::IcalSequence).add(1))
-        .col_expr(Column::ScheduledByUserId, Expr::value(scheduled_by))
         .col_expr(
             Column::UpdatedAt,
             Expr::value::<DateTimeWithTimeZone>(chrono::Utc::now().into()),
         )
-        .filter(Column::Id.eq(id))
+        .filter(Column::Id.eq(id));
+    let update = match scheduled_by {
+        Some(user_id) => update.col_expr(Column::ScheduledByUserId, Expr::value(user_id)),
+        None => update,
+    };
+    update
         .exec_with_returning(db)
         .await?
         .into_iter()
@@ -862,16 +867,24 @@ pub async fn raise_ical_sequence_at(
     Ok(())
 }
 
+/// A session's meeting link and the user whose account made it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeetingUrl {
+    pub url: String,
+    pub created_by_user_id: Option<Id>,
+}
+
 /// Find the most recent meeting URL for a coaching relationship and provider.
 ///
 /// Searches all sessions in the given relationship for one that has a `meeting_url`
-/// with the specified `provider`, returning the URL from the most recently created match.
-/// Returns `None` if no session in the relationship has a meeting URL for that provider.
+/// with the specified `provider`, returning the URL and its creator from the most recently
+/// created match. Returns `None` if no session in the relationship has a meeting URL for
+/// that provider.
 pub async fn find_meeting_url_by_relationship_and_provider(
     db: &impl ConnectionTrait,
     coaching_relationship_id: Id,
     provider: Provider,
-) -> Result<Option<String>, Error> {
+) -> Result<Option<MeetingUrl>, Error> {
     Ok(Entity::find()
         .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
         .filter(Column::Provider.eq(provider))
@@ -879,7 +892,12 @@ pub async fn find_meeting_url_by_relationship_and_provider(
         .order_by_desc(Column::CreatedAt)
         .one(db)
         .await?
-        .and_then(|session| session.meeting_url))
+        .and_then(|session| {
+            session.meeting_url.map(|url| MeetingUrl {
+                url,
+                created_by_user_id: session.meeting_url_created_by_user_id,
+            })
+        }))
 }
 
 /// All of `viewer`'s coaching sessions in relationships they may access (see
@@ -3380,7 +3398,7 @@ mod tests {
 
         // Should get session_2's URL, not session_1's older one.
         assert_eq!(
-            result,
+            result.map(|meeting_url| meeting_url.url),
             Some("https://meet.google.com/latest-meet-url".to_string())
         );
 

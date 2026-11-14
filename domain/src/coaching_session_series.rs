@@ -376,6 +376,11 @@ impl Move {
             && self.session.ical_recurrence_id == Some(self.slot)
             && self.session.duration_minutes == self.duration.minutes()
     }
+
+    /// True when the session's start or length changes, which makes the caller its scheduler.
+    fn reschedules(&self) -> bool {
+        self.session.date != self.date || self.session.duration_minutes != self.duration.minutes()
+    }
 }
 
 impl FollowingPlan {
@@ -715,7 +720,7 @@ pub async fn reschedule_following(
                     date: landing.date,
                     duration: landing.duration,
                 },
-                coach_id,
+                landing.reschedules().then_some(coach_id),
             )
         })
         .try_collect()
@@ -2429,12 +2434,14 @@ mod tests {
     }
 
     /// SQLite cannot take the advisory locks, so the scheduler is checked in the writes: the
-    /// moves and the new session carry the acting user, and the session left behind on the
-    /// old series is not written.
+    /// rescheduled anchor and the new session carry the acting user, while a session that
+    /// only takes a new slot and the one left behind on the old series keep theirs.
     #[tokio::test]
-    async fn reschedule_following_records_the_acting_user_on_moved_and_created_sessions(
+    async fn reschedule_following_records_the_acting_user_only_on_rescheduled_and_created_sessions(
     ) -> Result<(), Error> {
-        let (series, _, sessions) = following_fixture(3);
+        let (series, _, mut sessions) = following_fixture(3);
+        let own_date = sessions[2].date + chrono::Duration::days(1);
+        sessions[2].date = own_date;
         let anchor = sessions[1].clone();
         let new_start = anchor.date + chrono::Duration::hours(1);
         let acting_user = Id::new_v4();
@@ -2455,7 +2462,14 @@ mod tests {
             ..session.clone()
         };
         let week = |n| new_start + chrono::Duration::weeks(n);
-        let moved_rows = [landed(&sessions[1], week(0)), landed(&sessions[2], week(1))];
+        let moved_rows = [
+            landed(&sessions[1], week(0)),
+            coaching_sessions::Model {
+                date: own_date,
+                scheduled_by_user_id: None,
+                ..landed(&sessions[2], week(1))
+            },
+        ];
         let created_row = coaching_sessions::Model {
             id: Id::new_v4(),
             ..landed(&sessions[2], week(2))
@@ -2522,14 +2536,31 @@ mod tests {
                 .filter(|write| write.contains(&id.to_string()))
                 .collect()
         };
-        for moved in &sessions[1..] {
-            let moves = writes_of(moved.id);
+        let set_clause = |write: &str| -> String {
+            write
+                .split_once(" SET ")
+                .and_then(|(_, rest)| rest.split_once(" WHERE "))
+                .map(|(set, _)| set.to_string())
+                .unwrap_or_default()
+        };
+        let move_of = |session: &coaching_sessions::Model| -> String {
+            let moves = writes_of(session.id);
             assert_eq!(moves.len(), 1, "{session_writes:?}");
-            assert!(
-                schedules(moves[0]),
-                "the move records the acting user: {moves:?}"
-            );
-        }
+            set_clause(moves[0])
+        };
+        let (rescheduled, kept) = (move_of(&sessions[1]), move_of(&sessions[2]));
+        assert!(
+            rescheduled.contains(r#""scheduled_by_user_id""#),
+            "the rescheduled anchor records the acting user: {rescheduled}"
+        );
+        assert!(
+            schedules(writes_of(sessions[1].id)[0]),
+            "{session_writes:?}"
+        );
+        assert!(
+            !kept.is_empty() && !kept.contains(r#""scheduled_by_user_id""#),
+            "a session that only takes a new slot keeps its scheduler: {kept}"
+        );
         let inserts: Vec<&String> = session_writes
             .iter()
             .filter(|write| write.starts_with("INSERT"))

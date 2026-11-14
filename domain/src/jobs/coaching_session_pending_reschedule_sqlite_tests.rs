@@ -308,15 +308,35 @@ async fn a_change_that_is_not_due_is_left_alone() {
     .await;
 }
 
+/// Which participants of [`moved_session_between_two`] hold a role in its organization.
+#[derive(Clone, Copy)]
+enum Members {
+    Both,
+    CoacheeOnly,
+    CoachOnly,
+}
+
+impl Members {
+    fn coach(self) -> bool {
+        matches!(self, Members::Both | Members::CoachOnly)
+    }
+
+    fn coachee(self) -> bool {
+        matches!(self, Members::Both | Members::CoacheeOnly)
+    }
+}
+
 /// A session a week out between a separate coach and coachee, each with a notice row an
-/// hour old, moved and recorded as settled; the coach holds a role only when `coach_member`.
+/// hour old, moved and recorded as settled; `members` say who holds a role.
 /// Returns its id, coach and coachee.
-async fn moved_session_between_two(db: &DatabaseConnection, coach_member: bool) -> (Id, Id, Id) {
+async fn moved_session_between_two(db: &DatabaseConnection, members: Members) -> (Id, Id, Id) {
     mirror_migration_defaults(db).await;
     let (coach_id, coachee_id) = (seed_user(db).await, seed_user(db).await);
     let organization_id = seed_organization(db).await;
-    seed_membership(db, coachee_id, organization_id).await;
-    if coach_member {
+    if members.coachee() {
+        seed_membership(db, coachee_id, organization_id).await;
+    }
+    if members.coach() {
         seed_membership(db, coach_id, organization_id).await;
     }
     let now = Utc::now();
@@ -387,7 +407,7 @@ async fn a_change_told_to_both_restamps_each_participants_notice() {
         let mut server = Server::new_async().await;
         let _resend = resend_answering(&mut server, 200).await;
         let db = database().await;
-        let (id, coach_id, coachee_id) = moved_session_between_two(&db, true).await;
+        let (id, coach_id, coachee_id) = moved_session_between_two(&db, Members::Both).await;
         let (before, column) = (notices(&db, id).await, notice_given_at(&db, id).await);
         let ctx = context(db, sending(&server));
 
@@ -410,7 +430,7 @@ async fn a_coach_no_longer_in_the_organization_keeps_their_notice() {
         let mut server = Server::new_async().await;
         let _resend = resend_answering(&mut server, 200).await;
         let db = database().await;
-        let (id, coach_id, coachee_id) = moved_session_between_two(&db, false).await;
+        let (id, coach_id, coachee_id) = moved_session_between_two(&db, Members::CoacheeOnly).await;
         let before = notices(&db, id).await;
         let ctx = context(db, sending(&server));
 
@@ -427,12 +447,35 @@ async fn a_coach_no_longer_in_the_organization_keeps_their_notice() {
 }
 
 #[tokio::test]
+async fn a_coachee_no_longer_in_the_organization_leaves_only_the_coach_told() {
+    within_time_limit(async {
+        let mut server = Server::new_async().await;
+        let _resend = resend_answering(&mut server, 200).await;
+        let db = database().await;
+        let (id, coach_id, coachee_id) = moved_session_between_two(&db, Members::CoachOnly).await;
+        let (before, column) = (notices(&db, id).await, notice_given_at(&db, id).await);
+        let ctx = context(db, sending(&server));
+
+        Sweep::from_config(&ctx.config)
+            .run(&ctx)
+            .await
+            .expect("the tick runs");
+
+        let after = notices(&ctx.db, id).await;
+        assert!(after[&coach_id] > before[&coach_id]);
+        assert_eq!(after[&coachee_id], before[&coachee_id]);
+        assert_eq!(notice_given_at(&ctx.db, id).await, column);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_change_told_to_nobody_restamps_no_notice() {
     within_time_limit(async {
         let mut server = Server::new_async().await;
         let _resend = resend_answering(&mut server, 500).await;
         let db = database().await;
-        let (id, _, _) = moved_session_between_two(&db, true).await;
+        let (id, _, _) = moved_session_between_two(&db, Members::Both).await;
         let (before, column) = (notices(&db, id).await, notice_given_at(&db, id).await);
         let ctx = context(db, sending(&server));
 

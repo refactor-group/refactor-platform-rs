@@ -715,15 +715,16 @@ async fn maybe_attach_meeting_url(
     coach_id: Id,
 ) -> Result<(), Error> {
     if let Some(provider) = &coaching_session_model.provider {
-        if let Some(url) = find_reusable_meeting_url(
+        if let Some(reused) = find_reusable_meeting_url(
             db,
             coaching_session_model.coaching_relationship_id,
             provider,
         )
         .await?
         {
-            coaching_session_model.meeting_url = Some(url);
-            coaching_session_model.meeting_url_created_by_user_id = Some(coach_id);
+            coaching_session_model.meeting_url = Some(reused.url);
+            coaching_session_model.meeting_url_created_by_user_id =
+                reused.created_by_user_id.or(Some(coach_id));
             return Ok(());
         }
 
@@ -753,7 +754,7 @@ async fn find_reusable_meeting_url(
     db: &DatabaseConnection,
     coaching_relationship_id: Id,
     provider: &crate::meeting_provider::Provider,
-) -> Result<Option<String>, Error> {
+) -> Result<Option<coaching_session::MeetingUrl>, Error> {
     if !provider.has_persistent_meeting_urls() {
         return Ok(None);
     }

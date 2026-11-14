@@ -157,7 +157,7 @@ async fn move_to_slot_moves_only_the_target_and_keeps_what_hangs_off_it() {
                 date: slot,
                 duration: Duration::from_minutes_unchecked(45),
             },
-            seeded.user_id,
+            Some(seeded.user_id),
         )
         .await
         .expect("the move succeeds");
@@ -204,7 +204,7 @@ async fn move_to_slot_keeps_a_date_of_its_own_while_taking_the_slot() {
                 date: own_date,
                 duration: Duration::from_minutes_unchecked(90),
             },
-            seeded.user_id,
+            Some(seeded.user_id),
         )
         .await
         .expect("the move succeeds");
@@ -498,7 +498,7 @@ async fn move_to_slot_records_who_moved_the_session() {
                 date: slot,
                 duration: Duration::from_minutes_unchecked(60),
             },
-            mover,
+            Some(mover),
         )
         .await
         .expect("the move succeeds");
@@ -508,6 +508,44 @@ async fn move_to_slot_records_who_moved_the_session() {
             Some(mover)
         );
         assert_eq!(reread(&db, bystander.id).await, bystander);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn move_to_slot_without_a_scheduler_keeps_the_one_recorded() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed_series(&db).await;
+        let scheduler = seed_user(&db).await;
+        let target = coaching_sessions::ActiveModel {
+            id: Unchanged(seed_series_session(&db, &seeded, monday()).await.id),
+            scheduled_by_user_id: Set(Some(scheduler)),
+            ..Default::default()
+        }
+        .update(&db)
+        .await
+        .expect("the scheduler is seeded");
+        let slot = monday() + TimeDelta::hours(1);
+
+        entity_api::coaching_session::move_to_slot(
+            &db,
+            target.id,
+            Landing {
+                series_id: seeded.series_id,
+                slot,
+                date: slot,
+                duration: Duration::from_minutes_unchecked(60),
+            },
+            None,
+        )
+        .await
+        .expect("the move succeeds");
+
+        let moved = reread(&db, target.id).await;
+        assert_eq!(moved.date, slot);
+        assert_eq!(moved.ical_recurrence_id, Some(slot));
+        assert_eq!(moved.scheduled_by_user_id, Some(scheduler));
     })
     .await;
 }

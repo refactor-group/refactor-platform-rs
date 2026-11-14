@@ -698,9 +698,9 @@ async fn create_stamps_both_participants_notice_at_the_sessions_own() {
     .await;
 }
 
-/// A link reused from an earlier session came from the coach's account.
+/// A reused link whose earlier session recorded no creator is credited to the coach.
 #[tokio::test]
-async fn create_reusing_a_meeting_link_records_the_coach_as_its_creator() {
+async fn create_reusing_a_meeting_link_with_no_recorded_creator_records_the_coach() {
     within_time_limit(async {
         let (db, rel) = scheduling_database().await;
         let (_server, _documents, config) = documents().await;
@@ -720,6 +720,41 @@ async fn create_reusing_a_meeting_link_records_the_coach_as_its_creator() {
             Some("https://meet.google.com/abc-defg-hij")
         );
         assert_eq!(created.meeting_url_created_by_user_id, Some(rel.coach_id));
+    })
+    .await;
+}
+
+/// A reused link keeps the creator recorded on the session it came from.
+#[tokio::test]
+async fn create_reusing_a_meeting_link_keeps_its_original_creator() {
+    within_time_limit(async {
+        let (db, rel) = scheduling_database().await;
+        let (_server, _documents, config) = documents().await;
+        let link_creator = seed_user(&db).await;
+        let earlier = seed_session(&db, rel.id, days_from_around(-7)).await;
+        set_google_meeting_url(&db, earlier, "https://meet.google.com/abc-defg-hij").await;
+        coaching_sessions::ActiveModel {
+            id: Unchanged(earlier),
+            meeting_url_created_by_user_id: Set(Some(link_creator)),
+            ..Default::default()
+        }
+        .update(&db)
+        .await
+        .expect("the link creator is seeded");
+
+        let created = create_as(
+            &db,
+            &config,
+            new_session(&rel, Some(Provider::Google)),
+            rel.coach_id,
+        )
+        .await;
+
+        assert_eq!(
+            created.meeting_url.as_deref(),
+            Some("https://meet.google.com/abc-defg-hij")
+        );
+        assert_eq!(created.meeting_url_created_by_user_id, Some(link_creator));
     })
     .await;
 }
