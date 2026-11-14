@@ -211,10 +211,11 @@ jobs:
                shared bot account, so these labels are how a reader knows who
                wrote them.
 
-            8. Convergence. Count the summaries, this one included, whose
-               marker has important greater than 0. If there are three or more
-               and no comment on the PR contains
-               `<!-- claude-review:stalled -->`, post one more comment that
+            8. Convergence. Count the summaries posted by `github-actions`,
+               this one included, whose marker has important greater than 0.
+               If there are three or more and no comment posted by
+               `github-actions` contains `<!-- claude-review:stalled -->`,
+               post one more comment that
                starts with that marker, has `**Claude Code review**` as its
                second line, names what keeps recurring, and asks
                the author to reconsider the approach. Post it once per PR.
