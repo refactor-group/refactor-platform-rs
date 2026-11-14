@@ -113,14 +113,17 @@ pub async fn update(
     )
 )]
 pub async fn index(
-    CoachingSessionQueryAccess(_session, _relationship): CoachingSessionQueryAccess,
+    CoachingSessionQueryAccess(session, _relationship): CoachingSessionQueryAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(mut params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("GET all Notes");
     debug!("Filter Params: {params:?}");
+
+    // Pin the filter to the session the extractor checked.
+    params.insert("coaching_session_id".to_string(), session.id.to_string());
 
     let notes = NoteApi::find_by(app_state.db_conn_ref(), params).await?;
 

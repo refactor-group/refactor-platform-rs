@@ -130,7 +130,7 @@ pub async fn view(
     )
 )]
 pub async fn index(
-    CoachingRelationshipQueryAccess(_relationship): CoachingRelationshipQueryAccess,
+    CoachingRelationshipQueryAccess(relationship): CoachingRelationshipQueryAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
@@ -141,6 +141,7 @@ pub async fn index(
 
     // Apply default sorting parameters
     let mut params = params;
+    params.coaching_relationship_id = relationship.id;
     IndexParams::apply_sort_defaults(&mut params.sort_by, &mut params.sort_order, SortField::Date);
 
     let coaching_sessions =

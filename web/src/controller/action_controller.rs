@@ -340,7 +340,7 @@ pub async fn update_status(
     )
 )]
 pub async fn index(
-    CoachingSessionQueryAccess(_session, _relationship): CoachingSessionQueryAccess,
+    CoachingSessionQueryAccess(session, _relationship): CoachingSessionQueryAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
@@ -351,6 +351,7 @@ pub async fn index(
 
     // Apply default sorting parameters
     let mut params = params;
+    params.coaching_session_id = session.id;
     IndexParams::apply_sort_defaults(
         &mut params.sort_by,
         &mut params.sort_order,

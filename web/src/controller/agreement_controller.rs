@@ -160,7 +160,7 @@ pub async fn update(
 )]
 pub async fn index(
     Query(params): Query<IndexParams>,
-    CoachingSessionQueryAccess(_session, _relationship): CoachingSessionQueryAccess,
+    CoachingSessionQueryAccess(session, _relationship): CoachingSessionQueryAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
@@ -170,6 +170,7 @@ pub async fn index(
 
     // Apply default sorting parameters
     let mut params = params;
+    params.coaching_session_id = session.id;
     IndexParams::apply_sort_defaults(&mut params.sort_by, &mut params.sort_order, SortField::Body);
 
     let agreements = AgreementApi::find_by(app_state.db_conn_ref(), params).await?;

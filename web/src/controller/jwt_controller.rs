@@ -3,9 +3,8 @@ use crate::extractors::{
     authenticated_user::AuthenticatedUser, coaching_session_access::CoachingSessionQueryAccess,
     compare_api_version::CompareApiVersion,
 };
-use crate::params::jwt::GenerateCollabTokenParams;
 use crate::{AppState, Error};
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
@@ -32,23 +31,18 @@ use service::config::ApiVersion;
     )
 )]
 pub async fn generate_collab_token(
-    CoachingSessionQueryAccess(_session, _relationship): CoachingSessionQueryAccess,
+    CoachingSessionQueryAccess(session, _relationship): CoachingSessionQueryAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Query(params): Query<GenerateCollabTokenParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!(
         "GET generate collaboration token for coaching session id: {}",
-        params.coaching_session_id
+        session.id
     );
 
-    let jwt = JwtApi::generate_collab_token(
-        app_state.db_conn_ref(),
-        &app_state.config,
-        params.coaching_session_id,
-    )
-    .await?;
+    let jwt = JwtApi::generate_collab_token(app_state.db_conn_ref(), &app_state.config, session.id)
+        .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), jwt)))
 }
