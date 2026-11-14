@@ -1,8 +1,5 @@
 use crate::controller::ApiResponse;
-use crate::extractors::{
-    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
-    user_self_access::UserSelfAccess,
-};
+use crate::extractors::{compare_api_version::CompareApiVersion, user_self_access::UserSelfAccess};
 use crate::params::user::coaching_relationship::IndexParams;
 use crate::{AppState, Error};
 use axum::extract::{Query, State};
@@ -37,12 +34,12 @@ use log::*;
     )
 )]
 pub async fn index(
-    UserSelfAccess(user_id): UserSelfAccess,
+    UserSelfAccess(user): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
+    let user_id = user.id;
     debug!("GET Coaching Relationships for User: {user_id}");
 
     let params = params.with_user_id(user_id);

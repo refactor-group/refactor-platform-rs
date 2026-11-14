@@ -26,11 +26,12 @@ use service::config::ApiVersion;
     )
 )]
 pub async fn update_password(
-    UserSelfAccess(user_id): UserSelfAccess,
+    UserSelfAccess(user): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
     Json(params): Json<UpdatePasswordParams>,
 ) -> Result<impl IntoResponse, Error> {
+    let user_id = user.id;
     UserApi::update_password(app_state.db_conn_ref(), user_id, params).await?;
     Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
 }

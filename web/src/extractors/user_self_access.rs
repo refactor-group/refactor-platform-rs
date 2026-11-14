@@ -3,15 +3,15 @@ use axum::{
     extract::FromRequestParts,
     http::{request::Parts, StatusCode},
 };
-use domain::Id;
+use domain::users;
 use log::*;
 
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, parse_path_id_from_parts, RejectionType,
 };
 
-/// Admits only the `:user_id` user themselves, yielding that id.
-pub(crate) struct UserSelfAccess(pub Id);
+/// Admits only the `:user_id` user themselves, yielding that user.
+pub(crate) struct UserSelfAccess(pub users::Model);
 
 #[async_trait]
 impl<S> FromRequestParts<S> for UserSelfAccess
@@ -26,7 +26,7 @@ where
         let user_id = parse_path_id_from_parts(parts, "user_id").await?;
 
         if user.id == user_id {
-            return Ok(UserSelfAccess(user_id));
+            return Ok(UserSelfAccess(user));
         }
 
         warn!("Forbidden: user {} cannot act as user {user_id}", user.id);

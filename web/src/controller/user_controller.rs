@@ -94,10 +94,11 @@ pub async fn index(
     )
 )]
 pub async fn read(
-    UserSelfAccess(user_id): UserSelfAccess,
+    UserSelfAccess(user): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
+    let user_id = user.id;
     let user = UserApi::find_by_id(app_state.db_conn_ref(), user_id).await?;
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), user)))
 }
@@ -125,11 +126,12 @@ pub async fn read(
     )
 )]
 pub async fn update(
-    UserSelfAccess(user_id): UserSelfAccess,
+    UserSelfAccess(user): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
     Json(params): Json<UpdateParams>,
 ) -> Result<impl IntoResponse, Error> {
+    let user_id = user.id;
     UserApi::update(
         app_state.db_conn_ref(),
         user_id,

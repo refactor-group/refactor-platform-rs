@@ -1,7 +1,7 @@
 //! Who may change a user's password.
 //!
 //! Each test signs in as one kind of person, calls the route against a real database, and
-//! checks that everyone but the user is refused with nothing changed.
+//! checks that only the user gets through and everyone else is refused with nothing changed.
 //! `web/src/test_utils/README.md` describes the people and the database.
 
 use axum::http::{Method, StatusCode};
@@ -34,6 +34,12 @@ async fn only_the_user_changes_their_own_password() {
             assert_eq!(&reply.bytes[..], b"FORBIDDEN", "{caller:?}");
             assert_eq!(password_hash(app.db(), coachee).await, before, "{caller:?}");
         }
+
+        let reply = app
+            .send(Caller::Coachee, Method::PUT, &path, Some(body))
+            .await;
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_ne!(password_hash(app.db(), coachee).await, before);
     })
     .await;
 }

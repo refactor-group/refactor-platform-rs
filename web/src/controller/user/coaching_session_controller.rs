@@ -1,9 +1,6 @@
 use crate::controller::ApiResponse;
 use crate::error::WebErrorKind;
-use crate::extractors::{
-    authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
-    user_self_access::UserSelfAccess,
-};
+use crate::extractors::{compare_api_version::CompareApiVersion, user_self_access::UserSelfAccess};
 use crate::params::user::coaching_session::{
     include_options, CountsByMonthParams, GroupByParam, IndexParams, NearestParams,
 };
@@ -57,12 +54,12 @@ use utoipa::ToSchema;
     )
 )]
 pub async fn index(
-    UserSelfAccess(user_id): UserSelfAccess,
+    UserSelfAccess(user): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
+    let user_id = user.id;
     debug!("GET Coaching Sessions for User: {user_id}");
     debug!("Query Params: {params:?}");
 
@@ -148,12 +145,12 @@ pub async fn index(
     )
 )]
 pub async fn nearest(
-    UserSelfAccess(user_id): UserSelfAccess,
+    UserSelfAccess(user): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Query(params): Query<NearestParams>,
 ) -> Result<impl IntoResponse, Error> {
+    let user_id = user.id;
     debug!("GET nearest Coaching Sessions for User: {user_id}, params: {params:?}");
 
     let sessions = CoachingSessionApi::find_nearest_by_user_with_includes(
@@ -202,12 +199,12 @@ pub(crate) struct CountsResponse {
     security(("cookie_auth" = []))
 )]
 pub async fn counts(
-    UserSelfAccess(user_id): UserSelfAccess,
+    UserSelfAccess(user): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Query(params): Query<CountsByMonthParams>,
 ) -> Result<impl IntoResponse, Error> {
+    let user_id = user.id;
     let params = params.with_user_id(user_id);
     debug!(
         "GET coaching session counts for user {user_id}, params: from={} to={} tz={} relationship={:?}",

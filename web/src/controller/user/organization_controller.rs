@@ -31,10 +31,11 @@ use log::*;
     )
 )]
 pub async fn index(
-    UserSelfAccess(user_id): UserSelfAccess,
+    UserSelfAccess(user): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
+    let user_id = user.id;
     debug!("GET Organizations for User: {user_id}");
 
     let organizations = OrganizationApi::find_by_user(

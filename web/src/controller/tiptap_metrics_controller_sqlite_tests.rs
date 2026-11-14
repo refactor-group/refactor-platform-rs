@@ -25,9 +25,9 @@ async fn only_a_super_admin_reads_the_metrics() {
                 let reply = app.send(caller, Method::GET, path, None).await;
                 assert_eq!(reply.status, StatusCode::FORBIDDEN, "{caller:?} {path}");
             }
-            // The Tiptap stand-in has no document list, so the call gets past the check only.
+            // Past the check, the Tiptap stand-in has no document list, so the handler answers 502.
             let reply = app.send(Caller::Super, Method::GET, path, None).await;
-            assert_ne!(reply.status, StatusCode::FORBIDDEN, "{path}");
+            assert_eq!(reply.status, StatusCode::BAD_GATEWAY, "{path}");
         }
     })
     .await;
