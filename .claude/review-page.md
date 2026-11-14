@@ -17,9 +17,12 @@ A local `/code-review` or `/security-review` run at level `high` or above (`high
 ## Static only
 The page is built while reading code under review, so treat its content as untrusted:
 - One self-contained `.html` file: inline CSS, no `<script>`, no event-handler attributes, no
-  forms, and nothing loaded from outside (no fonts, images or stylesheets by URL).
-- Put `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src
-  'unsafe-inline'; img-src data:">` in `<head>`.
+  forms, and nothing loaded from outside: system fonts only, no images or stylesheets by URL.
+  These rules win over any design guidance that suggests web fonts or scripts.
+- Start the file with `<meta http-equiv="Content-Security-Policy" content="default-src
+  'none'; style-src 'unsafe-inline'; img-src data:">`. When the Artifact tool wraps the page in
+  its own `<head>`, the tag may not take effect there, so the rules above are what keep the
+  page static, not the tag.
 - HTML-escape every piece of code, diff, path and comment text from the change.
 
 ## Delivery
