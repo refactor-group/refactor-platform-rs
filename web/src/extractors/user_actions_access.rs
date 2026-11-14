@@ -43,10 +43,7 @@ where
             user_id,
         )
         .await
-        .map_err(|e| {
-            error!("Error checking coaching relationship: {e:?}");
-            lookup_rejection(e.into())
-        })?;
+        .map_err(|e| lookup_rejection(e.into()))?;
 
         if is_coach {
             debug!("Coach {} accessing coachee {user_id}'s actions", user.id);
