@@ -19,7 +19,8 @@
 //!
 //! A delivered send stamps notice with `coaching_session::mark_notice_given` alone, leaving
 //! the row to `coaching_session_pending_reschedule::complete`, which keeps it when a newer change landed
-//! mid-send.
+//! mid-send. Each participant whose copy went out has their own notice restamped, even when
+//! the coachee's failed and the send is retried.
 //!
 //! See [`crate::jobs`] for why this is a sweep rather than an enqueued job.
 
@@ -27,16 +28,18 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{TimeDelta, Utc};
-use entity_api::coaching_session;
 use entity_api::coaching_session_pending_reschedule::{
     self, Claimed, Completed, Released, Schedule, Timing,
 };
 use entity_api::error::EntityApiErrorKind;
+use entity_api::{coaching_relationship, coaching_session};
 use log::*;
 use sea_orm::DatabaseConnection;
 use service::config::Config;
 
-use crate::emails::{self, Delivery, RescheduleOutcome};
+use crate::coaching_session::record_delivered_notice;
+use crate::coaching_sessions;
+use crate::emails::{self, Delivered, Delivery, RescheduleOutcome};
 use crate::error::Error;
 use crate::jobs::{Context, FirstRun, Job, Outcome};
 use crate::Id;
@@ -127,14 +130,21 @@ impl Sweep {
                 if let Err(e) = coaching_session::mark_notice_given(db, id).await {
                     warn!("[coaching-session-pending-reschedule] could not record notice for session {id}: {e:?}");
                 }
+                record_participant_notice(db, &session, &delivered).await;
                 handled
             }
-            Ok(RescheduleOutcome::CoacheeNoLongerAMember) => {
+            Ok(RescheduleOutcome::CoacheeNoLongerAMember { coach }) => {
                 info!("[coaching-session-pending-reschedule] session {id} coachee is no longer a member; nothing to tell");
+                let delivered = Delivered {
+                    coachee: Delivery::NoLongerAMember,
+                    coach,
+                };
+                record_participant_notice(db, &session, &delivered).await;
                 settle(db, claimed, current).await
             }
             Ok(RescheduleOutcome::Sent(delivered)) => {
                 warn!("[coaching-session-pending-reschedule] session {id} coachee was not told: {delivered:?}");
+                record_participant_notice(db, &session, &delivered).await;
                 retry(db, claimed).await
             }
             Err(e) => {
@@ -142,6 +152,27 @@ impl Sweep {
                 retry(db, claimed).await
             }
         }
+    }
+}
+
+/// Restamps the notice of each participant `delivered` reached. Best-effort: a failure is
+/// logged.
+async fn record_participant_notice(
+    db: &DatabaseConnection,
+    session: &coaching_sessions::Model,
+    delivered: &Delivered,
+) {
+    if ![delivered.coachee, delivered.coach].contains(&Delivery::Sent) {
+        return;
+    }
+    let id = session.id;
+    match coaching_relationship::find_by_id(db, session.coaching_relationship_id).await {
+        Ok(relationship) => {
+            record_delivered_notice(db, &relationship, delivered, &[id]).await
+        }
+        Err(e) => warn!(
+            "[coaching-session-pending-reschedule] could not record whom session {id} was told: {e:?}"
+        ),
     }
 }
 

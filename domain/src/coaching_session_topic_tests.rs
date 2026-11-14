@@ -45,6 +45,8 @@ fn session_with_relationship(
         updated_at: now,
         hydrated_at: None,
         notice_given_at: chrono::Utc::now().into(),
+        scheduled_by_user_id: None,
+        meeting_url_created_by_user_id: None,
     };
     let relationship = coaching_relationships::Model {
         id: relationship_id,
@@ -81,6 +83,8 @@ fn coaching_session(
         updated_at: now,
         hydrated_at: None,
         notice_given_at: chrono::Utc::now().into(),
+        scheduled_by_user_id: None,
+        meeting_url_created_by_user_id: None,
     }
 }
 

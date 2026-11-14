@@ -13,12 +13,12 @@ pub use entity_api::{
 // Re-exports from `entity` crate via `entity_api`
 pub use entity_api::{
     actions, agreements, coachees, coaches, coaching_relationships, coaching_session_images,
-    coaching_session_pending_reschedules, coaching_session_topics, coaching_session_views,
-    coaching_sessions, coaching_sessions_goals, cost_metric, cost_unit, duration, goals, jwts,
-    magic_link_tokens, meeting_provider, oauth_connections, organizations, password_reset_attempts,
-    pipeline_provider, query::QuerySort, status, token_purpose, topic_status,
-    transcript_suggestion_target, user_lookup_attempts, user_role_changes, user_roles, users,
-    working_hours, Id,
+    coaching_session_notices, coaching_session_pending_reschedules, coaching_session_topics,
+    coaching_session_views, coaching_sessions, coaching_sessions_goals, cost_metric, cost_unit,
+    duration, goals, jwts, magic_link_tokens, meeting_provider, oauth_connections, organizations,
+    password_reset_attempts, pipeline_provider, query::QuerySort, status, token_purpose,
+    topic_status, transcript_suggestion_target, user_lookup_attempts, user_role_changes,
+    user_roles, users, working_hours, Id,
 };
 
 pub mod action;
