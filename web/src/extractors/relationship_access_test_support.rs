@@ -141,11 +141,6 @@ impl Fixture {
     }
 }
 
-/// The app state over `db`, for routes layered with `from_fn_with_state`.
-pub(crate) fn app_state(db: &Arc<DatabaseConnection>) -> AppState {
-    app_state_with(Config::default(), db)
-}
-
 fn app_state_with(config: Config, db: &Arc<DatabaseConnection>) -> AppState {
     AppState::new(
         service::AppState::new(config, db),

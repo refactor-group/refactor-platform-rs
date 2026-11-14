@@ -601,24 +601,11 @@ fn coaching_session_goal_routes(app_state: AppState) -> Router {
 
 pub fn user_routes(app_state: AppState) -> Router {
     Router::new()
-        .merge(
-            // GET /users?email= — authorized in the handler against the target user.
-            Router::new().route("/users", get(user_controller::index)),
-        )
-        .merge(
-            // GET /users/:id
-            Router::new()
-                .route("/users/:id", get(user_controller::read))
-                .route_layer(from_fn_with_state(app_state.clone(), protect::users::read)),
-        )
-        .merge(
-            // PUT /users/:id
-            Router::new()
-                .route("/users/:id", put(user_controller::update))
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::users::update,
-                )),
+        // GET /users?email= — authorized in the handler against the target user.
+        .route("/users", get(user_controller::index))
+        .route(
+            "/users/:user_id",
+            get(user_controller::read).put(user_controller::update),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
@@ -627,13 +614,9 @@ pub fn user_routes(app_state: AppState) -> Router {
 pub fn user_password_routes(app_state: AppState) -> Router {
     Router::new()
         .route(
-            "/users/:id/password",
+            "/users/:user_id/password",
             put(user::password_controller::update_password),
         )
-        .route_layer(from_fn_with_state(
-            app_state.clone(),
-            protect::users::passwords::update_password,
-        ))
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
@@ -707,16 +690,9 @@ fn jwt_routes(app_state: AppState) -> Router {
 
 fn user_organizations_routes(app_state: AppState) -> Router {
     Router::new()
-        .merge(
-            Router::new()
-                .route(
-                    "/users/:user_id/organizations",
-                    get(user::organization_controller::index),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::users::organizations::index,
-                )),
+        .route(
+            "/users/:user_id/organizations",
+            get(user::organization_controller::index),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
@@ -734,24 +710,17 @@ fn user_actions_routes(app_state: AppState) -> Router {
 
 fn user_coaching_sessions_routes(app_state: AppState) -> Router {
     Router::new()
-        .merge(
-            Router::new()
-                .route(
-                    "/users/:user_id/coaching_sessions",
-                    get(user::coaching_session_controller::index),
-                )
-                .route(
-                    "/users/:user_id/coaching_sessions/counts",
-                    get(user::coaching_session_controller::counts),
-                )
-                .route(
-                    "/users/:user_id/coaching_sessions/nearest",
-                    get(user::coaching_session_controller::nearest),
-                )
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::users::coaching_sessions::index,
-                )),
+        .route(
+            "/users/:user_id/coaching_sessions",
+            get(user::coaching_session_controller::index),
+        )
+        .route(
+            "/users/:user_id/coaching_sessions/counts",
+            get(user::coaching_session_controller::counts),
+        )
+        .route(
+            "/users/:user_id/coaching_sessions/nearest",
+            get(user::coaching_session_controller::nearest),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
@@ -759,27 +728,16 @@ fn user_coaching_sessions_routes(app_state: AppState) -> Router {
 
 fn user_goals_routes(app_state: AppState) -> Router {
     Router::new()
-        .merge(
-            Router::new()
-                .route("/users/:user_id/goals", get(user::goal_controller::index))
-                .route_layer(from_fn_with_state(
-                    app_state.clone(),
-                    protect::users::goals::index,
-                )),
-        )
+        .route("/users/:user_id/goals", get(user::goal_controller::index))
         .route_layer(from_fn(require_auth))
         .with_state(app_state)
 }
 
 fn user_coaching_relationships_routes(app_state: AppState) -> Router {
     Router::new()
-        .merge(
-            Router::new()
-                .route(
-                    "/users/:user_id/coaching-relationships",
-                    get(user::coaching_relationships_controller::index),
-                )
-                .route_layer(from_fn_with_state(app_state.clone(), protect::users::read)),
+        .route(
+            "/users/:user_id/coaching-relationships",
+            get(user::coaching_relationships_controller::index),
         )
         .route_layer(from_fn(require_auth))
         .with_state(app_state)

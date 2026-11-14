@@ -1,15 +1,16 @@
 use crate::controller::ApiResponse;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    user_self_access::UserSelfAccess,
 };
 use crate::params::user::goal::IndexParams;
 use crate::{AppState, Error};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
+use domain::goal as GoalApi;
 use domain::search::visibility_for;
-use domain::{goal as GoalApi, Id};
 use service::config::ApiVersion;
 
 use log::*;
@@ -39,13 +40,12 @@ use log::*;
     )
 )]
 pub async fn index(
+    UserSelfAccess(user_id): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(user_id): Path<Id>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
-    super::ensure_self(&user, user_id)?;
     debug!("GET Goals for User: {user_id}");
     debug!("Filter Params: {params:?}");
 

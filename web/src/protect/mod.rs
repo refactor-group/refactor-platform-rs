@@ -9,7 +9,6 @@
 //! to understand and maintain.
 
 pub(crate) mod tiptap_metrics;
-pub(crate) mod users;
 
 use crate::AppState;
 use async_trait::async_trait;

@@ -2,6 +2,7 @@ use crate::controller::ApiResponse;
 use crate::error::WebErrorKind;
 use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
+    user_self_access::UserSelfAccess,
 };
 use crate::params::user::coaching_session::{
     include_options, CountsByMonthParams, GroupByParam, IndexParams, NearestParams,
@@ -9,13 +10,13 @@ use crate::params::user::coaching_session::{
 use crate::{AppState, Error};
 use std::str::FromStr;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono_tz::Tz;
 use domain::search::visibility_for;
-use domain::{coaching_session as CoachingSessionApi, Id, QuerySort};
+use domain::{coaching_session as CoachingSessionApi, QuerySort};
 use log::*;
 use serde::Serialize;
 use service::config::ApiVersion;
@@ -56,13 +57,12 @@ use utoipa::ToSchema;
     )
 )]
 pub async fn index(
+    UserSelfAccess(user_id): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(user_id): Path<Id>,
     Query(params): Query<IndexParams>,
 ) -> Result<impl IntoResponse, Error> {
-    super::ensure_self(&user, user_id)?;
     debug!("GET Coaching Sessions for User: {user_id}");
     debug!("Query Params: {params:?}");
 
@@ -148,13 +148,12 @@ pub async fn index(
     )
 )]
 pub async fn nearest(
+    UserSelfAccess(user_id): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(user_id): Path<Id>,
     Query(params): Query<NearestParams>,
 ) -> Result<impl IntoResponse, Error> {
-    super::ensure_self(&user, user_id)?;
     debug!("GET nearest Coaching Sessions for User: {user_id}, params: {params:?}");
 
     let sessions = CoachingSessionApi::find_nearest_by_user_with_includes(
@@ -178,8 +177,8 @@ pub(crate) struct CountsResponse {
 ///
 /// Aggregates by local calendar month in the caller-supplied IANA timezone
 /// (`?tz=`). Months with zero sessions are omitted; results are sorted
-/// ascending chronologically. Authentication is required; the protect
-/// middleware further restricts the caller to their own `user_id`.
+/// ascending chronologically. Authentication is required; `UserSelfAccess`
+/// restricts the caller to their own `user_id`.
 #[utoipa::path(
     get,
     path = "/users/{user_id}/coaching_sessions/counts",
@@ -203,13 +202,12 @@ pub(crate) struct CountsResponse {
     security(("cookie_auth" = []))
 )]
 pub async fn counts(
+    UserSelfAccess(user_id): UserSelfAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    Path(user_id): Path<Id>,
     Query(params): Query<CountsByMonthParams>,
 ) -> Result<impl IntoResponse, Error> {
-    super::ensure_self(&user, user_id)?;
     let params = params.with_user_id(user_id);
     debug!(
         "GET coaching session counts for user {user_id}, params: from={} to={} tz={} relationship={:?}",

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use axum::{middleware::from_fn_with_state, routing::get, Router};
+use axum::{routing::get, Router};
 use domain::{coaching_sessions, users, Id};
 use sea_orm::Value;
 use serde_json::json;
@@ -16,7 +16,7 @@ use crate::extractors::relationship_access_test_support::{
     self as support, json_body, Caller, Fixture,
 };
 use crate::router::ApiDoc;
-use crate::{protect, AppState};
+use crate::AppState;
 
 /// Every key the relationship object carried before the membership fields.
 const RELATIONSHIP_KEYS: [&str; 7] = [
@@ -29,17 +29,11 @@ const RELATIONSHIP_KEYS: [&str; 7] = [
     "updated_at",
 ];
 
-fn routes(db: &Arc<sea_orm::DatabaseConnection>) -> Router<AppState> {
-    let state = support::app_state(db);
-    Router::new()
-        .route(
-            "/users/:user_id/coaching_sessions",
-            get(user_coaching_session_controller::index),
-        )
-        .route_layer(from_fn_with_state(
-            state,
-            protect::users::coaching_sessions::index,
-        ))
+fn routes() -> Router<AppState> {
+    Router::new().route(
+        "/users/:user_id/coaching_sessions",
+        get(user_coaching_session_controller::index),
+    )
 }
 
 /// The relationship's model row with its membership columns, `members` holding a role.
@@ -83,7 +77,7 @@ async fn m4_05_an_included_relationship_marks_a_removed_coachee() {
         w.coach.id
     );
 
-    let response = support::send(routes(&db), &db, &w.coach.email, "GET", &uri, None).await;
+    let response = support::send(routes(), &db, &w.coach.email, "GET", &uri, None).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_body(response).await;

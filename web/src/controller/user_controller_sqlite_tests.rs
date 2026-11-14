@@ -113,6 +113,7 @@ async fn a_malformed_user_id_is_a_bad_request() {
             .send(Caller::Coachee, Method::GET, "/users/not-a-uuid", None)
             .await;
         assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+        assert_eq!(&reply.bytes[..], b"Invalid user_id");
     })
     .await;
 }
