@@ -4,7 +4,7 @@ Please perform a comprehensive code review of this Rust/Axum/SeaORM pull request
 
 Apply the criteria from each of the following specialized reviews:
 
-1. **Security** → See `.claude/commands/security-review.md`
+1. **Security** → Apply steps 3 and 4 of `.github/security-review-procedure.md`, with `.github/security-review-instructions.txt`
 2. **Performance** → See `.claude/commands/performance-review.md`
 3. **API Design** → See `.claude/commands/api-review.md`
 4. **Architecture** → See `.claude/commands/architecture-review.md`
