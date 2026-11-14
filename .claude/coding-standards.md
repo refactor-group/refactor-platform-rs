@@ -355,7 +355,7 @@ When adding a resource, copy the shape of the closest exemplar for each layer, t
 - **Extractor**: `web/src/extractors/goal_access.rs`. Parses the path id, loads the resource, authorizes against its relationship, and returns it.
 - **Controller**: `update` in `web/src/controller/goal_controller.rs`. Takes the extractor, calls one domain function, maps the result.
 
-Older slices predate these patterns; don't copy their shape. Examples: `note::find_by_id` returns `Result<Option<Model>>` yet errors on a missing row, and `note::find_by` builds a query from a string-keyed `HashMap`.
+Older slices predate these patterns; don't copy their shape.
 
 Reuse rules:
 
