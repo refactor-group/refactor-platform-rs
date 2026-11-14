@@ -91,3 +91,7 @@ pub async fn abandoned_documents(
         TiptapMetricsApi::abandoned_documents(app_state.db_conn_ref(), &app_state.config).await?;
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), report)))
 }
+
+#[cfg(test)]
+#[path = "tiptap_metrics_controller_sqlite_tests.rs"]
+mod sqlite_tests;

@@ -40,3 +40,7 @@ pub async fn update_password(
     UserApi::update_password(app_state.db_conn_ref(), user_id, params).await?;
     Ok(Json(ApiResponse::new(StatusCode::NO_CONTENT.into(), ())))
 }
+
+#[cfg(test)]
+#[path = "password_controller_sqlite_tests.rs"]
+mod sqlite_tests;

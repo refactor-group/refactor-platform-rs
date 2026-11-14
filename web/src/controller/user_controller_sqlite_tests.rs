@@ -12,7 +12,7 @@ use domain::test_utils::sqlite::read_back::working_hours;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use serde_json::json;
 
-use crate::test_utils::sqlite::{assert_signed_out_refused, TestApp};
+use crate::test_utils::sqlite::{assert_signed_out_refused, ids, TestApp};
 
 /// USR-04
 #[tokio::test]
@@ -79,6 +79,40 @@ async fn only_admins_look_up_users_by_email() {
             let (status, _) = app.expect(caller, Method::GET, &path, None).await;
             assert_eq!(status, StatusCode::FORBIDDEN, "{caller:?}");
         }
+    })
+    .await;
+}
+
+/// Only the user reads their own record.
+#[tokio::test]
+async fn only_the_user_reads_their_own_record() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let coachee = app.fixture.user(Caller::Coachee);
+        let path = format!("/users/{coachee}");
+
+        for caller in [Caller::Coach, Caller::Member, Caller::Admin, Caller::Super] {
+            let reply = app.send(caller, Method::GET, &path, None).await;
+            assert_eq!(reply.status, StatusCode::FORBIDDEN, "{caller:?}");
+            assert_eq!(&reply.bytes[..], b"FORBIDDEN", "{caller:?}");
+        }
+
+        let (status, read) = app.expect(Caller::Coachee, Method::GET, &path, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(read, ids([coachee]));
+    })
+    .await;
+}
+
+/// A user path id that is not a UUID is a bad request.
+#[tokio::test]
+async fn a_malformed_user_id_is_a_bad_request() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let reply = app
+            .send(Caller::Coachee, Method::GET, "/users/not-a-uuid", None)
+            .await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST);
     })
     .await;
 }
