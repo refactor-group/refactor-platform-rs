@@ -118,7 +118,8 @@ onto extractors: "is this my own user" on the `/users/{user_id}` routes becomes
 
 - `scheduled_by_user_id` on `coaching_sessions` (named like the series'
   `created_by_user_id`), set on create and reschedule; base for coachee-requested sessions.
-  Backfilled with the coach: until now only the coach could create or reschedule a session.
+  Backfilled with the coach by assumption: the app's screens have only let the coach create
+  or reschedule a session, though until Nov 10 the API let any signed-in user create one.
 - `meeting_url_created_by_user_id` on `coaching_sessions`: whose account made the meeting
   link (#419). Backfilled with the coach where `meeting_url` is set, since every link so far
   came from the coach's account or was set by the coach; null with no link.

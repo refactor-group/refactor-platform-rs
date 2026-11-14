@@ -33,15 +33,25 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        // Both participants were told whenever the session as a whole was. DO NOTHING
-        // covers a coach coaching themselves, which only data older than the create check
-        // could hold.
+        // The unique key leads with the session, so a user delete's cascade needs its own.
+        manager
+            .get_connection()
+            .execute_unprepared(
+                "CREATE INDEX IF NOT EXISTS coaching_session_notices_user_idx
+                 ON refactor_platform.coaching_session_notices(user_id)",
+            )
+            .await?;
+
+        // Both participants were told whenever the session as a whole was, so each row is
+        // stamped with that time. DO NOTHING covers a coach coaching themselves, which only
+        // data older than the create check could hold.
         manager
             .get_connection()
             .execute_unprepared(
                 "INSERT INTO refactor_platform.coaching_session_notices
-                     (coaching_session_id, user_id, notice_given_at)
-                 SELECT cs.id, participant.user_id, cs.notice_given_at
+                     (coaching_session_id, user_id, notice_given_at, created_at, updated_at)
+                 SELECT cs.id, participant.user_id, cs.notice_given_at, cs.notice_given_at,
+                        cs.notice_given_at
                  FROM refactor_platform.coaching_sessions cs
                  JOIN refactor_platform.coaching_relationships cr
                    ON cr.id = cs.coaching_relationship_id

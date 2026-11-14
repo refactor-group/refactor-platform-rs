@@ -16,6 +16,15 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
+        // Lets a user delete's RESTRICT check find sessions without a full scan.
+        manager
+            .get_connection()
+            .execute_unprepared(
+                "CREATE INDEX IF NOT EXISTS coaching_sessions_meeting_url_created_by_idx
+                 ON refactor_platform.coaching_sessions(meeting_url_created_by_user_id)",
+            )
+            .await?;
+
         // Every existing link came from the coach's account or was set by the coach.
         manager
             .get_connection()
