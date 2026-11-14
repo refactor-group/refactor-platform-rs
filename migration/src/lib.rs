@@ -62,6 +62,9 @@ mod m20261101_000000_add_transcript_suggestion_search_index;
 mod m20261105_000000_add_working_hours_to_users;
 mod m20261106_000000_create_coaching_session_pending_reschedules;
 mod m20261112_000000_drop_topic_priority;
+mod m20261114_000000_add_scheduled_by_to_coaching_sessions;
+mod m20261114_000001_add_meeting_url_created_by_to_coaching_sessions;
+mod m20261114_000002_create_coaching_session_notices;
 
 pub struct Migrator;
 
@@ -133,6 +136,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20261105_000000_add_working_hours_to_users::Migration),
             Box::new(m20261106_000000_create_coaching_session_pending_reschedules::Migration),
             Box::new(m20261112_000000_drop_topic_priority::Migration),
+            Box::new(m20261114_000000_add_scheduled_by_to_coaching_sessions::Migration),
+            Box::new(m20261114_000001_add_meeting_url_created_by_to_coaching_sessions::Migration),
+            Box::new(m20261114_000002_create_coaching_session_notices::Migration),
         ]
     }
 }
