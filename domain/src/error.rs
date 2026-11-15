@@ -177,6 +177,7 @@ pub(crate) mod reason {
     pub(crate) const NO_UPCOMING_SESSIONS: &str = "no_upcoming_sessions";
     pub(crate) const SERIES_MEMBER: &str = "series_member";
     pub(crate) const LEGACY_SERIES: &str = "legacy_series";
+    pub(crate) const PAIR_ALREADY_RELATED: &str = "pair_already_related";
 }
 
 impl fmt::Display for Error {
@@ -244,6 +245,17 @@ impl From<EntityApiError> for Error {
                 return Error {
                     source: Some(Box::new(err)),
                     error_kind: DomainErrorKind::Validation(message),
+                };
+            }
+            EntityApiErrorKind::PairAlreadyRelated { relationship_id } => {
+                let refusal = Error::conflict_because(
+                    reason::PAIR_ALREADY_RELATED,
+                    "These two people already have a relationship of another kind in this organization.",
+                    serde_json::json!({ "relationship_id": relationship_id }),
+                );
+                return Error {
+                    source: Some(Box::new(err)),
+                    ..refusal
                 };
             }
             EntityApiErrorKind::RecordNotFound => EntityErrorKind::NotFound,

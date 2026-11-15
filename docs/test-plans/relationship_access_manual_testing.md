@@ -628,11 +628,15 @@ between the 1a migration and 1b's code, so both hold on a database that ran the 
 ### 4.16 Relationship kind and role (`KIND`)
 
 Phase 2 gives each relationship a `kind` (`coaching` or `colleague`) and names what a participant
-is (`coach`, `coachee` or `colleague`) with one type. Every relationship is `coaching` until
-phase 4 adds a way to make a colleague one, and no request can set `kind`. That holds for
-every path that creates a relationship, including adding a person to an organization with a
-`coach_id` (ORG-01, ORG-03): each passes its kind to the one create, and none assumes an invited
-person is coached. Who may do what
+is (`coach`, `coachee` or `colleague`) with one type. Phase 4 lets the relationship POST set
+`kind` (omitted, it is `coaching`); adding a person to an organization with a `coach_id`
+(ORG-01, ORG-03) still makes a `coaching` one. Every path that creates a relationship passes
+its kind to the one create, and none assumes an invited person is coached. That create keeps
+one kind per pair in an organization: colleagues are an unordered pair, so their relationship
+is returned whichever person is named first, and a request of the other kind for the pair, in
+either direction, is a 409 with `details.reason` `pair_already_related` and
+`details.relationship_id` the existing one. A coaching pair may still coach the other way
+round. Who may do what
 does not change: the `REL`, `SES` and `SER` rows above still decide that. Wire values are
 lowercase.
 
@@ -641,13 +645,17 @@ lowercase.
 | KIND-01 | GET /organizations/O1/coaching_relationships (REL-01, REL-05) | COACH, ADMIN | 200; every relationship has `"kind": "coaching"` | `entity_api::coaching_relationship::CoachingRelationshipWithUserNames` | |
 | KIND-02 | GET /organizations/O1/coaching_relationships/R1 (REL-08) | COACH | 200; `"kind": "coaching"` | same | |
 | KIND-03 | GET /users/{COACHEE_ID}/coaching-relationships (REL-13) | COACHEE | 200; each has `"kind": "coaching"` | same | |
-| KIND-04 | POST /organizations/O1/coaching_relationships `{coach_id: COACH, coachee_id: MEMBER, kind: "colleague"}` (REL-15) | ADMIN | 200 (201); response `"kind": "coaching"`; psql `kind = 'coaching'` | the handler passes `coaching` to `entity_api::coaching_relationship::create`; `entity::coaching_relationships::Model` (`kind` not read from a request) | Delete the relationship afterwards |
+| KIND-04 | POST /organizations/O1/coaching_relationships `{coach_id: COACH, coachee_id: MEMBER, kind: "colleague"}` (REL-15) | ADMIN | 200 (201); response `"kind": "colleague"`; psql `kind = 'colleague'` | the handler passes the body's `kind` (default `coaching`) to `entity_api::coaching_relationship::create` | Delete the relationship afterwards |
 | KIND-05 | POST /organizations/O1/users `{..., coach_id: COACH}` (ORG-01), and POST /organizations/O1/users/{user}/role `{role: User, coach_id: COACH}` (ORG-03) | ADMIN | each new relationship's `kind = 'coaching'` (psql) | `domain::user`, `domain::user_role`: each passes its kind to `entity_api::coaching_relationship::create` | Adding a person with a `coach_id` creates the relationship in the same transaction. Coaching because no request chooses a kind yet; phase 4 lets these invites make a colleague relationship |
 | KIND-10 | GET /users/{COACH_ID}/coaching_sessions?include=relationship&from_date=2000-01-01&to_date=2100-01-01 (SES-27) | COACH | each session's `relationship` has `"kind": "coaching"` | `entity_api::coaching_relationship::WithMembership` (flattens the relationship `Model`) | The relationship embedded in an enriched session |
 | KIND-06 | POST /coaching_sessions (SES-09) with a mock Resend | COACH | the scheduled email's `other_user_role` is `"coach"` in COACHEE's copy and `"coachee"` in COACH's, as before | `entity::coaching_relationship_kind::Role::as_str`; `domain/src/emails.rs` | The role words come from the one `Role` type |
 | KIND-07 | Transcript download and speakers (`transcript_download_manual_testing.md` cases 1 to 5c) | COACH | role values `"coach"` / `"coachee"` and filenames unchanged; `speaker=colleague` per case 5c | `domain::transcript_export` | |
 | KIND-08 | The OpenAPI document (`/api-docs/openapi2.json`, or `/rapidoc`) | COACH | `CoachingRelationshipWithUserNames` lists `kind` as required; schema `domain.coaching_relationship_kind.Kind` has `coaching`, `colleague`; schema `domain.coaching_relationship_kind.Role` has `coach`, `coachee`, `colleague`; no `SpeakerRole` | `entity::coaching_relationship_kind` | |
 | KIND-09 | Phase 2 migration on a database at `m20261114_000005` | operator | every relationship `kind = 'coaching'`; `kind` NOT NULL, default `'coaching'`; the type is owned by `refactor`; `migrate down -n 1` removes the column and the type | `migration/src/m20261115_000000_add_kind_to_coaching_relationships.rs` | |
+| KIND-11 | POST /organizations/O1/coaching_relationships `{coach_id: COACH, coachee_id: MEMBER, kind: "colleague"}`, then `{coach_id: MEMBER, coachee_id: COACH, kind: "colleague"}` | ADMIN | both 200 (201) with the same `id`; psql one row for the pair | `entity_api::coaching_relationship::create` (`settle`) | Colleagues are an unordered pair. Delete the relationship afterwards |
+| KIND-12 | POST /organizations/O1/coaching_relationships `{coach_id: COACH, coachee_id: MEMBER, kind: "colleague"}`, and again with COACH and MEMBER swapped, while COACH coaches MEMBER | ADMIN | each 409, `details.reason` `pair_already_related`, `details.relationship_id` the coaching relationship; no new row | same | Create the coaching relationship first; delete it afterwards |
+| KIND-13 | POST /organizations/O1/coaching_relationships `{coach_id: COACH, coachee_id: MEMBER}`, and again with COACH and MEMBER swapped, while the two are colleagues | ADMIN | each 409, `details.reason` `pair_already_related`, `details.relationship_id` the colleague relationship; no new row | same | Create the colleague relationship first; delete it afterwards |
+| KIND-14 | POST /organizations/O1/coaching_relationships `{coach_id: MEMBER, coachee_id: COACH}` while COACH coaches MEMBER, then `{coach_id: COACH, coachee_id: MEMBER}` again | ADMIN | 200 (201) with a second relationship, `"kind": "coaching"`; then the first relationship's `id` | same | Unchanged from before phase 4. Delete both afterwards |
 
 KIND-09's checks:
 
@@ -1034,3 +1042,8 @@ a frozen `domain` test, or by hand with the reason.
 | MAIL-12 | `domain/src/emails_tests.rs::test_send_welcome_email_success` |
 | MAIL-13 | `domain/src/emails_added_to_organization_tests.rs::send_added_to_organization_email_wire_contract` |
 | MAIL-14 | `domain/src/emails_tests.rs::test_send_password_reset_email_wire_contract` |
+| KIND-04 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::an_admin_creates_a_colleague_relationship` |
+| KIND-11 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_colleague_create_returns_the_pairs_colleague_relationship_either_way_round` |
+| KIND-12 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_colleague_create_is_refused_for_a_coaching_pair` |
+| KIND-13 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_coaching_create_is_refused_for_a_colleague_pair` |
+| KIND-14 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_coaching_pair_may_also_coach_the_other_way_round` |

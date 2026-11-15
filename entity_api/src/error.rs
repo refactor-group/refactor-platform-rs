@@ -81,6 +81,10 @@ pub enum EntityApiErrorKind {
     UserBelongsToMultipleOrganizations {
         organization_count: u64,
     },
+    // The pair already holds a relationship that refuses the one requested.
+    PairAlreadyRelated {
+        relationship_id: Id,
+    },
     // A text field exceeded its maximum length. Maps to 422 in domain (a
     // value-validation failure, distinct from `ValidationError` → 409 state
     // conflicts). `max`/`actual` are character counts, matching the column bound.

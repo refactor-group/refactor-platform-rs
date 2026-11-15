@@ -9,15 +9,15 @@ use crate::user_role::is_member;
 use chrono::Utc;
 use entity::{
     coachees, coaches,
-    coaching_relationship_kind::Kind,
+    coaching_relationship_kind::{Kind, Seat},
     coaching_relationships::{self, ActiveModel, Entity, Model, Visibility},
     coaching_sessions, users, Id,
 };
 use log::*;
 use sea_orm::{
     entity::prelude::*, sea_query::Alias, sea_query::Expr, sea_query::OnConflict, Condition,
-    DatabaseConnection, DbErr, ExprTrait, FromQueryResult, Iterable, JoinType, QuerySelect,
-    QueryTrait, Set,
+    DatabaseConnection, DbBackend, DbErr, ExprTrait, FromQueryResult, Iterable, JoinType,
+    QuerySelect, QueryTrait, Set, Statement, TransactionSession, TransactionTrait,
 };
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
@@ -35,10 +35,16 @@ pub struct Draft {
 
 /// Creates the drafted relationship in an organization.
 ///
-/// Returns the existing relationship when one of the same kind already exists for that
-/// coach, coachee and organization, and refuses one of another kind.
+/// Returns the existing relationship when the pair already holds one of the same kind
+/// (in either direction for colleagues, in the drafted direction for coaching), and
+/// refuses with `PairAlreadyRelated` when the pair holds one of the other kind.
+///
+/// The check and the insert run in one transaction holding the pair's advisory lock, so
+/// two concurrent creates for the same pair are decided one after the other. Called on
+/// a caller's transaction, it runs in a savepoint and the lock lasts until that
+/// transaction ends.
 pub async fn create(
-    db: &impl ConnectionTrait,
+    db: &(impl ConnectionTrait + TransactionTrait),
     organization_id: Id,
     draft: Draft,
 ) -> Result<CoachingRelationshipWithUserNames, Error> {
@@ -93,20 +99,35 @@ pub async fn create(
         });
     }
 
-    // Coaching Relationship must be unique within the context of an organization
-    // Note: this is enforced at the database level as well
-    let existing_coaching_relationship =
-        find_for_pair(db, organization_id, draft.coach_id, draft.coachee_id).await?;
+    let txn = db.begin().await?;
+    lock_pair(&txn, organization_id, draft.coach_id, draft.coachee_id).await?;
 
-    if let Some(existing) = existing_coaching_relationship {
-        debug!(
-            "Coaching relationship {} already exists for coach {}, coachee {} in organization {organization_id}; returning it",
-            existing.id, existing.coach_id, existing.coachee_id
-        );
-        return of_kind(existing, draft.kind)
-            .map(|existing| with_user_names(&existing, &coach, &coachee));
-    }
+    let relationship = match settle(
+        &draft,
+        find_between(&txn, organization_id, draft.coach_id, draft.coachee_id).await?,
+    )? {
+        Some(existing) => {
+            debug!(
+                "Coaching relationship {} already exists for coach {}, coachee {} in organization {organization_id}; returning it",
+                existing.id, existing.coach_id, existing.coachee_id
+            );
+            existing
+        }
+        None => insert(&txn, organization_id, draft, &coach, &coachee).await?,
+    };
 
+    txn.commit().await?;
+    Ok(with_user_names(&relationship, &coach, &coachee))
+}
+
+/// Inserts the drafted relationship, or returns the one a concurrent request inserted first.
+async fn insert(
+    db: &impl ConnectionTrait,
+    organization_id: Id,
+    draft: Draft,
+    coach: &users::Model,
+    coachee: &users::Model,
+) -> Result<Model, Error> {
     let now = Utc::now();
     let slug = slugify!(format!("{} {}", coach.first_name, coachee.first_name).as_str());
 
@@ -122,34 +143,74 @@ pub async fn create(
     };
 
     match insert_unless_exists(db, coaching_relationship_active_model).await? {
-        Some(inserted) => Ok(with_user_names(&inserted, &coach, &coachee)),
+        Some(inserted) => Ok(inserted),
         None => {
-            let winner = find_for_pair(db, organization_id, draft.coach_id, draft.coachee_id)
-                .await?
-                .ok_or_else(|| Error {
-                    source: None,
-                    error_kind: EntityApiErrorKind::RecordNotFound,
-                })?;
+            let winner = settle(
+                &draft,
+                find_between(db, organization_id, draft.coach_id, draft.coachee_id).await?,
+            )?
+            .ok_or_else(not_found)?;
             debug!(
                 "Coaching relationship for coach {}, coachee {} in organization {organization_id} was created by a concurrent request; returning that one ({})",
                 winner.coach_id, winner.coachee_id, winner.id
             );
-            of_kind(winner, draft.kind).map(|winner| with_user_names(&winner, &coach, &coachee))
+            Ok(winner)
         }
     }
 }
 
-/// `existing` when it is of `kind`; a conflict otherwise, since a pair holds one relationship.
-fn of_kind(existing: Model, kind: Kind) -> Result<Model, Error> {
-    Some(existing)
-        .filter(|existing| existing.kind == kind)
-        .ok_or_else(|| Error {
-            source: None,
-            error_kind: EntityApiErrorKind::ValidationError {
-                message: "This coach and coachee already have a relationship of another kind in the organization.".into(),
-                details: None,
-            },
+/// Holds the pair's advisory lock until the transaction ends, so creates for the same
+/// pair in an organization are decided one after the other.
+async fn lock_pair(
+    db: &impl ConnectionTrait,
+    organization_id: Id,
+    a: Id,
+    b: Id,
+) -> Result<(), Error> {
+    // SQLite, the test tier, has no advisory locks and runs on one connection.
+    if db.get_database_backend() != DbBackend::Postgres {
+        return Ok(());
+    }
+    db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "SELECT pg_advisory_xact_lock($1)",
+        [pair_lock_key(organization_id, a, b).into()],
+    ))
+    .await?;
+    Ok(())
+}
+
+/// The advisory lock key for a pair in an organization, the same whichever person is first.
+fn pair_lock_key(organization_id: Id, a: Id, b: Id) -> i64 {
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    [organization_id, Ord::min(a, b), Ord::max(a, b)]
+        .iter()
+        .map(|id| {
+            let (upper, lower) = id.as_u64_pair();
+            upper ^ lower
         })
+        .fold(0, |key: u64, part| key.wrapping_mul(FNV_PRIME) ^ part) as i64
+}
+
+/// Decides a create from the pair's existing relationships in the organization: the one to
+/// return, `None` to insert, or `PairAlreadyRelated` when the pair holds the other kind.
+///
+/// A kind whose two seats hold the same role (colleagues) makes the pair unordered, so a
+/// relationship in either direction is returned; otherwise only the drafted direction is.
+fn settle(draft: &Draft, existing: Vec<Model>) -> Result<Option<Model>, Error> {
+    if let Some(other) = existing.iter().find(|related| related.kind != draft.kind) {
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::PairAlreadyRelated {
+                relationship_id: other.id,
+            },
+        });
+    }
+    let rules = draft.kind.rules();
+    let unordered = rules.role(Seat::CoachId) == rules.role(Seat::CoacheeId);
+    Ok(existing
+        .into_iter()
+        .find(|related| unordered || related.coach_id == draft.coach_id))
 }
 
 /// Inserts `relationship`, returning `None` when its coach, coachee and organization already exist.
@@ -183,25 +244,22 @@ pub async fn insert_unless_exists(
     }
 }
 
-/// The relationship for exactly this coach, coachee and organization, if one exists.
-///
-/// Shared by the pre-check and the lost-race recovery so both agree on what "the same
-/// relationship" means. Directional: swapping coach and coachee is a different pair.
-///
-/// Filters in SQL so this rides the `coaching_relationships_coach_coachee_org` unique
-/// index and returns at most one row, rather than reading an organization's whole set
-/// to answer a question about one pair.
-async fn find_for_pair(
+/// Every relationship between two people in an organization, in either direction.
+async fn find_between(
     db: &impl ConnectionTrait,
     organization_id: Id,
-    coach_id: Id,
-    coachee_id: Id,
-) -> Result<Option<Model>, Error> {
+    a: Id,
+    b: Id,
+) -> Result<Vec<Model>, Error> {
+    let directed = |coach_id: Id, coachee_id: Id| {
+        Condition::all()
+            .add(coaching_relationships::Column::CoachId.eq(coach_id))
+            .add(coaching_relationships::Column::CoacheeId.eq(coachee_id))
+    };
     Ok(Entity::find()
         .filter(coaching_relationships::Column::OrganizationId.eq(organization_id))
-        .filter(coaching_relationships::Column::CoachId.eq(coach_id))
-        .filter(coaching_relationships::Column::CoacheeId.eq(coachee_id))
-        .one(db)
+        .filter(Condition::any().add(directed(a, b)).add(directed(b, a)))
+        .all(db)
         .await?)
 }
 
@@ -1051,6 +1109,25 @@ mod tests {
         assert!(
             db.into_transaction_log().is_empty(),
             "self-coaching must be rejected before any statement runs"
+        );
+    }
+}
+
+#[cfg(test)]
+mod lock_key_tests {
+    use super::*;
+
+    #[test]
+    fn a_pairs_lock_key_ignores_which_person_is_first_and_depends_on_the_organization() {
+        let (organization_id, a, b) = (Id::new_v4(), Id::new_v4(), Id::new_v4());
+
+        assert_eq!(
+            pair_lock_key(organization_id, a, b),
+            pair_lock_key(organization_id, b, a)
+        );
+        assert_ne!(
+            pair_lock_key(organization_id, a, b),
+            pair_lock_key(Id::new_v4(), a, b)
         );
     }
 }

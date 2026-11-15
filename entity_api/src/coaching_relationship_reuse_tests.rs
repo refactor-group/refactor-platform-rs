@@ -1,6 +1,6 @@
 use super::*;
 use entity::{organizations, user_roles, users};
-use sea_orm::{DatabaseBackend, DatabaseConnection, MockDatabase};
+use sea_orm::{DatabaseBackend, DatabaseConnection, MockDatabase, MockExecResult};
 
 fn organization(id: Id, archived: bool) -> organizations::Model {
     let now = Utc::now();
@@ -85,7 +85,8 @@ fn statements(db: DatabaseConnection) -> Vec<String> {
 }
 
 /// Mocks every query `create` runs before the uniqueness lookup: the organization,
-/// both users, then a super-admin probe plus an organization list per user.
+/// both users, then a super-admin probe plus an organization list per user, then the
+/// pair's advisory lock.
 fn mock_up_to_uniqueness_check(
     organization_id: Id,
     coach: &users::Model,
@@ -102,6 +103,10 @@ fn mock_up_to_uniqueness_check(
         .append_query_results([membership.clone()])
         .append_query_results([Vec::<user_roles::Model>::new()])
         .append_query_results([membership])
+        .append_exec_results([MockExecResult {
+            last_insert_id: 0,
+            rows_affected: 1,
+        }])
 }
 
 /// The uniqueness lookup finds the requested pair, so no insert result is queued.
@@ -172,7 +177,7 @@ async fn reuse_does_not_issue_an_insert() -> Result<(), Error> {
     Ok(())
 }
 
-/// `(coach=A, coachee=B)` and `(coach=B, coachee=A)` are different relationships.
+/// `(coach=A, coachee=B)` and `(coach=B, coachee=A)` are different coaching relationships.
 #[tokio::test]
 async fn does_not_reuse_a_reversed_pair() -> Result<(), Error> {
     let organization_id = Id::new_v4();
@@ -181,11 +186,9 @@ async fn does_not_reuse_a_reversed_pair() -> Result<(), Error> {
     let reversed = relationship(organization_id, coachee.id, coach.id);
     let inserted = relationship(organization_id, coach.id, coachee.id);
 
-    // The uniqueness lookup filters in SQL, so a real database excludes the reversed
-    // row and returns nothing. The proof that it is genuinely excluded is the query
-    // itself, asserted below.
+    // The lookup reads the pair in both directions, so it finds the reversed row.
     let db = mock_up_to_uniqueness_check(organization_id, &coach, &coachee)
-        .append_query_results([Vec::<Model>::new()])
+        .append_query_results([[reversed.clone()]])
         .append_query_results([[inserted.clone()]])
         .into_connection();
 
@@ -288,4 +291,44 @@ async fn rejects_an_archived_organization_before_the_uniqueness_check() {
         !sql.iter().any(|statement| statement.contains("INSERT")),
         "an archived organization must not be written to: {sql:?}"
     );
+}
+
+/// The pair's advisory lock is taken before the pair is looked up, so the lookup and the
+/// insert see no concurrent create for the pair.
+#[tokio::test]
+async fn takes_the_pairs_advisory_lock_before_the_pair_lookup() -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let coach = user(Id::new_v4(), "Coach");
+    let coachee = user(Id::new_v4(), "Coachee");
+    let existing = relationship(organization_id, coach.id, coachee.id);
+    let db = mock_reuse(organization_id, &coach, &coachee, &existing);
+
+    create(
+        &db,
+        organization_id,
+        Draft {
+            coach_id: coach.id,
+            coachee_id: coachee.id,
+            kind: Kind::Coaching,
+        },
+    )
+    .await?;
+
+    let logged = logged(db);
+    let lock = logged
+        .iter()
+        .position(|(sql, _)| sql.contains("pg_advisory_xact_lock"))
+        .expect("the pair's advisory lock is taken");
+    let lookup = logged
+        .iter()
+        .position(|(sql, _)| sql.contains("\"coach_id\" = "))
+        .expect("the pair is looked up");
+    assert!(lock < lookup, "{logged:?}");
+    assert!(
+        logged[lock].1[0]
+            .contains(&pair_lock_key(organization_id, coach.id, coachee.id).to_string()),
+        "{logged:?}"
+    );
+
+    Ok(())
 }

@@ -187,9 +187,11 @@ async fn create_refuses_a_pair_whose_relationship_is_of_another_kind() {
             .await
             .expect_err("another kind must not reuse the pair's relationship");
 
-        assert!(
-            matches!(error.error_kind, EntityApiErrorKind::ValidationError { .. }),
-            "{error:?}"
+        assert_eq!(
+            error.error_kind,
+            EntityApiErrorKind::PairAlreadyRelated {
+                relationship_id: before[0].id
+            }
         );
         assert_eq!(relationships_between(&db, coach, coachee).await, before);
         assert_eq!(before.len(), 1);

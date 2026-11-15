@@ -303,8 +303,8 @@ async fn attach_to_organization_audits_the_grant_inside_the_transaction() -> Res
 }
 
 /// Mocks every query `attach_to_organization` runs up to and including the role
-/// insert, then the lookups `coaching_relationship::create` runs before its own
-/// insert.
+/// insert, then the lookups and advisory lock `coaching_relationship::create` runs
+/// before its own insert.
 fn mock_attach_with_coach(
     actor_user_id: Id,
     organization_id: Id,
@@ -333,6 +333,7 @@ fn mock_attach_with_coach(
         .append_query_results([membership.clone()])
         .append_query_results([Vec::<user_roles::Model>::new()])
         .append_query_results([membership])
+        .append_exec_results([exec_result(1)])
         .append_query_results([Vec::<coaching_relationships::Model>::new()])
 }
 

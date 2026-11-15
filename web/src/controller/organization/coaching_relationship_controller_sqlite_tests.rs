@@ -19,7 +19,7 @@ use domain::Id;
 use serde_json::json;
 
 use crate::test_utils::sqlite::{
-    assert_signed_out_refused, field_ids, ids, TestApp, NON_PARTICIPANTS,
+    assert_signed_out_refused, created_id, field_ids, ids, TestApp, NON_PARTICIPANTS,
 };
 
 /// The goal progress path for R1.
@@ -315,30 +315,197 @@ async fn admins_create_a_relationship_once_per_pair() {
     .await;
 }
 
-/// An admin's create stores a coaching relationship whatever kind the body names.
+/// O1's relationship create path.
+fn create_path(app: &TestApp) -> String {
+    format!("/organizations/{}/coaching_relationships", app.fixture.o1)
+}
+
+/// Creates a relationship as O1's admin and returns its id.
+async fn admin_creates(app: &mut TestApp, body: serde_json::Value) -> Id {
+    let path = create_path(app);
+    let reply = app
+        .send(Caller::Admin, Method::POST, &path, Some(body))
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    created_id(&reply)
+}
+
+/// Every relationship between `a` and `b`, in either direction: its coach and kind by id.
+async fn stored_between(app: &TestApp, a: Id, b: Id) -> BTreeMap<Id, (Id, Kind)> {
+    let mut stored = relationships_between(app.db(), a, b).await;
+    stored.extend(relationships_between(app.db(), b, a).await);
+    stored
+        .into_iter()
+        .map(|relationship| (relationship.id, (relationship.coach_id, relationship.kind)))
+        .collect()
+}
+
+/// Asserts an admin's create is refused because the pair holds `existing`, and stores nothing.
+async fn assert_pair_already_related(
+    app: &mut TestApp,
+    body: serde_json::Value,
+    (a, b): (Id, Id),
+    existing: Id,
+) {
+    let before = stored_between(app, a, b).await;
+    let path = create_path(app);
+
+    let reply = app
+        .send(Caller::Admin, Method::POST, &path, Some(body.clone()))
+        .await;
+
+    assert_eq!(reply.status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        reply.body["details"]["reason"], "pair_already_related",
+        "{body}"
+    );
+    assert_eq!(
+        reply.body["details"]["relationship_id"],
+        existing.to_string(),
+        "{body}"
+    );
+    assert_eq!(stored_between(app, a, b).await, before, "{body}");
+}
+
+/// KIND-04
 #[tokio::test]
-async fn a_create_request_cannot_choose_the_kind() {
+async fn an_admin_creates_a_colleague_relationship() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
-        let (coach, member) = (
+        let (a, b) = (
             app.fixture.user(Caller::Coach),
             app.fixture.user(Caller::Member),
         );
-        let path = format!("/organizations/{}/coaching_relationships", app.fixture.o1);
-        let body = json!({ "coach_id": coach, "coachee_id": member, "kind": "colleague" });
+        let path = create_path(&app);
+        let body = json!({ "coach_id": a, "coachee_id": b, "kind": "colleague" });
 
         let created = app
             .send(Caller::Admin, Method::POST, &path, Some(body))
             .await;
+
         assert_eq!(created.status, StatusCode::OK);
         assert_eq!(created.body["status_code"], 201);
+        assert_eq!(created.body["data"]["kind"], "colleague");
         assert_eq!(
-            relationships_between(app.db(), coach, member)
-                .await
-                .into_iter()
-                .map(|relationship| relationship.kind)
-                .collect::<Vec<_>>(),
-            vec![Kind::Coaching]
+            stored_between(&app, a, b).await,
+            BTreeMap::from([(created_id(&created), (a, Kind::Colleague))])
+        );
+    })
+    .await;
+}
+
+/// KIND-11
+#[tokio::test]
+async fn a_colleague_create_returns_the_pairs_colleague_relationship_either_way_round() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (a, b) = (
+            app.fixture.user(Caller::Coach),
+            app.fixture.user(Caller::Member),
+        );
+        let first = admin_creates(
+            &mut app,
+            json!({ "coach_id": a, "coachee_id": b, "kind": "colleague" }),
+        )
+        .await;
+
+        let again = admin_creates(
+            &mut app,
+            json!({ "coach_id": b, "coachee_id": a, "kind": "colleague" }),
+        )
+        .await;
+
+        assert_eq!(again, first);
+        assert_eq!(
+            stored_between(&app, a, b).await,
+            BTreeMap::from([(first, (a, Kind::Colleague))])
+        );
+    })
+    .await;
+}
+
+/// KIND-12
+#[tokio::test]
+async fn a_colleague_create_is_refused_for_a_coaching_pair() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (a, b) = (
+            app.fixture.user(Caller::Coach),
+            app.fixture.user(Caller::Member),
+        );
+        let coaching = admin_creates(&mut app, json!({ "coach_id": a, "coachee_id": b })).await;
+
+        for (coach_id, coachee_id) in [(a, b), (b, a)] {
+            assert_pair_already_related(
+                &mut app,
+                json!({ "coach_id": coach_id, "coachee_id": coachee_id, "kind": "colleague" }),
+                (a, b),
+                coaching,
+            )
+            .await;
+        }
+        assert_eq!(
+            stored_between(&app, a, b).await,
+            BTreeMap::from([(coaching, (a, Kind::Coaching))])
+        );
+    })
+    .await;
+}
+
+/// KIND-13
+#[tokio::test]
+async fn a_coaching_create_is_refused_for_a_colleague_pair() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (a, b) = (
+            app.fixture.user(Caller::Coach),
+            app.fixture.user(Caller::Member),
+        );
+        let colleague = admin_creates(
+            &mut app,
+            json!({ "coach_id": a, "coachee_id": b, "kind": "colleague" }),
+        )
+        .await;
+
+        for (coach_id, coachee_id) in [(a, b), (b, a)] {
+            assert_pair_already_related(
+                &mut app,
+                json!({ "coach_id": coach_id, "coachee_id": coachee_id, "kind": "coaching" }),
+                (a, b),
+                colleague,
+            )
+            .await;
+        }
+        assert_eq!(
+            stored_between(&app, a, b).await,
+            BTreeMap::from([(colleague, (a, Kind::Colleague))])
+        );
+    })
+    .await;
+}
+
+/// KIND-14
+#[tokio::test]
+async fn a_coaching_pair_may_also_coach_the_other_way_round() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (a, b) = (
+            app.fixture.user(Caller::Coach),
+            app.fixture.user(Caller::Member),
+        );
+        let forward = admin_creates(&mut app, json!({ "coach_id": a, "coachee_id": b })).await;
+
+        let reverse = admin_creates(&mut app, json!({ "coach_id": b, "coachee_id": a })).await;
+        let again = admin_creates(&mut app, json!({ "coach_id": a, "coachee_id": b })).await;
+
+        assert_ne!(reverse, forward);
+        assert_eq!(again, forward);
+        assert_eq!(
+            stored_between(&app, a, b).await,
+            BTreeMap::from([
+                (forward, (a, Kind::Coaching)),
+                (reverse, (b, Kind::Coaching))
+            ])
         );
     })
     .await;

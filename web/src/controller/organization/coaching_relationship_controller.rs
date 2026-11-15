@@ -7,6 +7,7 @@ use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
 use crate::params::coaching_relationship::goal_progress::IndexParams as GoalProgressIndexParams;
+use crate::params::coaching_relationship::CreateParams;
 use crate::{AppState, Error};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -15,7 +16,7 @@ use axum::Json;
 use domain::coaching_relationship::CoachingRelationshipWithUserNames;
 use domain::coaching_relationship_kind::Kind;
 use domain::{
-    action as ActionApi, coaching_relationship as CoachingRelationshipApi, coaching_relationships,
+    action as ActionApi, coaching_relationship as CoachingRelationshipApi,
     goal_progress as GoalProgressApi,
 };
 use service::config::ApiVersion;
@@ -25,8 +26,9 @@ use log::*;
 /// CREATE a new CoachingRelationship.
 ///
 /// Restricted to administrators of the organization named in the path. Idempotent:
-/// when a relationship already exists for this coach and coachee in the organization,
-/// that relationship is returned rather than a duplicate created.
+/// when the pair already has a relationship of the requested kind in the organization,
+/// that relationship is returned rather than a duplicate created. Colleagues are an
+/// unordered pair, so a colleague relationship is found whichever person is named first.
 #[utoipa::path(
     post,
     path = "/organizations/{organization_id}/coaching_relationships",
@@ -34,14 +36,14 @@ use log::*;
         ApiVersion,
         ("organization_id" = Uuid, Path, description = "Organization id"),
     ),
-    request_body = domain::coaching_relationships::Model,
+    request_body = CreateParams,
     responses(
-        (status = 200, description = "The Coaching Relationship, newly created or the existing one for this coach and coachee. The envelope's status_code is 201 in both cases, so it does not distinguish a reuse from a create", body = domain::coaching_relationship::CoachingRelationshipWithUserNames),
+        (status = 200, description = "The relationship of the requested kind (default coaching), newly created or the existing one for this pair: for coaching, this coach and coachee; for colleagues, these two people in either order. The envelope's status_code is 201 in both cases, so it does not distinguish a reuse from a create", body = domain::coaching_relationship::CoachingRelationshipWithUserNames),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Caller does not administer the organization"),
         (status = 404, description = "Organization, coach or coachee not found"),
         (status = 405, description = "Method not allowed"),
-        (status = 409, description = "The coach is the coachee, the coach or coachee is not a member of the organization, the pair already has a relationship of another kind in the organization, or the organization is archived"),
+        (status = 409, description = "The coach is the coachee, the coach or coachee is not a member of the organization, the organization is archived, or the two people already have a relationship of the other kind in the organization in either direction (`details.reason` `pair_already_related`, `details.relationship_id` the existing relationship)"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -52,18 +54,17 @@ pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
     OrganizationAdminAccess { organization, .. }: OrganizationAdminAccess,
-    Json(coaching_relationship_model): Json<coaching_relationships::Model>,
+    Json(params): Json<CreateParams>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("CREATE new Coaching Relationship from: {coaching_relationship_model:?}");
+    debug!("CREATE new Coaching Relationship from: {params:?}");
 
     let coaching_relationship: CoachingRelationshipWithUserNames = CoachingRelationshipApi::create(
         app_state.db_conn_ref(),
         organization.id,
         CoachingRelationshipApi::Draft {
-            coach_id: coaching_relationship_model.coach_id,
-            coachee_id: coaching_relationship_model.coachee_id,
-            // No request chooses a kind yet.
-            kind: Kind::Coaching,
+            coach_id: params.coach_id,
+            coachee_id: params.coachee_id,
+            kind: params.kind.unwrap_or(Kind::Coaching),
         },
     )
     .await?;
