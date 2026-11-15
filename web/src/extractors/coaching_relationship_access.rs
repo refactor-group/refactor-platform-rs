@@ -5,7 +5,11 @@ use axum::{
     extract::{FromRef, FromRequestParts, Path, Query},
     http::{request::Parts, StatusCode},
 };
-use domain::{coaching_relationship as CoachingRelationshipApi, coaching_relationships, users, Id};
+use domain::{
+    coaching_relationship as CoachingRelationshipApi,
+    coaching_relationships::{self, SessionManager},
+    users, Id,
+};
 use serde::Deserialize;
 
 use crate::{
@@ -143,19 +147,16 @@ pub(crate) async fn authorize_relationship(
     Ok(relationship)
 }
 
-/// `authorize_relationship`, then admits only the relationship's coach.
-pub(crate) async fn authorize_relationship_coach(
+/// `authorize_relationship`, then admits only a session manager, whose proof it returns.
+pub(crate) async fn authorize_session_manager(
     state: &AppState,
     user: &users::Model,
     coaching_relationship_id: Id,
-) -> Result<coaching_relationships::Model, RejectionType> {
+) -> Result<SessionManager, RejectionType> {
     let relationship = authorize_relationship(state, user, coaching_relationship_id).await?;
 
-    if relationship.coach_id != user.id {
-        return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
-    }
-
-    Ok(relationship)
+    SessionManager::verify(relationship, user)
+        .ok_or_else(|| (StatusCode::FORBIDDEN, "FORBIDDEN".to_string()))
 }
 
 #[cfg(test)]

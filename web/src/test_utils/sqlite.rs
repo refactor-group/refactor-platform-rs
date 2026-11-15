@@ -19,6 +19,8 @@ use axum_login::{
     AuthManagerLayerBuilder,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use domain::coaching_relationship_kind::Kind;
+use domain::coaching_relationships;
 use domain::gateway::object_storage::{self, ObjectStore};
 use domain::test_utils::sqlite::fixture::{
     remove_roles, seed_goal, seed_relationship_with_actions, IMG1_BYTES, IMG1_CONTENT_TYPE,
@@ -35,7 +37,7 @@ use hmac::{Hmac, Mac};
 use meeting_ai::traits::recording_bot;
 use meeting_ai::types::recording::{Config as BotConfig, Filters, Info, Status as BotStatus};
 use mockito::{Matcher, Mock, ServerGuard};
-use sea_orm::DatabaseConnection;
+use sea_orm::{ActiveModelTrait, ActiveValue::Set, DatabaseConnection};
 use serde_json::{json, Value};
 use service::config::Config;
 use sha2::Sha256;
@@ -705,6 +707,18 @@ pub(crate) async fn seed_super_coaching(app: &TestApp) -> SuperCoaching {
         own_action: actions[0],
         actions,
     }
+}
+
+/// Stores `relationship` as a colleague relationship, which no route can make yet.
+pub(crate) async fn make_colleagues(app: &TestApp, relationship: Id) {
+    coaching_relationships::ActiveModel {
+        id: Set(relationship),
+        kind: Set(Kind::Colleague),
+        ..Default::default()
+    }
+    .update(app.db())
+    .await
+    .expect("the relationship becomes a colleague one");
 }
 
 /// COACH resends the invite at `path`; exactly COACH and COACHEE are mailed.

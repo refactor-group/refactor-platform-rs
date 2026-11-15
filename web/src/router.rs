@@ -359,7 +359,7 @@ pub fn coaching_sessions_routes(app_state: AppState) -> Router {
             "/coaching_sessions/:id",
             put(coaching_session_controller::update),
         )
-        // Either participant; the coach-only PUT keeps the scheduling fields.
+        // Either participant; the session manager's PUT keeps the scheduling fields.
         .route(
             "/coaching_sessions/:id/title",
             patch(coaching_session_controller::update_title),

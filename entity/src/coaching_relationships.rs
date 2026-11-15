@@ -101,8 +101,8 @@ impl Model {
     }
 
     /// Whether `user_id` may schedule, reschedule, cancel, run series, set meeting links and
-    /// delete any topic in this relationship. Says nothing about organization membership:
-    /// combine with `is_participant_and_member` where that matters.
+    /// delete any topic in this relationship. Says nothing about organization membership, so
+    /// outside callers use [`SessionManager::verify`] rather than this alone.
     pub fn can_manage_sessions(&self, user_id: Id) -> bool {
         self.seat(user_id)
             .is_some_and(|seat| self.kind.rules().can_manage_sessions(seat))
@@ -129,6 +129,35 @@ impl Model {
                     .roles
                     .iter()
                     .any(|role| role.organization_id == Some(self.organization_id)))
+    }
+}
+
+/// Proof that `user_id` may run this relationship's sessions: a participant still in its
+/// organization whose seat can manage sessions.
+#[derive(Debug, Clone)]
+pub struct SessionManager {
+    relationship: Model,
+    user_id: Id,
+}
+
+impl SessionManager {
+    /// The proof for `user` when they are a participant and member who can manage sessions.
+    pub fn verify(relationship: Model, user: &users::Model) -> Option<SessionManager> {
+        (relationship.is_participant_and_member(user) && relationship.can_manage_sessions(user.id))
+            .then_some(SessionManager {
+                relationship,
+                user_id: user.id,
+            })
+    }
+
+    /// The relationship this proof is for.
+    pub fn relationship(&self) -> &Model {
+        &self.relationship
+    }
+
+    /// The user this proof admits.
+    pub fn user_id(&self) -> Id {
+        self.user_id
     }
 }
 

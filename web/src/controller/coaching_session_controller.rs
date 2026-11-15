@@ -1,10 +1,10 @@
 use crate::controller::ApiResponse;
 use crate::extractors::coaching_session_access::{
-    CoachingSessionAccess, CoachingSessionCoachAccess, CoachingSessionContextAccess,
+    CoachingSessionAccess, CoachingSessionContextAccess, CoachingSessionManagerAccess,
 };
 use crate::extractors::{
     authenticated_user::AuthenticatedUser,
-    coaching_relationship_access::{authorize_relationship_coach, CoachingRelationshipQueryAccess},
+    coaching_relationship_access::{authorize_session_manager, CoachingRelationshipQueryAccess},
     compare_api_version::CompareApiVersion,
 };
 use crate::params::coaching_session::{
@@ -183,11 +183,11 @@ pub async fn create(
 ) -> Result<Response, Error> {
     debug!("POST Create a new Coaching Session from: {params:?}");
 
-    if let Err(rejection) =
-        authorize_relationship_coach(&app_state, &user, params.coaching_relationship_id).await
-    {
-        return Ok(rejection.into_response());
-    }
+    let manager =
+        match authorize_session_manager(&app_state, &user, params.coaching_relationship_id).await {
+            Ok(manager) => manager,
+            Err(rejection) => return Ok(rejection.into_response()),
+        };
 
     // Validate wire `Option<i16>` → `Option<Duration>` so lower layers see
     // only already-validated values. Out-of-range propagates as 422.
@@ -199,7 +199,7 @@ pub async fn create(
         &app_state.config,
         app_state.event_publisher.as_ref(),
         coaching_session_model,
-        user.id,
+        manager.user_id(),
         requested_duration,
     )
     .await?;
@@ -234,16 +234,15 @@ pub async fn create(
     )
 )]
 pub async fn update(
-    CoachingSessionCoachAccess(coaching_session, _relationship): CoachingSessionCoachAccess,
+    CoachingSessionManagerAccess(coaching_session, manager): CoachingSessionManagerAccess,
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     Json(params): Json<UpdateParams>,
 ) -> Result<impl IntoResponse, Error> {
     CoachingSessionApi::update(
         app_state.db_conn_ref(),
         coaching_session.id,
-        user.id,
+        manager.user_id(),
         params,
     )
     .await?;
@@ -252,8 +251,8 @@ pub async fn update(
 
 /// PATCH update only the title of a Coaching Session.
 ///
-/// Either participant (coach or coachee) may edit the title; the scheduling fields stay on the
-/// coach-only `PUT /coaching_sessions/{id}`. Authorization is the `CoachingSessionAccess`
+/// Either participant may edit the title; the scheduling fields stay on the session manager's
+/// `PUT /coaching_sessions/{id}`. Authorization is the `CoachingSessionAccess`
 /// extractor (participant-gated). Returns the updated session.
 #[utoipa::path(
     patch,
@@ -306,7 +305,7 @@ pub async fn update_title(
     )
 )]
 pub async fn delete(
-    CoachingSessionCoachAccess(coaching_session, _relationship): CoachingSessionCoachAccess,
+    CoachingSessionManagerAccess(coaching_session, _manager): CoachingSessionManagerAccess,
     CompareApiVersion(_v): CompareApiVersion,
     AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
@@ -331,7 +330,7 @@ pub async fn delete(
         (status = 204, description = "Invite resent"),
         (status = 400, description = "Missing or unsupported API version header"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden — not the coach on the relationship"),
+        (status = 403, description = "Forbidden — not a session manager of the relationship"),
         (status = 404, description = "Coaching Session not found"),
         (status = 409, description = "Not resendable; `details.reason` is `no_upcoming_sessions`, `series_member`, or `coachee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status = 502, description = "The invite did not reach the coachee"),
@@ -341,7 +340,7 @@ pub async fn delete(
     )
 )]
 pub async fn resend_invite(
-    CoachingSessionCoachAccess(coaching_session, _relationship): CoachingSessionCoachAccess,
+    CoachingSessionManagerAccess(coaching_session, _manager): CoachingSessionManagerAccess,
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {

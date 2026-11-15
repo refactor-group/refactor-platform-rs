@@ -13,7 +13,7 @@ use domain::Id;
 use serde_json::json;
 
 use crate::test_utils::sqlite::{
-    assert_signed_out_refused, created_id, ids, TestApp, NON_PARTICIPANTS,
+    assert_signed_out_refused, created_id, ids, make_colleagues, TestApp, NON_PARTICIPANTS,
 };
 
 /// The path of `topic` under `session`, plus `suffix`.
@@ -465,5 +465,48 @@ async fn signed_out_callers_cannot_reach_topics() {
             (Method::POST, topic_path(s1, t1, "/undo")),
         ]
     }))
+    .await;
+}
+
+/// In a colleague relationship, the person in the coachee seat deletes the other's topic.
+#[tokio::test]
+async fn the_colleague_in_the_coachee_seat_deletes_the_others_topic() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (s1, t1) = (app.fixture.s1, app.fixture.t1);
+        make_colleagues(&app, app.fixture.r1).await;
+
+        let reply = app
+            .send(
+                Caller::Coachee,
+                Method::DELETE,
+                &topic_path(s1, t1, ""),
+                None,
+            )
+            .await;
+
+        assert_eq!((reply.status, reply.ids()), (StatusCode::OK, ids([t1])));
+        assert!(topic(&app, t1).await.deleted);
+    })
+    .await;
+}
+
+/// Colleagues delete topics in their own relationship's sessions, nobody else's.
+#[tokio::test]
+async fn non_participants_cannot_delete_a_colleague_sessions_topic() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (s1, t1) = (app.fixture.s1, app.fixture.t1);
+        make_colleagues(&app, app.fixture.r1).await;
+        let before = topic(&app, t1).await;
+
+        for caller in NON_PARTICIPANTS {
+            let (status, _) = app
+                .expect(caller, Method::DELETE, &topic_path(s1, t1, ""), None)
+                .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{caller:?}");
+        }
+        assert_eq!(topic(&app, t1).await, before);
+    })
     .await;
 }

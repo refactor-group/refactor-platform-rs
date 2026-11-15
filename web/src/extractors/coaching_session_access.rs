@@ -12,7 +12,10 @@ use crate::{
     extractors::{authenticated_user::AuthenticatedUser, lookup_rejection, RejectionType},
     AppState,
 };
-use domain::{coaching_relationships, coaching_sessions, users};
+use domain::{
+    coaching_relationships::{self, SessionManager},
+    coaching_sessions, users,
+};
 use log::*;
 
 /// Extractor that verifies the authenticated user is a participant (coach or coachee)
@@ -36,11 +39,9 @@ pub(crate) struct CoachingSessionQueryAccess(
     pub coaching_relationships::Model,
 );
 
-/// Coach-only [`CoachingSessionContextAccess`]: the caller must coach the session's relationship.
-pub(crate) struct CoachingSessionCoachAccess(
-    pub coaching_sessions::Model,
-    pub coaching_relationships::Model,
-);
+/// [`CoachingSessionContextAccess`] for a session manager of the session's relationship,
+/// yielding their proof.
+pub(crate) struct CoachingSessionManagerAccess(pub coaching_sessions::Model, pub SessionManager);
 
 #[derive(Deserialize)]
 struct SessionQueryParams {
@@ -76,7 +77,7 @@ where
 }
 
 #[async_trait]
-impl<S> FromRequestParts<S> for CoachingSessionCoachAccess
+impl<S> FromRequestParts<S> for CoachingSessionManagerAccess
 where
     AppState: FromRef<S>,
     S: Send + Sync,
@@ -87,20 +88,21 @@ where
         let (session, relationship) = authorize(parts, &AppState::from_ref(state)).await?;
         let AuthenticatedUser(user) = AuthenticatedUser::from_request_parts(parts, state).await?;
         let operation = format!("{} {}", parts.method, parts.uri.path());
+        let relationship_id = relationship.id;
 
-        if relationship.coach_id != user.id {
+        let Some(manager) = SessionManager::verify(relationship, &user) else {
             warn!(
-                "{operation} auth denied (not coach): coaching_session_id={} relationship_id={} user_id={}",
-                session.id, relationship.id, user.id
+                "{operation} auth denied (not a session manager): coaching_session_id={} relationship_id={relationship_id} user_id={}",
+                session.id, user.id
             );
             return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
-        }
+        };
 
         debug!(
-            "{operation} auth passed: coaching_session_id={} relationship_id={} user_id={}",
-            session.id, relationship.id, user.id
+            "{operation} auth passed: coaching_session_id={} relationship_id={relationship_id} user_id={}",
+            session.id, user.id
         );
-        Ok(CoachingSessionCoachAccess(session, relationship))
+        Ok(CoachingSessionManagerAccess(session, manager))
     }
 }
 

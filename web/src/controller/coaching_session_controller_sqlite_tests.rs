@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 
 use crate::test_utils::sqlite::{
     assert_coachee_not_a_member, assert_removed_coach_resend_refused, assert_resend_mails_both,
-    assert_signed_out_refused, created_id, ids, TestApp, NON_PARTICIPANTS,
+    assert_signed_out_refused, created_id, ids, make_colleagues, TestApp, NON_PARTICIPANTS,
 };
 
 /// S1's invite resend path.
@@ -926,5 +926,58 @@ async fn signed_out_callers_cannot_reach_sessions() {
             ),
         ]
     }))
+    .await;
+}
+
+/// In a colleague relationship, the person in the coachee seat manages sessions too.
+#[tokio::test]
+async fn the_colleague_in_the_coachee_seat_updates_a_session() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let s1 = app.fixture.s1;
+        make_colleagues(&app, app.fixture.r1).await;
+        let body = retitle_body(&app, s1).await;
+
+        let reply = app
+            .send(
+                Caller::Coachee,
+                Method::PUT,
+                &format!("/coaching_sessions/{s1}"),
+                Some(body),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(
+            session_title(app.db(), s1).await,
+            Some(Some(NEW_TITLE.to_string()))
+        );
+    })
+    .await;
+}
+
+/// Colleagues manage their own relationship's sessions, nobody else's.
+#[tokio::test]
+async fn non_participants_cannot_update_a_colleague_session() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let s1 = app.fixture.s1;
+        make_colleagues(&app, app.fixture.r1).await;
+        let title = session_title(app.db(), s1).await;
+        let body = retitle_body(&app, s1).await;
+
+        for caller in NON_PARTICIPANTS {
+            let (status, _) = app
+                .expect(
+                    caller,
+                    Method::PUT,
+                    &format!("/coaching_sessions/{s1}"),
+                    Some(body.clone()),
+                )
+                .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{caller:?}");
+        }
+        assert_eq!(session_title(app.db(), s1).await, title);
+    })
     .await;
 }
