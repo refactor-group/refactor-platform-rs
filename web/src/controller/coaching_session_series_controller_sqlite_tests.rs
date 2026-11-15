@@ -12,7 +12,9 @@ use std::collections::BTreeSet;
 
 use axum::http::{Method, StatusCode};
 use chrono::{TimeDelta, Utc};
-use domain::test_utils::sqlite::fixture::{move_series_into_the_past, remove_roles};
+use domain::test_utils::sqlite::fixture::{
+    make_colleagues, move_series_into_the_past, remove_roles,
+};
 use domain::test_utils::sqlite::read_back::{
     relationship_series, relationship_sessions, series_state,
 };
@@ -22,7 +24,7 @@ use serde_json::{json, Value};
 
 use crate::test_utils::sqlite::{
     assert_coachee_not_a_member, assert_removed_coach_resend_refused, assert_resend_mails_both,
-    assert_signed_out_refused, ids, ids_in, make_colleagues, TestApp, NON_PARTICIPANTS,
+    assert_signed_out_refused, ids, ids_in, TestApp, NON_PARTICIPANTS,
 };
 
 /// SR1's invite resend path.
@@ -532,7 +534,7 @@ async fn the_colleague_in_the_coachee_seat_creates_a_series() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
         let r1 = app.fixture.r1;
-        make_colleagues(&app, r1).await;
+        make_colleagues(app.db(), r1).await;
         let series_before = relationship_series(app.db(), r1).await;
 
         let reply = app

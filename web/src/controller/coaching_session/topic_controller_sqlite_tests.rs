@@ -6,6 +6,7 @@
 //! `web/src/test_utils/README.md` describes the people and the database.
 
 use axum::http::{Method, StatusCode};
+use domain::test_utils::sqlite::fixture::make_colleagues;
 use domain::test_utils::sqlite::read_back::{session_topics, topic_row, TopicRow};
 use domain::test_utils::sqlite::{seed_topic, within_time_limit, Caller};
 use domain::topic_status::Status;
@@ -13,7 +14,7 @@ use domain::Id;
 use serde_json::json;
 
 use crate::test_utils::sqlite::{
-    assert_signed_out_refused, created_id, ids, make_colleagues, TestApp, NON_PARTICIPANTS,
+    assert_signed_out_refused, created_id, ids, TestApp, NON_PARTICIPANTS,
 };
 
 /// The path of `topic` under `session`, plus `suffix`.
@@ -474,7 +475,7 @@ async fn the_colleague_in_the_coachee_seat_deletes_the_others_topic() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
         let (s1, t1) = (app.fixture.s1, app.fixture.t1);
-        make_colleagues(&app, app.fixture.r1).await;
+        make_colleagues(app.db(), app.fixture.r1).await;
 
         let reply = app
             .send(
@@ -497,7 +498,7 @@ async fn non_participants_cannot_delete_a_colleague_sessions_topic() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
         let (s1, t1) = (app.fixture.s1, app.fixture.t1);
-        make_colleagues(&app, app.fixture.r1).await;
+        make_colleagues(app.db(), app.fixture.r1).await;
         let before = topic(&app, t1).await;
 
         for caller in NON_PARTICIPANTS {

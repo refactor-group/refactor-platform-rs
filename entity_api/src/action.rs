@@ -494,8 +494,8 @@ impl CallerVisibility {
         user_id: Id,
         relationship: &entity::coaching_relationships::Model,
     ) -> Option<Self> {
-        relationship.seat(user_id).map(|_| {
-            if relationship.sees_all_actions(user_id) {
+        relationship.seat(user_id).map(|seat| {
+            if relationship.kind.rules().sees_all_actions(seat) {
                 Self::Unrestricted
             } else {
                 Self::OwnAndUnassigned { user_id }

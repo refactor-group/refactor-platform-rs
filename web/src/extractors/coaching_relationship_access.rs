@@ -127,18 +127,14 @@ where
     }
 }
 
-/// Loads the relationship and admits `user` only if it grants them access.
+/// Loads the relationship and admits `user` only if they are a participant still in its
+/// organization.
 pub(crate) async fn authorize_relationship(
     state: &AppState,
     user: &users::Model,
     coaching_relationship_id: Id,
 ) -> Result<coaching_relationships::Model, RejectionType> {
-    debug!("Checking coaching relationship access for relationship_id={coaching_relationship_id}");
-
-    let relationship =
-        CoachingRelationshipApi::find_by_id(state.db_conn_ref(), coaching_relationship_id)
-            .await
-            .map_err(|e| lookup_rejection(e.into()))?;
+    let relationship = find_relationship(state, coaching_relationship_id).await?;
 
     if !relationship.is_participant_and_member(user) {
         return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
@@ -147,16 +143,28 @@ pub(crate) async fn authorize_relationship(
     Ok(relationship)
 }
 
-/// `authorize_relationship`, then admits only a session manager, whose proof it returns.
+/// Loads the relationship and admits only a session manager, whose proof it returns.
 pub(crate) async fn authorize_session_manager(
     state: &AppState,
     user: &users::Model,
     coaching_relationship_id: Id,
 ) -> Result<SessionManager, RejectionType> {
-    let relationship = authorize_relationship(state, user, coaching_relationship_id).await?;
+    let relationship = find_relationship(state, coaching_relationship_id).await?;
 
     SessionManager::verify(relationship, user)
         .ok_or_else(|| (StatusCode::FORBIDDEN, "FORBIDDEN".to_string()))
+}
+
+/// Loads the relationship; an unknown one is a 404.
+async fn find_relationship(
+    state: &AppState,
+    coaching_relationship_id: Id,
+) -> Result<coaching_relationships::Model, RejectionType> {
+    debug!("Checking coaching relationship access for relationship_id={coaching_relationship_id}");
+
+    CoachingRelationshipApi::find_by_id(state.db_conn_ref(), coaching_relationship_id)
+        .await
+        .map_err(|e| lookup_rejection(e.into()))
 }
 
 #[cfg(test)]

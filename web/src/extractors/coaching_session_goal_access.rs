@@ -51,9 +51,9 @@ where
     }
 }
 
-/// Admits `user` only if every session's relationship grants them access. Loads the sessions
-/// in one query, then walks the ids in request order: the first unknown id is a 404, the
-/// first session of someone else's relationship a 403.
+/// Admits `user` only if they are a participant still in the organization of every session's
+/// relationship. Loads the sessions in one query, then walks the ids in request order: the
+/// first unknown id is a 404, the first session of someone else's relationship a 403.
 async fn authorize_sessions(
     state: &AppState,
     user: &users::Model,

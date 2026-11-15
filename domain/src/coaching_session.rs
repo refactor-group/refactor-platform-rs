@@ -189,7 +189,7 @@ pub(crate) async fn create(
 /// `coaching_session_series` row (`series_id`); the [`crate::coaching_session_series`]
 /// orchestration module is the only call-site that should reach this helper
 /// directly.
-pub async fn bulk_create_recurring(
+pub(crate) async fn bulk_create_recurring(
     db: &impl sea_orm::ConnectionTrait,
     coaching_relationship_id: Id,
     coach_id: Id,

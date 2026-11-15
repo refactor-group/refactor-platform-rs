@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use chrono::{DateTime, NaiveDateTime, TimeDelta, Timelike, Utc};
+use entity::coaching_relationship_kind::Kind;
 use entity::meeting_provider::Provider;
 use entity::meeting_recording::MeetingRecordingStatus;
 use entity::roles::Role;
@@ -305,6 +306,18 @@ pub async fn archive_organization(db: &DatabaseConnection, organization_id: Id, 
     .update(db)
     .await
     .expect("the organization is archived");
+}
+
+/// Stores `relationship` as a colleague relationship, which no route can make yet.
+pub async fn make_colleagues(db: &DatabaseConnection, relationship: Id) {
+    coaching_relationships::ActiveModel {
+        id: Set(relationship),
+        kind: Set(Kind::Colleague),
+        ..Default::default()
+    }
+    .update(db)
+    .await
+    .expect("the relationship becomes a colleague one");
 }
 
 /// The audit row an admin's removal of `user_id` from `organization_id` leaves, which lets

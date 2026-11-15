@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use axum::http::{Method, StatusCode};
 use chrono::{TimeDelta, Utc};
 use domain::test_utils::sqlite::fixture::{
-    remove_roles, seed_content_free_session, set_google_meeting_url,
+    make_colleagues, remove_roles, seed_content_free_session, set_google_meeting_url,
 };
 use domain::test_utils::sqlite::read_back::{
     relationship_sessions, session_content, session_ical_sequence, session_meeting_url,
@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 
 use crate::test_utils::sqlite::{
     assert_coachee_not_a_member, assert_removed_coach_resend_refused, assert_resend_mails_both,
-    assert_signed_out_refused, created_id, ids, make_colleagues, TestApp, NON_PARTICIPANTS,
+    assert_signed_out_refused, created_id, ids, TestApp, NON_PARTICIPANTS,
 };
 
 /// S1's invite resend path.
@@ -935,7 +935,7 @@ async fn the_colleague_in_the_coachee_seat_updates_a_session() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
         let s1 = app.fixture.s1;
-        make_colleagues(&app, app.fixture.r1).await;
+        make_colleagues(app.db(), app.fixture.r1).await;
         let body = retitle_body(&app, s1).await;
 
         let reply = app
@@ -962,7 +962,7 @@ async fn non_participants_cannot_update_a_colleague_session() {
     within_time_limit(async {
         let mut app = TestApp::new().await;
         let s1 = app.fixture.s1;
-        make_colleagues(&app, app.fixture.r1).await;
+        make_colleagues(app.db(), app.fixture.r1).await;
         let title = session_title(app.db(), s1).await;
         let body = retitle_body(&app, s1).await;
 

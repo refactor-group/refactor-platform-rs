@@ -1,6 +1,7 @@
 //! `POST /coaching_session_series/:id/reschedule`, driven through the real router with a
 //! logged-in session and a mock database. Which rows move is covered in `domain`.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::{body::Body, extract::Request, http::StatusCode, routing::post, Router};
@@ -8,7 +9,7 @@ use axum_login::{
     tower_sessions::{MemoryStore, SessionManagerLayer},
     AuthManagerLayerBuilder,
 };
-use sea_orm::{MockExecResult, Value};
+use sea_orm::{MockDatabase, MockExecResult, Value};
 use serde_json::json;
 use time::Duration;
 use tower::ServiceExt;
@@ -40,14 +41,24 @@ fn session_id_row(id: Id) -> std::collections::BTreeMap<&'static str, Value> {
 }
 
 impl Fixture {
-    /// Past the gate, the domain's reads before any lock: the coach's zone, the series and
-    /// its sessions.
+    /// Past the gate, the domain's reads before any lock: the series, its relationship, the
+    /// coach's zone and the series' sessions.
     fn planned(&self, series: &Series, rows: &[Session]) -> Call {
         self.gate(&self.coach, series, path(series)).then(|db| {
-            db.append_query_results([vec![self.coach.clone()]])
-                .append_query_results([vec![series.clone()]])
+            db.append_query_results([vec![series.clone()]])
+                .append_query_results([vec![self.relationship.clone()]])
+                .append_query_results([vec![self.coach.clone()]])
                 .append_query_results([rows.to_vec()])
         })
+    }
+
+    /// Which of `members` still hold a role in the relationship's organization.
+    fn still_members(&self, db: MockDatabase, members: &[Id]) -> MockDatabase {
+        let rows: Vec<_> = members
+            .iter()
+            .map(|&id| BTreeMap::from([("user_id".to_string(), Value::from(id))]))
+            .collect();
+        db.append_query_results([rows])
     }
 
     /// Planned, then the transaction's session locks and its locked re-reads.
@@ -142,7 +153,7 @@ async fn leaving_out_a_session_with_content_is_a_409_naming_it() {
     let series = f.series(start_in(7));
     let rows = f.members(&series);
     let call = f.locked(&series, &rows, 3).then(|db| {
-        f.membership(db, &f.both())
+        f.still_members(db, &f.both())
             .append_query_results([vec![session_id_row(rows[1].id), session_id_row(rows[2].id)]])
             .append_query_results([vec![session_id_row(rows[2].id)]])
     });
@@ -169,7 +180,7 @@ async fn m3_05_a_reschedule_with_a_coachee_no_longer_in_the_organization_is_a_40
     let rows = f.members(&series);
     let call = f
         .locked(&series, &rows, 2)
-        .then(|db| f.membership(db, &[f.coach.id]));
+        .then(|db| f.still_members(db, &[f.coach.id]));
 
     let (status, body) = post_json(
         call,

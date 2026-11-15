@@ -1,71 +1,94 @@
-//! The coach/coachee permission rule for reviewing suggestions.
+//! The participant permission rule for reviewing suggestions.
 
 use super::*;
+use crate::coaching_relationship_kind::Kind;
 
-fn people() -> People {
-    People {
+fn relationship(kind: Kind) -> coaching_relationships::Model {
+    let epoch = DateTime::<Utc>::UNIX_EPOCH.fixed_offset();
+    coaching_relationships::Model {
+        id: Id::new_v4(),
+        organization_id: Id::new_v4(),
         coach_id: Id::new_v4(),
         coachee_id: Id::new_v4(),
+        kind,
+        slug: String::new(),
+        created_at: epoch,
+        updated_at: epoch,
     }
+}
+
+fn reviewer(relationship: &coaching_relationships::Model, user_id: Id) -> Reviewer {
+    reviewer_of(user_id, relationship).expect("a participant")
 }
 
 #[test]
 fn the_coach_may_act_on_every_assignment() {
-    let p = people();
+    let r = relationship(Kind::Coaching);
+    let coach = reviewer(&r, r.coach_id);
     for stored in [
-        vec![p.coach_id],
-        vec![p.coachee_id],
-        vec![p.coach_id, p.coachee_id],
+        vec![r.coach_id],
+        vec![r.coachee_id],
+        vec![r.coach_id, r.coachee_id],
         vec![],
     ] {
-        assert!(may_act(Actor::Coach, p, &stored, None), "{stored:?}");
+        assert!(may_act(coach, &stored, None), "{stored:?}");
     }
 }
 
 #[test]
 fn the_coachee_may_not_act_on_a_coach_only_suggestion() {
-    let p = people();
-    assert!(!may_act(Actor::Coachee, p, &[p.coach_id], None));
+    let r = relationship(Kind::Coaching);
+    assert!(!may_act(reviewer(&r, r.coachee_id), &[r.coach_id], None));
 }
 
 #[test]
 fn the_coachee_may_act_on_coachee_only_shared_and_unassigned_suggestions() {
-    let p = people();
-    for stored in [vec![p.coachee_id], vec![p.coach_id, p.coachee_id], vec![]] {
-        assert!(may_act(Actor::Coachee, p, &stored, None), "{stored:?}");
+    let r = relationship(Kind::Coaching);
+    let coachee = reviewer(&r, r.coachee_id);
+    for stored in [vec![r.coachee_id], vec![r.coach_id, r.coachee_id], vec![]] {
+        assert!(may_act(coachee, &stored, None), "{stored:?}");
     }
 }
 
 #[test]
 fn the_coachee_may_not_add_or_remove_the_coach() {
-    let p = people();
-    assert!(!may_act(Actor::Coachee, p, &[], Some(&[p.coach_id])));
+    let r = relationship(Kind::Coaching);
+    let coachee = reviewer(&r, r.coachee_id);
+    assert!(!may_act(coachee, &[], Some(&[r.coach_id])));
     assert!(!may_act(
-        Actor::Coachee,
-        p,
-        &[p.coach_id, p.coachee_id],
-        Some(&[p.coachee_id])
+        coachee,
+        &[r.coach_id, r.coachee_id],
+        Some(&[r.coachee_id])
     ));
 }
 
 #[test]
 fn the_coachee_may_edit_without_changing_the_coach() {
-    let p = people();
-    assert!(may_act(
-        Actor::Coachee,
-        p,
-        &[p.coachee_id],
-        Some(&[p.coachee_id])
-    ));
-    assert!(may_act(Actor::Coachee, p, &[], Some(&[p.coachee_id])));
+    let r = relationship(Kind::Coaching);
+    let coachee = reviewer(&r, r.coachee_id);
+    assert!(may_act(coachee, &[r.coachee_id], Some(&[r.coachee_id])));
+    assert!(may_act(coachee, &[], Some(&[r.coachee_id])));
 }
 
 #[test]
-fn actor_of_names_the_coach_the_coachee_or_nobody() {
-    let p = people();
-    assert_eq!(actor_of(p.coach_id, p), Some(Actor::Coach));
-    assert_eq!(actor_of(p.coachee_id, p), Some(Actor::Coachee));
-    assert_eq!(actor_of(Id::new_v4(), p), None);
+fn a_colleague_in_the_coachee_seat_may_act_on_and_move_the_other_colleague() {
+    let r = relationship(Kind::Colleague);
+    let colleague = reviewer(&r, r.coachee_id);
+    assert!(may_act(colleague, &[r.coach_id], None));
+    assert!(may_act(colleague, &[], Some(&[r.coach_id])));
+    assert!(may_act(
+        colleague,
+        &[r.coach_id, r.coachee_id],
+        Some(&[r.coachee_id])
+    ));
+}
+
+#[test]
+fn reviewer_of_names_the_other_participant_or_nobody() {
+    let r = relationship(Kind::Coaching);
+    assert_eq!(reviewer(&r, r.coach_id).other_id, r.coachee_id);
+    assert_eq!(reviewer(&r, r.coachee_id).other_id, r.coach_id);
+    assert_eq!(reviewer_of(Id::new_v4(), &r), None);
 }
 
 #[test]

@@ -85,8 +85,9 @@ where
     type Rejection = RejectionType;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let (session, relationship) = authorize(parts, &AppState::from_ref(state)).await?;
-        let AuthenticatedUser(user) = AuthenticatedUser::from_request_parts(parts, state).await?;
+        let state = AppState::from_ref(state);
+        let (user, coaching_session_id) = caller_and_path_session(parts, &state).await?;
+        let (session, relationship) = find_session(&state, coaching_session_id).await?;
         let operation = format!("{} {}", parts.method, parts.uri.path());
         let relationship_id = relationship.id;
 
@@ -129,11 +130,20 @@ where
 }
 
 /// Loads the session named in the path with its relationship, and admits the caller only if
-/// the relationship grants them access.
+/// they are a participant still in the relationship's organization.
 async fn authorize(
     parts: &mut Parts,
     state: &AppState,
 ) -> Result<(coaching_sessions::Model, coaching_relationships::Model), RejectionType> {
+    let (user, coaching_session_id) = caller_and_path_session(parts, state).await?;
+    authorize_session(state, &user, coaching_session_id).await
+}
+
+/// The authenticated caller and the session id named in the path.
+async fn caller_and_path_session(
+    parts: &mut Parts,
+    state: &AppState,
+) -> Result<(users::Model, Id), RejectionType> {
     let AuthenticatedUser(authenticated_user) =
         AuthenticatedUser::from_request_parts(parts, state).await?;
 
@@ -163,31 +173,39 @@ async fn authorize(
             )
         })?;
 
-    authorize_session(state, &authenticated_user, coaching_session_id).await
+    Ok((authenticated_user, coaching_session_id))
 }
 
-/// Loads the session and its relationship, and admits `user` only if the relationship
-/// grants them access.
+/// Loads the session and its relationship, and admits `user` only if they are a participant
+/// still in the relationship's organization.
 pub(crate) async fn authorize_session(
     state: &AppState,
     user: &users::Model,
     coaching_session_id: Id,
 ) -> Result<(coaching_sessions::Model, coaching_relationships::Model), RejectionType> {
-    debug!("Checking coaching session access for coaching_session_id={coaching_session_id}");
-
     let (coaching_session, coaching_relationship) =
-        coaching_session::find_by_id_with_coaching_relationship(
-            state.db_conn_ref(),
-            coaching_session_id,
-        )
-        .await
-        .map_err(lookup_rejection)?;
+        find_session(state, coaching_session_id).await?;
 
     if !coaching_relationship.is_participant_and_member(user) {
         return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
     }
 
     Ok((coaching_session, coaching_relationship))
+}
+
+/// Loads the session and its relationship; an unknown session is a 404.
+async fn find_session(
+    state: &AppState,
+    coaching_session_id: Id,
+) -> Result<(coaching_sessions::Model, coaching_relationships::Model), RejectionType> {
+    debug!("Checking coaching session access for coaching_session_id={coaching_session_id}");
+
+    coaching_session::find_by_id_with_coaching_relationship(
+        state.db_conn_ref(),
+        coaching_session_id,
+    )
+    .await
+    .map_err(lookup_rejection)
 }
 
 #[cfg(test)]

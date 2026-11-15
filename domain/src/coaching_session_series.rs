@@ -72,8 +72,7 @@ impl SeriesRule {
 
 /// Create a series and materialize its sessions in a single transaction.
 ///
-/// 1. Authorizes the caller: `acting_user_id` must manage sessions in the target
-///    relationship, and the coachee must still be a member of its organization.
+/// 1. Refuses when the coachee is no longer a member of the relationship's organization.
 /// 2. Expands and validates the recurrence rule.
 /// 3. Resolves the coach's effective duration via the defaulting cascade.
 /// 4. Inserts the series row with the resolved rule (including the resolved
@@ -95,9 +94,6 @@ pub(crate) async fn create_with_sessions(
 ) -> Result<(Model, Vec<coaching_sessions::Model>), Error> {
     let relationship =
         entity_api::coaching_relationship::find_by_id(db, coaching_relationship_id).await?;
-    if !relationship.can_manage_sessions(acting_user_id) {
-        return Err(Error::forbidden());
-    }
     let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
     ensure_coachee_is_member(&relationship, &member_ids)?;
     let coach_id = relationship.coach_id;
@@ -208,8 +204,12 @@ pub(crate) async fn reschedule(
         return Err(RecurrenceError::StartAtInPast.into());
     }
 
+    let existing = coaching_session_series::find_by_id(db, series_id).await?;
+    let relationship =
+        coaching_relationship::find_by_id(db, existing.coaching_relationship_id).await?;
+
     // A reschedule re-publishes the series, so it adopts the coach's zone as it is now.
-    let zone = publication_zone(db, acting_user_id).await?;
+    let zone = publication_zone(db, relationship.coach_id).await?;
     let new_dates = coaching_session::expand_recurrence(new_start_at, &new_recurrence, zone)?;
 
     // Resolve the duration for the re-materialized sessions. A reschedule moves
@@ -217,7 +217,6 @@ pub(crate) async fn reschedule(
     // omits a duration, reuse the value persisted on the existing series rule
     // rather than re-deriving the coach's *current* default (which may have
     // changed since the series was created). An explicit request still wins.
-    let existing = coaching_session_series::find_by_id(db, series_id).await?;
     // An unreadable stored rule is treated as "differs", which re-materializes rather
     // than wrongly reporting no change.
     let existing_rule: Option<SeriesRule> = serde_json::from_value(existing.rule.clone()).ok();
@@ -252,8 +251,6 @@ pub(crate) async fn reschedule(
         });
     }
 
-    let relationship =
-        coaching_relationship::find_by_id(db, existing.coaching_relationship_id).await?;
     let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
     ensure_coachee_is_member(&relationship, &member_ids)?;
 
@@ -292,7 +289,7 @@ pub(crate) async fn reschedule(
     let new_sessions = coaching_session::bulk_create_recurring(
         &txn,
         updated_series.coaching_relationship_id,
-        acting_user_id,
+        relationship.coach_id,
         acting_user_id,
         updated_series.id,
         new_dates,
@@ -620,11 +617,14 @@ pub(crate) async fn reschedule_following(
     acting_user_id: Id,
     request: FollowingReschedule,
 ) -> Result<Rescheduled, Error> {
-    let zone = publication_zone(db, acting_user_id).await?;
+    let snapshot_series = coaching_session_series::find_by_id(db, series_id).await?;
+    let relationship =
+        coaching_relationship::find_by_id(db, snapshot_series.coaching_relationship_id).await?;
+    let zone = publication_zone(db, relationship.coach_id).await?;
     let now = chrono::Utc::now().naive_utc();
 
     // Planned once to reject a bad request before taking locks, then again under them.
-    let snapshot_rule = rule_of(&coaching_session_series::find_by_id(db, series_id).await?)?;
+    let snapshot_rule = rule_of(&snapshot_series)?;
     let snapshot = entity_api::coaching_session::find_by_series_id(db, series_id).await?;
     let draft = plan_following(&snapshot_rule, &snapshot, &request, zone, now)?;
 
@@ -647,8 +647,6 @@ pub(crate) async fn reschedule_following(
         });
     }
 
-    let relationship =
-        coaching_relationship::find_by_id(&txn, existing.coaching_relationship_id).await?;
     let member_ids = coaching_relationship::notify_member_ids(&txn, &relationship).await?;
     ensure_coachee_is_member(&relationship, &member_ids)?;
 
@@ -726,7 +724,7 @@ pub(crate) async fn reschedule_following(
     let created = coaching_session::bulk_create_recurring(
         &txn,
         existing.coaching_relationship_id,
-        acting_user_id,
+        relationship.coach_id,
         acting_user_id,
         target.id,
         plan.extras.clone(),
@@ -1145,10 +1143,10 @@ mod tests {
         let rematerialized = occurrences(&series, new_start, 3);
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![vec![series.clone()]])
-            .append_query_results(vec![future.clone()])
             .append_query_results(vec![vec![p.relationship.clone()]])
+            .append_query_results(vec![vec![coach_row("UTC")]])
+            .append_query_results(vec![future.clone()])
             .append_query_results(vec![p.members()])
             .append_query_results(vec![Vec::<coaching_session_images::Model>::new()])
             // BEGIN, a lock per session, the locked re-read, the delete
@@ -1209,13 +1207,13 @@ mod tests {
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![vec![p.relationship.clone()]])
+            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![sessions.clone()])
             .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
             .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![sessions.clone()])
-            .append_query_results(vec![vec![p.relationship.clone()]])
             .append_query_results(vec![p.members()])
             .append_query_results(vec![vec![bumped]])
             .append_query_results(vec![vec![moved[0].clone()]])
@@ -1284,7 +1282,7 @@ mod tests {
         let now = chrono::Utc::now();
         let rule = weekly_rule_count(3);
 
-        // The acting user is the coach on this relationship, so authz passes.
+        // The acting user is the coach on this relationship.
         let relationship = entity::coaching_relationships::Model {
             id: relationship_id,
             organization_id: Id::new_v4(),
@@ -1351,7 +1349,7 @@ mod tests {
         ];
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            // 1. authz → coaching_relationship::find_by_id
+            // 1. coaching_relationship::find_by_id
             .append_query_results(vec![vec![relationship.clone()]])
             // 1b. the coachee is still a member
             .append_query_results(vec![both_participants_are_members(&relationship)])
@@ -1406,7 +1404,7 @@ mod tests {
         let coach_id = Id::new_v4();
         let relationship_id = Id::new_v4();
         let now = chrono::Utc::now();
-        // Authz must pass first, so the failure is attributable to the rule.
+        // The relationship loads first, so the failure is attributable to the rule.
         let relationship = entity::coaching_relationships::Model {
             id: relationship_id,
             organization_id: Id::new_v4(),
@@ -1515,14 +1513,14 @@ mod tests {
 
         let relationship = member_relationship(relationship_id);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            // 0. publication zone → the coach
-            .append_query_results(vec![vec![coach_row("UTC")]])
-            // 1. duration omitted → find_by_id on the series to read its stored rule
+            // 0. the series, whose stored rule supplies the omitted duration
             .append_query_results(vec![vec![existing_series.clone()]])
+            // 1. its relationship, then the coach's publication zone
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![coach_row("UTC")]])
             // 2. find_future_sessions_by_series_id → 2 future rows
             .append_query_results(vec![future_sessions.clone()])
-            // the relationship, then its coachee's membership
-            .append_query_results(vec![vec![relationship.clone()]])
+            // the coachee's membership
             .append_query_results(vec![both_participants_are_members(&relationship)])
             // 2b. storage_keys_for_sessions → no images to strand
             .append_query_results(vec![Vec::<coaching_session_images::Model>::new()])
@@ -1635,8 +1633,11 @@ mod tests {
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![vec![existing_series.clone()]])
+            .append_query_results(vec![vec![member_relationship(
+                existing_series.coaching_relationship_id,
+            )]])
+            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![vec![future_session.clone()]])
             .into_connection();
 
@@ -1721,8 +1722,11 @@ mod tests {
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![vec![existing_series.clone()]])
+            .append_query_results(vec![vec![member_relationship(
+                existing_series.coaching_relationship_id,
+            )]])
+            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![vec![future_session]])
             .into_connection();
 
@@ -1900,12 +1904,12 @@ mod tests {
 
         let relationship = member_relationship(relationship_id);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![vec![existing_series.clone()]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![coach_row("UTC")]])
             // The pre-lock snapshot still shows SEQUENCE 1.
             .append_query_results(vec![vec![session(1)]])
-            // the relationship, then its coachee's membership
-            .append_query_results(vec![vec![relationship.clone()]])
+            // the coachee's membership
             .append_query_results(vec![both_participants_are_members(&relationship)])
             // storage_keys_for_sessions → no images to strand
             .append_query_results(vec![Vec::<coaching_session_images::Model>::new()])
@@ -2136,14 +2140,14 @@ mod tests {
         let relationship = member_relationship(series.coaching_relationship_id);
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![sessions.clone()])
             .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
             // the series, locked
             .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![sessions.clone()])
-            .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![members(&[relationship.coach_id])])
             .into_connection();
 
@@ -2174,8 +2178,11 @@ mod tests {
         let anchor = sessions[1].clone();
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![vec![member_relationship(
+                series.coaching_relationship_id,
+            )]])
+            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![sessions.clone()])
             .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
             // the series, locked
@@ -2215,15 +2222,15 @@ mod tests {
 
         let relationship = member_relationship(series.coaching_relationship_id);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![sessions.clone()])
             .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok(), exec_ok()])
             // the series, locked
             .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![sessions.clone()])
-            // the relationship, then its coachee's membership
-            .append_query_results(vec![vec![relationship.clone()]])
+            // the coachee's membership
             .append_query_results(vec![both_participants_are_members(&relationship)])
             // the leftovers, locked, then the content UNION
             .append_query_results(vec![vec![noted(sessions[1].id), noted(with_note)]])
@@ -2320,15 +2327,15 @@ mod tests {
 
         let relationship = member_relationship(series.coaching_relationship_id);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![sessions.clone()])
             .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
             // the series, locked
             .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![sessions.clone()])
-            // the relationship, then its coachee's membership
-            .append_query_results(vec![vec![relationship.clone()]])
+            // the coachee's membership
             .append_query_results(vec![both_participants_are_members(&relationship)])
             // update_rule on the old series, then the new series' insert
             .append_query_results(vec![vec![shortened.clone()]])
@@ -2456,15 +2463,15 @@ mod tests {
 
         let relationship = member_relationship(series.coaching_relationship_id);
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![sessions.clone()])
             .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
             // the series, locked
             .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![sessions.clone()])
-            // the relationship, then its coachee's membership
-            .append_query_results(vec![vec![relationship.clone()]])
+            // the coachee's membership
             .append_query_results(vec![both_participants_are_members(&relationship)])
             // update_rule on the old series, then the new series' insert
             .append_query_results(vec![vec![series.clone()]])
@@ -2618,15 +2625,15 @@ mod tests {
         };
 
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![coach_row("UTC")]])
             .append_query_results(vec![sessions.clone()])
             .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
             // the series, locked
             .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![sessions.clone()])
-            // the relationship, then its coachee's membership
-            .append_query_results(vec![vec![relationship.clone()]])
+            // the coachee's membership
             .append_query_results(vec![both_participants_are_members(&relationship)])
             // update_rule in place, then move_to_slot × 2
             .append_query_results(vec![vec![bumped.clone()]])

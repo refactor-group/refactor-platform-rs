@@ -53,7 +53,7 @@ fn check_assignee_visibility(
         Ok(())
     } else {
         warn!(
-            "Coachee caller {caller_id} attempted to scope assignee outside their visibility: {assignee_scope:?}"
+            "Caller {caller_id}, limited to their own and unassigned actions, attempted to scope assignee outside them: {assignee_scope:?}"
         );
         Err(WebError::Web(WebErrorKind::ForbiddenAssigneeScope))
     }
