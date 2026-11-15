@@ -33,7 +33,8 @@ access, different fields).
 
 Each phase is its own PR; phase 1 is three (migration and backfill, then code, then cleanup).
 Order: S, 0, M, 0b, 0c, 0d, 1, 2, 3, 4, 4b, E, 5, 6. Phases S and 0 can run in parallel. Done:
-S (#476), 0 (#480), M (#481), 0b (#492), 0c (#495), 0d (#496).
+S (#476), 0 (#480), M (#481), 0b (#492), 0c (#495), 0d (#496), 1 (#499, #501,
+#505), 2 (#507).
 
 **S. Relationship authorization fixes.** Its own security PR, ahead of the colleague work, so
 the phase 0b baseline records the corrected behavior. Notes, agreements, actions, goals and
@@ -178,22 +179,41 @@ decides view/edit/delete through a relationship asks the Model:
   `includes_user(user_id)`, which says only that their id is on the relationship.
 - `can_manage_sessions(user_id)`: may schedule, reschedule, cancel, run series, set meeting links
   and delete any topic. A role check alone, saying nothing about membership.
-- `sees_all_actions(user)`: action visibility (replaces `CallerVisibility::for_relationship`'s
+- `sees_all_actions(user_id)`: action visibility (replaces `CallerVisibility::for_relationship`'s
   hand comparison), a new required `Rules` method.
 
-Session-managing checks take a proof, not a bool: a `SessionManager` value that only the access
-extractors can make, and only after both `is_participant_and_member` and `can_manage_sessions`
-pass. Domain functions that schedule, reschedule, cancel or run series require it as an
-argument, so calling one without the full check does not compile, and `can_manage_sessions` is
-never used alone. The coach-named extractors (`CoachingSessionCoachAccess`,
-`CoachingSessionSeriesCoachAccess`) become manager-named ones that produce it.
+Session-managing checks take a proof, not a bool: a `SessionManager` value whose only
+constructor runs both `is_participant_and_member` and `can_manage_sessions`. The access
+extractors make it; the domain functions that schedule, reschedule, cancel, resend or run series
+require it as an argument and refuse a proof for another relationship, so calling one without
+the full check does not compile, and `can_manage_sessions` is never used alone. The coach-named
+extractors (`CoachingSessionCoachAccess`, `CoachingSessionSeriesCoachAccess`) become
+manager-named ones that produce it.
 
-One handoff per check site: the extractors from phase 0c; the existing
-`coaching_session_access`, `coaching_session_series_access` and `coaching_session_topic_access`
-extractors; `CallerVisibility`; search visibility (`entity_api/src/search/visibility.rs`);
-email recipients in `domain/src/jobs/`; and the transcription and recording controllers. Final
-list from the phase 0 audit. Sites outside `web/src/extractors/` move unchanged first, then
-switch to the Model method.
+The phase 0c extractors left these hand checks, the whole phase 3 inventory:
+
+| Site | Today | Handoff |
+|---|---|---|
+| `grants_access_to` callers (relationship, session, image, session-goal extractors; `visible_to` docs) | rename | 3-1 |
+| `CallerVisibility::for_relationship` (`entity_api/src/action.rs`) | `coach_id` comparison | 3-1 |
+| `caller_is_coach_in_any` (relationship actions controller) | `coach_id` comparison | 3-1 |
+| `authorize_relationship_coach`, `CoachingSessionCoachAccess`, `CoachingSessionSeriesCoachAccess` | `coach_id` comparison | 3-2 |
+| `CoachingSessionTopicDeleteAccess` (delete another's topic) | `coach_id` comparison | 3-2 |
+| `coaching_session_series::create_with_sessions` | its own `coach_id` check | 3-3 |
+| Session create/update/delete/resend and series reschedule/reschedule-following/delete/resend | acting user id, no check | 3-3 |
+
+Checked and left alone: search visibility and `visible_to` are participant-either-side, already
+kind-neutral; the transcription, recording and suggestion controllers take
+`CoachingSessionAccess`; the jobs make no access decision. Phase 4 changes, not switches: the
+reminder SQL's coachee-only recipient, the coach's timezone, duration default and meeting link
+when scheduling, the `assignee=coach|coachee` filters, and the `coachee_not_a_member` 409 (which
+names the other participant for colleagues). 3-4 takes three leftovers: the pending-reschedule
+job reloads a relationship the email send already loaded; `coaching_session_notice::stamp` and
+`find_by_coaching_session` are public only for tests; the relationship POST's 409s are missing
+from its OpenAPI responses.
+
+One PR. Afterwards the manual access matrix runs against the local API (every coach/coachee
+row) and the frontend reruns its coach/coachee Playwright rows.
 
 **4. Colleague behavior.**
 
