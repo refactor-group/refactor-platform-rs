@@ -12,6 +12,7 @@ items, which `domain/tests/` could not.
 | Module | Compiled when | Provides | For |
 |---|---|---|---|
 | `mock` | `domain`'s tests with the `mock` feature | `recording_publisher`, `both_participants_are_members` | mock database tests (the default) |
+| `proof` | `domain`'s tests | `coach_manages` (a `SessionManager` with no database) | tests of the `as_manager` functions and `ensure_manages` |
 | `sqlite` | `domain`'s tests, or `test-sqlite` | `database`, `within_time_limit`, `seed_user`, `seed_organization`, `seed_coaching_session`, `seed_action`, `seed_agreement`, `seed_topic`, `seed_lapsed_membership`, `foreign_key_violation` (with `mock`) | SQLite tier tests |
 | `sqlite::fixture` | as `sqlite` | `seed_fixture` (the access matrix's fixture), the per-test seeders and mutators, `mirror_migration_defaults` (in `sqlite`) | `web`'s SQLite route tests (`web/src/test_utils/sqlite.rs`) |
 | `sqlite::read_back` | as `sqlite` | reads of the stored rows, for asserting what a request left in the database | `web`'s SQLite route tests |

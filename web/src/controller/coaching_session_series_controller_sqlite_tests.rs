@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 
 use crate::test_utils::sqlite::{
     assert_coachee_not_a_member, assert_removed_coach_resend_refused, assert_resend_mails_both,
-    assert_signed_out_refused, ids, ids_in, TestApp, NON_PARTICIPANTS,
+    assert_signed_out_refused, ids, ids_in, make_colleagues, TestApp, NON_PARTICIPANTS,
 };
 
 /// SR1's invite resend path.
@@ -523,5 +523,38 @@ async fn signed_out_callers_cannot_reach_series() {
             ),
         ]
     }))
+    .await;
+}
+
+/// In a colleague relationship, the person in the coachee seat creates a series too.
+#[tokio::test]
+async fn the_colleague_in_the_coachee_seat_creates_a_series() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let r1 = app.fixture.r1;
+        make_colleagues(&app, r1).await;
+        let series_before = relationship_series(app.db(), r1).await;
+
+        let reply = app
+            .send(
+                Caller::Coachee,
+                Method::POST,
+                "/coaching_session_series",
+                Some(create_body(r1)),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(reply.body["status_code"], 201);
+        let series = ids_in(&reply.body["data"]["series"]);
+        let series_after = relationship_series(app.db(), r1).await;
+        assert_eq!(
+            series_after
+                .difference(&series_before)
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            series
+        );
+    })
     .await;
 }

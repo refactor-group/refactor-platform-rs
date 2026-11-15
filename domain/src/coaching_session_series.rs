@@ -5,6 +5,8 @@
 //! This module owns the JSONB rule serialization: callers interact with the
 //! typed [`SeriesRule`] struct, never with `serde_json::Value` directly.
 
+pub mod as_manager;
+
 use crate::coaching_relationship::{self, ensure_coachee_is_member};
 use crate::coaching_relationships;
 use crate::coaching_session;
@@ -12,7 +14,11 @@ use crate::coaching_session_image;
 use crate::coaching_sessions;
 use crate::duration::Duration;
 use crate::emails;
-use crate::error::{reason, DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
+#[cfg(test)]
+use crate::error::DomainErrorKind;
+use crate::error::{reason, Error};
+#[cfg(all(test, feature = "mock"))]
+use crate::error::{EntityErrorKind, InternalErrorKind};
 use crate::gateway::ical;
 use crate::gateway::tiptap::TiptapDocument;
 use crate::Id;
@@ -66,11 +72,8 @@ impl SeriesRule {
 
 /// Create a series and materialize its sessions in a single transaction.
 ///
-/// 1. Authorizes the caller: `acting_user_id` must be the coach on the target
-///    relationship (the relationship id arrives in the request body, so this
-///    coach-only gate lives here rather than in a `FromRequestParts` extractor
-///    like the path/query-keyed series routes), and the coachee must still be a
-///    member of its organization.
+/// 1. Authorizes the caller: `acting_user_id` must manage sessions in the target
+///    relationship, and the coachee must still be a member of its organization.
 /// 2. Expands and validates the recurrence rule.
 /// 3. Resolves the coach's effective duration via the defaulting cascade.
 /// 4. Inserts the series row with the resolved rule (including the resolved
@@ -81,7 +84,7 @@ impl SeriesRule {
 /// Returns `(series, sessions)`. Tiptap docs, meeting URLs, and goal links
 /// are NOT created here — those run lazily on first read via
 /// `coaching_session::ensure_hydrated`.
-pub async fn create_with_sessions(
+pub(crate) async fn create_with_sessions(
     db: &DatabaseConnection,
     config: &Config,
     coaching_relationship_id: Id,
@@ -92,13 +95,8 @@ pub async fn create_with_sessions(
 ) -> Result<(Model, Vec<coaching_sessions::Model>), Error> {
     let relationship =
         entity_api::coaching_relationship::find_by_id(db, coaching_relationship_id).await?;
-    if relationship.coach_id != acting_user_id {
-        return Err(Error {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
-                EntityErrorKind::Forbidden,
-            )),
-        });
+    if !relationship.can_manage_sessions(acting_user_id) {
+        return Err(Error::forbidden());
     }
     let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
     ensure_coachee_is_member(&relationship, &member_ids)?;
@@ -192,11 +190,11 @@ pub struct Rescheduled {
 /// would destroy live session rows and their notes to recreate an identical
 /// schedule, and would re-send invites under a burned SEQUENCE. Any other is
 /// refused when the coachee is no longer in the organization.
-pub async fn reschedule(
+pub(crate) async fn reschedule(
     db: &DatabaseConnection,
     config: &Config,
     series_id: Id,
-    coach_id: Id,
+    acting_user_id: Id,
     new_start_at: NaiveDateTime,
     new_recurrence: Recurrence,
     new_requested_duration: Option<Duration>,
@@ -211,7 +209,7 @@ pub async fn reschedule(
     }
 
     // A reschedule re-publishes the series, so it adopts the coach's zone as it is now.
-    let zone = publication_zone(db, coach_id).await?;
+    let zone = publication_zone(db, acting_user_id).await?;
     let new_dates = coaching_session::expand_recurrence(new_start_at, &new_recurrence, zone)?;
 
     // Resolve the duration for the re-materialized sessions. A reschedule moves
@@ -294,8 +292,8 @@ pub async fn reschedule(
     let new_sessions = coaching_session::bulk_create_recurring(
         &txn,
         updated_series.coaching_relationship_id,
-        coach_id,
-        coach_id,
+        acting_user_id,
+        acting_user_id,
         updated_series.id,
         new_dates,
         Some(resolved_duration),
@@ -615,14 +613,14 @@ fn rule_of(series: &Model) -> Result<SeriesRule, Error> {
 /// moved session and a new series holds the moved ones, as calendars model "this and
 /// following". A request that changes nothing writes nothing and sends no email; any other
 /// is refused when the coachee is no longer in the organization.
-pub async fn reschedule_following(
+pub(crate) async fn reschedule_following(
     db: &DatabaseConnection,
     config: &Config,
     series_id: Id,
-    coach_id: Id,
+    acting_user_id: Id,
     request: FollowingReschedule,
 ) -> Result<Rescheduled, Error> {
-    let zone = publication_zone(db, coach_id).await?;
+    let zone = publication_zone(db, acting_user_id).await?;
     let now = chrono::Utc::now().naive_utc();
 
     // Planned once to reject a bad request before taking locks, then again under them.
@@ -690,7 +688,7 @@ pub async fn reschedule_following(
                     coaching_relationship_id: existing.coaching_relationship_id,
                     rule: serde_json::to_value(&plan.rule)?,
                     ical_sequence: 0,
-                    created_by_user_id: coach_id,
+                    created_by_user_id: acting_user_id,
                     created_at: chrono::Utc::now().into(),
                     updated_at: chrono::Utc::now().into(),
                 },
@@ -720,7 +718,7 @@ pub async fn reschedule_following(
                     date: landing.date,
                     duration: landing.duration,
                 },
-                landing.reschedules().then_some(coach_id),
+                landing.reschedules().then_some(acting_user_id),
             )
         })
         .try_collect()
@@ -728,8 +726,8 @@ pub async fn reschedule_following(
     let created = coaching_session::bulk_create_recurring(
         &txn,
         existing.coaching_relationship_id,
-        coach_id,
-        coach_id,
+        acting_user_id,
+        acting_user_id,
         target.id,
         plan.extras.clone(),
         Some(plan.duration()),
@@ -820,7 +818,7 @@ async fn record_following_notice(
 /// delete didn't touch, so their notes / meeting URLs / collab docs stay
 /// intact.
 ///
-pub async fn delete_with_future_sessions(
+pub(crate) async fn delete_with_future_sessions(
     db: &DatabaseConnection,
     config: &Config,
     series_id: Id,
@@ -885,7 +883,7 @@ pub async fn delete_with_future_sessions(
 /// left to attend, when an upcoming member predates `ical_recurrence_id` (such a series
 /// was never published as one, so a snapshot would not line up with what calendars hold),
 /// or when the coachee is no longer in the organization.
-pub async fn resend_invite(
+pub(crate) async fn resend_invite(
     db: &DatabaseConnection,
     config: &Config,
     series_id: Id,

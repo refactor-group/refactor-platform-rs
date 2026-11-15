@@ -194,12 +194,12 @@ pub async fn create(
     let requested_duration = CoachingSessionApi::parse_duration_minutes(params.duration_minutes)?;
     let coaching_session_model = params.into_model();
 
-    let coaching_session = CoachingSessionApi::create(
+    let coaching_session = CoachingSessionApi::as_manager::create(
         app_state.db_conn_ref(),
         &app_state.config,
         app_state.event_publisher.as_ref(),
+        &manager,
         coaching_session_model,
-        manager.user_id(),
         requested_duration,
     )
     .await?;
@@ -239,10 +239,10 @@ pub async fn update(
     State(app_state): State<AppState>,
     Json(params): Json<UpdateParams>,
 ) -> Result<impl IntoResponse, Error> {
-    CoachingSessionApi::update(
+    CoachingSessionApi::as_manager::update(
         app_state.db_conn_ref(),
-        coaching_session.id,
-        manager.user_id(),
+        &manager,
+        &coaching_session,
         params,
     )
     .await?;
@@ -305,15 +305,15 @@ pub async fn update_title(
     )
 )]
 pub async fn delete(
-    CoachingSessionManagerAccess(coaching_session, _manager): CoachingSessionManagerAccess,
+    CoachingSessionManagerAccess(coaching_session, manager): CoachingSessionManagerAccess,
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(_user): AuthenticatedUser,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
-    CoachingSessionApi::delete(
+    CoachingSessionApi::as_manager::delete(
         app_state.db_conn_ref(),
         &app_state.config,
-        coaching_session.id,
+        &manager,
+        &coaching_session,
     )
     .await?;
 
@@ -340,14 +340,15 @@ pub async fn delete(
     )
 )]
 pub async fn resend_invite(
-    CoachingSessionManagerAccess(coaching_session, _manager): CoachingSessionManagerAccess,
+    CoachingSessionManagerAccess(coaching_session, manager): CoachingSessionManagerAccess,
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
-    CoachingSessionApi::resend_invite(
+    CoachingSessionApi::as_manager::resend_invite(
         app_state.db_conn_ref(),
         &app_state.config,
-        coaching_session.id,
+        &manager,
+        &coaching_session,
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)

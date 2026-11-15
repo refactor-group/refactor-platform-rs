@@ -127,6 +127,16 @@ impl Error {
         }
     }
 
+    /// A request the caller may not make, answered with a 403.
+    pub(crate) fn forbidden() -> Self {
+        Self {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::Forbidden,
+            )),
+        }
+    }
+
     /// A request that cannot apply as things stand, answered with a 409 carrying
     /// machine-readable `details`.
     pub(crate) fn conflict(message: impl Into<String>, details: serde_json::Value) -> Self {

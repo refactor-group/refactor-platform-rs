@@ -2,4 +2,6 @@
 
 #[cfg(all(test, feature = "mock"))]
 pub(crate) mod mock;
+#[cfg(test)]
+pub(crate) mod proof;
 pub mod sqlite;

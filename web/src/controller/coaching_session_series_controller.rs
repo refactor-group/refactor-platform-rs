@@ -67,11 +67,10 @@ pub async fn create(
 
     let requested_duration = CoachingSessionApi::parse_duration_minutes(params.duration_minutes)?;
 
-    let (series, sessions) = CoachingSessionSeriesApi::create_with_sessions(
+    let (series, sessions) = CoachingSessionSeriesApi::as_manager::create_with_sessions(
         db,
         &app_state.config,
-        params.coaching_relationship_id,
-        manager.user_id(),
+        &manager,
         params.start_at,
         params.recurrence,
         requested_duration,
@@ -176,11 +175,11 @@ pub async fn update(
     let db = app_state.db_conn_ref();
     let requested_duration = CoachingSessionApi::parse_duration_minutes(params.duration_minutes)?;
 
-    let rescheduled = CoachingSessionSeriesApi::reschedule(
+    let rescheduled = CoachingSessionSeriesApi::as_manager::reschedule(
         db,
         &app_state.config,
-        series.id,
-        manager.user_id(),
+        &manager,
+        &series,
         params.start_at,
         params.recurrence,
         requested_duration,
@@ -232,11 +231,11 @@ pub async fn reschedule_following(
         series.id
     );
 
-    let rescheduled = CoachingSessionSeriesApi::reschedule_following(
+    let rescheduled = CoachingSessionSeriesApi::as_manager::reschedule_following(
         app_state.db_conn_ref(),
         &app_state.config,
-        series.id,
-        manager.user_id(),
+        &manager,
+        &series,
         CoachingSessionSeriesApi::FollowingReschedule {
             coaching_session_id: params.coaching_session_id,
             start_at: params.start_at,
@@ -274,12 +273,13 @@ pub async fn reschedule_following(
 pub async fn delete(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    CoachingSessionSeriesManagerAccess(series, _manager): CoachingSessionSeriesManagerAccess,
+    CoachingSessionSeriesManagerAccess(series, manager): CoachingSessionSeriesManagerAccess,
 ) -> Result<impl IntoResponse, Error> {
-    CoachingSessionSeriesApi::delete_with_future_sessions(
+    CoachingSessionSeriesApi::as_manager::delete_with_future_sessions(
         app_state.db_conn_ref(),
         &app_state.config,
-        series.id,
+        &manager,
+        &series,
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -308,10 +308,15 @@ pub async fn delete(
 pub async fn resend_invite(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    CoachingSessionSeriesManagerAccess(series, _manager): CoachingSessionSeriesManagerAccess,
+    CoachingSessionSeriesManagerAccess(series, manager): CoachingSessionSeriesManagerAccess,
 ) -> Result<impl IntoResponse, Error> {
-    CoachingSessionSeriesApi::resend_invite(app_state.db_conn_ref(), &app_state.config, series.id)
-        .await?;
+    CoachingSessionSeriesApi::as_manager::resend_invite(
+        app_state.db_conn_ref(),
+        &app_state.config,
+        &manager,
+        &series,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

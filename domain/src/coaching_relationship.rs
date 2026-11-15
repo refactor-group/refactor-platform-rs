@@ -1,4 +1,4 @@
-use crate::coaching_relationships::Model;
+use crate::coaching_relationships::{Model, SessionManager};
 use crate::error::{reason, DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::Id;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
@@ -101,6 +101,16 @@ pub(crate) fn coachee_not_a_member(relationship: &Model) -> Error {
     )
 }
 
+/// `Ok` when `manager` is the proof for relationship `coaching_relationship_id`, else a 403.
+pub(crate) fn ensure_manages(
+    manager: &SessionManager,
+    coaching_relationship_id: Id,
+) -> Result<(), Error> {
+    (manager.relationship().id == coaching_relationship_id)
+        .then_some(())
+        .ok_or_else(Error::forbidden)
+}
+
 /// A 409 for the first of `assignee_ids`, in order, no longer in the relationship's
 /// organization.
 pub async fn ensure_assignees_are_members(
@@ -191,5 +201,21 @@ mod tests {
             details["user_id"],
             serde_json::json!(relationship.coachee_id)
         );
+    }
+
+    /// A proof manages its own relationship and refuses any other with a 403.
+    #[test]
+    fn ensure_manages_admits_only_the_proofs_relationship() {
+        let relationship = relationship();
+        let manager = crate::test_utils::proof::coach_manages(relationship.clone());
+
+        assert!(ensure_manages(&manager, relationship.id).is_ok());
+
+        let err = ensure_manages(&manager, Id::new_v4())
+            .expect_err("another relationship's id is refused");
+        assert!(matches!(
+            err.error_kind,
+            DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Forbidden))
+        ));
     }
 }
