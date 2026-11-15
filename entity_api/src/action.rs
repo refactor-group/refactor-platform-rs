@@ -472,35 +472,35 @@ pub enum CallerVisibility {
     #[default]
     Unrestricted,
     /// Limits visibility to actions assigned to `user_id` or unassigned.
-    CoacheeSelf { user_id: Id },
+    OwnAndUnassigned { user_id: Id },
 }
 
 impl CallerVisibility {
     pub fn allows(&self, assignee_ids: &[Id]) -> bool {
         match self {
             Self::Unrestricted => true,
-            Self::CoacheeSelf { user_id } => {
+            Self::OwnAndUnassigned { user_id } => {
                 assignee_ids.is_empty() || assignee_ids.contains(user_id)
             }
         }
     }
 
-    /// Resolves the caller's visibility against a specific relationship.
-    /// Coach → `Some(Unrestricted)`, coachee → `Some(CoacheeSelf)`,
-    /// non-participant → `None`. Returning `Option` makes membership an
-    /// explicit precondition: every callsite is forced to handle the
-    /// non-participant case rather than silently inheriting a default.
+    /// Resolves the caller's visibility against a specific relationship by asking it
+    /// whether the caller sees all its actions: `Some(Unrestricted)` if so,
+    /// `Some(OwnAndUnassigned)` if not, and `None` for a non-participant. Returning
+    /// `Option` makes participation an explicit precondition: every callsite is forced
+    /// to handle the non-participant case rather than silently inheriting a default.
     pub fn for_relationship(
         user_id: Id,
         relationship: &entity::coaching_relationships::Model,
     ) -> Option<Self> {
-        if user_id == relationship.coach_id {
-            Some(Self::Unrestricted)
-        } else if user_id == relationship.coachee_id {
-            Some(Self::CoacheeSelf { user_id })
-        } else {
-            None
-        }
+        relationship.seat(user_id).map(|_| {
+            if relationship.sees_all_actions(user_id) {
+                Self::Unrestricted
+            } else {
+                Self::OwnAndUnassigned { user_id }
+            }
+        })
     }
 }
 
@@ -1698,24 +1698,24 @@ mod tests {
     }
 
     #[test]
-    fn caller_visibility_coachee_self_allows_unassigned() {
-        let vis = CallerVisibility::CoacheeSelf {
+    fn caller_visibility_own_and_unassigned_allows_unassigned() {
+        let vis = CallerVisibility::OwnAndUnassigned {
             user_id: Id::new_v4(),
         };
         assert!(vis.allows(&[]));
     }
 
     #[test]
-    fn caller_visibility_coachee_self_allows_when_self_in_assignees() {
+    fn caller_visibility_own_and_unassigned_allows_when_self_in_assignees() {
         let user_id = Id::new_v4();
-        let vis = CallerVisibility::CoacheeSelf { user_id };
+        let vis = CallerVisibility::OwnAndUnassigned { user_id };
         assert!(vis.allows(&[user_id]));
         assert!(vis.allows(&[user_id, Id::new_v4()]));
     }
 
     #[test]
-    fn caller_visibility_coachee_self_rejects_when_self_not_in_assignees() {
-        let vis = CallerVisibility::CoacheeSelf {
+    fn caller_visibility_own_and_unassigned_rejects_when_self_not_in_assignees() {
+        let vis = CallerVisibility::OwnAndUnassigned {
             user_id: Id::new_v4(),
         };
         assert!(!vis.allows(&[Id::new_v4()]));
@@ -1733,12 +1733,12 @@ mod tests {
     }
 
     #[test]
-    fn caller_visibility_for_relationship_coachee_role_is_coachee_self() {
+    fn caller_visibility_for_relationship_coachee_role_is_own_and_unassigned() {
         let coachee_id = Id::new_v4();
         let rel = create_test_relationship(Id::new_v4(), Id::new_v4(), coachee_id, Id::new_v4());
         assert_eq!(
             CallerVisibility::for_relationship(coachee_id, &rel),
-            Some(CallerVisibility::CoacheeSelf {
+            Some(CallerVisibility::OwnAndUnassigned {
                 user_id: coachee_id
             })
         );
@@ -1751,6 +1751,23 @@ mod tests {
         let unknown_id = Id::new_v4();
         let rel = create_test_relationship(Id::new_v4(), Id::new_v4(), Id::new_v4(), Id::new_v4());
         assert_eq!(CallerVisibility::for_relationship(unknown_id, &rel), None);
+    }
+
+    #[test]
+    fn caller_visibility_for_relationship_colleagues_are_unrestricted() {
+        let (first, second, stranger) = (Id::new_v4(), Id::new_v4(), Id::new_v4());
+        let rel = entity::coaching_relationships::Model {
+            kind: entity::coaching_relationship_kind::Kind::Colleague,
+            ..create_test_relationship(Id::new_v4(), first, second, Id::new_v4())
+        };
+        for user_id in [first, second] {
+            assert_eq!(
+                CallerVisibility::for_relationship(user_id, &rel),
+                Some(CallerVisibility::Unrestricted),
+                "{user_id}"
+            );
+        }
+        assert_eq!(CallerVisibility::for_relationship(stranger, &rel), None);
     }
 
     /// Coachee with `assignee_filter=assigned` sees only self-assigned, not unassigned.
@@ -1784,7 +1801,7 @@ mod tests {
             status: None,
             assignee_filter: AssigneeFilter::Assigned,
             assignee_user_id: None,
-            caller_visibility: CallerVisibility::CoacheeSelf {
+            caller_visibility: CallerVisibility::OwnAndUnassigned {
                 user_id: coachee_id,
             },
             sort_column: None,

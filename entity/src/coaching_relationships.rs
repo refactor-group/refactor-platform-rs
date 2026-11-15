@@ -102,10 +102,18 @@ impl Model {
 
     /// Whether `user_id` may schedule, reschedule, cancel, run series, set meeting links and
     /// delete any topic in this relationship. Says nothing about organization membership:
-    /// combine with `grants_access_to` where that matters.
+    /// combine with `is_participant_and_member` where that matters.
     pub fn can_manage_sessions(&self, user_id: Id) -> bool {
         self.seat(user_id)
             .is_some_and(|seat| self.kind.rules().can_manage_sessions(seat))
+    }
+
+    /// Whether `user_id` sees every action in this relationship, not only their own and
+    /// unassigned ones. Says nothing about organization membership: combine with
+    /// `is_participant_and_member` where that matters.
+    pub fn sees_all_actions(&self, user_id: Id) -> bool {
+        self.seat(user_id)
+            .is_some_and(|seat| self.kind.rules().sees_all_actions(seat))
     }
 
     /// Returns `true` if the given user may access this relationship's data.
@@ -114,7 +122,7 @@ impl Model {
     /// organization, so a user removed from the organization loses access to
     /// coaching history they took part in. A global SuperAdmin participant keeps
     /// access without holding an organization role.
-    pub fn grants_access_to(&self, user: &users::Model) -> bool {
+    pub fn is_participant_and_member(&self, user: &users::Model) -> bool {
         self.includes_user(user.id)
             && (user.is_super_admin()
                 || user
@@ -126,7 +134,7 @@ impl Model {
 
 /// A caller's relationship visibility, derived once per request from their
 /// preloaded roles (see `domain::search::visibility_for`). Input to [`visible_to`], the
-/// corpus-wide query form of [`Model::grants_access_to`].
+/// corpus-wide query form of [`Model::is_participant_and_member`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Visibility {
     pub user_id: Id,
@@ -139,14 +147,14 @@ pub struct Visibility {
     pub member_org_ids: Vec<Id>,
 }
 
-/// The query form of [`Model::grants_access_to`]: a `Condition` selecting every
+/// The query form of [`Model::is_participant_and_member`]: a `Condition` selecting every
 /// coaching relationship the caller may access, evaluated corpus-wide.
 ///
-/// Mirrors `grants_access_to` exactly — participant (coach or coachee) AND
+/// Mirrors `is_participant_and_member` exactly — participant (coach or coachee) AND
 /// current member of the relationship's organization. Super admins skip this condition
 /// entirely (callers must not apply it when `visibility.is_super_admin`).
 ///
-/// Kept beside `grants_access_to` deliberately: these are the two expressions
+/// Kept beside `is_participant_and_member` deliberately: these are the two expressions
 /// of one rule, and `domain/src/search_sqlite_tests.rs` pins them together over
 /// an access matrix. Change one, mirror the other. The equivalence holds for
 /// every caller except super admins, who skip this condition and search every
@@ -254,10 +262,13 @@ mod tests {
             Some(coaching_relationship_kind::Role::Coachee)
         );
         assert!(!relationship.can_manage_sessions(coachee));
+        assert!(relationship.sees_all_actions(coach));
+        assert!(!relationship.sees_all_actions(coachee));
 
         assert_eq!(relationship.seat(stranger), None);
         assert_eq!(relationship.role(stranger), None);
         assert!(!relationship.can_manage_sessions(stranger));
+        assert!(!relationship.sees_all_actions(stranger));
     }
 
     #[test]
@@ -285,10 +296,12 @@ mod tests {
                 Some(coaching_relationship_kind::Role::Colleague)
             );
             assert!(relationship.can_manage_sessions(user));
+            assert!(relationship.sees_all_actions(user));
         }
         assert_eq!(relationship.seat(stranger), None);
         assert_eq!(relationship.role(stranger), None);
         assert!(!relationship.can_manage_sessions(stranger));
+        assert!(!relationship.sees_all_actions(stranger));
     }
 
     #[test]

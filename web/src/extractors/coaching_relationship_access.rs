@@ -79,7 +79,7 @@ where
             }
         }
 
-        if !relationship.grants_access_to(&authenticated_user) {
+        if !relationship.is_participant_and_member(&authenticated_user) {
             return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
         }
 
@@ -136,7 +136,7 @@ pub(crate) async fn authorize_relationship(
             .await
             .map_err(|e| lookup_rejection(e.into()))?;
 
-    if !relationship.grants_access_to(user) {
+    if !relationship.is_participant_and_member(user) {
         return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
     }
 

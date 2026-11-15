@@ -52,7 +52,7 @@ fn create_test_user(id: Id, roles: Vec<user_roles::Model>) -> users::Model {
 }
 
 #[test]
-fn grants_access_to_a_coach_who_is_still_a_member() {
+fn admits_a_coach_who_is_still_a_member() {
     let coach_id = Id::new_v4();
     let relationship = create_test_relationship(coach_id, Id::new_v4());
     let user = create_test_user(
@@ -64,11 +64,11 @@ fn grants_access_to_a_coach_who_is_still_a_member() {
         )],
     );
 
-    assert!(relationship.grants_access_to(&user));
+    assert!(relationship.is_participant_and_member(&user));
 }
 
 #[test]
-fn grants_access_to_a_coachee_who_is_still_a_member() {
+fn admits_a_coachee_who_is_still_a_member() {
     let coachee_id = Id::new_v4();
     let relationship = create_test_relationship(Id::new_v4(), coachee_id);
     let user = create_test_user(
@@ -80,7 +80,7 @@ fn grants_access_to_a_coachee_who_is_still_a_member() {
         )],
     );
 
-    assert!(relationship.grants_access_to(&user));
+    assert!(relationship.is_participant_and_member(&user));
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn denies_a_coach_removed_from_the_organization() {
     let relationship = create_test_relationship(coach_id, Id::new_v4());
     let user = create_test_user(coach_id, vec![]);
 
-    assert!(!relationship.grants_access_to(&user));
+    assert!(!relationship.is_participant_and_member(&user));
 }
 
 #[test]
@@ -98,7 +98,7 @@ fn denies_a_coachee_removed_from_the_organization() {
     let relationship = create_test_relationship(Id::new_v4(), coachee_id);
     let user = create_test_user(coachee_id, vec![]);
 
-    assert!(!relationship.grants_access_to(&user));
+    assert!(!relationship.is_participant_and_member(&user));
 }
 
 /// Membership is checked against this relationship's organization, not just any.
@@ -111,7 +111,7 @@ fn denies_a_participant_whose_only_role_is_in_another_organization() {
         vec![create_test_role(coachee_id, Role::User, Some(Id::new_v4()))],
     );
 
-    assert!(!relationship.grants_access_to(&user));
+    assert!(!relationship.is_participant_and_member(&user));
 }
 
 /// Membership alone never substitutes for participation.
@@ -128,11 +128,11 @@ fn denies_a_non_participant_who_is_a_member_of_the_organization() {
         )],
     );
 
-    assert!(!relationship.grants_access_to(&user));
+    assert!(!relationship.is_participant_and_member(&user));
 }
 
 #[test]
-fn grants_access_to_a_global_super_admin_participant() {
+fn admits_a_global_super_admin_participant() {
     let coach_id = Id::new_v4();
     let relationship = create_test_relationship(coach_id, Id::new_v4());
     let user = create_test_user(
@@ -140,7 +140,7 @@ fn grants_access_to_a_global_super_admin_participant() {
         vec![create_test_role(coach_id, Role::SuperAdmin, None)],
     );
 
-    assert!(relationship.grants_access_to(&user));
+    assert!(relationship.is_participant_and_member(&user));
 }
 
 /// A global SuperAdmin still gets nothing without participation.
@@ -153,11 +153,11 @@ fn denies_a_global_super_admin_who_is_not_a_participant() {
         vec![create_test_role(outsider_id, Role::SuperAdmin, None)],
     );
 
-    assert!(!relationship.grants_access_to(&user));
+    assert!(!relationship.is_participant_and_member(&user));
 }
 
 #[test]
-fn grants_access_to_a_member_holding_roles_in_several_organizations() {
+fn admits_a_member_holding_roles_in_several_organizations() {
     let coachee_id = Id::new_v4();
     let relationship = create_test_relationship(Id::new_v4(), coachee_id);
     let user = create_test_user(
@@ -169,5 +169,5 @@ fn grants_access_to_a_member_holding_roles_in_several_organizations() {
         ],
     );
 
-    assert!(relationship.grants_access_to(&user));
+    assert!(relationship.is_participant_and_member(&user));
 }

@@ -41,7 +41,7 @@ Rules the security PR adds:
 
 - Agreements and actions, read or written by id or created for a session: the caller
   must be a participant of that session's relationship and still a member of its
-  organization (`grants_access_to`). Unknown id: 404. Otherwise: 403.
+  organization (`is_participant_and_member`). Unknown id: 404. Otherwise: 403.
 - Action assignees must be the relationship's coach or coachee. Anyone else: 422, nothing
   written, no email.
 - Goals created for a relationship, and goal links on a session: same participant rule. A
@@ -165,7 +165,7 @@ How to read the tables:
   (visibility filters, search, recipient lists). Phase 0b covers those with SQLite tests.
 - "Non-participants" means `MEMBER`, `OTHER_COACH` (for R1 data), `ADMIN`, `SUPER` and
   `OUTSIDER`, grouped only where the code takes the identical path for all of them.
-- `grants_access_to` (`entity/src/coaching_relationships.rs:87`) is the common participant
+- `is_participant_and_member` (`entity/src/coaching_relationships.rs:125`) is the common participant
   rule: coach or coachee of the relationship AND (global SuperAdmin OR any role in the
   relationship's organization). A non-participant SuperAdmin does not pass it.
 
@@ -501,14 +501,14 @@ Rows here cover user routes that return relationship data and are not covered ab
 
 ### 4.13 Organizations (`ORG`)
 
-Organization membership changes decide `grants_access_to`; these rows create or end it.
+Organization membership changes decide `is_participant_and_member`; these rows create or end it.
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
 | ORG-01 | POST /organizations/O1/users `{..., coach_id: COACH}` | ADMIN, SUPER | 200 (201), new user plus a relationship in which COACH coaches the new user | `web/src/extractors/organization_admin_access.rs:42`; `domain/src/user.rs:156` | Sends MAIL-12. The relationship is `coaching` only because no request chooses a kind yet (KIND-05); phase 4 lets this invite make a colleague relationship |
 | ORG-02 | POST /organizations/O1/users | COACH, COACHEE, MEMBER, OUTSIDER | 403 | `web/src/extractors/organization_admin_access.rs:48` | |
 | ORG-03 | POST /organizations/O1/users/{user}/role `{role: User, coach_id: COACH}` | ADMIN, SUPER | 200 (201), membership plus a relationship in which COACH coaches the user | `web/src/controller/organization/user/role_controller.rs:80`; `domain/src/user_role.rs:77` | Target must be administrable by the caller, else 404. Sends MAIL-13. Coaching only because no request chooses a kind yet (KIND-05); phase 4 lets this make a colleague relationship |
-| ORG-04 | DELETE /organizations/O1/users/{REMOVED_ID}/role | ADMIN, SUPER | 200 (204) | `web/src/extractors/organization_admin_access.rs:42`; `domain/src/user_role.rs:107` | R3 is kept; REMOVED loses every `grants_access_to` route |
+| ORG-04 | DELETE /organizations/O1/users/{REMOVED_ID}/role | ADMIN, SUPER | 200 (204) | `web/src/extractors/organization_admin_access.rs:42`; `domain/src/user_role.rs:107` | R3 is kept; REMOVED loses every `is_participant_and_member` route |
 | ORG-05 | DELETE /organizations/O1/users/{user}/role | COACH, COACHEE, MEMBER, OUTSIDER | 403 | `web/src/extractors/organization_admin_access.rs:48` | |
 | ORG-06 | DELETE /organizations/O1/users/{user} (single-org user, no relationship with a session) | ADMIN, SUPER | 200 (204) | `web/src/extractors/organization_admin_access.rs:42`; `domain/src/user.rs:249` | Deletes the account and every relationship it is in (their goals and series go too). Multi-org user: 409. With coaching history: ORG-08 |
 | ORG-07 | DELETE /organizations/O1/users/{ADMIN_ID} | ADMIN | 403 | `web/src/controller/organization/user_controller.rs:183` | Cannot delete self |

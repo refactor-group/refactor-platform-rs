@@ -1,5 +1,5 @@
 //! Pins search's relationship visibility to direct access. `visible_to` (the SQL
-//! form search scopes on) and `grants_access_to` (the in-memory check every
+//! form search scopes on) and `is_participant_and_member` (the in-memory check every
 //! direct read goes through) are two expressions of one rule; this runs the real
 //! query over an access matrix and requires them to agree on every pair.
 
@@ -66,7 +66,7 @@ async fn load_user(db: &DatabaseConnection, id: Id) -> users::Model {
 }
 
 #[tokio::test]
-async fn search_visibility_matches_grants_access_to_for_every_user_and_relationship() {
+async fn search_visibility_matches_direct_access_for_every_user_and_relationship() {
     within_time_limit(async {
         let db = sqlite::database().await;
         let (org_a, org_b) = (seed_organization(&db).await, seed_organization(&db).await);
@@ -115,7 +115,7 @@ async fn search_visibility_matches_grants_access_to_for_every_user_and_relations
                 .expect("a non-super-admin always gets an explicit set");
 
             for relationship in &relationships {
-                let granted = relationship.grants_access_to(&user);
+                let granted = relationship.is_participant_and_member(&user);
                 assert_eq!(
                     visible.contains(&relationship.id),
                     granted,
@@ -139,7 +139,7 @@ async fn search_visibility_matches_grants_access_to_for_every_user_and_relations
 }
 
 /// Super admins deliberately skip `visible_to` and search everything, while
-/// `grants_access_to` still requires them to participate. Pinned here so the
+/// `is_participant_and_member` still requires them to participate. Pinned here so the
 /// divergence stays a decision rather than an accident.
 #[tokio::test]
 async fn a_super_admin_searches_every_relationship_unrestricted() {

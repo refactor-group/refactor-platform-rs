@@ -72,6 +72,8 @@ pub trait Rules {
     fn role(&self, seat: Seat) -> Role;
     /// May schedule, reschedule, cancel, run series, set meeting links and delete any topic.
     fn can_manage_sessions(&self, seat: Seat) -> bool;
+    /// Sees every action in the relationship, not only their own and unassigned ones.
+    fn sees_all_actions(&self, seat: Seat) -> bool;
 }
 
 /// One person coaches the other.
@@ -91,6 +93,13 @@ impl Rules for Coaching {
             Seat::CoacheeId => false,
         }
     }
+
+    fn sees_all_actions(&self, seat: Seat) -> bool {
+        match seat {
+            Seat::CoachId => true,
+            Seat::CoacheeId => false,
+        }
+    }
 }
 
 /// Two equals with identical privileges.
@@ -102,6 +111,10 @@ impl Rules for Colleague {
     }
 
     fn can_manage_sessions(&self, _seat: Seat) -> bool {
+        true
+    }
+
+    fn sees_all_actions(&self, _seat: Seat) -> bool {
         true
     }
 }
@@ -134,8 +147,10 @@ mod tests {
         let rules = Kind::Coaching.rules();
         assert_eq!(rules.role(Seat::CoachId), Role::Coach);
         assert!(rules.can_manage_sessions(Seat::CoachId));
+        assert!(rules.sees_all_actions(Seat::CoachId));
         assert_eq!(rules.role(Seat::CoacheeId), Role::Coachee);
         assert!(!rules.can_manage_sessions(Seat::CoacheeId));
+        assert!(!rules.sees_all_actions(Seat::CoacheeId));
     }
 
     #[test]
@@ -144,6 +159,7 @@ mod tests {
         for seat in [Seat::CoachId, Seat::CoacheeId] {
             assert_eq!(rules.role(seat), Role::Colleague, "{seat:?}");
             assert!(rules.can_manage_sessions(seat), "{seat:?}");
+            assert!(rules.sees_all_actions(seat), "{seat:?}");
         }
     }
 

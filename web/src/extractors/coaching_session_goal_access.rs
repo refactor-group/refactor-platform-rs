@@ -73,7 +73,7 @@ async fn authorize_sessions(
         relationships
             .get(id)
             .ok_or_else(not_found)?
-            .grants_access_to(user)
+            .is_participant_and_member(user)
             .then_some(())
             .ok_or_else(|| (StatusCode::FORBIDDEN, "FORBIDDEN".to_string()))
     })

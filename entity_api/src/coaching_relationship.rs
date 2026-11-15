@@ -414,7 +414,7 @@ pub async fn find_by_user_and_organization(
     Ok(relationships)
 }
 
-/// The query form of [`Model::grants_access_to`]: relationships `viewer` is coach or
+/// The query form of [`Model::is_participant_and_member`]: relationships `viewer` is coach or
 /// coachee of, in an organization they are still a member of unless a SuperAdmin.
 pub fn accessible_to(viewer: &Visibility) -> Condition {
     Condition::all()
