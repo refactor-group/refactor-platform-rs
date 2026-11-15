@@ -34,7 +34,7 @@ access, different fields).
 Each phase is its own PR; phase 1 is three (migration and backfill, then code, then cleanup).
 Order: S, 0, M, 0b, 0c, 0d, 1, 2, 3, 4, 4b, E, 5, 6. Phases S and 0 can run in parallel. Done:
 S (#476), 0 (#480), M (#481), 0b (#492), 0c (#495), 0d (#496), 1 (#499, #501,
-#505), 2 (#507).
+#505), 2 (#507), 3 (#508).
 
 **S. Relationship authorization fixes.** Its own security PR, ahead of the colleague work, so
 the phase 0b baseline records the corrected behavior. Notes, agreements, actions, goals and
@@ -230,7 +230,10 @@ row) and the frontend reruns its coach/coachee Playwright rows.
   colleague one, e.g. an admin inviting a colleague of their own. The request shape (a `kind`
   beside a neutral "with this person" field rather than `coach_id`) is settled in this phase's
   frontend contract. The welcome email's `coach_first_name` already holds the inviter, not a
-  coach; a colleague invite's welcome must not call the inviter a coach.
+  coach; a colleague invite's welcome must not call the inviter a coach. Shape (decided): the
+  invite's `coach_id` is replaced by `relationship: { with_user_id, kind }`; for coaching,
+  `with_user_id` is the coach and the invitee the coachee; for colleagues the two are equals.
+  No alias: the frontend switches both forms in the same release.
 - Same pair: a colleague relationship is refused if the pair has any relationship in the org,
   either direction. A coaching create runs the same check under the same lock and refuses only
   when the pair already holds a colleague relationship; otherwise coaching's rule is unchanged
@@ -276,6 +279,20 @@ the 409's consequences before re-sending with `confirmed: true`) is posted at th
   three steps: the backend sends the old and new names for one release, each template switches
   to the new names and neutral copy, then a later release drops the old names. Verify every
   template against a mock Resend payload with a colleague relationship before the gate lifts.
+
+Handoffs, one PR (gate off in production):
+
+| Handoff | Scope |
+|---|---|
+| 4-1 | `COLLEAGUE_RELATIONSHIPS_ENABLED` (default false; true locally and in previews) through every passthrough layer; relationship POST takes `kind` (422 while gated); the same-pair rule under an advisory lock |
+| 4-2 | Invites take `relationship: { with_user_id, kind }`, gated, same-pair rule |
+| 4-3 | Colleague scheduling: both reminded; scheduler's zone for colleague series and `.ics`; meeting link from the scheduler's account, then the other's; the 409 names the other participant |
+| 4-4 | `assignee=coach|coachee` on a colleague relationship is a 422 |
+| 4-5 | Wording step 1: send `inviter_*` and `other_user_*`/`other_user_role` beside the old names; `.ics` names the other participant by role |
+
+Each handoff adds its colleague rows to the access test plan, with SQLite tests. Afterwards: the
+manual access matrix (coach, coachee and colleague rows), the frontend Playwright pass, and the
+code and security reviews.
 
 **4b. Transcripts and suggested actions.** Speaker attribution
 (`domain/src/transcript_attribution.rs`) uses the recorded meeting-link creator and attributes
