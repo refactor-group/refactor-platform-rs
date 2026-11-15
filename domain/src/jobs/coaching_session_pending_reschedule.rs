@@ -27,21 +27,20 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{TimeDelta, Utc};
+use entity_api::coaching_session;
 use entity_api::coaching_session_pending_reschedule::{
     self, Claimed, Completed, Released, Schedule, Timing,
 };
 use entity_api::error::EntityApiErrorKind;
-use entity_api::{coaching_relationship, coaching_session};
 use log::*;
 use sea_orm::DatabaseConnection;
 use service::config::Config;
 
 use crate::coaching_session::record_delivered_notice;
-use crate::coaching_sessions;
 use crate::emails::{self, Delivered, Delivery, RescheduleOutcome};
 use crate::error::Error;
 use crate::jobs::{Context, FirstRun, Job, Outcome};
-use crate::Id;
+use crate::{coaching_relationships, coaching_sessions, Id};
 
 /// How often the sweep looks for due rows.
 const INTERVAL: Duration = Duration::from_secs(15);
@@ -124,23 +123,25 @@ impl Sweep {
         match emails::send_session_rescheduled(db, &ctx.config, &session, claimed.announced.date)
             .await
         {
-            Ok(RescheduleOutcome::Sent(delivered)) if delivered.coachee == Delivery::Sent => {
+            Ok((relationship, RescheduleOutcome::Sent(delivered)))
+                if delivered.coachee == Delivery::Sent =>
+            {
                 let handled = settle(db, claimed, current).await;
-                record_participant_notice(db, &session, &delivered).await;
+                record_participant_notice(db, &session, &relationship, &delivered).await;
                 handled
             }
-            Ok(RescheduleOutcome::CoacheeNoLongerAMember { coach }) => {
+            Ok((relationship, RescheduleOutcome::CoacheeNoLongerAMember { coach })) => {
                 info!("[coaching-session-pending-reschedule] session {id} coachee is no longer a member; nothing to tell");
                 let delivered = Delivered {
                     coachee: Delivery::NoLongerAMember,
                     coach,
                 };
-                record_participant_notice(db, &session, &delivered).await;
+                record_participant_notice(db, &session, &relationship, &delivered).await;
                 settle(db, claimed, current).await
             }
-            Ok(RescheduleOutcome::Sent(delivered)) => {
+            Ok((relationship, RescheduleOutcome::Sent(delivered))) => {
                 warn!("[coaching-session-pending-reschedule] session {id} coachee was not told: {delivered:?}");
-                record_participant_notice(db, &session, &delivered).await;
+                record_participant_notice(db, &session, &relationship, &delivered).await;
                 retry(db, claimed).await
             }
             Err(e) => {
@@ -156,20 +157,13 @@ impl Sweep {
 async fn record_participant_notice(
     db: &DatabaseConnection,
     session: &coaching_sessions::Model,
+    relationship: &coaching_relationships::Model,
     delivered: &Delivered,
 ) {
     if ![delivered.coachee, delivered.coach].contains(&Delivery::Sent) {
         return;
     }
-    let id = session.id;
-    match coaching_relationship::find_by_id(db, session.coaching_relationship_id).await {
-        Ok(relationship) => {
-            record_delivered_notice(db, &relationship, delivered, &[id]).await
-        }
-        Err(e) => warn!(
-            "[coaching-session-pending-reschedule] could not record whom session {id} was told: {e:?}"
-        ),
-    }
+    record_delivered_notice(db, relationship, delivered, &[session.id]).await
 }
 
 /// Converts a configured duration, falling back to `default` when it overflows.

@@ -553,7 +553,7 @@ async fn authorize(
     actor_of(user.id, people)
         .filter(|actor| may_act(*actor, people, Actions::assignees(stored), requested))
         .map(|_| (session, relationship))
-        .ok_or_else(forbidden)
+        .ok_or_else(Error::forbidden)
 }
 
 fn people_of(relationship: &coaching_relationships::Model) -> People {
@@ -678,10 +678,6 @@ fn is_not_found(error: &Error) -> bool {
         error.error_kind,
         DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound))
     )
-}
-
-fn forbidden() -> Error {
-    entity_error(EntityErrorKind::Forbidden)
 }
 
 fn conflict(message: &str) -> Error {

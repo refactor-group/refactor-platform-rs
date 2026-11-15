@@ -1291,13 +1291,14 @@ pub enum RescheduleOutcome {
 /// period, by which time someone may have lost access to the session's details.
 ///
 /// A delivered send must settle the session's pending reschedule (via
-/// `coaching_session_pending_reschedule::complete`).
+/// `coaching_session_pending_reschedule::complete`). Returns the session's relationship
+/// beside the outcome.
 pub async fn send_session_rescheduled(
     db: &DatabaseConnection,
     config: &Config,
     session: &coaching_sessions::Model,
     previous_start: NaiveDateTime,
-) -> Result<RescheduleOutcome, Error> {
+) -> Result<(coaching_relationships::Model, RescheduleOutcome), Error> {
     let relationship =
         coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
     let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
@@ -1305,9 +1306,12 @@ pub async fn send_session_rescheduled(
     let org = organization::find_by_id(db, relationship.organization_id).await?;
     let member_ids = notify_member_ids(db, &relationship).await?;
     if member_ids.is_empty() {
-        return Ok(RescheduleOutcome::CoacheeNoLongerAMember {
-            coach: Delivery::NoLongerAMember,
-        });
+        return Ok((
+            relationship,
+            RescheduleOutcome::CoacheeNoLongerAMember {
+                coach: Delivery::NoLongerAMember,
+            },
+        ));
     }
 
     let delivered = send_session_rescheduled_email(
@@ -1326,12 +1330,13 @@ pub async fn send_session_rescheduled(
         previous_start,
     )
     .await?;
-    Ok(match member_ids.contains(&coachee.id) {
+    let outcome = match member_ids.contains(&coachee.id) {
         true => RescheduleOutcome::Sent(delivered),
         false => RescheduleOutcome::CoacheeNoLongerAMember {
             coach: delivered.coach,
         },
-    })
+    };
+    Ok((relationship, outcome))
 }
 
 /// Send the upcoming-session reminder to the coachee.

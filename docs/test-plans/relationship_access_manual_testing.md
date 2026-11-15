@@ -999,12 +999,12 @@ a frozen `domain` test, or by hand with the reason.
 | SSE-05 | `web/src/sse/handler_sqlite_tests.rs::both_participants_hear_that_suggestions_changed` (through a scan start, which shares the sweep's `extract::notify`); `domain/src/transcript_suggestion/extract_sqlite_tests.rs::every_completed_run_announces_once_with_or_without_suggestions` |
 | SSE-06 | `web/src/sse/handler_sqlite_tests.rs::both_participants_hear_of_a_recording_update` |
 | SSE-07 | `web/src/sse/handler_sqlite_tests.rs::signed_out_callers_cannot_open_an_event_stream` |
-| SCHED-01 | `domain/src/coaching_session_sqlite_tests.rs::create_records_the_acting_user_as_scheduler`, `domain/src/coaching_session_sqlite_tests.rs::create_stamps_both_participants_notice_at_one_time` |
+| SCHED-01 | `domain/src/coaching_session_sqlite_tests.rs::create_records_the_acting_user_as_scheduler`, `domain/src/coaching_session_sqlite_tests.rs::create_stamps_both_participants_notice_at_the_sessions_creation` |
 | SCHED-02 | `domain/src/coaching_session_sqlite_tests.rs::create_records_the_acting_user_as_scheduler` (a caller's value is overwritten); by hand for the request body and response, which `#[serde(skip)]` decides |
 | SCHED-03 | `domain/src/coaching_session_sqlite_tests.rs::create_reusing_a_meeting_link_with_no_recorded_creator_records_the_coach`, `domain/src/coaching_session_sqlite_tests.rs::create_reusing_a_meeting_link_keeps_its_original_creator`, `domain/src/coaching_session_sqlite_tests.rs::create_without_a_provider_records_no_link_creator`; by hand for a new link: it calls the provider |
 | SCHED-04 | `domain/src/coaching_session_update_sqlite_tests.rs::moving_a_session_records_the_acting_user_as_scheduler` |
 | SCHED-05 | `domain/src/coaching_session_update_sqlite_tests.rs::a_title_edit_leaves_the_scheduler_as_it_was` |
-| SCHED-06 | `domain/src/coaching_session_series_sqlite_tests.rs::a_created_series_records_the_acting_user_on_every_session`, `domain/src/coaching_session_series_sqlite_tests.rs::a_created_series_stamps_both_participants_notice_at_one_time` |
+| SCHED-06 | `domain/src/coaching_session_series_sqlite_tests.rs::a_created_series_records_the_acting_user_on_every_session`, `domain/src/coaching_session_series_sqlite_tests.rs::a_created_series_stamps_both_participants_notice_at_each_sessions_creation` |
 | SCHED-07 | `domain/src/coaching_session_series_sqlite_tests.rs::a_rescheduled_series_records_the_acting_user_on_the_sessions_it_creates`; by hand end to end: the series update takes Postgres advisory locks |
 | SCHED-08 | `domain/src/coaching_session_series_sqlite_tests.rs::move_to_slot_records_who_moved_the_session`, `domain/src/coaching_session_series_sqlite_tests.rs::a_following_reschedule_restamps_only_the_participants_it_reached`; by hand end to end: reschedule takes Postgres advisory locks |
 | SCHED-09 | `domain/src/coaching_session_sqlite_tests.rs::mark_hydrated_stores_the_link_creator_and_keeps_the_scheduler` |
