@@ -58,9 +58,12 @@ pub async fn create(
     let coaching_relationship: CoachingRelationshipWithUserNames = CoachingRelationshipApi::create(
         app_state.db_conn_ref(),
         organization.id,
-        coaching_relationship_model,
-        // No request chooses a kind yet.
-        Kind::Coaching,
+        CoachingRelationshipApi::Draft {
+            coach_id: coaching_relationship_model.coach_id,
+            coachee_id: coaching_relationship_model.coachee_id,
+            // No request chooses a kind yet.
+            kind: Kind::Coaching,
+        },
     )
     .await?;
 

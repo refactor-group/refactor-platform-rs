@@ -373,6 +373,7 @@ async fn world_with_coachee(
         .append_query_results([lines])
         .append_query_results([participants])
         .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
+        .append_query_results([[relationship.clone()]])
         .into_connection();
 
     let app = build_app(&Arc::new(db));
@@ -717,6 +718,7 @@ async fn incomplete_transcription_is_409_for_text_but_200_for_json() {
         .append_query_results([Vec::<transcript_segment::Model>::new()])
         .append_query_results([Vec::<transcript_participant::Model>::new()])
         .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
+        .append_query_results([[relationship.clone()]])
         .into_connection();
     let app = build_app(&Arc::new(db));
     let cookie = login_cookie(&app).await;
@@ -795,6 +797,7 @@ async fn segments_carry_their_labels_and_attribution_without_raw_participants() 
         .append_query_results([lines])
         .append_query_results([participants])
         .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
+        .append_query_results([[relationship.clone()]])
         .into_connection();
     let app = build_app(&Arc::new(db));
     let cookie = login_cookie(&app).await;
@@ -857,6 +860,7 @@ async fn latest_transcription_carries_its_speakers() {
         .append_query_results([lines])
         .append_query_results([participants])
         .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
+        .append_query_results([[relationship.clone()]])
         .into_connection();
     let app = build_app(&Arc::new(db));
     let cookie = login_cookie(&app).await;

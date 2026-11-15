@@ -6,18 +6,18 @@ use std::collections::BTreeSet;
 
 use chrono::Utc;
 use entity::coaching_relationship_kind::Kind;
-use entity::coaching_relationships::{ActiveModel, Entity, Model, Visibility};
+use entity::coaching_relationships::{ActiveModel, Entity, Visibility};
 use entity::Id;
-use entity_api::coaching_relationship::{create, insert_unless_exists};
+use entity_api::coaching_relationship::{create, insert_unless_exists, Draft};
+use entity_api::error::EntityApiErrorKind;
 use sea_orm::{ActiveModelTrait, ConnectionTrait, DatabaseConnection, EntityTrait, Set};
 
 use super::{find_by_user_id_with_user_names, is_coach_of, RoleFilterable};
 
-use crate::test_utils::sqlite::read_back::relationship_kinds_between;
+use crate::test_utils::sqlite::read_back::relationships_between;
 use crate::test_utils::sqlite::{
     self, seed_lapsed_membership, seed_membership, seed_organization, seed_user, within_time_limit,
 };
-use crate::user::new_coaching_relationship;
 
 /// The synced schema plus the relationships table's production unique index.
 async fn database() -> DatabaseConnection {
@@ -112,38 +112,88 @@ async fn an_insert_outside_the_conflict_target_is_written() {
     .await
 }
 
+/// The organization `o` with three of its members.
+async fn three_members() -> (DatabaseConnection, Id, [Id; 3]) {
+    let db = sqlite::database().await;
+    sqlite::mirror_migration_defaults(&db).await;
+    let o = seed_organization(&db).await;
+    let members = [
+        seed_user(&db).await,
+        seed_user(&db).await,
+        seed_user(&db).await,
+    ];
+    for user in members {
+        seed_membership(&db, user, o).await;
+    }
+    (db, o, members)
+}
+
+fn draft(coach_id: Id, coachee_id: Id, kind: Kind) -> Draft {
+    Draft {
+        coach_id,
+        coachee_id,
+        kind,
+    }
+}
+
 #[tokio::test]
 async fn create_stores_the_kind_it_is_given() {
     within_time_limit(async {
-        let db = sqlite::database().await;
-        sqlite::mirror_migration_defaults(&db).await;
-        let o = seed_organization(&db).await;
-        let (coach, colleague, coachee) = (
-            seed_user(&db).await,
-            seed_user(&db).await,
-            seed_user(&db).await,
-        );
-        for user in [coach, colleague, coachee] {
-            seed_membership(&db, user, o).await;
-        }
+        let (db, o, [coach, colleague, coachee]) = three_members().await;
 
-        for (other, model_kind, given) in [
-            (colleague, Kind::Coaching, Kind::Colleague),
-            (coachee, Kind::Colleague, Kind::Coaching),
-        ] {
-            let model = Model {
-                kind: model_kind,
-                ..new_coaching_relationship(coach, other)
-            };
-            create(&db, o, model, given)
+        for (other, kind) in [(colleague, Kind::Colleague), (coachee, Kind::Coaching)] {
+            create(&db, o, draft(coach, other, kind))
                 .await
                 .expect("the relationship is created");
-            assert_eq!(
-                relationship_kinds_between(&db, coach, other).await,
-                vec![given],
-                "given {given:?}"
-            );
+            let kinds: Vec<Kind> = relationships_between(&db, coach, other)
+                .await
+                .into_iter()
+                .map(|relationship| relationship.kind)
+                .collect();
+            assert_eq!(kinds, vec![kind], "given {kind:?}");
         }
+    })
+    .await
+}
+
+#[tokio::test]
+async fn create_returns_the_existing_relationship_of_the_same_kind() {
+    within_time_limit(async {
+        let (db, o, [coach, coachee, _]) = three_members().await;
+        let first = create(&db, o, draft(coach, coachee, Kind::Coaching))
+            .await
+            .expect("the relationship is created");
+
+        let again = create(&db, o, draft(coach, coachee, Kind::Coaching))
+            .await
+            .expect("the existing relationship is returned");
+
+        assert_eq!(again.id, first.id);
+        assert_eq!(relationships_between(&db, coach, coachee).await.len(), 1);
+    })
+    .await
+}
+
+#[tokio::test]
+async fn create_refuses_a_pair_whose_relationship_is_of_another_kind() {
+    within_time_limit(async {
+        let (db, o, [coach, coachee, _]) = three_members().await;
+        create(&db, o, draft(coach, coachee, Kind::Coaching))
+            .await
+            .expect("the relationship is created");
+        let before = relationships_between(&db, coach, coachee).await;
+
+        let error = create(&db, o, draft(coach, coachee, Kind::Colleague))
+            .await
+            .expect_err("another kind must not reuse the pair's relationship");
+
+        assert!(
+            matches!(error.error_kind, EntityApiErrorKind::ValidationError { .. }),
+            "{error:?}"
+        );
+        assert_eq!(relationships_between(&db, coach, coachee).await, before);
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].kind, Kind::Coaching);
     })
     .await
 }

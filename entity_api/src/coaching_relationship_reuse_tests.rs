@@ -128,8 +128,11 @@ async fn reuses_an_existing_relationship_instead_of_erroring() -> Result<(), Err
     let reused = create(
         &db,
         organization_id,
-        relationship(organization_id, coach.id, coachee.id),
-        Kind::Coaching,
+        Draft {
+            coach_id: coach.id,
+            coachee_id: coachee.id,
+            kind: Kind::Coaching,
+        },
     )
     .await?;
 
@@ -152,8 +155,11 @@ async fn reuse_does_not_issue_an_insert() -> Result<(), Error> {
     create(
         &db,
         organization_id,
-        relationship(organization_id, coach.id, coachee.id),
-        Kind::Coaching,
+        Draft {
+            coach_id: coach.id,
+            coachee_id: coachee.id,
+            kind: Kind::Coaching,
+        },
     )
     .await?;
 
@@ -186,8 +192,11 @@ async fn does_not_reuse_a_reversed_pair() -> Result<(), Error> {
     let created = create(
         &db,
         organization_id,
-        relationship(organization_id, coach.id, coachee.id),
-        Kind::Coaching,
+        Draft {
+            coach_id: coach.id,
+            coachee_id: coachee.id,
+            kind: Kind::Coaching,
+        },
     )
     .await?;
 
@@ -228,8 +237,11 @@ async fn rejects_a_self_coaching_relationship_before_any_query() {
     let error = create(
         &db,
         organization_id,
-        relationship(organization_id, user_id, user_id),
-        Kind::Coaching,
+        Draft {
+            coach_id: user_id,
+            coachee_id: user_id,
+            kind: Kind::Coaching,
+        },
     )
     .await
     .expect_err("expected self-coaching rejection");
@@ -258,8 +270,11 @@ async fn rejects_an_archived_organization_before_the_uniqueness_check() {
     let error = create(
         &db,
         organization_id,
-        relationship(organization_id, coach_id, coachee_id),
-        Kind::Coaching,
+        Draft {
+            coach_id,
+            coachee_id,
+            kind: Kind::Coaching,
+        },
     )
     .await
     .expect_err("expected archived-org rejection");

@@ -40,6 +40,29 @@ fn coachee() -> users::Model {
     user("Caleb", "Bourg", None)
 }
 
+/// A coaching relationship between `coach` and `coachee`.
+fn relationship(coach: &users::Model, coachee: &users::Model) -> coaching_relationships::Model {
+    coaching_relationships::Model {
+        kind: coaching_relationship_kind::Kind::Coaching,
+        ..colleagues(coach, coachee)
+    }
+}
+
+/// A colleague relationship between `first` and `second`.
+fn colleagues(first: &users::Model, second: &users::Model) -> coaching_relationships::Model {
+    let now = Utc::now();
+    coaching_relationships::Model {
+        id: Id::new_v4(),
+        organization_id: Id::new_v4(),
+        coach_id: first.id,
+        coachee_id: second.id,
+        kind: coaching_relationship_kind::Kind::Colleague,
+        slug: String::new(),
+        created_at: now.into(),
+        updated_at: now.into(),
+    }
+}
+
 fn participant(
     name: Option<&str>,
     account: Option<&str>,
@@ -128,7 +151,13 @@ fn attributed_speakers_show_profile_names_and_their_roles() {
     let (coach, coachee) = (coach(), coachee());
     let (participants, segments) = three_speaker_transcript(&coach, &coachee);
 
-    let labeled = label_transcript(&participants, &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &participants,
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     assert_eq!(
         labels(&labeled.speakers),
@@ -153,7 +182,13 @@ fn each_segment_carries_its_user_and_role() {
     let (coach, coachee) = (coach(), coachee());
     let (participants, segments) = three_speaker_transcript(&coach, &coachee);
 
-    let labeled = label_transcript(&participants, &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &participants,
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     let attribution: Vec<(Option<Id>, Option<coaching_relationship_kind::Role>)> = labeled
         .segments
@@ -185,7 +220,13 @@ fn every_segment_label_names_exactly_one_speaker_with_the_same_role() {
     let (coach, coachee) = (coach(), coachee());
     let (participants, segments) = three_speaker_transcript(&coach, &coachee);
 
-    let labeled = label_transcript(&participants, &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &participants,
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     for segment in &labeled.segments {
         let matching: Vec<&Speaker> = labeled
@@ -213,7 +254,13 @@ fn nameless_speakers_are_numbered_guests_in_speaking_order() {
         spoken(Some(&first), "100", "I spoke second.", 5000),
     ];
 
-    let labeled = label_transcript(&[first, second], &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &[first, second],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     assert_eq!(labels(&labeled.speakers), vec!["Guest 1", "Guest 2"]);
     assert_eq!(segment_labels(&labeled), vec!["Guest 1", "Guest 2"]);
@@ -233,7 +280,13 @@ fn a_typed_name_that_matches_a_profile_name_gets_a_suffix() {
         spoken(Some(&real), "J. Hodapp", "I am the coach.", 5000),
     ];
 
-    let labeled = label_transcript(&[impostor, real], &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &[impostor, real],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     assert_eq!(labels(&labeled.speakers), vec!["Jim H (2)", "Jim H"]);
     assert_eq!(
@@ -252,7 +305,13 @@ fn two_different_people_with_one_typed_name_are_told_apart() {
         spoken(Some(&second), "Pat", "Two.", 5000),
     ];
 
-    let labeled = label_transcript(&[first, second], &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &[first, second],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     assert_eq!(labels(&labeled.speakers), vec!["Pat", "Pat (2)"]);
 }
@@ -267,7 +326,13 @@ fn a_typed_guest_number_does_not_collide_with_a_generated_one() {
         spoken(Some(&nameless), "300", "Nameless.", 5000),
     ];
 
-    let labeled = label_transcript(&[typed, nameless], &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &[typed, nameless],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     assert_eq!(labels(&labeled.speakers), vec!["Guest 1", "Guest 1 (2)"]);
 }
@@ -290,7 +355,13 @@ fn an_attributed_rejoin_is_one_speaker() {
         spoken(Some(&after), "CB", "After.", 60_000),
     ];
 
-    let labeled = label_transcript(&[before, after], &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &[before, after],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     assert_eq!(labels(&labeled.speakers), vec!["Caleb Bourg"]);
     assert_eq!(segment_labels(&labeled), vec!["Caleb Bourg", "Caleb Bourg"]);
@@ -306,7 +377,13 @@ fn an_unattributed_rejoin_under_one_name_is_one_speaker() {
         spoken(Some(&after), "Pat", "After.", 60_000),
     ];
 
-    let labeled = label_transcript(&[before, after], &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &[before, after],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     assert_eq!(labels(&labeled.speakers), vec!["Pat"]);
 }
@@ -321,10 +398,35 @@ fn one_account_under_two_names_is_one_speaker_named_as_first_seen() {
         spoken(Some(&renamed), "Patricia", "After.", 60_000),
     ];
 
-    let labeled = label_transcript(&[first, renamed], &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &[first, renamed],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     assert_eq!(labels(&labeled.speakers), vec!["Pat"]);
     assert_eq!(segment_labels(&labeled), vec!["Pat", "Pat"]);
+}
+
+#[test]
+fn colleagues_are_attributed_as_colleagues() {
+    let (first, second) = (coach(), coachee());
+    let (participants, segments) = three_speaker_transcript(&first, &second);
+
+    let labeled = label_transcript(
+        &participants,
+        &segments,
+        &colleagues(&first, &second),
+        &first,
+        &second,
+    );
+
+    let colleague = Some(coaching_relationship_kind::Role::Colleague);
+    assert_eq!(roles(&labeled.speakers), vec![colleague, colleague, None]);
+    let segment_roles: Vec<_> = labeled.segments.iter().map(|s| s.speaker_role).collect();
+    assert_eq!(segment_roles, vec![colleague, colleague, None, colleague]);
 }
 
 #[test]
@@ -333,7 +435,13 @@ fn roles_follow_the_relationship_as_it_is_now() {
     let (participants, segments) = three_speaker_transcript(&coach, &coachee);
 
     // The same stored attribution, read after the two people swapped roles.
-    let labeled = label_transcript(&participants, &segments, &coachee, &coach);
+    let labeled = label_transcript(
+        &participants,
+        &segments,
+        &relationship(&coachee, &coach),
+        &coachee,
+        &coach,
+    );
 
     assert_eq!(
         labels(&labeled.speakers),
@@ -359,7 +467,13 @@ fn a_user_outside_the_relationship_is_never_exposed() {
     );
     let segments = vec![spoken(Some(&stranger), "Someone", "Hello.", 0)];
 
-    let labeled = label_transcript(&[stranger], &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &[stranger],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     assert_eq!(labels(&labeled.speakers), vec!["Someone"]);
     assert_eq!(roles(&labeled.speakers), vec![None]);
@@ -375,7 +489,13 @@ fn transcripts_without_participants_keep_their_stored_labels() {
         spoken(None, "Jim H", "Again.", 9000),
     ];
 
-    let labeled = label_transcript(&[], &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &[],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     assert_eq!(labels(&labeled.speakers), vec!["Jim H", "Unknown"]);
     assert_eq!(roles(&labeled.speakers), vec![None, None]);
@@ -394,7 +514,13 @@ fn segments_are_ordered_by_start_then_id() {
     segments[1].id = Id::from_u128(2);
     segments[2].id = Id::from_u128(1);
 
-    let labeled = label_transcript(&[guest], &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &[guest],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     let texts: Vec<&str> = labeled.segments.iter().map(|s| s.text.as_str()).collect();
     assert_eq!(texts, vec!["tie-a", "tie-b", "late"]);
@@ -404,7 +530,7 @@ fn segments_are_ordered_by_start_then_id() {
 fn no_segments_label_nothing() {
     let (coach, coachee) = (coach(), coachee());
 
-    let labeled = label_transcript(&[], &[], &coach, &coachee);
+    let labeled = label_transcript(&[], &[], &relationship(&coach, &coachee), &coach, &coachee);
 
     assert!(labeled.speakers.is_empty());
     assert!(labeled.segments.is_empty());
@@ -432,7 +558,13 @@ fn timestamp_truncates_sub_second_remainder() {
 fn three_speaker_labeled() -> Labeled {
     let (coach, coachee) = (coach(), coachee());
     let (participants, segments) = three_speaker_transcript(&coach, &coachee);
-    label_transcript(&participants, &segments, &coach, &coachee)
+    label_transcript(
+        &participants,
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    )
 }
 
 #[test]
@@ -499,7 +631,13 @@ fn coach_named(display: &str) -> Labeled {
     let coachee = coachee();
     let coach_p = participant(Some("typed"), None, Some((coach.id, MatchSource::Account)));
     let segments = vec![spoken(Some(&coach_p), "typed", "Hello.", 0)];
-    label_transcript(&[coach_p], &segments, &coach, &coachee)
+    label_transcript(
+        &[coach_p],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    )
 }
 
 #[test]
@@ -566,7 +704,13 @@ fn names_that_slug_alike_carry_their_role() {
         spoken(Some(&coach_p), "A", "Hello.", 0),
         spoken(Some(&coachee_p), "B", "Hi.", 1000),
     ];
-    let labeled = label_transcript(&[coach_p, coachee_p], &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &[coach_p, coachee_p],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     let filename = |filter: &[coaching_relationship_kind::Role]| {
         render_plain_text(date(), &labeled, filter)
@@ -604,7 +748,13 @@ fn render_filters_by_attribution_not_by_label_text() {
         spoken(Some(&impostor), "Jim H", "Impostor line.", 0),
         spoken(Some(&real), "J. Hodapp", "Coach line.", 5000),
     ];
-    let labeled = label_transcript(&[impostor, real], &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &[impostor, real],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     let rendered = render_plain_text(date(), &labeled, &[coaching_relationship_kind::Role::Coach])
         .expect("renders");
@@ -626,7 +776,13 @@ fn render_header_lists_only_speakers_with_surviving_lines() {
         spoken(Some(&coach_p), "J. Hodapp", "Hello.", 0),
         spoken(Some(&quiet), "Pat", "   ", 2000),
     ];
-    let labeled = label_transcript(&[coach_p, quiet], &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &[coach_p, quiet],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     let rendered = render_plain_text(date(), &labeled, &[]).expect("renders");
 
@@ -639,7 +795,13 @@ fn render_trims_surrounding_whitespace_from_text() {
     let (coach, coachee) = (coach(), coachee());
     let guest = participant(Some("Pat"), None, None);
     let segments = vec![spoken(Some(&guest), "Pat", "  Hello there.  ", 0)];
-    let labeled = label_transcript(&[guest], &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &[guest],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     let rendered = render_plain_text(date(), &labeled, &[]).expect("renders");
 
@@ -649,7 +811,7 @@ fn render_trims_surrounding_whitespace_from_text() {
 #[test]
 fn render_with_no_segments_yields_header_only() {
     let (coach, coachee) = (coach(), coachee());
-    let labeled = label_transcript(&[], &[], &coach, &coachee);
+    let labeled = label_transcript(&[], &[], &relationship(&coach, &coachee), &coach, &coachee);
 
     let rendered = render_plain_text(date(), &labeled, &[]).expect("renders");
 
@@ -672,7 +834,13 @@ fn render_fails_when_a_requested_role_has_no_speaker() {
         spoken(Some(&coach_p), "J. Hodapp", "Hello.", 0),
         spoken(Some(&guest), "Pat", "Hi.", 2000),
     ];
-    let labeled = label_transcript(&[coach_p, guest], &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &[coach_p, guest],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     let err = render_plain_text(
         date(),
@@ -699,7 +867,13 @@ fn render_fails_when_a_requested_role_has_no_speaker() {
 fn render_unfiltered_never_fails_without_attribution() {
     let (coach, coachee) = (coach(), coachee());
     let segments = vec![spoken(None, "Unknown", "Hi.", 0)];
-    let labeled = label_transcript(&[], &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &[],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     assert!(render_plain_text(date(), &labeled, &[]).is_ok());
 }
@@ -734,7 +908,13 @@ fn speaker_serializes_role_as_null_when_unattributed() {
 fn a_labeled_segment_serializes_attribution_and_hides_raw_provider_data() {
     let (coach, coachee) = (coach(), coachee());
     let (participants, segments) = three_speaker_transcript(&coach, &coachee);
-    let labeled = label_transcript(&participants, &segments, &coach, &coachee);
+    let labeled = label_transcript(
+        &participants,
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
 
     let coach_line = serde_json::to_value(&labeled.segments[0]).unwrap();
     let guest_line = serde_json::to_value(&labeled.segments[2]).unwrap();

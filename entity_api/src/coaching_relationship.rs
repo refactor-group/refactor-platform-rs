@@ -25,20 +25,26 @@ use slugify::slugify;
 use utoipa::openapi::{ObjectBuilder, Ref, RefOr, Schema};
 use utoipa::{PartialSchema, ToSchema};
 
-/// Creates a coaching relationship of `kind` between a coach and a coachee in an
-/// organization. The Model's own kind is ignored.
+/// A relationship to create: who holds each seat and what kind it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Draft {
+    pub coach_id: Id,
+    pub coachee_id: Id,
+    pub kind: Kind,
+}
+
+/// Creates the drafted relationship in an organization.
 ///
-/// Returns the existing relationship when one already exists for that coach, coachee
-/// and organization.
+/// Returns the existing relationship when one of the same kind already exists for that
+/// coach, coachee and organization, and refuses one of another kind.
 pub async fn create(
     db: &impl ConnectionTrait,
     organization_id: Id,
-    coaching_relationship_model: Model,
-    kind: Kind,
+    draft: Draft,
 ) -> Result<CoachingRelationshipWithUserNames, Error> {
-    debug!("New Coaching Relationship Model to be inserted: {coaching_relationship_model:?}");
+    debug!("New Coaching Relationship to be inserted: {draft:?}");
 
-    if coaching_relationship_model.coach_id == coaching_relationship_model.coachee_id {
+    if draft.coach_id == draft.coachee_id {
         return Err(Error {
             source: None,
             error_kind: EntityApiErrorKind::ValidationError {
@@ -56,8 +62,8 @@ pub async fn create(
         });
     }
 
-    let coach = user::find_by_id(db, coaching_relationship_model.coach_id).await?;
-    let coachee = user::find_by_id(db, coaching_relationship_model.coachee_id).await?;
+    let coach = user::find_by_id(db, draft.coach_id).await?;
+    let coachee = user::find_by_id(db, draft.coachee_id).await?;
 
     let coach_organization_ids =
         // membership is independent of archive state
@@ -77,7 +83,7 @@ pub async fn create(
     if !coach_organization_ids.contains(&organization_id)
         || !coachee_organization_ids.contains(&organization_id)
     {
-        error!("Coach and coachee do not belong to the correct organization, not creating requested new coaching relationship between coach: {:?} and coachee: {:?} for organization: {:?}.", coaching_relationship_model.coach_id, coaching_relationship_model.coachee_id, organization_id);
+        error!("Coach and coachee do not belong to the correct organization, not creating requested new coaching relationship between coach: {:?} and coachee: {:?} for organization: {:?}.", draft.coach_id, draft.coachee_id, organization_id);
         return Err(Error {
             source: None,
             error_kind: EntityApiErrorKind::ValidationError {
@@ -89,20 +95,16 @@ pub async fn create(
 
     // Coaching Relationship must be unique within the context of an organization
     // Note: this is enforced at the database level as well
-    let existing_coaching_relationship = find_for_pair(
-        db,
-        organization_id,
-        coaching_relationship_model.coach_id,
-        coaching_relationship_model.coachee_id,
-    )
-    .await?;
+    let existing_coaching_relationship =
+        find_for_pair(db, organization_id, draft.coach_id, draft.coachee_id).await?;
 
     if let Some(existing) = existing_coaching_relationship {
         debug!(
             "Coaching relationship {} already exists for coach {}, coachee {} in organization {organization_id}; returning it",
             existing.id, existing.coach_id, existing.coachee_id
         );
-        return Ok(with_user_names(&existing, &coach, &coachee));
+        return of_kind(existing, draft.kind)
+            .map(|existing| with_user_names(&existing, &coach, &coachee));
     }
 
     let now = Utc::now();
@@ -110,9 +112,9 @@ pub async fn create(
 
     let coaching_relationship_active_model: ActiveModel = ActiveModel {
         organization_id: Set(organization_id),
-        coach_id: Set(coaching_relationship_model.coach_id),
-        coachee_id: Set(coaching_relationship_model.coachee_id),
-        kind: Set(kind),
+        coach_id: Set(draft.coach_id),
+        coachee_id: Set(draft.coachee_id),
+        kind: Set(draft.kind),
         slug: Set(slug),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
@@ -122,24 +124,32 @@ pub async fn create(
     match insert_unless_exists(db, coaching_relationship_active_model).await? {
         Some(inserted) => Ok(with_user_names(&inserted, &coach, &coachee)),
         None => {
-            let winner = find_for_pair(
-                db,
-                organization_id,
-                coaching_relationship_model.coach_id,
-                coaching_relationship_model.coachee_id,
-            )
-            .await?
-            .ok_or_else(|| Error {
-                source: None,
-                error_kind: EntityApiErrorKind::RecordNotFound,
-            })?;
+            let winner = find_for_pair(db, organization_id, draft.coach_id, draft.coachee_id)
+                .await?
+                .ok_or_else(|| Error {
+                    source: None,
+                    error_kind: EntityApiErrorKind::RecordNotFound,
+                })?;
             debug!(
                 "Coaching relationship for coach {}, coachee {} in organization {organization_id} was created by a concurrent request; returning that one ({})",
                 winner.coach_id, winner.coachee_id, winner.id
             );
-            Ok(with_user_names(&winner, &coach, &coachee))
+            of_kind(winner, draft.kind).map(|winner| with_user_names(&winner, &coach, &coachee))
         }
     }
+}
+
+/// `existing` when it is of `kind`; a conflict otherwise, since a pair holds one relationship.
+fn of_kind(existing: Model, kind: Kind) -> Result<Model, Error> {
+    Some(existing)
+        .filter(|existing| existing.kind == kind)
+        .ok_or_else(|| Error {
+            source: None,
+            error_kind: EntityApiErrorKind::ValidationError {
+                message: "This coach and coachee already have a relationship of another kind in the organization.".into(),
+                details: None,
+            },
+        })
 }
 
 /// Inserts `relationship`, returning `None` when its coach, coachee and organization already exist.
@@ -1002,18 +1012,13 @@ mod tests {
             .append_query_results(vec![vec![archived_org]])
             .into_connection();
 
-        let model = Model {
-            id: Id::new_v4(),
-            organization_id,
+        let draft = Draft {
             coach_id: Id::new_v4(),
             coachee_id: Id::new_v4(),
             kind: Kind::Coaching,
-            slug: String::new(),
-            created_at: now.into(),
-            updated_at: now.into(),
         };
 
-        let result = create(&db, organization_id, model, Kind::Coaching).await;
+        let result = create(&db, organization_id, draft).await;
 
         let err = result.expect_err("expected archived-org rejection");
         assert!(matches!(
@@ -1024,24 +1029,18 @@ mod tests {
 
     #[tokio::test]
     async fn create_rejects_a_user_as_their_own_coach() {
-        let now = Utc::now();
         let organization_id = Id::new_v4();
         let user_id = Id::new_v4();
 
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
-        let model = Model {
-            id: Id::new_v4(),
-            organization_id,
+        let draft = Draft {
             coach_id: user_id,
             coachee_id: user_id,
             kind: Kind::Coaching,
-            slug: String::new(),
-            created_at: now.into(),
-            updated_at: now.into(),
         };
 
-        let err = create(&db, organization_id, model, Kind::Coaching)
+        let err = create(&db, organization_id, draft)
             .await
             .expect_err("expected self-coaching rejection");
 

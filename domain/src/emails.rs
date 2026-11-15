@@ -551,6 +551,8 @@ pub fn affects_schedule(old: &coaching_sessions::Model, new: &coaching_sessions:
 pub(crate) struct Participants<'a> {
     pub(crate) coach: &'a users::Model,
     pub(crate) coachee: &'a users::Model,
+    /// The relationship's kind, which names each participant's role.
+    pub(crate) kind: coaching_relationship_kind::Kind,
 }
 
 /// The participants of a send and which of them it may reach: those still in the
@@ -907,21 +909,24 @@ impl<'a> Participants<'a> {
 
     /// Each participant's copy, coachee first, labelled with their role.
     fn copies(&self) -> [(coaching_relationship_kind::Role, Recipient<'a>); 2] {
+        let rules = self.kind.rules();
+        let coach_role = rules.role(coaching_relationship_kind::Seat::CoachId);
+        let coachee_role = rules.role(coaching_relationship_kind::Seat::CoacheeId);
         [
             (
-                coaching_relationship_kind::Role::Coachee,
+                coachee_role,
                 Recipient {
                     user: self.coachee,
                     other_user: self.coach,
-                    other_user_role: coaching_relationship_kind::Role::Coach,
+                    other_user_role: coach_role,
                 },
             ),
             (
-                coaching_relationship_kind::Role::Coach,
+                coach_role,
                 Recipient {
                     user: self.coach,
                     other_user: self.coachee,
-                    other_user_role: coaching_relationship_kind::Role::Coachee,
+                    other_user_role: coachee_role,
                 },
             ),
         ]
@@ -996,7 +1001,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
         participants,
         member_ids,
     } = *audience;
-    let Participants { coach, coachee } = *participants;
+    let Participants { coach, coachee, .. } = *participants;
     info!(
         "Initiating {} emails for session: {} (coach: {}, coachee: {})",
         N::notification_name(),
@@ -1225,6 +1230,7 @@ pub async fn notify_session_scheduled(
                 participants: &Participants {
                     coach: &coach,
                     coachee: &coachee,
+                    kind: relationship.kind,
                 },
                 member_ids,
             },
@@ -1311,6 +1317,7 @@ pub async fn send_session_rescheduled(
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: relationship.kind,
             },
             member_ids: &member_ids,
         },
@@ -1566,7 +1573,7 @@ async fn send_session_cancelled_email(
         participants,
         member_ids,
     } = *audience;
-    let Participants { coach, coachee } = *participants;
+    let Participants { coach, coachee, .. } = *participants;
     info!(
         "Initiating session cancelled emails for session: {} (coach: {}, coachee: {})",
         session.id, coach.email, coachee.email
@@ -1644,6 +1651,7 @@ pub async fn notify_session_cancelled(
         let participants = Participants {
             coach: &coach,
             coachee: &coachee,
+            kind: relationship.kind,
         };
 
         let series_zone = invite_zone(db, session, &coach).await?;
@@ -1944,7 +1952,7 @@ async fn send_series_invite_email<N: EmailNotification>(
         participants,
         member_ids,
     } = *audience;
-    let Participants { coach, coachee } = *participants;
+    let Participants { coach, coachee, .. } = *participants;
     let SeriesInviteKind { reschedule, shape } = kind;
     let SeriesSessions {
         current: sessions,
@@ -2172,6 +2180,7 @@ pub(crate) async fn send_session_invite_resend(
 pub(crate) struct InviteParties {
     coach: users::Model,
     coachee: users::Model,
+    kind: coaching_relationship_kind::Kind,
     pub(crate) organization: organizations::Model,
 }
 
@@ -2183,6 +2192,7 @@ impl InviteParties {
         Ok(Self {
             coach: user::find_by_id_without_roles(db, relationship.coach_id).await?,
             coachee: user::find_by_id_without_roles(db, relationship.coachee_id).await?,
+            kind: relationship.kind,
             organization: organization::find_by_id(db, relationship.organization_id).await?,
         })
     }
@@ -2191,6 +2201,7 @@ impl InviteParties {
         Participants {
             coach: &self.coach,
             coachee: &self.coachee,
+            kind: self.kind,
         }
     }
 }
@@ -2264,6 +2275,7 @@ pub async fn notify_recurring_sessions_scheduled(
                 participants: &Participants {
                     coach: &coach,
                     coachee: &coachee,
+                    kind: relationship.kind,
                 },
                 member_ids,
             },
@@ -2327,6 +2339,7 @@ pub async fn notify_recurring_sessions_rescheduled(
                 participants: &Participants {
                     coach: &coach,
                     coachee: &coachee,
+                    kind: relationship.kind,
                 },
                 member_ids,
             },
@@ -2753,7 +2766,7 @@ async fn send_recurring_sessions_cancelled_email(
         participants,
         member_ids,
     } = *audience;
-    let Participants { coach, coachee } = *participants;
+    let Participants { coach, coachee, .. } = *participants;
     info!(
         "Initiating series cancelled emails for {} sessions (coach: {}, coachee: {})",
         sessions.len(),
@@ -2826,6 +2839,7 @@ pub async fn notify_recurring_sessions_cancelled(
         let participants = Participants {
             coach: &coach,
             coachee: &coachee,
+            kind: relationship.kind,
         };
 
         // Both, members or not: a removed member still holds the events.

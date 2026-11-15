@@ -46,7 +46,7 @@ pub enum Seat {
 
 /// What a participant is to their relationship: derived from its kind and their seat,
 /// never stored. Lowercase on the wire.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, EnumIter, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 #[schema(as = domain::coaching_relationship_kind::Role)]
 pub enum Role {
@@ -56,9 +56,6 @@ pub enum Role {
 }
 
 impl Role {
-    /// Every role; a new variant must be added here.
-    pub const ALL: [Role; 3] = [Role::Coach, Role::Coachee, Role::Colleague];
-
     /// The role's wire spelling, as it appears in JSON, emails and filenames.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -116,6 +113,8 @@ pub fn from_request() -> Kind {
 
 #[cfg(test)]
 mod tests {
+    use sea_orm::Iterable;
+
     use super::*;
 
     #[test]
@@ -161,7 +160,7 @@ mod tests {
 
     #[test]
     fn as_str_matches_the_serde_value_of_every_role() {
-        for role in Role::ALL {
+        for role in Role::iter() {
             assert_eq!(
                 serde_json::to_value(role).expect("serializes"),
                 role.as_str(),

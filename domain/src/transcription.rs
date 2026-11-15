@@ -685,7 +685,15 @@ async fn label(
 ) -> Result<(Labeled, users::Model), Error> {
     let participants = participant_api::find_by_transcription(db, transcription_id).await?;
     let (coach, coachee) = load_participants(db, session).await?;
-    let labeled = transcript_export::label_transcript(&participants, segments, &coach, &coachee);
+    let relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    let labeled = transcript_export::label_transcript(
+        &participants,
+        segments,
+        &relationship,
+        &coach,
+        &coachee,
+    );
 
     Ok((labeled, coach))
 }

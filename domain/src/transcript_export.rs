@@ -10,6 +10,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::coaching_relationship_kind;
+use crate::coaching_relationships;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::transcript_participant::Model as Participant;
 use crate::users;
@@ -23,9 +24,9 @@ pub struct Speaker {
     /// The speaker label exactly as it appears on transcript lines; unique per transcript.
     #[schema(example = "Jim Hodapp")]
     pub label: String,
-    /// Which participant the speaker is attributed to.
+    /// The attributed participant's role in the relationship.
     ///
-    /// `null` for anyone not attributed to the coach or coachee, such as a guest.
+    /// `null` for anyone not attributed to a participant, such as a guest.
     pub role: Option<coaching_relationship_kind::Role>,
 }
 
@@ -43,7 +44,7 @@ pub struct LabeledSegment {
     pub speaker_label: String,
     /// The user who spoke, only ever the session's coach or coachee; `null` otherwise.
     pub speaker_user_id: Option<Id>,
-    /// The speaker's role in the relationship; `null` when not the coach or coachee.
+    /// The speaker's role in the relationship; `null` when not attributed to a participant.
     pub speaker_role: Option<coaching_relationship_kind::Role>,
     pub text: String,
     pub start_ms: i32,
@@ -90,6 +91,7 @@ enum GroupKey<'a> {
 pub fn label_transcript(
     participants: &[Participant],
     segments: &[Segment],
+    relationship: &coaching_relationships::Model,
     coach: &users::Model,
     coachee: &users::Model,
 ) -> Labeled {
@@ -143,7 +145,7 @@ pub fn label_transcript(
         .zip(&labels)
         .map(|(key, label)| Speaker {
             label: label.clone(),
-            role: attribution(key, coach).1,
+            role: attribution(key, relationship).1,
         })
         .collect();
 
@@ -151,7 +153,7 @@ pub fn label_transcript(
         .iter()
         .zip(group_of)
         .map(|((segment, _, _), index)| {
-            let (speaker_user_id, speaker_role) = attribution(keys[index], coach);
+            let (speaker_user_id, speaker_role) = attribution(keys[index], relationship);
             LabeledSegment {
                 id: segment.id,
                 transcription_id: segment.transcription_id,
@@ -222,16 +224,13 @@ fn typed_name(participant: &Participant) -> Option<&str> {
         .filter(|name| !name.trim().is_empty())
 }
 
-/// The user and role a group speaks for; only coach and coachee groups have them.
+/// The user and role a group speaks for; only participant groups have them.
 fn attribution(
     key: &GroupKey,
-    coach: &users::Model,
+    relationship: &coaching_relationships::Model,
 ) -> (Option<Id>, Option<coaching_relationship_kind::Role>) {
     match key {
-        GroupKey::User(id) if *id == coach.id => {
-            (Some(*id), Some(coaching_relationship_kind::Role::Coach))
-        }
-        GroupKey::User(id) => (Some(*id), Some(coaching_relationship_kind::Role::Coachee)),
+        GroupKey::User(id) => (Some(*id), relationship.role(*id)),
         _ => (None, None),
     }
 }

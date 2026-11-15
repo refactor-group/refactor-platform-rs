@@ -11,6 +11,7 @@ use domain::error::{
     DomainErrorKind, EntityErrorKind, Error as DomainError, ExternalErrorKind, InternalErrorKind,
 };
 use log::*;
+use sea_orm::Iterable;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -459,8 +460,9 @@ where
 
 /// The accepted `speaker` query values, comma-separated.
 pub(crate) fn accepted_speakers() -> String {
-    coaching_relationship_kind::Role::ALL
+    coaching_relationship_kind::Role::iter()
         .map(coaching_relationship_kind::Role::as_str)
+        .collect::<Vec<_>>()
         .join(", ")
 }
 

@@ -11,8 +11,7 @@ use axum::http::{Method, StatusCode};
 use domain::coaching_relationship_kind::Kind;
 use domain::test_utils::sqlite::fixture::set_role;
 use domain::test_utils::sqlite::read_back::{
-    holds_role, relationship_kinds_between, relationships_between, role_in, user_exists,
-    user_with_email,
+    holds_role, relationships_between, role_in, user_exists, user_with_email,
 };
 use domain::test_utils::sqlite::{seed_membership, seed_user, within_time_limit, Caller};
 use domain::users::Role;
@@ -108,7 +107,11 @@ async fn adding_a_member_with_a_coach_stores_a_coaching_relationship() {
             .await
             .expect("the member is stored");
         assert_eq!(
-            relationship_kinds_between(app.db(), coach, user).await,
+            relationships_between(app.db(), coach, user)
+                .await
+                .into_iter()
+                .map(|relationship| relationship.kind)
+                .collect::<Vec<_>>(),
             vec![Kind::Coaching]
         );
     })
@@ -233,8 +236,9 @@ async fn deleting_a_member_with_coaching_history_is_refused() {
             assert!(holds_role(app.db(), coachee, o1).await, "{caller:?}");
             let kept: BTreeSet<_> = relationships_between(app.db(), coach, coachee)
                 .await
-                .union(&relationships_between(app.db(), other_coach, coachee).await)
-                .copied()
+                .into_iter()
+                .chain(relationships_between(app.db(), other_coach, coachee).await)
+                .map(|relationship| relationship.id)
                 .collect();
             assert_eq!(kept, relationships, "{caller:?}");
         }

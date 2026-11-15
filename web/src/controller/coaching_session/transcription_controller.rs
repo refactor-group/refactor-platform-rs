@@ -81,7 +81,7 @@ pub async fn read_latest(
         ApiVersion,
         ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
         ("transcription_id" = Uuid, Path, description = "Transcription id"),
-        ("speaker" = Option<Vec<coaching_relationship_kind::Role>>, Query, explode, description = "Limit the plain-text transcript to these participants. Repeat the parameter for both. Omitted means every speaker. An invalid value is rejected with 400 for every representation; valid values are applied only to text/plain."),
+        ("speaker" = Option<Vec<coaching_relationship_kind::Role>>, Query, explode, description = "Limit the plain-text transcript to speakers with these roles. Repeat the parameter for each role. Omitted means every speaker. An invalid value is rejected with 400 for every representation; valid values are applied only to text/plain."),
     ),
     responses(
         (status = 200, description = "JSON metadata with labeled speakers, or the plain-text transcript file when `Accept: text/plain`", content(

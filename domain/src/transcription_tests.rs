@@ -248,6 +248,7 @@ async fn export_plain_text_renders_the_relationship_participants() {
         .append_query_results([segments])
         .append_query_results([participants])
         .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
+        .append_query_results([[relationship.clone()]])
         .into_connection();
 
     let rendered = export_plain_text(
@@ -288,6 +289,7 @@ async fn export_plain_text_dates_the_file_in_the_coach_timezone() {
         .append_query_results([segments])
         .append_query_results([participants])
         .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
+        .append_query_results([[relationship.clone()]])
         .into_connection();
 
     let rendered = export_plain_text(&db, &session, row.id, &[])
@@ -313,6 +315,7 @@ async fn export_plain_text_reports_an_unidentified_role() {
         .append_query_results([segments])
         .append_query_results([participants])
         .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
+        .append_query_results([[relationship.clone()]])
         .into_connection();
 
     let error = export_plain_text(
@@ -353,6 +356,7 @@ async fn read_with_speakers_labels_roles_in_speaking_order() {
         .append_query_results([segments])
         .append_query_results([participants])
         .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
+        .append_query_results([[relationship.clone()]])
         .into_connection();
 
     let result = read_with_speakers(&db, &session, row.id)
@@ -392,6 +396,7 @@ async fn read_with_speakers_is_empty_without_segments() {
         .append_query_results([Vec::<Segment>::new()])
         .append_query_results([Vec::<Participant>::new()])
         .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
+        .append_query_results([[relationship.clone()]])
         .into_connection();
 
     let result = read_with_speakers(&db, &session, row.id)

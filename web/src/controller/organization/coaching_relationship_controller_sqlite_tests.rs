@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use axum::http::{Method, StatusCode};
 use domain::coaching_relationship_kind::Kind;
 use domain::test_utils::sqlite::fixture::set_role;
-use domain::test_utils::sqlite::read_back::{relationship_kinds_between, relationships_between};
+use domain::test_utils::sqlite::read_back::relationships_between;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::users::Role;
 use domain::Id;
@@ -289,7 +289,11 @@ async fn admins_create_a_relationship_once_per_pair() {
                 .await;
             assert_eq!(created.status, StatusCode::OK, "{caller:?}");
             assert_eq!(created.body["status_code"], 201, "{caller:?}");
-            let stored = relationships_between(app.db(), coach, member).await;
+            let stored: BTreeSet<Id> = relationships_between(app.db(), coach, member)
+                .await
+                .into_iter()
+                .map(|relationship| relationship.id)
+                .collect();
             assert_eq!(stored.len(), 1, "{caller:?}");
             assert_eq!(created.ids(), stored, "{caller:?}");
 
@@ -297,7 +301,11 @@ async fn admins_create_a_relationship_once_per_pair() {
             assert_eq!(again.status, StatusCode::OK, "{caller:?} again");
             assert_eq!(again.ids(), stored, "{caller:?} again");
             assert_eq!(
-                relationships_between(app.db(), coach, member).await,
+                relationships_between(app.db(), coach, member)
+                    .await
+                    .into_iter()
+                    .map(|relationship| relationship.id)
+                    .collect::<BTreeSet<_>>(),
                 stored,
                 "{caller:?} again"
             );
@@ -324,7 +332,11 @@ async fn a_create_request_cannot_choose_the_kind() {
         assert_eq!(created.status, StatusCode::OK);
         assert_eq!(created.body["status_code"], 201);
         assert_eq!(
-            relationship_kinds_between(app.db(), coach, member).await,
+            relationships_between(app.db(), coach, member)
+                .await
+                .into_iter()
+                .map(|relationship| relationship.kind)
+                .collect::<Vec<_>>(),
             vec![Kind::Coaching]
         );
     })
@@ -353,9 +365,10 @@ async fn non_admins_cannot_create_a_relationship() {
                 .expect(caller, Method::POST, &path, Some(body.clone()))
                 .await;
             assert_eq!(status, StatusCode::FORBIDDEN, "{caller:?}");
-            assert_eq!(
-                relationships_between(app.db(), coach, member).await,
-                BTreeSet::new(),
+            assert!(
+                relationships_between(app.db(), coach, member)
+                    .await
+                    .is_empty(),
                 "{caller:?}"
             );
         }
@@ -436,10 +449,9 @@ async fn an_admin_of_another_org_cannot_create_a_relationship() {
             .await;
 
         assert_eq!(status, StatusCode::FORBIDDEN);
-        assert_eq!(
-            relationships_between(app.db(), coach, member).await,
-            BTreeSet::new()
-        );
+        assert!(relationships_between(app.db(), coach, member)
+            .await
+            .is_empty());
     })
     .await;
 }

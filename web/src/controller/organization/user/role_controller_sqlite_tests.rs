@@ -6,12 +6,12 @@
 //! How the routes behave once allowed is tested in `role_controller_tests.rs`.
 //! `web/src/test_utils/README.md` describes the people and the database.
 
+use std::collections::BTreeSet;
+
 use axum::http::{Method, StatusCode};
 use domain::coaching_relationship_kind::Kind;
 use domain::test_utils::sqlite::fixture::{record_removal, set_role};
-use domain::test_utils::sqlite::read_back::{
-    holds_role, relationship_kinds_between, relationships_between, role_in,
-};
+use domain::test_utils::sqlite::read_back::{holds_role, relationships_between, role_in};
 use domain::test_utils::sqlite::{seed_membership, seed_user, within_time_limit, Caller};
 use domain::users::Role;
 use domain::Id;
@@ -82,7 +82,11 @@ async fn attaching_a_member_with_a_new_coach_stores_a_coaching_relationship() {
         assert_eq!(reply.status, StatusCode::OK);
         assert_eq!(reply.body["status_code"], 201);
         assert_eq!(
-            relationship_kinds_between(app.db(), coach, target).await,
+            relationships_between(app.db(), coach, target)
+                .await
+                .into_iter()
+                .map(|relationship| relationship.kind)
+                .collect::<Vec<_>>(),
             vec![Kind::Coaching]
         );
     })
@@ -113,7 +117,11 @@ async fn admins_remove_a_member_and_keep_their_relationship() {
             assert_eq!(reply.body["status_code"], 204, "{caller:?}");
             assert!(!holds_role(app.db(), removed, o1).await, "{caller:?}");
             assert_eq!(
-                relationships_between(app.db(), coach, removed).await,
+                relationships_between(app.db(), coach, removed)
+                    .await
+                    .into_iter()
+                    .map(|relationship| relationship.id)
+                    .collect::<BTreeSet<_>>(),
                 ids([r3]),
                 "{caller:?}"
             );

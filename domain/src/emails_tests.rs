@@ -511,6 +511,28 @@ fn test_session_summary_puts_the_coachee_first() {
     assert_eq!(session_summary(&coach, &coachee), "Jane / Alex");
 }
 
+/// A colleague is named a colleague in both copies, never a coach or coachee.
+#[test]
+fn colleagues_copies_name_each_other_colleague() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let participants = Participants {
+        coach: &coach,
+        coachee: &coachee,
+        kind: coaching_relationship_kind::Kind::Colleague,
+    };
+
+    for (role, to) in participants.copies() {
+        assert_eq!(role.as_str(), "colleague", "{}", to.user.email);
+        assert_eq!(
+            to.other_user_role.as_str(),
+            "colleague",
+            "{}",
+            to.user.email
+        );
+    }
+}
+
 /// The `ORGANIZER` must equal the sending address: when the two disagree, calendar
 /// clients treat the invite as untrusted and silently drop reschedules.
 #[test]
@@ -729,6 +751,7 @@ async fn test_send_session_scheduled_email_variables() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -822,6 +845,7 @@ async fn test_send_session_rescheduled_email() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -975,6 +999,7 @@ async fn test_send_session_rescheduled_email_carries_both_when_variables_per_rec
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -1031,6 +1056,7 @@ async fn test_send_session_rescheduled_email_unmoved_start_renders_unchanged() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -1088,6 +1114,7 @@ async fn test_send_session_rescheduled_email_moved_start_is_not_unchanged() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -1150,6 +1177,7 @@ async fn test_send_session_scheduled_email_omits_when_variables() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -1226,6 +1254,7 @@ async fn test_send_session_rescheduled_email_omits_recurrence_variables() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -1279,6 +1308,7 @@ async fn test_send_occurrence_rescheduled_email_addresses_the_occurrence() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -1511,6 +1541,7 @@ async fn test_send_session_cancelled_email() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -1583,6 +1614,7 @@ async fn test_send_session_cancelled_email_omits_when_variables() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -1755,6 +1787,7 @@ async fn test_cancelling_a_legacy_series_member_addresses_it_by_its_own_uid() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -1817,6 +1850,7 @@ async fn test_scheduling_and_rescheduling_a_legacy_series_member_send_standalone
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -1833,6 +1867,7 @@ async fn test_scheduling_and_rescheduling_a_legacy_series_member_send_standalone
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -2004,6 +2039,7 @@ async fn test_send_occurrence_cancelled_email_uses_session_template() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -2085,6 +2121,7 @@ async fn test_send_session_scheduled_email_missing_template_id() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -2923,6 +2960,7 @@ async fn test_send_recurring_sessions_scheduled_email_personalization() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -3017,6 +3055,7 @@ async fn test_send_recurring_sessions_rescheduled_email() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -3115,6 +3154,7 @@ async fn test_send_recurring_sessions_rescheduled_email_previous_when_comes_from
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -3189,6 +3229,7 @@ async fn test_send_recurring_sessions_scheduled_email_carries_recurrence_summary
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -3263,6 +3304,7 @@ async fn test_send_recurring_sessions_rescheduled_email_previous_recurrence_from
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -3336,6 +3378,7 @@ async fn test_send_recurring_sessions_rescheduled_email_unchanged_recurrence() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -3505,6 +3548,7 @@ async fn test_send_recurring_sessions_cancelled_email() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -3565,6 +3609,7 @@ async fn test_rescheduling_a_series_clears_the_standalone_events_it_replaced() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -3679,6 +3724,7 @@ async fn test_a_split_reschedule_carries_the_new_and_the_shortened_series() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -3776,6 +3822,7 @@ async fn send_edited_series(
             let participants = Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             };
             let delivered = send_series_invite_resend(
                 &db,
@@ -3801,6 +3848,7 @@ async fn send_edited_series(
                     participants: &Participants {
                         coach: &coach,
                         coachee: &coachee,
+                        kind: coaching_relationship_kind::Kind::Coaching,
                     },
                     member_ids: &[coach.id, coachee.id],
                 },
@@ -4020,6 +4068,7 @@ fn an_orphan_cancel_outranks_the_invite_that_placed_the_event() {
         &Participants {
             coach: &coach,
             coachee: &coachee,
+            kind: coaching_relationship_kind::Kind::Coaching,
         },
         std::slice::from_ref(&session),
         session.date,
@@ -4055,6 +4104,7 @@ fn a_stale_override_cancel_addresses_the_occurrence_it_overrode() {
         &Participants {
             coach: &coach,
             coachee: &coachee,
+            kind: coaching_relationship_kind::Kind::Coaching,
         },
         &SeriesRows {
             series: &series,
@@ -4117,6 +4167,7 @@ async fn test_cancelling_a_series_also_clears_a_legacy_members_standalone_event(
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -4196,6 +4247,7 @@ async fn test_cancelling_a_native_series_carries_only_the_series_cancellation() 
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -4254,6 +4306,7 @@ async fn test_send_recurring_sessions_cancelled_email_omits_recurrence_variables
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -4339,6 +4392,7 @@ async fn test_send_recurring_sessions_scheduled_email_single_session() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -4377,6 +4431,7 @@ async fn test_send_recurring_sessions_scheduled_email_missing_template_id() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
@@ -4738,6 +4793,7 @@ async fn occurrence_reschedule_uses_the_stored_series_zone() {
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: coaching_relationship_kind::Kind::Coaching,
             },
             member_ids: &[coach.id, coachee.id],
         },
