@@ -172,6 +172,7 @@ impl Provider {
 }
 
 /// Maps a transport failure to a timeout or network error.
+#[allow(clippy::needless_pass_by_value)] // By value so `.map_err(transport_error)` stays point-free
 fn transport_error(err: reqwest::Error) -> meeting_ai::Error {
     if err.is_timeout() {
         meeting_ai::Error::Timeout("LLM Gateway request timed out".to_string())

@@ -68,3 +68,6 @@ sha2 = "0.10"
 
 [build-dependencies]
 utoipa-config = "0.1"
+
+[lints]
+workspace = true

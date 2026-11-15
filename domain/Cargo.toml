@@ -63,3 +63,6 @@ test-sqlite = ["sea-orm/sqlx-sqlite", "sea-orm/schema-sync"]
 
 [build-dependencies]
 utoipa-config = "0.1"
+
+[lints]
+workspace = true

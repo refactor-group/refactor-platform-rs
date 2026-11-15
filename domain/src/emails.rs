@@ -1797,7 +1797,7 @@ fn build_series_snapshot_ics(
     series: &coaching_session_series::Model,
     members: &[coaching_sessions::Model],
     reissued: &[ReissuedOverride],
-    description: String,
+    description: &str,
     dtstamp: chrono::NaiveDateTime,
 ) -> Result<String, Error> {
     let rule: SeriesRule = serde_json::from_value(series.rule.clone())?;
@@ -1824,7 +1824,7 @@ fn build_series_snapshot_ics(
         method: ical::Method::Request,
         status: ical::EventStatus::Confirmed,
         summary: session_summary(coach, coachee),
-        description: description.clone(),
+        description: description.to_owned(),
         anchor_tz,
         dtstamp,
         start,
@@ -2014,7 +2014,7 @@ async fn send_series_invite_email<N: EmailNotification>(
                             from.series,
                             from.rows,
                             &[],
-                            description.clone(),
+                            &description,
                             dtstamp,
                         )
                     })
@@ -2025,7 +2025,7 @@ async fn send_series_invite_email<N: EmailNotification>(
                     series,
                     rows,
                     &reissued,
-                    description,
+                    &description,
                     dtstamp,
                 )?,
                 orphan_cancels: build_orphan_cancels(participants, replaced, dtstamp)

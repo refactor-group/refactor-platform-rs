@@ -127,11 +127,11 @@ fn signed_in(user: &users::Model, role: &user_roles::Model, world: &World) -> Mo
         .append_query_results([vec![(world.session.clone(), world.relationship.clone())]])
 }
 
-fn build_app(db: Arc<DatabaseConnection>) -> Router {
+fn build_app(db: &Arc<DatabaseConnection>) -> Router {
     let app_state = AppState::new(
         service::AppState::new(
             Config::from_args(["test", "--assembly-ai-api-key=test-key"]),
-            &db,
+            db,
         ),
         Arc::new(sse::Manager::default()),
         domain::events::EventPublisher::default(),
@@ -144,7 +144,7 @@ fn build_app(db: Arc<DatabaseConnection>) -> Router {
         .with_secure(false)
         .with_expiry(Expiry::OnInactivity(Duration::days(1)))
         .with_always_save(true);
-    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(&db), session_layer).build();
+    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(db), session_layer).build();
 
     Router::new()
         .route(
@@ -261,7 +261,7 @@ async fn as_coach(
 ) -> (Router, String, Arc<DatabaseConnection>) {
     let coach_role = role(world.coach.id, world.organization_id);
     let db = Arc::new(then(signed_in(&world.coach, &coach_role, world)).into_connection());
-    let app = build_app(db.clone());
+    let app = build_app(&db);
     let cookie = login_cookie(&app, &world.coach.email).await;
     (app, cookie, db)
 }

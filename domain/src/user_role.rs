@@ -233,7 +233,7 @@ pub async fn update_role_in_organization(
 
     // Setting the role a member already holds is an idempotent no-op: no update,
     // no audit row, and the same response as a real change.
-    let previous_role = membership.role.clone();
+    let previous_role = membership.role;
     if previous_role != role {
         user_role::update_role(&txn, actor, &membership, role).await?;
     }

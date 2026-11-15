@@ -95,7 +95,7 @@ pub trait ObjectStore: Send + Sync + 'static {
 }
 
 /// Misconfiguration, or a request we refuse to make. Logged here so every caller does not have to.
-fn config_error(message: String) -> Error {
+fn config_error(message: &str) -> Error {
     warn!("{message}");
     Error {
         source: None,
@@ -104,7 +104,7 @@ fn config_error(message: String) -> Error {
 }
 
 /// The remote store was reachable but refused, or could not be reached at all.
-fn transport_error(message: String) -> Error {
+fn transport_error(message: &str) -> Error {
     warn!("{message}");
     Error {
         source: None,
@@ -118,7 +118,7 @@ fn transport_error(message: String) -> Error {
 /// `reqwest::Error` print it. Propagating the error as-is would write a usable signature
 /// and a permanent key id into the logs on any DNS blip or connect failure.
 fn spaces_transport_error(operation: &str, key: &str, err: reqwest::Error) -> Error {
-    transport_error(format!(
+    transport_error(&format!(
         "Spaces {operation} of {key} failed: {}",
         err.without_url()
     ))
@@ -175,7 +175,7 @@ impl LocalObjectStore {
                 .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir));
 
         if escapes {
-            return Err(config_error(format!(
+            return Err(config_error(&format!(
                 "Rejected object key that escapes the local store root: {key}"
             )));
         }
@@ -198,7 +198,7 @@ impl LocalObjectStore {
         };
 
         anchor.starts_with(&root).then_some(()).ok_or_else(|| {
-            config_error(format!(
+            config_error(&format!(
                 "Rejected object key resolving outside the local store root: {}",
                 path.display()
             ))
@@ -293,18 +293,18 @@ impl SpacesObjectStore {
     pub fn from_config(config: &Config) -> Result<Self, Error> {
         let endpoint = config
             .spaces_endpoint()
-            .ok_or_else(|| config_error("SPACES_ENDPOINT is not set".to_string()))?;
+            .ok_or_else(|| config_error("SPACES_ENDPOINT is not set"))?;
         let endpoint = Url::parse(&endpoint)
-            .map_err(|e| config_error(format!("SPACES_ENDPOINT is not a valid URL: {e}")))?;
+            .map_err(|e| config_error(&format!("SPACES_ENDPOINT is not a valid URL: {e}")))?;
         let bucket_name = config
             .spaces_bucket()
-            .ok_or_else(|| config_error("SPACES_BUCKET is not set".to_string()))?;
+            .ok_or_else(|| config_error("SPACES_BUCKET is not set"))?;
         let access_key_id = config
             .spaces_access_key_id()
-            .ok_or_else(|| config_error("SPACES_ACCESS_KEY_ID is not set".to_string()))?;
+            .ok_or_else(|| config_error("SPACES_ACCESS_KEY_ID is not set"))?;
         let secret_access_key = config
             .spaces_secret_access_key()
-            .ok_or_else(|| config_error("SPACES_SECRET_ACCESS_KEY is not set".to_string()))?;
+            .ok_or_else(|| config_error("SPACES_SECRET_ACCESS_KEY is not set"))?;
 
         // Spaces addresses buckets as `<bucket>.<region>.digitaloceanspaces.com`.
         let bucket = Bucket::new(
@@ -313,7 +313,7 @@ impl SpacesObjectStore {
             bucket_name,
             config.spaces_region().to_string(),
         )
-        .map_err(|e| config_error(format!("Failed to build the Spaces bucket: {e}")))?;
+        .map_err(|e| config_error(&format!("Failed to build the Spaces bucket: {e}")))?;
 
         Ok(Self {
             bucket,
@@ -360,7 +360,7 @@ impl ObjectStore for SpacesObjectStore {
 
         match response.status() {
             status if status.is_success() => Ok(()),
-            status => Err(transport_error(format!(
+            status => Err(transport_error(&format!(
                 "Spaces rejected the upload of {key} with status {status}"
             ))),
         }
@@ -379,7 +379,7 @@ impl ObjectStore for SpacesObjectStore {
     async fn get(&self, key: &str) -> Result<StoredObject, Error> {
         let url = self
             .presigned_get(key, IMMEDIATE_SIGNATURE_TTL)?
-            .ok_or_else(|| config_error(format!("Failed to sign a GET URL for {key}")))?;
+            .ok_or_else(|| config_error(&format!("Failed to sign a GET URL for {key}")))?;
 
         let response = self
             .client
@@ -393,7 +393,7 @@ impl ObjectStore for SpacesObjectStore {
             return Err(object_not_found(key));
         }
         if !status.is_success() {
-            return Err(transport_error(format!(
+            return Err(transport_error(&format!(
                 "Spaces refused to serve {key} with status {status}"
             )));
         }
@@ -435,7 +435,7 @@ impl ObjectStore for SpacesObjectStore {
         match response.status() {
             // 404 means the object is already gone, which is the outcome we wanted.
             status if status.is_success() || status.as_u16() == 404 => Ok(()),
-            status => Err(transport_error(format!(
+            status => Err(transport_error(&format!(
                 "Spaces refused to delete {key} with status {status}"
             ))),
         }
@@ -493,7 +493,7 @@ mod tests {
         file
     }
 
-    fn assert_config_error(error: Error, context: &str) {
+    fn assert_config_error(error: &Error, context: &str) {
         assert_eq!(
             error.error_kind,
             DomainErrorKind::Internal(InternalErrorKind::Config),
@@ -600,12 +600,12 @@ mod tests {
                 .put(key, source.path(), "image/png")
                 .await
                 .expect_err("traversal key must not be written");
-            assert_config_error(put, &format!("put({key})"));
+            assert_config_error(&put, &format!("put({key})"));
 
             let Err(get) = store.get(key).await else {
                 panic!("traversal key must not be read: {key}");
             };
-            assert_config_error(get, &format!("get({key})"));
+            assert_config_error(&get, &format!("get({key})"));
         }
 
         assert!(

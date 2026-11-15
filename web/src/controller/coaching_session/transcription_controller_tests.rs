@@ -207,9 +207,9 @@ fn transcript(
     (vec![coach, coachee, guest], segments)
 }
 
-fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
+fn build_app(db: &Arc<sea_orm::DatabaseConnection>) -> Router {
     let app_state = AppState::new(
-        service::AppState::new(Config::default(), &db),
+        service::AppState::new(Config::default(), db),
         Arc::new(sse::Manager::default()),
         domain::events::EventPublisher::default(),
         None,
@@ -221,7 +221,7 @@ fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
         .with_secure(false)
         .with_expiry(Expiry::OnInactivity(Duration::days(1)))
         .with_always_save(true);
-    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(&db), session_layer).build();
+    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(db), session_layer).build();
 
     Router::new()
         .route(
@@ -374,7 +374,7 @@ async fn world_with_coachee(
         .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
         .into_connection();
 
-    let app = build_app(Arc::new(db));
+    let app = build_app(&Arc::new(db));
     let cookie = login_cookie(&app).await;
 
     (
@@ -513,7 +513,7 @@ async fn unsupported_accept_is_406() {
 
     // Only the auth and access rows: a handler that queried anything would 500.
     let db = authorized(&coach, &role, &session, &relationship).into_connection();
-    let app = build_app(Arc::new(db));
+    let app = build_app(&Arc::new(db));
     let cookie = login_cookie(&app).await;
 
     let response = get_transcript(
@@ -607,7 +607,7 @@ async fn a_zero_quality_on_every_supported_type_is_406() {
     let session = session(relationship.id);
 
     let db = authorized(&coach, &role, &session, &relationship).into_connection();
-    let app = build_app(Arc::new(db));
+    let app = build_app(&Arc::new(db));
     let cookie = login_cookie(&app).await;
 
     let response = get_transcript(
@@ -633,7 +633,7 @@ async fn unknown_speaker_is_400_for_json_too() {
     let session = session(relationship.id);
 
     let db = authorized(&coach, &role, &session, &relationship).into_connection();
-    let app = build_app(Arc::new(db));
+    let app = build_app(&Arc::new(db));
     let cookie = login_cookie(&app).await;
 
     let response = get_transcript(
@@ -663,7 +663,7 @@ async fn invalid_speaker_message_names_only_the_speaker_values() {
     let session = session(relationship.id);
 
     let db = authorized(&coach, &role, &session, &relationship).into_connection();
-    let app = build_app(Arc::new(db));
+    let app = build_app(&Arc::new(db));
     let cookie = login_cookie(&app).await;
 
     let response = get_transcript(
@@ -698,7 +698,7 @@ async fn incomplete_transcription_is_409_for_text_but_200_for_json() {
     let db = authorized(&coach, &role, &session, &relationship)
         .append_query_results([vec![queued.clone()]])
         .into_connection();
-    let app = build_app(Arc::new(db));
+    let app = build_app(&Arc::new(db));
     let cookie = login_cookie(&app).await;
 
     let response =
@@ -717,7 +717,7 @@ async fn incomplete_transcription_is_409_for_text_but_200_for_json() {
         .append_query_results([Vec::<transcript_participant::Model>::new()])
         .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
         .into_connection();
-    let app = build_app(Arc::new(db));
+    let app = build_app(&Arc::new(db));
     let cookie = login_cookie(&app).await;
 
     let response = get_transcript(&app, &cookie, session.id, queued.id, None, "").await;
@@ -770,7 +770,7 @@ async fn segments_carry_their_labels_and_attribution_without_raw_participants() 
         .append_query_results([participants])
         .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
         .into_connection();
-    let app = build_app(Arc::new(db));
+    let app = build_app(&Arc::new(db));
     let cookie = login_cookie(&app).await;
 
     let request = Request::builder()
@@ -832,7 +832,7 @@ async fn latest_transcription_carries_its_speakers() {
         .append_query_results([participants])
         .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
         .into_connection();
-    let app = build_app(Arc::new(db));
+    let app = build_app(&Arc::new(db));
     let cookie = login_cookie(&app).await;
 
     let response = get_latest(&app, &cookie, session.id).await;
@@ -863,7 +863,7 @@ async fn latest_transcription_is_null_when_the_session_has_none() {
     let db = authorized(&coach, &role, &session, &relationship)
         .append_query_results([Vec::<transcription::Model>::new()])
         .into_connection();
-    let app = build_app(Arc::new(db));
+    let app = build_app(&Arc::new(db));
     let cookie = login_cookie(&app).await;
 
     let response = get_latest(&app, &cookie, session.id).await;

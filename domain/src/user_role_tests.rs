@@ -183,7 +183,7 @@ fn audited_transition(statement: &sea_orm::Statement) -> (Option<String>, Option
             .position(|candidate| *candidate == column)
             .and_then(|index| values.get(index))
             .and_then(|value| match value {
-                sea_orm::Value::String(role) => role.as_ref().map(|role| role.to_string()),
+                sea_orm::Value::String(role) => role.clone(),
                 _ => None,
             })
     };
@@ -982,17 +982,13 @@ fn mock_update_role(
     admins: Vec<user_roles::Model>,
     returned_roles: Vec<user_roles::Model>,
 ) -> MockDatabase {
-    let mut updated = user_role_model(user_id, Some(organization_id), current.clone());
-    updated.role = requested.clone();
+    let mut updated = user_role_model(user_id, Some(organization_id), current);
+    updated.role = requested;
 
     let mut mock = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([[organization(organization_id, false)]])
         .append_query_results([[user(user_id, vec![])]])
-        .append_query_results([[user_role_model(
-            user_id,
-            Some(organization_id),
-            current.clone(),
-        )]]);
+        .append_query_results([[user_role_model(user_id, Some(organization_id), current)]]);
 
     if !admins.is_empty() {
         mock = mock.append_query_results([admins]);

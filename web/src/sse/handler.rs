@@ -22,7 +22,7 @@ pub(crate) async fn sse_handler(
         .sse_manager
         .register_connection(user.id.to_string(), tx);
 
-    let manager = app_state.sse_manager.clone();
+    let manager = app_state.sse_manager;
 
     // Create the stream - events arrive from the channel
     // The channel sends Result<Event, Infallible>, so we just pass them through

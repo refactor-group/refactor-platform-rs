@@ -25,3 +25,6 @@ log = "0.4.22"
 
 # UUID generation
 uuid = { version = "1.6", features = ["v4"] }
+
+[lints]
+workspace = true

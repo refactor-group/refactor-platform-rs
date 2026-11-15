@@ -252,12 +252,7 @@ fn scope_roles_to_organization_keeps_only_the_target_org_and_global_roles() {
     let other_a = role_model(user_id, Some(Id::new_v4()), Role::User);
     let other_b = role_model(user_id, Some(Id::new_v4()), Role::Admin);
 
-    let mut user = user_model(vec![
-        in_scope.clone(),
-        other_a.clone(),
-        global.clone(),
-        other_b.clone(),
-    ]);
+    let mut user = user_model(vec![in_scope.clone(), other_a, global.clone(), other_b]);
 
     scope_roles_to_organization(&mut user, target_organization_id);
 
@@ -479,7 +474,7 @@ async fn update_role_audits_the_previous_and_the_new_role() -> Result<(), Error>
             .position(|candidate| *candidate == column)
             .and_then(|index| values.get(index))
             .and_then(|value| match value {
-                Value::String(role) => role.as_ref().map(|role| role.to_string()),
+                Value::String(role) => role.clone(),
                 _ => None,
             })
     };

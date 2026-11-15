@@ -364,9 +364,9 @@ mod tests {
     use service::config::Config;
     use std::sync::Arc;
 
-    fn test_app_state(db: Arc<sea_orm::DatabaseConnection>) -> AppState {
+    fn test_app_state(db: &Arc<sea_orm::DatabaseConnection>) -> AppState {
         AppState::new(
-            service::AppState::new(Config::default(), &db),
+            service::AppState::new(Config::default(), db),
             Arc::new(sse::Manager::default()),
             domain::events::EventPublisher::default(),
             None,
@@ -429,7 +429,7 @@ mod tests {
         let result = update_title(
             CompareApiVersion(HeaderValue::from_static("1.0.0")),
             CoachingSessionAccess(session.clone()),
-            State(test_app_state(db)),
+            State(test_app_state(&db)),
             Json(TitleUpdateParams {
                 title: Some(Some("New title".to_string())),
             }),

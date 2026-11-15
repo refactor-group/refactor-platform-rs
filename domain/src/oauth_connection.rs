@@ -188,7 +188,7 @@ pub async fn get_valid_access_token(
     };
 
     match result {
-        Ok(token) => Ok(token.expose_secret().to_string()),
+        Ok(token) => Ok(token.expose_secret().clone()),
         Err(e)
             if matches!(
                 e.error_kind,

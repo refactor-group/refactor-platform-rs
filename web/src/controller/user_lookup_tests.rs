@@ -63,9 +63,9 @@ fn test_role(user_id: Id, organization_id: Option<Id>, role: users::Role) -> use
     }
 }
 
-fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
+fn build_app(db: &Arc<sea_orm::DatabaseConnection>) -> Router {
     let app_state = AppState::new(
-        service::AppState::new(Config::default(), &db),
+        service::AppState::new(Config::default(), db),
         Arc::new(sse::Manager::default()),
         domain::events::EventPublisher::default(),
         None,
@@ -77,7 +77,7 @@ fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
         .with_secure(false)
         .with_expiry(Expiry::OnInactivity(Duration::days(1)))
         .with_always_save(true);
-    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(&db), session_layer).build();
+    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(db), session_layer).build();
 
     Router::new()
         .route(
@@ -170,7 +170,7 @@ async fn lookup_returns_200_and_an_empty_array_when_nothing_matches() {
     )
     .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![]]);
 
-    let app = build_app(Arc::new(empty_scope_probe(mock).into_connection()));
+    let app = build_app(&Arc::new(empty_scope_probe(mock).into_connection()));
     let cookie = login_cookie(&app).await;
 
     let response = lookup(&app, &cookie, "nobody@example.com").await;
@@ -196,7 +196,7 @@ async fn lookup_result_carries_only_the_narrow_dto_fields() {
         None,
     )]]);
 
-    let app = build_app(Arc::new(empty_scope_probe(mock).into_connection()));
+    let app = build_app(&Arc::new(empty_scope_probe(mock).into_connection()));
     let cookie = login_cookie(&app).await;
 
     let response = lookup(&app, &cookie, "found@example.com").await;
@@ -246,7 +246,7 @@ async fn lookup_returns_429_over_the_rate_limit_without_looking_anything_up() {
             .into_connection(),
     );
 
-    let app = build_app(db);
+    let app = build_app(&db);
     let cookie = login_cookie(&app).await;
 
     let response = lookup(&app, &cookie, "found@example.com").await;
@@ -272,7 +272,7 @@ async fn lookup_proceeds_under_the_rate_limit() {
         None,
     )]]);
 
-    let app = build_app(Arc::new(empty_scope_probe(mock).into_connection()));
+    let app = build_app(&Arc::new(empty_scope_probe(mock).into_connection()));
     let cookie = login_cookie(&app).await;
 
     let response = lookup(&app, &cookie, "found@example.com").await;

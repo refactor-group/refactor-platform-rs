@@ -98,7 +98,7 @@ impl ConnectionRegistry {
     }
 
     /// Send message to specific user - O(1) lookup + O(k) send where k = user's connections
-    pub fn send_to_user(&self, user_id: &UserId, event: Event) {
+    pub fn send_to_user(&self, user_id: &UserId, event: &Event) {
         if let Some(connection_ids) = self.user_index.get(user_id) {
             for conn_id in connection_ids.iter() {
                 if let Some(info) = self.connections.get(conn_id) {
@@ -115,7 +115,7 @@ impl ConnectionRegistry {
     }
 
     /// Broadcast message to all connections - O(n) (unavoidable, but explicit)
-    pub fn broadcast(&self, event: Event) {
+    pub fn broadcast(&self, event: &Event) {
         for entry in self.connections.iter() {
             if let Err(e) = entry.value().sender.send(Ok(event.clone())) {
                 warn!(

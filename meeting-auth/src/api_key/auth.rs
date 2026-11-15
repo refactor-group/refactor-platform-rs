@@ -111,7 +111,7 @@ impl Authenticate for Auth {
         let auth_value = if let Some(prefix) = &self.prefix {
             format!("{} {}", prefix, self.api_key.expose_secret())
         } else {
-            self.api_key.expose_secret().to_string()
+            self.api_key.expose_secret().clone()
         };
 
         request.header(&self.header_name, auth_value)

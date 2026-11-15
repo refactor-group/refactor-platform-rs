@@ -214,11 +214,11 @@ fn image(session_id: Id, uploaded_by_id: Id, deleted: bool) -> coaching_session_
 }
 
 fn build_app(
-    db: Arc<sea_orm::DatabaseConnection>,
+    db: &Arc<sea_orm::DatabaseConnection>,
     object_store: Option<Arc<dyn ObjectStore>>,
 ) -> Router {
     let app_state = AppState::new(
-        service::AppState::new(Config::default(), &db),
+        service::AppState::new(Config::default(), db),
         Arc::new(sse::Manager::default()),
         domain::events::EventPublisher::default(),
         None,
@@ -230,7 +230,7 @@ fn build_app(
         .with_secure(false)
         .with_expiry(Expiry::OnInactivity(Duration::days(1)))
         .with_always_save(true);
-    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(&db), session_layer).build();
+    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(db), session_layer).build();
 
     let body_limit = usize::try_from(
         app_state
@@ -380,7 +380,7 @@ async fn fetch_world_for(object_store: Option<Arc<dyn ObjectStore>>, deleted: bo
         .append_query_results([vec![(session.clone(), relationship.clone())]])
         .into_connection();
 
-    let app = build_app(Arc::new(db), object_store);
+    let app = build_app(&Arc::new(db), object_store);
     let cookie = login_cookie(&app).await;
 
     World {
@@ -405,7 +405,7 @@ async fn upload_world(object_store: Option<Arc<dyn ObjectStore>>) -> World {
         .append_query_results([vec![image.clone()]])
         .into_connection();
 
-    let app = build_app(Arc::new(db), object_store);
+    let app = build_app(&Arc::new(db), object_store);
     let cookie = login_cookie(&app).await;
 
     World {
@@ -649,7 +649,7 @@ async fn signal_world(returns_deleted: bool) -> Signal {
         .append_query_results([vec![updated]])
         .into_connection();
 
-    let app = build_app(Arc::new(db), presigning_store());
+    let app = build_app(&Arc::new(db), presigning_store());
     let cookie = login_cookie(&app).await;
 
     Signal {

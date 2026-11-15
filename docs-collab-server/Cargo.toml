@@ -65,3 +65,6 @@ yrs = { version = "0.26", features = ["sync"] }
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[lints]
+workspace = true

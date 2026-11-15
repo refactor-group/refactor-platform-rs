@@ -22,3 +22,6 @@ features = ["with-uuid", "with-json", "with-rust_decimal"]
 
 [build-dependencies]
 utoipa-config = "0.1"
+
+[lints]
+workspace = true
