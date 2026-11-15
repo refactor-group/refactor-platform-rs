@@ -6,27 +6,15 @@ use std::iter;
 use chrono::NaiveDate;
 use entity::transcript_segment::Model as Segment;
 use sea_orm::prelude::DateTimeWithTimeZone;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use utoipa::ToSchema;
 
+use crate::coaching_relationship_kind;
+use crate::coaching_relationships;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::transcript_participant::Model as Participant;
 use crate::users;
 use crate::Id;
-
-/// Which participant of the coaching relationship a speaker is.
-///
-/// Comes from attribution stored when the transcript completed (the participant's own
-/// meeting account, or elimination), never from matching names.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "lowercase")]
-#[schema(example = "coach")]
-pub enum SpeakerRole {
-    /// The relationship's coach.
-    Coach,
-    /// The relationship's coachee.
-    Coachee,
-}
 
 /// A distinct transcript speaker and the relationship role attributed to them, if any.
 ///
@@ -36,10 +24,10 @@ pub struct Speaker {
     /// The speaker label exactly as it appears on transcript lines; unique per transcript.
     #[schema(example = "Jim Hodapp")]
     pub label: String,
-    /// Which participant the speaker is attributed to.
+    /// The attributed participant's role in the relationship.
     ///
-    /// `null` for anyone not attributed to the coach or coachee, such as a guest.
-    pub role: Option<SpeakerRole>,
+    /// `null` for anyone not attributed to a participant, such as a guest.
+    pub role: Option<coaching_relationship_kind::Role>,
 }
 
 /// A transcript segment as readers see it: the shown label and who spoke it.
@@ -56,8 +44,8 @@ pub struct LabeledSegment {
     pub speaker_label: String,
     /// The user who spoke, only ever the session's coach or coachee; `null` otherwise.
     pub speaker_user_id: Option<Id>,
-    /// The speaker's role in the relationship; `null` when not the coach or coachee.
-    pub speaker_role: Option<SpeakerRole>,
+    /// The speaker's role in the relationship; `null` when not attributed to a participant.
+    pub speaker_role: Option<coaching_relationship_kind::Role>,
     pub text: String,
     pub start_ms: i32,
     pub end_ms: i32,
@@ -103,6 +91,7 @@ enum GroupKey<'a> {
 pub fn label_transcript(
     participants: &[Participant],
     segments: &[Segment],
+    relationship: &coaching_relationships::Model,
     coach: &users::Model,
     coachee: &users::Model,
 ) -> Labeled {
@@ -156,7 +145,7 @@ pub fn label_transcript(
         .zip(&labels)
         .map(|(key, label)| Speaker {
             label: label.clone(),
-            role: attribution(key, coach).1,
+            role: attribution(key, relationship).1,
         })
         .collect();
 
@@ -164,7 +153,7 @@ pub fn label_transcript(
         .iter()
         .zip(group_of)
         .map(|((segment, _, _), index)| {
-            let (speaker_user_id, speaker_role) = attribution(keys[index], coach);
+            let (speaker_user_id, speaker_role) = attribution(keys[index], relationship);
             LabeledSegment {
                 id: segment.id,
                 transcription_id: segment.transcription_id,
@@ -235,11 +224,13 @@ fn typed_name(participant: &Participant) -> Option<&str> {
         .filter(|name| !name.trim().is_empty())
 }
 
-/// The user and role a group speaks for; only coach and coachee groups have them.
-fn attribution(key: &GroupKey, coach: &users::Model) -> (Option<Id>, Option<SpeakerRole>) {
+/// The user and role a group speaks for; only participant groups have them.
+fn attribution(
+    key: &GroupKey,
+    relationship: &coaching_relationships::Model,
+) -> (Option<Id>, Option<coaching_relationship_kind::Role>) {
     match key {
-        GroupKey::User(id) if *id == coach.id => (Some(*id), Some(SpeakerRole::Coach)),
-        GroupKey::User(id) => (Some(*id), Some(SpeakerRole::Coachee)),
+        GroupKey::User(id) => (Some(*id), relationship.role(*id)),
         _ => (None, None),
     }
 }
@@ -272,7 +263,7 @@ fn unique_labels(keys: &[&GroupKey], bases: &[String]) -> Vec<String> {
 pub fn render_plain_text(
     session_date: NaiveDate,
     labeled: &Labeled,
-    filter: &[SpeakerRole],
+    filter: &[coaching_relationship_kind::Role],
 ) -> Result<Rendered, Error> {
     let speakers = &labeled.speakers;
     if let Some(missing) = filter
@@ -319,13 +310,13 @@ pub fn render_plain_text(
     let suffix = if filter.is_empty() {
         String::new()
     } else {
-        let named: Vec<(SpeakerRole, String)> = speakers
+        let named: Vec<(coaching_relationship_kind::Role, String)> = speakers
             .iter()
             .filter_map(|speaker| {
                 let role = speaker.role?;
                 Some((
                     role,
-                    slug(&speaker.label).unwrap_or_else(|| role_slug(role).to_owned()),
+                    slug(&speaker.label).unwrap_or_else(|| role.as_str().to_owned()),
                 ))
             })
             .collect();
@@ -336,7 +327,7 @@ pub fn render_plain_text(
             .map(|(role, name)| {
                 let shared = named.iter().any(|(other, n)| other != role && n == name);
                 if shared {
-                    format!("{name}-{}", role_slug(*role))
+                    format!("{name}-{}", role.as_str())
                 } else {
                     name.clone()
                 }
@@ -352,13 +343,6 @@ pub fn render_plain_text(
     })
 }
 
-fn role_slug(role: SpeakerRole) -> &'static str {
-    match role {
-        SpeakerRole::Coach => "coach",
-        SpeakerRole::Coachee => "coachee",
-    }
-}
-
 /// Lowercases a label into filename-safe words joined by single dashes; `None` when nothing remains.
 fn slug(label: &str) -> Option<String> {
     let words = label
@@ -370,7 +354,7 @@ fn slug(label: &str) -> Option<String> {
     (!words.is_empty()).then(|| words.join("-"))
 }
 
-fn speaker_not_identified(role: SpeakerRole, speakers: &[Speaker]) -> Error {
+fn speaker_not_identified(role: coaching_relationship_kind::Role, speakers: &[Speaker]) -> Error {
     Error {
         source: None,
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(

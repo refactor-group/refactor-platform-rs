@@ -163,6 +163,7 @@ mod tests {
             organization_id: Id::new_v4(),
             coach_id: Id::new_v4(),
             coachee_id: Id::new_v4(),
+            kind: crate::coaching_relationship_kind::Kind::Coaching,
             slug: "test-slug".to_string(),
             created_at: now,
             updated_at: now,

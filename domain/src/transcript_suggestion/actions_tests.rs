@@ -4,7 +4,8 @@ use chrono::{NaiveDate, TimeZone, Utc, Weekday};
 use serde_json::{json, Value};
 
 use super::*;
-use crate::transcript_export::{LabeledSegment, SpeakerRole};
+use crate::coaching_relationship_kind;
+use crate::transcript_export::LabeledSegment;
 use crate::transcript_suggestion::{verify_output, Existing, NextSession};
 
 const S2_TEXT: &str = "Um, yeah, I'll schedule a one-on-one with my manager by Friday.";
@@ -13,7 +14,7 @@ fn day(y: i32, m: u32, d: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, d).expect("valid date")
 }
 
-fn segment(role: SpeakerRole, start_ms: i32, text: &str) -> LabeledSegment {
+fn segment(role: coaching_relationship_kind::Role, start_ms: i32, text: &str) -> LabeledSegment {
     LabeledSegment {
         id: Id::new_v4(),
         transcription_id: Id::nil(),
@@ -31,10 +32,14 @@ fn segment(role: SpeakerRole, start_ms: i32, text: &str) -> LabeledSegment {
 
 fn segments() -> Vec<LabeledSegment> {
     vec![
-        segment(SpeakerRole::Coach, 1_000, "What will you do this week?"),
-        segment(SpeakerRole::Coachee, 5_000, S2_TEXT),
         segment(
-            SpeakerRole::Coach,
+            coaching_relationship_kind::Role::Coach,
+            1_000,
+            "What will you do this week?",
+        ),
+        segment(coaching_relationship_kind::Role::Coachee, 5_000, S2_TEXT),
+        segment(
+            coaching_relationship_kind::Role::Coach,
             9_000,
             "Great, and I'll send you the article.",
         ),

@@ -351,6 +351,7 @@ async fn attach_to_organization_commits_the_role_and_the_coach_together() -> Res
             organization_id,
             coach_id,
             coachee_id: user_id,
+            kind: crate::coaching_relationship_kind::Kind::Coaching,
             slug: "member-member".to_owned(),
             created_at: now.into(),
             updated_at: now.into(),

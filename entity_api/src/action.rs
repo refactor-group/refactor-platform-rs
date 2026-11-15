@@ -1392,6 +1392,7 @@ mod tests {
             organization_id,
             coach_id,
             coachee_id,
+            kind: entity::coaching_relationship_kind::Kind::Coaching,
             slug: format!("test-slug-{}", relationship_id),
             created_at: now,
             updated_at: now,

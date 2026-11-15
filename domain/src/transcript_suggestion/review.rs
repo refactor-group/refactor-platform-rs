@@ -22,10 +22,10 @@ use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::events::EventPublisher;
 use crate::status::Status as ActionStatus;
 use crate::transcript_analysis::Status as AnalysisStatus;
-use crate::transcript_export::{LabeledSegment, SpeakerRole};
+use crate::transcript_export::LabeledSegment;
 use crate::{
-    actions, coaching_relationships, coaching_session, coaching_sessions, emails, goal,
-    transcript_analysis, transcription, users, Id,
+    actions, coaching_relationship_kind, coaching_relationships, coaching_session,
+    coaching_sessions, emails, goal, transcript_analysis, transcription, users, Id,
 };
 
 /// Most suggestions one list returns: a database bound well above what real sessions collect (at
@@ -136,7 +136,7 @@ pub struct ActionSuggestion {
 pub struct SourceSegment {
     pub id: Id,
     pub start_ms: i32,
-    pub speaker_role: Option<SpeakerRole>,
+    pub speaker_role: Option<coaching_relationship_kind::Role>,
     pub speaker_label: String,
 }
 

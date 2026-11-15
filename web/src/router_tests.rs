@@ -114,15 +114,19 @@ fn the_transcript_download_operation_is_served_with_its_schemas() {
 
     let mut speaker_refs = Vec::new();
     schema_refs(speaker, &mut speaker_refs);
-    assert_eq!(speaker_refs, ["SpeakerRole"]);
+    assert_eq!(speaker_refs, ["domain.coaching_relationship_kind.Role"]);
 
     let schemas = spec["components"]["schemas"]
         .as_object()
         .expect("the spec must define schemas");
 
     assert_eq!(
-        schemas["SpeakerRole"]["enum"],
-        serde_json::json!(["coach", "coachee"])
+        schemas["domain.coaching_relationship_kind.Role"]["enum"],
+        serde_json::json!(["coach", "coachee", "colleague"])
+    );
+    assert!(
+        !spec.to_string().contains("SpeakerRole"),
+        "the spec still names SpeakerRole"
     );
     ["Speaker", "domain.transcription.WithSpeakers"]
         .iter()
@@ -133,7 +137,7 @@ fn the_transcript_download_operation_is_served_with_its_schemas() {
     let mut referenced = Vec::new();
     schema_refs(operation, &mut referenced);
     [
-        "SpeakerRole",
+        "domain.coaching_relationship_kind.Role",
         "Speaker",
         "domain.transcription.WithSpeakers",
     ]

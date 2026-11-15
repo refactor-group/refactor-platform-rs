@@ -10,6 +10,7 @@ fn create_test_relationship(coach_id: Id, coachee_id: Id) -> Model {
         organization_id: Id::new_v4(),
         coach_id,
         coachee_id,
+        kind: Kind::Coaching,
         slug: "test-slug".to_string(),
         created_at: now,
         updated_at: now,

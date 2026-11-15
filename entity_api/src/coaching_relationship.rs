@@ -9,6 +9,7 @@ use crate::user_role::is_member;
 use chrono::Utc;
 use entity::{
     coachees, coaches,
+    coaching_relationship_kind::Kind,
     coaching_relationships::{self, ActiveModel, Entity, Model, Visibility},
     coaching_sessions, users, Id,
 };
@@ -21,21 +22,29 @@ use sea_orm::{
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
 use slugify::slugify;
-use utoipa::openapi::{ObjectBuilder, RefOr, Schema};
+use utoipa::openapi::{ObjectBuilder, Ref, RefOr, Schema};
 use utoipa::{PartialSchema, ToSchema};
 
-/// Creates a coaching relationship between a coach and a coachee in an organization.
+/// A relationship to create: who holds each seat and what kind it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Draft {
+    pub coach_id: Id,
+    pub coachee_id: Id,
+    pub kind: Kind,
+}
+
+/// Creates the drafted relationship in an organization.
 ///
-/// Returns the existing relationship when one already exists for that coach, coachee
-/// and organization.
+/// Returns the existing relationship when one of the same kind already exists for that
+/// coach, coachee and organization, and refuses one of another kind.
 pub async fn create(
     db: &impl ConnectionTrait,
     organization_id: Id,
-    coaching_relationship_model: Model,
+    draft: Draft,
 ) -> Result<CoachingRelationshipWithUserNames, Error> {
-    debug!("New Coaching Relationship Model to be inserted: {coaching_relationship_model:?}");
+    debug!("New Coaching Relationship to be inserted: {draft:?}");
 
-    if coaching_relationship_model.coach_id == coaching_relationship_model.coachee_id {
+    if draft.coach_id == draft.coachee_id {
         return Err(Error {
             source: None,
             error_kind: EntityApiErrorKind::ValidationError {
@@ -53,8 +62,8 @@ pub async fn create(
         });
     }
 
-    let coach = user::find_by_id(db, coaching_relationship_model.coach_id).await?;
-    let coachee = user::find_by_id(db, coaching_relationship_model.coachee_id).await?;
+    let coach = user::find_by_id(db, draft.coach_id).await?;
+    let coachee = user::find_by_id(db, draft.coachee_id).await?;
 
     let coach_organization_ids =
         // membership is independent of archive state
@@ -74,7 +83,7 @@ pub async fn create(
     if !coach_organization_ids.contains(&organization_id)
         || !coachee_organization_ids.contains(&organization_id)
     {
-        error!("Coach and coachee do not belong to the correct organization, not creating requested new coaching relationship between coach: {:?} and coachee: {:?} for organization: {:?}.", coaching_relationship_model.coach_id, coaching_relationship_model.coachee_id, organization_id);
+        error!("Coach and coachee do not belong to the correct organization, not creating requested new coaching relationship between coach: {:?} and coachee: {:?} for organization: {:?}.", draft.coach_id, draft.coachee_id, organization_id);
         return Err(Error {
             source: None,
             error_kind: EntityApiErrorKind::ValidationError {
@@ -86,20 +95,16 @@ pub async fn create(
 
     // Coaching Relationship must be unique within the context of an organization
     // Note: this is enforced at the database level as well
-    let existing_coaching_relationship = find_for_pair(
-        db,
-        organization_id,
-        coaching_relationship_model.coach_id,
-        coaching_relationship_model.coachee_id,
-    )
-    .await?;
+    let existing_coaching_relationship =
+        find_for_pair(db, organization_id, draft.coach_id, draft.coachee_id).await?;
 
     if let Some(existing) = existing_coaching_relationship {
         debug!(
             "Coaching relationship {} already exists for coach {}, coachee {} in organization {organization_id}; returning it",
             existing.id, existing.coach_id, existing.coachee_id
         );
-        return Ok(with_user_names(&existing, &coach, &coachee));
+        return of_kind(existing, draft.kind)
+            .map(|existing| with_user_names(&existing, &coach, &coachee));
     }
 
     let now = Utc::now();
@@ -107,8 +112,9 @@ pub async fn create(
 
     let coaching_relationship_active_model: ActiveModel = ActiveModel {
         organization_id: Set(organization_id),
-        coach_id: Set(coaching_relationship_model.coach_id),
-        coachee_id: Set(coaching_relationship_model.coachee_id),
+        coach_id: Set(draft.coach_id),
+        coachee_id: Set(draft.coachee_id),
+        kind: Set(draft.kind),
         slug: Set(slug),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
@@ -118,24 +124,32 @@ pub async fn create(
     match insert_unless_exists(db, coaching_relationship_active_model).await? {
         Some(inserted) => Ok(with_user_names(&inserted, &coach, &coachee)),
         None => {
-            let winner = find_for_pair(
-                db,
-                organization_id,
-                coaching_relationship_model.coach_id,
-                coaching_relationship_model.coachee_id,
-            )
-            .await?
-            .ok_or_else(|| Error {
-                source: None,
-                error_kind: EntityApiErrorKind::RecordNotFound,
-            })?;
+            let winner = find_for_pair(db, organization_id, draft.coach_id, draft.coachee_id)
+                .await?
+                .ok_or_else(|| Error {
+                    source: None,
+                    error_kind: EntityApiErrorKind::RecordNotFound,
+                })?;
             debug!(
                 "Coaching relationship for coach {}, coachee {} in organization {organization_id} was created by a concurrent request; returning that one ({})",
                 winner.coach_id, winner.coachee_id, winner.id
             );
-            Ok(with_user_names(&winner, &coach, &coachee))
+            of_kind(winner, draft.kind).map(|winner| with_user_names(&winner, &coach, &coachee))
         }
     }
+}
+
+/// `existing` when it is of `kind`; a conflict otherwise, since a pair holds one relationship.
+fn of_kind(existing: Model, kind: Kind) -> Result<Model, Error> {
+    Some(existing)
+        .filter(|existing| existing.kind == kind)
+        .ok_or_else(|| Error {
+            source: None,
+            error_kind: EntityApiErrorKind::ValidationError {
+                message: "This coach and coachee already have a relationship of another kind in the organization.".into(),
+                details: None,
+            },
+        })
 }
 
 /// Inserts `relationship`, returning `None` when its coach, coachee and organization already exist.
@@ -264,6 +278,7 @@ fn with_user_names(
         id: coaching_relationship.id,
         coach_id: coaching_relationship.coach_id,
         coachee_id: coaching_relationship.coachee_id,
+        kind: coaching_relationship.kind,
         coach_first_name: coach.first_name.clone(),
         coach_last_name: coach.last_name.clone(),
         coachee_first_name: coachee.first_name.clone(),
@@ -477,6 +492,7 @@ pub async fn find_by_organization_with_user_names(
         .column(coaching_relationships::Column::OrganizationId)
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
+        .column(coaching_relationships::Column::Kind)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -518,6 +534,7 @@ pub async fn find_by_user_and_organization_with_user_names(
         .column(coaching_relationships::Column::OrganizationId)
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
+        .column(coaching_relationships::Column::Kind)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -553,6 +570,7 @@ pub async fn get_relationship_with_user_names(
         .column(coaching_relationships::Column::OrganizationId)
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
+        .column(coaching_relationships::Column::Kind)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -682,6 +700,7 @@ pub async fn find_by_user_id_with_user_names(
         .column(coaching_relationships::Column::OrganizationId)
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
+        .column(coaching_relationships::Column::Kind)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -700,6 +719,7 @@ pub struct CoachingRelationshipWithUserNames {
     pub id: Id,
     pub coach_id: Id,
     pub coachee_id: Id,
+    pub kind: Kind,
     pub coach_first_name: String,
     pub coach_last_name: String,
     pub coachee_first_name: String,
@@ -713,10 +733,14 @@ pub struct CoachingRelationshipWithUserNames {
 /// By hand: the derive would nest `membership` under `allOf`, but the wire lists its fields.
 impl PartialSchema for CoachingRelationshipWithUserNames {
     fn schema() -> RefOr<Schema> {
-        let fields: [(&str, RefOr<Schema>); 9] = [
+        let fields: [(&str, RefOr<Schema>); 10] = [
             ("id", utoipa::schema!(Uuid).into()),
             ("coach_id", utoipa::schema!(Uuid).into()),
             ("coachee_id", utoipa::schema!(Uuid).into()),
+            (
+                "kind",
+                Ref::from_schema_name(<Kind as ToSchema>::name()).into(),
+            ),
             ("coach_first_name", utoipa::schema!(String).into()),
             ("coach_last_name", utoipa::schema!(String).into()),
             ("coachee_first_name", utoipa::schema!(String).into()),
@@ -748,6 +772,10 @@ impl ToSchema for CoachingRelationshipWithUserNames {
     fn name() -> Cow<'static, str> {
         Cow::Borrowed("domain.coaching_relationship.CoachingRelationshipWithUserNames")
     }
+
+    fn schemas(schemas: &mut Vec<(String, RefOr<Schema>)>) {
+        schemas.push((<Kind as ToSchema>::name().into_owned(), Kind::schema()));
+    }
 }
 
 // serialize the CoachingRelationshipUserWithNames struct so that it can be used in the API
@@ -757,10 +785,11 @@ impl Serialize for CoachingRelationshipWithUserNames {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("CoachingRelationship", 11)?;
+        let mut state = serializer.serialize_struct("CoachingRelationship", 12)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("coach_id", &self.coach_id)?;
         state.serialize_field("coachee_id", &self.coachee_id)?;
+        state.serialize_field("kind", &self.kind)?;
         state.serialize_field("coach_first_name", &self.coach_first_name)?;
         state.serialize_field("coach_last_name", &self.coach_last_name)?;
         state.serialize_field("coachee_first_name", &self.coachee_first_name)?;
@@ -785,6 +814,7 @@ mod wire_tests {
             id: Id::new_v4(),
             coach_id: Id::new_v4(),
             coachee_id: Id::new_v4(),
+            kind: Kind::Coaching,
             coach_first_name: String::new(),
             coach_last_name: String::new(),
             coachee_first_name: String::new(),
@@ -806,6 +836,8 @@ mod wire_tests {
         let required: BTreeSet<&str> = schema.required.iter().map(String::as_str).collect();
         assert_eq!(keys, properties);
         assert_eq!(keys, required);
+        assert_eq!(wire["kind"], "coaching");
+        assert!(required.contains("kind"));
     }
 }
 
@@ -826,7 +858,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."id" = $1 LIMIT $2"#,
+                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", CAST("coaching_relationships"."kind" AS "text"), "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."id" = $1 LIMIT $2"#,
                 [
                     coaching_relationship_id.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
@@ -864,7 +896,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
+                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", CAST("coaching_relationships"."kind" AS "text"), "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
                 [user_id.into(), user_id.into()]
             )]
         );
@@ -883,7 +915,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $1)"#,
+                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", CAST("coaching_relationships"."kind" AS "text"), "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $1)"#,
                 [organization_id.into()]
             )]
         );
@@ -903,7 +935,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."created_at", "coaching_relationships"."updated_at", coaches.first_name AS "coach_first_name", coaches.last_name AS "coach_last_name", coachees.first_name AS "coachee_first_name", coachees.last_name AS "coachee_last_name", EXISTS(SELECT 1 FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = "coaching_relationships"."coach_id" AND ("user_roles"."organization_id" = "coaching_relationships"."organization_id" OR ("user_roles"."role" = (CAST($1 AS "role")) AND "user_roles"."organization_id" IS NULL))) AS "coach_is_member", EXISTS(SELECT 1 FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = "coaching_relationships"."coachee_id" AND ("user_roles"."organization_id" = "coaching_relationships"."organization_id" OR ("user_roles"."role" = (CAST($2 AS "role")) AND "user_roles"."organization_id" IS NULL))) AS "coachee_is_member" FROM "refactor_platform"."coaching_relationships" JOIN "refactor_platform"."users" AS "coaches" ON "coaching_relationships"."coach_id" = "coaches"."id" JOIN "refactor_platform"."users" AS "coachees" ON "coaching_relationships"."coachee_id" = "coachees"."id" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $3)"#,
+                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", CAST("coaching_relationships"."kind" AS "text"), "coaching_relationships"."created_at", "coaching_relationships"."updated_at", coaches.first_name AS "coach_first_name", coaches.last_name AS "coach_last_name", coachees.first_name AS "coachee_first_name", coachees.last_name AS "coachee_last_name", EXISTS(SELECT 1 FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = "coaching_relationships"."coach_id" AND ("user_roles"."organization_id" = "coaching_relationships"."organization_id" OR ("user_roles"."role" = (CAST($1 AS "role")) AND "user_roles"."organization_id" IS NULL))) AS "coach_is_member", EXISTS(SELECT 1 FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = "coaching_relationships"."coachee_id" AND ("user_roles"."organization_id" = "coaching_relationships"."organization_id" OR ("user_roles"."role" = (CAST($2 AS "role")) AND "user_roles"."organization_id" IS NULL))) AS "coachee_is_member" FROM "refactor_platform"."coaching_relationships" JOIN "refactor_platform"."users" AS "coaches" ON "coaching_relationships"."coach_id" = "coaches"."id" JOIN "refactor_platform"."users" AS "coachees" ON "coaching_relationships"."coachee_id" = "coachees"."id" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $3)"#,
                 [
                     "super_admin".into(),
                     "super_admin".into(),
@@ -951,7 +983,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT COUNT(*) AS num_items FROM (SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND EXISTS(SELECT 1 FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id")) AS "sub_query""#,
+                r#"SELECT COUNT(*) AS num_items FROM (SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", CAST("coaching_relationships"."kind" AS "text"), "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND EXISTS(SELECT 1 FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id")) AS "sub_query""#,
                 [user_id.into(), user_id.into()]
             )]
         );
@@ -980,17 +1012,13 @@ mod tests {
             .append_query_results(vec![vec![archived_org]])
             .into_connection();
 
-        let model = Model {
-            id: Id::new_v4(),
-            organization_id,
+        let draft = Draft {
             coach_id: Id::new_v4(),
             coachee_id: Id::new_v4(),
-            slug: String::new(),
-            created_at: now.into(),
-            updated_at: now.into(),
+            kind: Kind::Coaching,
         };
 
-        let result = create(&db, organization_id, model).await;
+        let result = create(&db, organization_id, draft).await;
 
         let err = result.expect_err("expected archived-org rejection");
         assert!(matches!(
@@ -1001,23 +1029,18 @@ mod tests {
 
     #[tokio::test]
     async fn create_rejects_a_user_as_their_own_coach() {
-        let now = Utc::now();
         let organization_id = Id::new_v4();
         let user_id = Id::new_v4();
 
         let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
-        let model = Model {
-            id: Id::new_v4(),
-            organization_id,
+        let draft = Draft {
             coach_id: user_id,
             coachee_id: user_id,
-            slug: String::new(),
-            created_at: now.into(),
-            updated_at: now.into(),
+            kind: Kind::Coaching,
         };
 
-        let err = create(&db, organization_id, model)
+        let err = create(&db, organization_id, draft)
             .await
             .expect_err("expected self-coaching rejection");
 

@@ -173,6 +173,7 @@ async fn fixture_in(db: DatabaseConnection) -> Fixture {
         organization_id: Set(organization_id),
         coach_id: Set(coach.id),
         coachee_id: Set(coachee.id),
+        kind: Set(crate::coaching_relationship_kind::Kind::Coaching),
         slug: Set(format!("relationship-{relationship_id}")),
         created_at: Set(at.into()),
         updated_at: Set(at.into()),
@@ -890,7 +891,10 @@ async fn list_returns_the_sessions_pending_suggestions_with_their_segment_and_du
         assert_eq!(item.quote, "send you the org chart");
         assert_eq!(item.segment.id, f.segment_ids[1]);
         assert_eq!(item.segment.start_ms, 4000);
-        assert_eq!(item.segment.speaker_role, Some(SpeakerRole::Coachee));
+        assert_eq!(
+            item.segment.speaker_role,
+            Some(coaching_relationship_kind::Role::Coachee)
+        );
         assert_eq!(item.segment.speaker_label, COACHEE_NAME);
         assert_eq!(
             item.duplicate_of,

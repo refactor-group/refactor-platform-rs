@@ -1,7 +1,7 @@
 # Test Plan: Manually Testing Transcript Download
 
 Verify `GET /coaching_sessions/{session_id}/transcriptions/{transcription_id}`
-negotiates on `Accept`, filters by `speaker=coach|coachee`, and returns the
+negotiates on `Accept`, filters by `speaker=coach|coachee|colleague`, and returns the
 documented error slugs.
 
 > [!IMPORTANT]
@@ -123,8 +123,8 @@ filename is `transcript-<date>-jim-h-caleb-bourg.txt` (each filtered speaker's s
 dl coach text/plain "?speaker=bob"
 ```
 
-**Pass:** 400 JSON, `error: "invalid_speaker"`, message lists `coach` and
-`coachee`.
+**Pass:** 400 JSON, `error: "invalid_speaker"`, message lists `coach`,
+`coachee` and `colleague`.
 
 ### Case 5b: role whose user matches no label
 
@@ -149,6 +149,17 @@ UPDATE refactor_platform.users
 SET display_name = NULL, first_name = 'Caleb', last_name = 'Bourg'
 WHERE id = '<caleb's user id>';
 ```
+
+### Case 5c: `speaker=colleague` on a coaching relationship
+
+```sh
+dl coach text/plain "?speaker=colleague"
+```
+
+**Pass:** 422 JSON, `error: "speaker_not_identified"`, message names `colleague`
+and lists the transcript's labels. `colleague` is a valid role (phase 2 of
+rs#399), but no speaker in a coaching relationship holds it. Before phase 2
+this was case 5's 400.
 
 ### Case 6: unsupported `Accept`
 
@@ -210,11 +221,12 @@ means `CONTENT_DISPOSITION` is missing from `expose_headers` in `web/src/lib.rs`
 
 Open the RapiDoc page and `GET /api-docs/openapi2.json` (the spec is not served at `/openapi.json`).
 
-**Pass:** `components.schemas.SpeakerRole` is a named schema with
-`enum: ["coach","coachee"]` and a description (OpenAPI string enums carry one
+**Pass:** `components.schemas["domain.coaching_relationship_kind.Role"]` is a
+named schema with `enum: ["coach","coachee","colleague"]` and a description, and
+no `SpeakerRole` schema remains (OpenAPI string enums carry one
 description; the per-variant doc comments stay in code). `Speaker` and the
 transcription-with-speakers schema are named and referenced by `$ref`, not
-inlined. The `speaker` query param on the route references `SpeakerRole` and is
+inlined. The `speaker` query param on the route references that `Role` schema and is
 marked repeatable (`explode: true`, array type). The 200 response lists both
 `application/json` and `text/plain`.
 

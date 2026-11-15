@@ -19,11 +19,12 @@ use crate::router::ApiDoc;
 use crate::AppState;
 
 /// Every key the relationship object carried before the membership fields.
-const RELATIONSHIP_KEYS: [&str; 7] = [
+const RELATIONSHIP_KEYS: [&str; 8] = [
     "id",
     "organization_id",
     "coach_id",
     "coachee_id",
+    "kind",
     "slug",
     "created_at",
     "updated_at",
@@ -44,6 +45,7 @@ fn included_row(w: &Fixture, members: &[Id]) -> BTreeMap<String, Value> {
         ("organization_id".to_string(), r.organization_id.into()),
         ("coach_id".to_string(), r.coach_id.into()),
         ("coachee_id".to_string(), r.coachee_id.into()),
+        ("kind".to_string(), "coaching".into()),
         ("slug".to_string(), r.slug.clone().into()),
         ("created_at".to_string(), r.created_at.into()),
         ("updated_at".to_string(), r.updated_at.into()),
@@ -84,6 +86,7 @@ async fn m4_05_an_included_relationship_marks_a_removed_coachee() {
     let relationship = &body["data"][0]["relationship"];
     assert_eq!(relationship["coach_is_member"], json!(true), "{body}");
     assert_eq!(relationship["coachee_is_member"], json!(false), "{body}");
+    assert_eq!(relationship["kind"], json!("coaching"), "{body}");
     let old = serde_json::to_value(&w.relationship).expect("the model serializes");
     for key in RELATIONSHIP_KEYS {
         assert_eq!(relationship[key], old[key], "{key}: {body}");
@@ -122,5 +125,28 @@ fn both_schemas_document_the_membership_fields() {
             ["organization_id"]
             .is_null(),
         "organization_id stays off the wire"
+    );
+}
+
+#[test]
+fn the_listed_relationship_schema_requires_the_kind() {
+    let spec = serde_json::to_value(ApiDoc::openapi()).expect("the spec serializes");
+    let schemas = &spec["components"]["schemas"];
+    let schema = &schemas["domain.coaching_relationship.CoachingRelationshipWithUserNames"];
+
+    assert_eq!(
+        schema["properties"]["kind"],
+        json!({ "$ref": "#/components/schemas/domain.coaching_relationship_kind.Kind" }),
+        "{schema}"
+    );
+    assert!(
+        schema["required"]
+            .as_array()
+            .is_some_and(|required| required.contains(&json!("kind"))),
+        "{schema}"
+    );
+    assert_eq!(
+        schemas["domain.coaching_relationship_kind.Kind"]["enum"],
+        json!(["coaching", "colleague"])
     );
 }

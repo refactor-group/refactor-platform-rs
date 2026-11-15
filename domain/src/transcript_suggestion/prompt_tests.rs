@@ -3,14 +3,20 @@
 use chrono::{NaiveDate, Utc, Weekday};
 
 use super::*;
-use crate::transcript_export::{LabeledSegment, SpeakerRole};
+use crate::coaching_relationship_kind;
+use crate::transcript_export::LabeledSegment;
 use crate::transcript_suggestion::{Existing, NextSession, People, Session};
 
 fn day(y: i32, m: u32, d: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, d).expect("valid date")
 }
 
-fn segment(label: &str, role: Option<SpeakerRole>, start_ms: i32, text: &str) -> LabeledSegment {
+fn segment(
+    label: &str,
+    role: Option<coaching_relationship_kind::Role>,
+    start_ms: i32,
+    text: &str,
+) -> LabeledSegment {
     LabeledSegment {
         id: Id::new_v4(),
         transcription_id: Id::nil(),
@@ -30,14 +36,14 @@ fn segments() -> Vec<LabeledSegment> {
     vec![
         segment(
             "Jim Hodapp",
-            Some(SpeakerRole::Coach),
+            Some(coaching_relationship_kind::Role::Coach),
             5_000,
             "Good to see you.",
         ),
         segment("Priya Shah", None, 65_000, "I'll send the org chart."),
         segment(
             "Alex Rivera",
-            Some(SpeakerRole::Coachee),
+            Some(coaching_relationship_kind::Role::Coachee),
             4_515_000,
             "I'll send it\nby Friday.",
         ),
@@ -153,5 +159,25 @@ fn refs_map_short_refs_to_ids() {
     assert_eq!(
         refs.segment_text(&session, segments[1].id),
         Some("I'll send the org chart.")
+    );
+}
+
+#[test]
+fn a_colleague_line_is_named_by_its_label_like_an_unattributed_line() {
+    let colleague = segment(
+        "Sam Lee",
+        Some(coaching_relationship_kind::Role::Colleague),
+        5_000,
+        "Let's pair on it.",
+    );
+    let unattributed = segment("Sam Lee", None, 5_000, "Let's pair on it.");
+
+    assert_eq!(
+        transcript_line(1, &colleague),
+        "[s1 00:05] Sam Lee: Let's pair on it."
+    );
+    assert_eq!(
+        transcript_line(1, &colleague),
+        transcript_line(1, &unattributed)
     );
 }

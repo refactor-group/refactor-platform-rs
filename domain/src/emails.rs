@@ -8,8 +8,8 @@ use sea_orm::DatabaseConnection;
 use service::config::Config;
 
 use crate::{
-    actions, coaching_relationship, coaching_relationships, coaching_session,
-    coaching_session_series,
+    actions, coaching_relationship, coaching_relationship_kind, coaching_relationships,
+    coaching_session, coaching_session_series,
     coaching_session_series::SeriesRule,
     coaching_sessions,
     error::Error,
@@ -551,6 +551,8 @@ pub fn affects_schedule(old: &coaching_sessions::Model, new: &coaching_sessions:
 pub(crate) struct Participants<'a> {
     pub(crate) coach: &'a users::Model,
     pub(crate) coachee: &'a users::Model,
+    /// The relationship's kind, which names each participant's role.
+    pub(crate) kind: coaching_relationship_kind::Kind,
 }
 
 /// The participants of a send and which of them it may reach: those still in the
@@ -566,8 +568,8 @@ pub(crate) struct Audience<'a> {
 struct Recipient<'a> {
     user: &'a users::Model,
     other_user: &'a users::Model,
-    /// How the copy refers to the other party: "coach" or "coachee".
-    other_user_role: &'a str,
+    /// How the copy refers to the other party.
+    other_user_role: coaching_relationship_kind::Role,
 }
 
 /// Template variables carried only by the reschedule sends: the discriminant the
@@ -759,7 +761,7 @@ async fn send_session_email_to_recipient(
         .add_variable("first_name", recipient.first_name.as_str())
         .add_variable("other_user_first_name", to.other_user.first_name.as_str())
         .add_variable("other_user_last_name", to.other_user.last_name.as_str())
-        .add_variable("other_user_role", to.other_user_role)
+        .add_variable("other_user_role", to.other_user_role.as_str())
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_date", session_date.as_str())
         .add_variable("session_time", session_time.as_str())
@@ -906,22 +908,25 @@ impl<'a> Participants<'a> {
     }
 
     /// Each participant's copy, coachee first, labelled with their role.
-    fn copies(&self) -> [(&'static str, Recipient<'a>); 2] {
+    fn copies(&self) -> [(coaching_relationship_kind::Role, Recipient<'a>); 2] {
+        let rules = self.kind.rules();
+        let coach_role = rules.role(coaching_relationship_kind::Seat::CoachId);
+        let coachee_role = rules.role(coaching_relationship_kind::Seat::CoacheeId);
         [
             (
-                "coachee",
+                coachee_role,
                 Recipient {
                     user: self.coachee,
                     other_user: self.coach,
-                    other_user_role: "coach",
+                    other_user_role: coach_role,
                 },
             ),
             (
-                "coach",
+                coach_role,
                 Recipient {
                     user: self.coach,
                     other_user: self.coachee,
-                    other_user_role: "coachee",
+                    other_user_role: coachee_role,
                 },
             ),
         ]
@@ -931,7 +936,7 @@ impl<'a> Participants<'a> {
 /// Sends each of `copies` (coachee, then coach), skipping anyone not in `member_ids`. A failed
 /// send is logged rather than returned, so it never costs the other participant their copy.
 async fn send_to_participants<'r, 'p, F, Fut>(
-    copies: &'r [(&'static str, Recipient<'p>); 2],
+    copies: &'r [(coaching_relationship_kind::Role, Recipient<'p>); 2],
     member_ids: &[Id],
     notification: &str,
     send: F,
@@ -951,7 +956,7 @@ where
 async fn deliver<'r, 'p, F, Fut>(
     member_ids: &[Id],
     notification: &str,
-    (role, to): &'r (&'static str, Recipient<'p>),
+    (role, to): &'r (coaching_relationship_kind::Role, Recipient<'p>),
     send: &F,
 ) -> Delivery
 where
@@ -960,7 +965,8 @@ where
 {
     if !member_ids.contains(&to.user.id) {
         debug!(
-            "Skipping {notification} email to {role} {}: not a member of the organization",
+            "Skipping {notification} email to {} {}: not a member of the organization",
+            role.as_str(),
             to.user.id
         );
         return Delivery::NoLongerAMember;
@@ -969,7 +975,8 @@ where
         Ok(()) => Delivery::Sent,
         Err(e) => {
             warn!(
-                "Failed to send {notification} email to {role} {}: {e:?}",
+                "Failed to send {notification} email to {} {}: {e:?}",
+                role.as_str(),
                 to.user.email
             );
             Delivery::Failed
@@ -994,7 +1001,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
         participants,
         member_ids,
     } = *audience;
-    let Participants { coach, coachee } = *participants;
+    let Participants { coach, coachee, .. } = *participants;
     info!(
         "Initiating {} emails for session: {} (coach: {}, coachee: {})",
         N::notification_name(),
@@ -1223,6 +1230,7 @@ pub async fn notify_session_scheduled(
                 participants: &Participants {
                     coach: &coach,
                     coachee: &coachee,
+                    kind: relationship.kind,
                 },
                 member_ids,
             },
@@ -1309,6 +1317,7 @@ pub async fn send_session_rescheduled(
             participants: &Participants {
                 coach: &coach,
                 coachee: &coachee,
+                kind: relationship.kind,
             },
             member_ids: &member_ids,
         },
@@ -1539,7 +1548,7 @@ async fn send_session_cancelled_email_to_recipient(
         .add_variable("first_name", recipient.first_name.as_str())
         .add_variable("other_user_first_name", to.other_user.first_name.as_str())
         .add_variable("other_user_last_name", to.other_user.last_name.as_str())
-        .add_variable("other_user_role", to.other_user_role)
+        .add_variable("other_user_role", to.other_user_role.as_str())
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_date", session_date.as_str())
         .add_variable("session_time", session_time.as_str())
@@ -1564,7 +1573,7 @@ async fn send_session_cancelled_email(
         participants,
         member_ids,
     } = *audience;
-    let Participants { coach, coachee } = *participants;
+    let Participants { coach, coachee, .. } = *participants;
     info!(
         "Initiating session cancelled emails for session: {} (coach: {}, coachee: {})",
         session.id, coach.email, coachee.email
@@ -1642,6 +1651,7 @@ pub async fn notify_session_cancelled(
         let participants = Participants {
             coach: &coach,
             coachee: &coachee,
+            kind: relationship.kind,
         };
 
         let series_zone = invite_zone(db, session, &coach).await?;
@@ -1702,7 +1712,7 @@ async fn send_recurring_series_email_to_recipient(
         .add_variable("first_name", recipient.first_name.as_str())
         .add_variable("other_user_first_name", to.other_user.first_name.as_str())
         .add_variable("other_user_last_name", to.other_user.last_name.as_str())
-        .add_variable("other_user_role", to.other_user_role)
+        .add_variable("other_user_role", to.other_user_role.as_str())
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_count", sessions.len() as u64)
         .add_variable("first_session_date", first_session_date.as_str())
@@ -1942,7 +1952,7 @@ async fn send_series_invite_email<N: EmailNotification>(
         participants,
         member_ids,
     } = *audience;
-    let Participants { coach, coachee } = *participants;
+    let Participants { coach, coachee, .. } = *participants;
     let SeriesInviteKind { reschedule, shape } = kind;
     let SeriesSessions {
         current: sessions,
@@ -2170,6 +2180,7 @@ pub(crate) async fn send_session_invite_resend(
 pub(crate) struct InviteParties {
     coach: users::Model,
     coachee: users::Model,
+    kind: coaching_relationship_kind::Kind,
     pub(crate) organization: organizations::Model,
 }
 
@@ -2181,6 +2192,7 @@ impl InviteParties {
         Ok(Self {
             coach: user::find_by_id_without_roles(db, relationship.coach_id).await?,
             coachee: user::find_by_id_without_roles(db, relationship.coachee_id).await?,
+            kind: relationship.kind,
             organization: organization::find_by_id(db, relationship.organization_id).await?,
         })
     }
@@ -2189,6 +2201,7 @@ impl InviteParties {
         Participants {
             coach: &self.coach,
             coachee: &self.coachee,
+            kind: self.kind,
         }
     }
 }
@@ -2262,6 +2275,7 @@ pub async fn notify_recurring_sessions_scheduled(
                 participants: &Participants {
                     coach: &coach,
                     coachee: &coachee,
+                    kind: relationship.kind,
                 },
                 member_ids,
             },
@@ -2325,6 +2339,7 @@ pub async fn notify_recurring_sessions_rescheduled(
                 participants: &Participants {
                     coach: &coach,
                     coachee: &coachee,
+                    kind: relationship.kind,
                 },
                 member_ids,
             },
@@ -2722,7 +2737,7 @@ async fn send_recurring_sessions_cancelled_email_to_recipient(
         .add_variable("first_name", recipient.first_name.as_str())
         .add_variable("other_user_first_name", to.other_user.first_name.as_str())
         .add_variable("other_user_last_name", to.other_user.last_name.as_str())
-        .add_variable("other_user_role", to.other_user_role)
+        .add_variable("other_user_role", to.other_user_role.as_str())
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_count", sessions.len() as u64)
         .add_variable("first_session_date", first_session_date.as_str())
@@ -2751,7 +2766,7 @@ async fn send_recurring_sessions_cancelled_email(
         participants,
         member_ids,
     } = *audience;
-    let Participants { coach, coachee } = *participants;
+    let Participants { coach, coachee, .. } = *participants;
     info!(
         "Initiating series cancelled emails for {} sessions (coach: {}, coachee: {})",
         sessions.len(),
@@ -2824,6 +2839,7 @@ pub async fn notify_recurring_sessions_cancelled(
         let participants = Participants {
             coach: &coach,
             coachee: &coachee,
+            kind: relationship.kind,
         };
 
         // Both, members or not: a removed member still holds the events.

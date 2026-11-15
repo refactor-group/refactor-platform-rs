@@ -296,6 +296,7 @@ async fn create_in_organization_commits_the_user_and_the_relationship_together()
         organization_id,
         coach_id: coach.id,
         coachee_id: new_user.id,
+        kind: crate::coaching_relationship_kind::Kind::Coaching,
         slug: "member-member".to_owned(),
         created_at: now.into(),
         updated_at: now.into(),

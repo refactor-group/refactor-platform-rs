@@ -48,6 +48,7 @@ fn relationship(organization_id: Id, coach_id: Id, coachee_id: Id) -> Model {
         organization_id,
         coach_id,
         coachee_id,
+        kind: Kind::Coaching,
         slug: "coach-coachee".to_owned(),
         created_at: now.into(),
         updated_at: now.into(),
@@ -108,7 +109,11 @@ async fn returns_the_winner_when_a_concurrent_insert_wins_the_race() -> Result<(
     let result = create(
         &db,
         organization_id,
-        relationship(organization_id, coach.id, coachee.id),
+        Draft {
+            coach_id: coach.id,
+            coachee_id: coachee.id,
+            kind: Kind::Coaching,
+        },
     )
     .await?;
 
@@ -129,4 +134,36 @@ async fn returns_the_winner_when_a_concurrent_insert_wins_the_race() -> Result<(
     );
 
     Ok(())
+}
+
+/// A concurrent winner of another kind is refused, not returned as the requested one.
+#[tokio::test]
+async fn refuses_a_concurrent_winner_of_another_kind() {
+    let organization_id = Id::new_v4();
+    let coach = user(Id::new_v4(), "Coach");
+    let coachee = user(Id::new_v4(), "Coachee");
+    let winner = relationship(organization_id, coach.id, coachee.id);
+
+    let db = mock_up_to_uniqueness_check(organization_id, &coach, &coachee)
+        .append_query_results([Vec::<Model>::new()])
+        .append_query_results([Vec::<Model>::new()])
+        .append_query_results([[winner]])
+        .into_connection();
+
+    let error = create(
+        &db,
+        organization_id,
+        Draft {
+            coach_id: coach.id,
+            coachee_id: coachee.id,
+            kind: Kind::Colleague,
+        },
+    )
+    .await
+    .expect_err("a coaching winner must not stand in for a colleague relationship");
+
+    assert!(
+        matches!(error.error_kind, EntityApiErrorKind::ValidationError { .. }),
+        "{error:?}"
+    );
 }

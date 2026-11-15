@@ -211,21 +211,18 @@ pub async fn session_viewers(db: &DatabaseConnection, session_id: Id) -> BTreeSe
         .collect()
 }
 
-/// Ids of every relationship from `coach_id` to `coachee_id`.
+/// Every relationship from `coach_id` to `coachee_id`.
 pub async fn relationships_between(
     db: &DatabaseConnection,
     coach_id: Id,
     coachee_id: Id,
-) -> BTreeSet<Id> {
+) -> Vec<coaching_relationships::Model> {
     coaching_relationships::Entity::find()
         .filter(coaching_relationships::Column::CoachId.eq(coach_id))
         .filter(coaching_relationships::Column::CoacheeId.eq(coachee_id))
         .all(db)
         .await
         .expect("the relationships read")
-        .into_iter()
-        .map(|relationship| relationship.id)
-        .collect()
 }
 
 /// The id of the user with `email`, if there is one.

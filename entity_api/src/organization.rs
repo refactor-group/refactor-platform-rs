@@ -516,6 +516,7 @@ mod tests {
             organization_id: org.id,
             coach_id: Id::new_v4(),
             coachee_id: Id::new_v4(),
+            kind: entity::coaching_relationship_kind::Kind::Coaching,
             slug: "rel".to_owned(),
             created_at: Utc::now().into(),
             updated_at: Utc::now().into(),

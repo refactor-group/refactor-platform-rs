@@ -60,6 +60,7 @@ async fn fixture() -> Fixture {
         organization_id: Set(seed_organization(&db).await),
         coach_id: Set(coach.id),
         coachee_id: Set(coachee.id),
+        kind: Set(crate::coaching_relationship_kind::Kind::Coaching),
         slug: Set(format!("relationship-{relationship_id}")),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
@@ -373,11 +374,15 @@ async fn persisted_attribution_reads_back_as_profile_names_and_roles() -> Result
         assert_eq!(
             labeled,
             vec![
-                ("Coach Profile", Some(f.coach.id), Some(SpeakerRole::Coach)),
+                (
+                    "Coach Profile",
+                    Some(f.coach.id),
+                    Some(coaching_relationship_kind::Role::Coach)
+                ),
                 (
                     "Coachee Profile",
                     Some(f.coachee.id),
-                    Some(SpeakerRole::Coachee)
+                    Some(coaching_relationship_kind::Role::Coachee)
                 ),
                 ("Guest 1", None, None),
                 ("Unknown", None, None),

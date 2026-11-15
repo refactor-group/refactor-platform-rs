@@ -79,6 +79,7 @@ pub(crate) fn fixture() -> Fixture {
         id: Id::new_v4(),
         coach_id: coach.id,
         coachee_id: coachee.id,
+        kind: domain::coaching_relationship_kind::Kind::Coaching,
         organization_id,
         slug: "test".to_string(),
         created_at: now.into(),

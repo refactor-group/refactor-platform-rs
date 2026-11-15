@@ -59,6 +59,7 @@ fn relationship(id: Id, coach_id: Id, coachee_id: Id) -> coaching_relationships:
         organization_id: Id::new_v4(),
         coach_id,
         coachee_id,
+        kind: crate::coaching_relationship_kind::Kind::Coaching,
         slug: "rel".to_string(),
         created_at: chrono::Utc::now().into(),
         updated_at: chrono::Utc::now().into(),

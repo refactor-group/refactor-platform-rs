@@ -3,7 +3,8 @@
 use chrono::{Datelike, NaiveDate, Weekday};
 
 use super::Session;
-use crate::transcript_export::{LabeledSegment, SpeakerRole};
+use crate::coaching_relationship_kind;
+use crate::transcript_export::LabeledSegment;
 use crate::Id;
 
 /// Days after the session the calendar covers.
@@ -134,9 +135,10 @@ fn existing_text(text: &str) -> String {
 
 fn transcript_line(index: usize, segment: &LabeledSegment) -> String {
     let speaker = match segment.speaker_role {
-        Some(SpeakerRole::Coach) => "Coach",
-        Some(SpeakerRole::Coachee) => "Coachee",
-        None => segment.speaker_label.as_str(),
+        Some(coaching_relationship_kind::Role::Coach) => "Coach",
+        Some(coaching_relationship_kind::Role::Coachee) => "Coachee",
+        // Colleagues are named by their label.
+        Some(coaching_relationship_kind::Role::Colleague) | None => segment.speaker_label.as_str(),
     };
     let seconds = segment.start_ms.max(0) / 1000;
     let text = segment.text.lines().collect::<Vec<_>>().join(" ");

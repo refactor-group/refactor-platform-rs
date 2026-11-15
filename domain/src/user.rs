@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use chrono::{Utc, Weekday};
+use chrono::Weekday;
 use entity_api::error::{EntityApiErrorKind, Error as EntityApiError};
 use entity_api::{
     coaching_relationship, coaching_session, mutate, query,
@@ -9,7 +9,7 @@ use entity_api::{
 };
 
 use crate::{
-    coaching_relationships,
+    coaching_relationship_kind::Kind,
     error::Error,
     error::{reason, DomainErrorKind, EntityErrorKind, InternalErrorKind},
     magic_link_token, magic_link_tokens, users, Actor, Id,
@@ -157,7 +157,12 @@ pub async fn create_in_organization(
         coaching_relationship::create(
             &txn,
             organization_id,
-            new_coaching_relationship(coach_id, new_user.id),
+            coaching_relationship::Draft {
+                coach_id,
+                coachee_id: new_user.id,
+                // No request chooses a kind yet.
+                kind: Kind::Coaching,
+            },
         )
         .await?;
     }
@@ -165,24 +170,6 @@ pub async fn create_in_organization(
     txn.commit().await.map_err(EntityApiError::from)?;
 
     Ok(new_user)
-}
-
-/// A relationship model for insertion. `id`, `slug` and `organization_id` are
-/// set by `coaching_relationship::create`.
-pub(crate) fn new_coaching_relationship(
-    coach_id: Id,
-    coachee_id: Id,
-) -> coaching_relationships::Model {
-    let now = Utc::now();
-    coaching_relationships::Model {
-        coach_id,
-        coachee_id,
-        organization_id: Default::default(),
-        id: Default::default(),
-        slug: String::new(),
-        created_at: now.into(),
-        updated_at: now.into(),
-    }
 }
 
 /// Deletes an account and every role it holds.

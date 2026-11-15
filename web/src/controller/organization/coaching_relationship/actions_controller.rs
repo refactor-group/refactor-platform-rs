@@ -205,6 +205,7 @@ mod tests {
             organization_id: Id::new_v4(),
             coach_id,
             coachee_id,
+            kind: domain::coaching_relationship_kind::Kind::Coaching,
             slug: "test".to_string(),
             created_at: now,
             updated_at: now,

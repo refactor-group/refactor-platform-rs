@@ -11,6 +11,7 @@ fn listed_row() -> BTreeMap<String, Value> {
         ("id".to_string(), Id::new_v4().into()),
         ("coach_id".to_string(), Id::new_v4().into()),
         ("coachee_id".to_string(), Id::new_v4().into()),
+        ("kind".to_string(), "coaching".into()),
         ("coach_first_name".to_string(), name("Coach")),
         ("coach_last_name".to_string(), name("One")),
         ("coachee_first_name".to_string(), name("Coachee")),

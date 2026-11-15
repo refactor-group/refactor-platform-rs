@@ -1,14 +1,14 @@
 # Colleague relationships (rs#399)
 
 Two people hold 1:1 sessions as equals, with identical privileges. Modeled as a `kind` on the
-existing coaching relationship, with a neutral `has_authority(user_id)` check, rather than a
+existing coaching relationship, with a neutral `can_manage_sessions(user_id)` check, rather than a
 new entity or two mirrored coaching rows.
 
 ## Today and target
 
 - **Today:** "coach" is whoever sits in `coach_id`. That person alone can reschedule, cancel,
   run series, set meeting links and delete any topic. Many checks compare `coach_id` by hand.
-- **Target:** `kind = coaching | colleague`. For coaching, `has_authority` is exactly "is the
+- **Target:** `kind = coaching | colleague`. For coaching, `can_manage_sessions` is exactly "is the
   coach", so nothing changes. For colleagues, it is true for both people.
 
 ## Hard requirement: no regressions for coaching
@@ -18,7 +18,7 @@ Every coach and coachee permission works exactly as it does today when this is d
 | Check | When |
 |---|---|
 | Baseline suite (phase 0b): today's coach/coachee access as automated tests, passing on `main` before any change | Every phase. Must stay green with zero edits; review confirms `git diff main` does not touch the tests named in section 6 of the access matrix. |
-| `kind` defaults to `coaching`; for coaching, `has_authority` equals "is the coach" | Phase 2, pinned by a unit test |
+| `kind` defaults to `coaching`; for coaching, `can_manage_sessions` equals "is the coach" | Phase 2, pinned by a unit test |
 | Phase 0c moves checks, never changes them; any diff that adds or removes a caller is sent back | Phase 0c, per handoff |
 | Phase 3 switches each check to a Model method that, for coaching, admits exactly the same callers | Phase 3, per handoff |
 | Manual access matrix run against the local API, all coach/coachee rows | After phase 3, and before phase 5 ships |
@@ -40,7 +40,7 @@ the phase 0b baseline records the corrected behavior. Notes, agreements, actions
 goal links require a participant of the relationship who is still an org member; action
 assignees must be the relationship's coach or coachee; the batch session-goals read
 authorizes every id; `POST /coaching_sessions` is coach only (colleagues later get session and
-series creation through `has_authority`); series creation also requires org membership; a
+series creation through `can_manage_sessions`); series creation also requires org membership; a
 coach reading a user's actions sees only their own relationship with that user. One commit per
 area, each test first. The access matrix marks every changed row `[tightened]`.
 
@@ -146,17 +146,47 @@ onto extractors: "is this my own user" on the `/users/{user_id}` routes becomes
   frontend never read it. Down re-adds the column, refills it from each session's coachee
   row, and drops NOT NULL; an image rollback runs the down migration first.
 
-**2. Add `kind`** (no visible change). Postgres enum, default `coaching`, owned by `refactor`.
-`has_authority(user_id)` on the Model. `kind` in the OpenAPI schema. Down migration.
+**2. Add `kind`** (no change in who may do what; an additive API change). Postgres enum
+`coaching_relationship_kind` (`coaching`, `colleague`), default `coaching`, owned by
+`refactor`; read-only on the Model so no request can set it before phase 4's gate.
+`entity_api::coaching_relationship::create` takes the kind once, in its input, and every caller
+(the relationship POST and both invite paths) passes `coaching` for now: no layer assumes a new
+relationship is coaching. It refuses (409) to reuse a pair's existing relationship of another
+kind. Down migration. `kind` in relationship responses and the OpenAPI schema. Emails and
+transcripts take each participant's role from the kind and their seat. The types live in
+`entity/src/coaching_relationship_kind.rs`:
+
+- `Kind`: what is stored.
+- `Seat` (`CoachId`, `CoacheeId`): which column a participant occupies.
+- `Role` (`Coach`, `Coachee`, `Colleague`): what a participant is, derived from kind and seat,
+  never stored; lowercase on the wire.
+- A `Rules` trait, one impl per kind (`Coaching`, `Colleague`), with `role(seat)` and
+  `can_manage_sessions(seat)`. No default methods, so a new capability can't ship until every kind
+  decides it; `Kind::rules()` is the one exhaustive match from a stored kind to its rules.
+- On the Model, `seat(user_id)`, `role(user_id)` and `can_manage_sessions(user_id)` look up the seat
+  and ask the rules. A non-participant has no seat, so no role and no authority.
+
+`Role` replaces the transcript export's `SpeakerRole` and the email copy's role strings, so a
+participant's role is one type with one spelling. The `assignee` and `role` query filters stay
+apart: they select a column, not a person's role, and phases 4 and 6 change them.
 
 **3. One source of truth for relationship permissions** (no visible change). Every check that
 decides view/edit/delete through a relationship asks the Model:
 
-- `grants_access_to(user)`: may see and work in the relationship
-- `has_authority(user)`: may schedule, reschedule, cancel, run series, set meeting links,
-  delete any topic
+- `is_participant_and_member(user)` (today's `grants_access_to`, renamed here): a participant who
+  is still in the relationship's organization, so may see and work in it. Distinct from
+  `includes_user(user_id)`, which says only that their id is on the relationship.
+- `can_manage_sessions(user_id)`: may schedule, reschedule, cancel, run series, set meeting links
+  and delete any topic. A role check alone, saying nothing about membership.
 - `sees_all_actions(user)`: action visibility (replaces `CallerVisibility::for_relationship`'s
-  hand comparison)
+  hand comparison), a new required `Rules` method.
+
+Session-managing checks take a proof, not a bool: a `SessionManager` value that only the access
+extractors can make, and only after both `is_participant_and_member` and `can_manage_sessions`
+pass. Domain functions that schedule, reschedule, cancel or run series require it as an
+argument, so calling one without the full check does not compile, and `can_manage_sessions` is
+never used alone. The coach-named extractors (`CoachingSessionCoachAccess`,
+`CoachingSessionSeriesCoachAccess`) become manager-named ones that produce it.
 
 One handoff per check site: the extractors from phase 0c; the existing
 `coaching_session_access`, `coaching_session_series_access` and `coaching_session_topic_access`
@@ -169,10 +199,17 @@ switch to the Model method.
 
 - Create: the existing `POST /organizations/{id}/coaching_relationships` takes an optional
   `kind` (default `coaching`). For colleagues, `coach_id`/`coachee_id` just name the two people.
+- Invites: adding a person to an organization with a relationship (`POST /organizations/{id}/users`
+  and `POST .../users/{user_id}/role`, today's `coach_id` field) can make that relationship a
+  colleague one, e.g. an admin inviting a colleague of their own. The request shape (a `kind`
+  beside a neutral "with this person" field rather than `coach_id`) is settled in this phase's
+  frontend contract. The welcome email's `coach_first_name` already holds the inviter, not a
+  coach; a colleague invite's welcome must not call the inviter a coach.
 - Same pair: a colleague relationship is refused if the pair has any relationship in the org,
   either direction. A coaching create runs the same check under the same lock and refuses only
   when the pair already holds a colleague relationship; otherwise coaching's rule is unchanged
-  (A coaching B and B coaching A stays allowed).
+  (A coaching B and B coaching A stays allowed). Phase 2 already makes `create` refuse to reuse
+  a pair's relationship of another kind; this phase adds the either-direction check.
   The rule lives in `entity_api::coaching_relationship::create`, so the invite path
   (`domain/src/user.rs`, `user_role.rs`) hits it too, and runs under
   `pg_advisory_xact_lock` on org plus the sorted pair.
@@ -180,7 +217,8 @@ switch to the Model method.
   path that would produce a colleague relationship (POST, the phase 5 switch, the invite path)
   returns 422. New env var, wired through every passthrough layer. Production turns it on in
   the phase 6 deploy. The FE admin-screen contract
-  (choose kind, flip with "who becomes coach") is posted at the start of this phase.
+  (choose kind, flip with "who becomes coach", and the phase 5 confirmation dialog that shows
+the 409's consequences before re-sending with `confirmed: true`) is posted at the start of this phase.
 - Both colleagues see every action; both get reminders, each by their own notice stamp.
 - Colleagues only (coaching keeps using the coach): the .ics timezone comes from whoever
   scheduled. Meeting link: reuse the relationship's existing persistent link first, as today;
@@ -188,11 +226,34 @@ switch to the Model method.
   no link. The recorded link creator is whoever's account made it.
 - `assignee=coach|coachee` against a colleague relationship is an error.
 - Emails say "colleague" through a role-word variable in the existing Resend templates.
+- **Wording, required before phase 6 lifts the gate.** Every email and calendar text a colleague
+  can receive stops assuming coaching:
+  - Welcome (invite): `coach_first_name` / `coach_full_name` hold the inviter; rename to
+    `inviter_*` (as the added-to-organization email already does) and make the copy neutral.
+  - Session reminder: `coach_first_name` / `coach_full_name` become the other participant
+    (`other_user_*` plus `other_user_role`), since both colleagues are reminded.
+  - Session scheduled, rescheduled, cancelled and their three series versions: `other_user_role`
+    comes from the relationship's kind and the person's seat (phase 2), so it is `colleague` for
+    colleagues with no code change; check each template's copy reads naturally with it.
+  - `.ics` DESCRIPTION's `Coach: {name}` line (`domain/src/gateway/ical.rs`) names the other
+    participant by role.
+  - Already neutral: added to organization (`inviter_*`), action assigned (`assigner_*`),
+    password reset.
+  - Frontend copy, in the phase 4 frontend PRs: every label picked for a coaching relationship
+    (the member card's "Assign Coach" / "Assign Coachee" menu and dialog, the "Coachee Actions"
+    header, "Coach (optional)" when adding a member, the coachee-oriented dashboard empty state)
+    is chosen from the participant's role (`coach`, `coachee`, `colleague`), and from `kind` only
+    where the copy is about the relationship itself.
+
+  The copy lives in the Resend dashboard, not this repository, so a renamed variable ships in
+  three steps: the backend sends the old and new names for one release, each template switches
+  to the new names and neutral copy, then a later release drops the old names. Verify every
+  template against a mock Resend payload with a colleague relationship before the gate lifts.
 
 **4b. Transcripts and suggested actions.** Speaker attribution
 (`domain/src/transcript_attribution.rs`) uses the recorded meeting-link creator and attributes
-colleague speakers to people, not roles. In the transcript download, colleague speakers get a
-`colleague` role; each line's `speaker_user_id` tells the two apart. Colleague sessions get suggested actions: a colleague-aware
+colleague speakers to people, not roles. Their `colleague` role already comes from the
+relationship's kind (phase 2); each line's `speaker_user_id` tells the two apart. Colleague sessions get suggested actions: a colleague-aware
 prompt (assignees and due-date timezone no longer assume a coach), the paid eval run, and a
 new `baseline.json` in which coaching results do not regress. Colleague suggestion due dates use
 each assignee's own timezone; unassigned ones use the scheduler's.
@@ -218,9 +279,30 @@ reminder recipient, so the switch writes suppression rows in `coaching_session_r
 sessions already inside the reminder window, in the same transaction. SSE event to both people. The switch is recorded
 through the phase E event log (who, when, from and to kind, new coach).
 
-**6. Frontend contract and coordinated deploy.** Built from the phase 0 wire inventory: session
-lists replace `coach` with `participants`; relationship `role` filter and
-`coach_first_name`/`coachee_first_name`; `coachee_actions`; transcript `speaker`. One
+- **Confirmation, enforced by the backend.** A switch changes what people can see and do, so the
+  admin confirms its consequences first. A request without `confirmed: true` changes nothing and
+  returns 409 with `details` listing them; the frontend shows that as a warning and re-sends with
+  the confirmation. A client that skips the dialog cannot switch by accident. The consequences:
+  - Actions that become visible: coaching to colleague shows the former coachee every action,
+    including those assigned to the coach that they could not see before (count, and to whom).
+  - Authority that moves: who gains the right to schedule, reschedule, cancel and run series,
+    and who loses it (a former colleague who becomes the coachee keeps what they already
+    created).
+- **Calendars update.** After the switch commits, every future session and series in the
+  relationship gets its invite re-sent to both people (the existing resend: same `UID`, higher
+  `SEQUENCE`), so calendar text such as the `.ics` participant label follows the new kind. Sent
+  only to participants still in the organization, never twice for one switch.
+- **History is relabeled, by design.** Roles are derived from the kind, never stored, so past
+  sessions and transcripts show the participants under the new kind's roles. The data is
+  unchanged; only its labels follow the switch.
+
+**6. Frontend contract and coordinated deploy.** Blocked on phase 4's wording step: every Resend
+template and the `.ics` text is verified with a colleague relationship before the gate lifts.
+Built from the phase 0 wire inventory: session lists replace `coach` with `participants`;
+relationship `role` filter and `coach_first_name`/`coachee_first_name`; `coachee_actions`;
+transcript `speaker`. The frontend
+also stops deriving a participant's role from `coach_id === userId` and reads the role the
+backend computes (agreed in phase 2, when both sides unified their role types). One
 coordinated FE+BE deploy, which also lifts the phase 4 gate.
 
 Deferred to its own issue after phase 5: renaming `coach_id`/`coachee_id` (about 960
@@ -232,11 +314,16 @@ One end-to-end scenario, through the API and in the browser, passes in a preview
 on, before the phase 6 production deploy: an
 admin creates a colleague relationship; each person schedules a session; both are reminded;
 both see every action; search shows both the same actions; the admin flips it to coaching;
-history is intact and the new coach has authority.
+history is intact and the new coach has authority. Every email each colleague received in the
+scenario (invite, scheduled, rescheduled, reminder, cancelled) and the `.ics` invites name the
+other person as a colleague, never a coach.
 
 ## Decisions
 
 - Name: "colleague" everywhere.
+- Relationship permission names: `includes_user` (on the relationship),
+  `is_participant_and_member` (may work in it now), `can_manage_sessions` (may run its sessions),
+  and the `SessionManager` proof that the last two passed.
 - Reminder notice: tracked per person.
 - Colleague cancels: calendar update and cancel email, same as coaching; no who-cancelled record.
 - #419: record who created each meeting link (phase 1).
@@ -248,7 +335,9 @@ history is intact and the new coach has authority.
 - Same pair: no coaching plus colleague for one pair in one org.
 - Columns keep `coach_id`/`coachee_id` until the separate rename.
 
-- Kind switch: no email; open pages refresh.
+- Kind switch: the admin confirms its consequences (actions that become visible, authority that
+  moves), enforced by a 409 until confirmed; invites for future sessions and series are re-sent
+  so calendars relabel; open pages refresh; past sessions are relabeled, not preserved.
 - A removed member is inactive in that org; their data is kept and returns when they are
   re-added. Read-only access (#482) is a separate state: it needs its own write check beside
   `is_member`, never a reuse of it, or a read-only user would pass write checks.
