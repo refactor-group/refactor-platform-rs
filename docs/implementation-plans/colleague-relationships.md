@@ -148,7 +148,9 @@ onto extractors: "is this my own user" on the `/users/{user_id}` routes becomes
 
 **2. Add `kind`** (no visible change). Postgres enum `coaching_relationship_kind`
 (`coaching`, `colleague`), default `coaching`, owned by `refactor`; read-only on the Model so
-no request can set it before phase 4's gate. Down migration. `kind` in relationship responses
+no request can set it before phase 4's gate. `entity_api::coaching_relationship::create` takes
+the kind as an argument and every caller (the relationship POST and both invite paths) passes
+`coaching` for now: no layer assumes a new relationship is coaching. Down migration. `kind` in relationship responses
 and the OpenAPI schema. The types live in `entity/src/coaching_relationship_kind.rs`:
 
 - `Kind`: what is stored.
@@ -185,6 +187,12 @@ switch to the Model method.
 
 - Create: the existing `POST /organizations/{id}/coaching_relationships` takes an optional
   `kind` (default `coaching`). For colleagues, `coach_id`/`coachee_id` just name the two people.
+- Invites: adding a person to an organization with a relationship (`POST /organizations/{id}/users`
+  and `POST .../users/{user_id}/role`, today's `coach_id` field) can make that relationship a
+  colleague one, e.g. an admin inviting a colleague of their own. The request shape (a `kind`
+  beside a neutral "with this person" field rather than `coach_id`) is settled in this phase's
+  frontend contract. The welcome email's `coach_first_name` already holds the inviter, not a
+  coach; a colleague invite's welcome must not call the inviter a coach.
 - Same pair: a colleague relationship is refused if the pair has any relationship in the org,
   either direction. A coaching create runs the same check under the same lock and refuses only
   when the pair already holds a colleague relationship; otherwise coaching's rule is unchanged
@@ -204,6 +212,24 @@ switch to the Model method.
   no link. The recorded link creator is whoever's account made it.
 - `assignee=coach|coachee` against a colleague relationship is an error.
 - Emails say "colleague" through a role-word variable in the existing Resend templates.
+- **Wording, required before phase 6 lifts the gate.** Every email and calendar text a colleague
+  can receive stops assuming coaching:
+  - Welcome (invite): `coach_first_name` / `coach_full_name` hold the inviter; rename to
+    `inviter_*` (as the added-to-organization email already does) and make the copy neutral.
+  - Session reminder: `coach_first_name` / `coach_full_name` become the other participant
+    (`other_user_*` plus `other_user_role`), since both colleagues are reminded.
+  - Session scheduled, rescheduled, cancelled and their three series versions: `other_user_role`
+    already comes from `Role` (phase 2) and will be `colleague`; check each template's copy reads
+    naturally with it.
+  - `.ics` DESCRIPTION's `Coach: {name}` line (`domain/src/gateway/ical.rs`) names the other
+    participant by role.
+  - Already neutral: added to organization (`inviter_*`), action assigned (`assigner_*`),
+    password reset.
+
+  The copy lives in the Resend dashboard, not this repository, so a renamed variable ships in
+  three steps: the backend sends the old and new names for one release, each template switches
+  to the new names and neutral copy, then a later release drops the old names. Verify every
+  template against a mock Resend payload with a colleague relationship before the gate lifts.
 
 **4b. Transcripts and suggested actions.** Speaker attribution
 (`domain/src/transcript_attribution.rs`) uses the recorded meeting-link creator and attributes
@@ -234,9 +260,13 @@ reminder recipient, so the switch writes suppression rows in `coaching_session_r
 sessions already inside the reminder window, in the same transaction. SSE event to both people. The switch is recorded
 through the phase E event log (who, when, from and to kind, new coach).
 
-**6. Frontend contract and coordinated deploy.** Built from the phase 0 wire inventory: session
-lists replace `coach` with `participants`; relationship `role` filter and
-`coach_first_name`/`coachee_first_name`; `coachee_actions`; transcript `speaker`. One
+**6. Frontend contract and coordinated deploy.** Blocked on phase 4's wording step: every Resend
+template and the `.ics` text is verified with a colleague relationship before the gate lifts.
+Built from the phase 0 wire inventory: session lists replace `coach` with `participants`;
+relationship `role` filter and `coach_first_name`/`coachee_first_name`; `coachee_actions`;
+transcript `speaker`. The frontend
+also stops deriving a participant's role from `coach_id === userId` and reads the role the
+backend computes (agreed in phase 2, when both sides unified their role types). One
 coordinated FE+BE deploy, which also lifts the phase 4 gate.
 
 Deferred to its own issue after phase 5: renaming `coach_id`/`coachee_id` (about 960
@@ -248,7 +278,9 @@ One end-to-end scenario, through the API and in the browser, passes in a preview
 on, before the phase 6 production deploy: an
 admin creates a colleague relationship; each person schedules a session; both are reminded;
 both see every action; search shows both the same actions; the admin flips it to coaching;
-history is intact and the new coach has authority.
+history is intact and the new coach has authority. Every email each colleague received in the
+scenario (invite, scheduled, rescheduled, reminder, cancelled) and the `.ics` invites name the
+other person as a colleague, never a coach.
 
 ## Decisions
 
