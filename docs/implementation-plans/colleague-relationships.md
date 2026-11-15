@@ -206,8 +206,10 @@ The phase 0c extractors left these hand checks, the whole phase 3 inventory:
 | Session create/update/delete/resend and series reschedule/reschedule-following/delete/resend | acting user id, no check | 3-3 |
 
 Checked and left alone: search visibility and `visible_to` are participant-either-side, already
-kind-neutral; the transcription, recording and suggestion controllers take
-`CoachingSessionAccess`; the jobs make no access decision. Phase 4 changes, not switches: the
+kind-neutral; the transcription and recording controllers take `CoachingSessionAccess`; the
+jobs make no access decision. Suggestion review looked covered by `CoachingSessionAccess` but
+decides who may act inside `review.rs` by `coach_id`; the code review caught it and 3-5 moved it
+onto `sees_all_actions`. Phase 4 changes, not switches: the
 reminder SQL's coachee-only recipient, the coach's timezone, duration default and meeting link
 when scheduling, the `assignee=coach|coachee` filters, and the `coachee_not_a_member` 409 (which
 names the other participant for colleagues). 3-4 takes the leftovers: the pending-reschedule
@@ -245,7 +247,8 @@ row) and the frontend reruns its coach/coachee Playwright rows.
 the 409's consequences before re-sending with `confirmed: true`) is posted at the start of this phase.
 - Both colleagues see every action; both get reminders, each by their own notice stamp.
 - Colleagues only (coaching keeps using the coach): the .ics timezone comes from whoever
-  scheduled. Meeting link: reuse the relationship's existing persistent link first, as today;
+  scheduled. Series create, reschedule and reschedule-following all take the zone from
+  `relationship.coach_id` today (3-5); switch all three together. Meeting link: reuse the relationship's existing persistent link first, as today;
   if a new one is needed, the scheduler's connected account, then the other colleague's, else
   no link. The recorded link creator is whoever's account made it.
 - `assignee=coach|coachee` against a colleague relationship is an error.
