@@ -210,10 +210,11 @@ kind-neutral; the transcription, recording and suggestion controllers take
 `CoachingSessionAccess`; the jobs make no access decision. Phase 4 changes, not switches: the
 reminder SQL's coachee-only recipient, the coach's timezone, duration default and meeting link
 when scheduling, the `assignee=coach|coachee` filters, and the `coachee_not_a_member` 409 (which
-names the other participant for colleagues). 3-4 takes three leftovers: the pending-reschedule
-job reloads a relationship the email send already loaded; `coaching_session_notice::stamp` and
-`find_by_coaching_session` are public only for tests; the relationship POST's 409s are missing
-from its OpenAPI responses.
+names the other participant for colleagues). 3-4 takes the leftovers: the pending-reschedule
+job reloads a relationship the email send already loaded; the relationship POST's 409s are
+missing from its OpenAPI responses; section 6 of the access test plan names two frozen tests by
+their pre-1c names. `coaching_session_notice::stamp` and `find_by_coaching_session` stay public:
+the seed uses `stamp`, and frozen tests in another crate read through `find_by_coaching_session`.
 
 One PR. Afterwards the manual access matrix runs against the local API (every coach/coachee
 row) and the frontend reruns its coach/coachee Playwright rows.
