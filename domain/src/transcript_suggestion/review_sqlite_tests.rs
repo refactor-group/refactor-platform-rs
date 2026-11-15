@@ -891,7 +891,10 @@ async fn list_returns_the_sessions_pending_suggestions_with_their_segment_and_du
         assert_eq!(item.quote, "send you the org chart");
         assert_eq!(item.segment.id, f.segment_ids[1]);
         assert_eq!(item.segment.start_ms, 4000);
-        assert_eq!(item.segment.speaker_role, Some(SpeakerRole::Coachee));
+        assert_eq!(
+            item.segment.speaker_role,
+            Some(coaching_relationship_kind::Role::Coachee)
+        );
         assert_eq!(item.segment.speaker_label, COACHEE_NAME);
         assert_eq!(
             item.duplicate_of,

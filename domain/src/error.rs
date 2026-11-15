@@ -9,7 +9,7 @@ use meeting_auth::error::{
     Error as MeetingAuthError, ErrorKind as MeetingAuthErrorKind, OAuthErrorKind,
 };
 
-use crate::transcript_export::SpeakerRole;
+use crate::coaching_relationship_kind;
 
 /// Top-level domain error type.
 /// Errors in the Domain layer are modeled as a tree structure
@@ -102,7 +102,7 @@ pub enum EntityErrorKind {
     TranscriptionNotCompleted,
     /// A requested speaker role's participant matched none of the transcript's labels.
     SpeakerNotIdentified {
-        role: SpeakerRole,
+        role: coaching_relationship_kind::Role,
         labels: Vec<String>,
     },
     DbTransaction,

@@ -4423,7 +4423,7 @@ async fn test_send_recurring_series_email_to_recipient_empty_sessions_errors() {
         &Recipient {
             user: &recipient,
             other_user: &other,
-            other_user_role: "coach",
+            other_user_role: coaching_relationship_kind::Role::Coach,
         },
         &[],
         &org,

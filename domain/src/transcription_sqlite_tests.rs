@@ -245,7 +245,7 @@ async fn speakers_are_labeled_from_stored_attribution() -> Result<(), Error> {
 
         let read = read_with_speakers(&f.db, &f.session, f.transcription_id).await?;
 
-        let speakers: Vec<(&str, Option<SpeakerRole>)> = read
+        let speakers: Vec<(&str, Option<coaching_relationship_kind::Role>)> = read
             .speakers
             .iter()
             .map(|speaker| (speaker.label.as_str(), speaker.role))
@@ -253,8 +253,8 @@ async fn speakers_are_labeled_from_stored_attribution() -> Result<(), Error> {
         assert_eq!(
             speakers,
             vec![
-                ("Jim H", Some(SpeakerRole::Coach)),
-                ("cbourg2", Some(SpeakerRole::Coachee)),
+                ("Jim H", Some(coaching_relationship_kind::Role::Coach)),
+                ("cbourg2", Some(coaching_relationship_kind::Role::Coachee)),
                 ("Jim H (2)", None),
                 ("Guest 1", None),
             ]
@@ -272,18 +272,30 @@ async fn segments_carry_the_same_labels_and_attribution() -> Result<(), Error> {
 
         let segments = read_segments(&f.db, &f.session, f.transcription_id).await?;
 
-        let read: Vec<(&str, Option<Id>, Option<SpeakerRole>)> = segments
+        let read: Vec<(&str, Option<Id>, Option<coaching_relationship_kind::Role>)> = segments
             .iter()
             .map(|s| (s.speaker_label.as_str(), s.speaker_user_id, s.speaker_role))
             .collect();
         assert_eq!(
             read,
             vec![
-                ("Jim H", Some(f.coach.id), Some(SpeakerRole::Coach)),
-                ("cbourg2", Some(f.coachee.id), Some(SpeakerRole::Coachee)),
+                (
+                    "Jim H",
+                    Some(f.coach.id),
+                    Some(coaching_relationship_kind::Role::Coach)
+                ),
+                (
+                    "cbourg2",
+                    Some(f.coachee.id),
+                    Some(coaching_relationship_kind::Role::Coachee)
+                ),
                 ("Jim H (2)", None, None),
                 ("Guest 1", None, None),
-                ("cbourg2", Some(f.coachee.id), Some(SpeakerRole::Coachee)),
+                (
+                    "cbourg2",
+                    Some(f.coachee.id),
+                    Some(coaching_relationship_kind::Role::Coachee)
+                ),
             ]
         );
 
@@ -297,8 +309,13 @@ async fn the_coach_export_keeps_only_attributed_coach_lines() -> Result<(), Erro
     within_time_limit(async {
         let f = fixture().await;
 
-        let rendered =
-            export_plain_text(&f.db, &f.session, f.transcription_id, &[SpeakerRole::Coach]).await?;
+        let rendered = export_plain_text(
+            &f.db,
+            &f.session,
+            f.transcription_id,
+            &[coaching_relationship_kind::Role::Coach],
+        )
+        .await?;
 
         assert!(
             rendered.body.contains("[0:00] Jim H: "),
@@ -336,7 +353,7 @@ async fn the_latest_transcription_is_read_with_its_speakers() -> Result<(), Erro
             .expect("the session has a transcription");
 
         assert_eq!(latest.transcription.id, f.transcription_id);
-        let speakers: Vec<(&str, Option<SpeakerRole>)> = latest
+        let speakers: Vec<(&str, Option<coaching_relationship_kind::Role>)> = latest
             .speakers
             .iter()
             .map(|speaker| (speaker.label.as_str(), speaker.role))
@@ -344,8 +361,8 @@ async fn the_latest_transcription_is_read_with_its_speakers() -> Result<(), Erro
         assert_eq!(
             speakers,
             vec![
-                ("Jim H", Some(SpeakerRole::Coach)),
-                ("cbourg2", Some(SpeakerRole::Coachee)),
+                ("Jim H", Some(coaching_relationship_kind::Role::Coach)),
+                ("cbourg2", Some(coaching_relationship_kind::Role::Coachee)),
                 ("Jim H (2)", None),
                 ("Guest 1", None),
             ]
@@ -386,12 +403,15 @@ async fn the_later_transcription_wins_with_its_own_speakers() -> Result<(), Erro
             .expect("the session has a transcription");
 
         assert_eq!(latest.transcription.id, later_id);
-        let speakers: Vec<(&str, Option<SpeakerRole>)> = latest
+        let speakers: Vec<(&str, Option<coaching_relationship_kind::Role>)> = latest
             .speakers
             .iter()
             .map(|speaker| (speaker.label.as_str(), speaker.role))
             .collect();
-        assert_eq!(speakers, vec![("Jim H", Some(SpeakerRole::Coach))]);
+        assert_eq!(
+            speakers,
+            vec![("Jim H", Some(coaching_relationship_kind::Role::Coach))]
+        );
 
         Ok::<(), Error>(())
     })

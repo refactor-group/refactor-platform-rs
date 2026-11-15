@@ -6,10 +6,10 @@ use std::error::Error as StdError;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use domain::coaching_relationship_kind;
 use domain::error::{
     DomainErrorKind, EntityErrorKind, Error as DomainError, ExternalErrorKind, InternalErrorKind,
 };
-use domain::transcript_export::SpeakerRole;
 use log::*;
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -33,7 +33,7 @@ pub enum WebErrorKind {
     /// timezone identifier. Payload carries the offending value for
     /// debuggability.
     InvalidTimezone(String),
-    /// Caller supplied a `speaker` query value outside the `coach` | `coachee` enum.
+    /// Caller supplied a `speaker` query value that is not a relationship role.
     /// Payload carries the raw query string for debuggability.
     InvalidSpeaker(String),
     /// Boundary-validation 400 with a stable discriminator the FE can branch
@@ -309,10 +309,7 @@ impl Error {
                 warn!(
                     "EntityErrorKind::SpeakerNotIdentified: Responding with 422 Unprocessable Entity. Error: {self:?}"
                 );
-                let role = match role {
-                    SpeakerRole::Coach => "coach",
-                    SpeakerRole::Coachee => "coachee",
-                };
+                let role = role.as_str();
                 let labels = if labels.is_empty() {
                     "(no speakers)".to_string()
                 } else {
@@ -411,7 +408,10 @@ impl Error {
                 let body = serde_json::json!({
                     "status_code": 400,
                     "error": "invalid_speaker",
-                    "message": format!("'{value}' is not a valid speaker. Expected one of: coach, coachee."),
+                    "message": format!(
+                        "'{value}' is not a valid speaker. Expected one of: {}.",
+                        accepted_speakers()
+                    ),
                 });
                 (StatusCode::BAD_REQUEST, Json(body)).into_response()
             }
@@ -455,6 +455,13 @@ where
     fn from(err: E) -> Self {
         Error::Domain(err.into())
     }
+}
+
+/// The accepted `speaker` query values, comma-separated.
+pub(crate) fn accepted_speakers() -> String {
+    coaching_relationship_kind::Role::ALL
+        .map(coaching_relationship_kind::Role::as_str)
+        .join(", ")
 }
 
 #[cfg(test)]
@@ -672,7 +679,7 @@ mod tests {
             source: None,
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
                 EntityErrorKind::SpeakerNotIdentified {
-                    role: SpeakerRole::Coachee,
+                    role: coaching_relationship_kind::Role::Coachee,
                     labels: vec!["Jim H".to_string(), "Guest".to_string()],
                 },
             )),

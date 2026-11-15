@@ -55,6 +55,20 @@ pub enum Role {
     Colleague,
 }
 
+impl Role {
+    /// Every role; a new variant must be added here.
+    pub const ALL: [Role; 3] = [Role::Coach, Role::Coachee, Role::Colleague];
+
+    /// The role's wire spelling, as it appears in JSON, emails and filenames.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::Coach => "coach",
+            Role::Coachee => "coachee",
+            Role::Colleague => "colleague",
+        }
+    }
+}
+
 /// What a kind of relationship lets each of its participants do.
 pub trait Rules {
     /// What the person in `seat` is.
@@ -142,6 +156,17 @@ mod tests {
             (Role::Colleague, "colleague"),
         ] {
             assert_eq!(serde_json::to_value(role).expect("serializes"), wire);
+        }
+    }
+
+    #[test]
+    fn as_str_matches_the_serde_value_of_every_role() {
+        for role in Role::ALL {
+            assert_eq!(
+                serde_json::to_value(role).expect("serializes"),
+                role.as_str(),
+                "{role:?}"
+            );
         }
     }
 }

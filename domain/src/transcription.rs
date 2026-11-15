@@ -31,13 +31,14 @@ use service::config::Config;
 use tokio::time::timeout;
 use utoipa::ToSchema;
 
+use crate::coaching_relationship_kind;
 use crate::coaching_sessions;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::gateway::google_meet;
 use crate::meeting_provider::Provider as MeetingProvider;
 use crate::oauth_connection::{external_account_id, get_valid_access_token};
 use crate::transcript_attribution::{attribute, Attribution, Evidence};
-use crate::transcript_export::{self, Labeled, LabeledSegment, Rendered, Speaker, SpeakerRole};
+use crate::transcript_export::{self, Labeled, LabeledSegment, Rendered, Speaker};
 use crate::transcript_suggestion_target::Target;
 use crate::users;
 
@@ -576,7 +577,7 @@ pub async fn export_plain_text(
     db: &DatabaseConnection,
     session: &coaching_sessions::Model,
     transcription_id: Id,
-    filter: &[SpeakerRole],
+    filter: &[coaching_relationship_kind::Role],
 ) -> Result<Rendered, Error> {
     let transcription = find_for_session(db, transcription_id, session.id).await?;
 

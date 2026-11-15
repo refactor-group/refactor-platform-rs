@@ -6,7 +6,7 @@ use chrono::{NaiveDate, NaiveTime, Weekday};
 
 use super::case::{load_all, parse_transcript, Set, Variant};
 use super::report::read_baseline;
-use crate::transcript_export::SpeakerRole;
+use crate::coaching_relationship_kind;
 
 const SOURCE: &str = "\
 # A comment line.
@@ -83,7 +83,11 @@ fn session_maps_speakers_and_labels_back() {
     let roles: Vec<_> = session.segments.iter().map(|s| s.speaker_role).collect();
     assert_eq!(
         roles,
-        [Some(SpeakerRole::Coach), Some(SpeakerRole::Coachee), None]
+        [
+            Some(coaching_relationship_kind::Role::Coach),
+            Some(coaching_relationship_kind::Role::Coachee),
+            None
+        ]
     );
     assert_eq!(session.segments[2].speaker_label, "Priya Shah");
     assert_eq!(

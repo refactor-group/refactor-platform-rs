@@ -250,9 +250,14 @@ async fn export_plain_text_renders_the_relationship_participants() {
         .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
         .into_connection();
 
-    let rendered = export_plain_text(&db, &session, row.id, &[SpeakerRole::Coach])
-        .await
-        .expect("the coach-only export should render");
+    let rendered = export_plain_text(
+        &db,
+        &session,
+        row.id,
+        &[coaching_relationship_kind::Role::Coach],
+    )
+    .await
+    .expect("the coach-only export should render");
 
     assert_eq!(rendered.filename, "transcript-2026-09-21-jim-h.txt");
     assert!(rendered.body.contains("Speakers: Jim H\n"));
@@ -310,15 +315,20 @@ async fn export_plain_text_reports_an_unidentified_role() {
         .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
         .into_connection();
 
-    let error = export_plain_text(&db, &session, row.id, &[SpeakerRole::Coachee])
-        .await
-        .expect_err("a coachee with no attributed speaker must not export");
+    let error = export_plain_text(
+        &db,
+        &session,
+        row.id,
+        &[coaching_relationship_kind::Role::Coachee],
+    )
+    .await
+    .expect_err("a coachee with no attributed speaker must not export");
 
     assert_eq!(
         error.error_kind,
         DomainErrorKind::Internal(InternalErrorKind::Entity(
             EntityErrorKind::SpeakerNotIdentified {
-                role: SpeakerRole::Coachee,
+                role: coaching_relationship_kind::Role::Coachee,
                 labels: vec![
                     "Jim H".to_owned(),
                     "Caleb Bourg".to_owned(),
@@ -354,13 +364,17 @@ async fn read_with_speakers_labels_roles_in_speaking_order() {
         .iter()
         .map(|speaker| speaker.label.as_str())
         .collect();
-    let roles: Vec<Option<SpeakerRole>> =
+    let roles: Vec<Option<coaching_relationship_kind::Role>> =
         result.speakers.iter().map(|speaker| speaker.role).collect();
 
     assert_eq!(labels, ["Jim H", "Caleb Bourg", "Guest"]);
     assert_eq!(
         roles,
-        [Some(SpeakerRole::Coach), Some(SpeakerRole::Coachee), None]
+        [
+            Some(coaching_relationship_kind::Role::Coach),
+            Some(coaching_relationship_kind::Role::Coachee),
+            None
+        ]
     );
     assert_eq!(result.transcription.status, TranscriptionStatus::Queued);
 }
@@ -409,7 +423,7 @@ async fn with_speakers_serializes_flat() {
         transcription: row,
         speakers: vec![Speaker {
             label: "Jim H".to_owned(),
-            role: Some(SpeakerRole::Coach),
+            role: Some(coaching_relationship_kind::Role::Coach),
         }],
     })
     .expect("WithSpeakers should serialize");

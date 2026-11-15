@@ -755,6 +755,31 @@ async fn unattributed_participant_is_422() {
 }
 
 #[tokio::test]
+async fn colleague_speaker_on_a_coaching_transcript_is_422() {
+    let (world, cookie) = world(transcription::TranscriptionStatus::Completed, true).await;
+
+    let response = get_transcript(
+        &world.app,
+        &cookie,
+        world.session_id,
+        world.transcription_id,
+        Some("text/plain"),
+        "?speaker=colleague",
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(response).await,
+        serde_json::json!({
+            "status_code": 422,
+            "error": "speaker_not_identified",
+            "message": "Could not identify the colleague among the transcript speakers: Test User, Caleb Bourg, Guest.",
+        })
+    );
+}
+
+#[tokio::test]
 async fn segments_carry_their_labels_and_attribution_without_raw_participants() {
     let organization_id = Id::new_v4();
     let coach = coach();

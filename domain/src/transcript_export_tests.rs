@@ -84,7 +84,7 @@ fn labels(speakers: &[Speaker]) -> Vec<&str> {
     speakers.iter().map(|s| s.label.as_str()).collect()
 }
 
-fn roles(speakers: &[Speaker]) -> Vec<Option<SpeakerRole>> {
+fn roles(speakers: &[Speaker]) -> Vec<Option<coaching_relationship_kind::Role>> {
     speakers.iter().map(|s| s.role).collect()
 }
 
@@ -136,7 +136,11 @@ fn attributed_speakers_show_profile_names_and_their_roles() {
     );
     assert_eq!(
         roles(&labeled.speakers),
-        vec![Some(SpeakerRole::Coach), Some(SpeakerRole::Coachee), None]
+        vec![
+            Some(coaching_relationship_kind::Role::Coach),
+            Some(coaching_relationship_kind::Role::Coachee),
+            None
+        ]
     );
     assert_eq!(
         segment_labels(&labeled),
@@ -151,7 +155,7 @@ fn each_segment_carries_its_user_and_role() {
 
     let labeled = label_transcript(&participants, &segments, &coach, &coachee);
 
-    let attribution: Vec<(Option<Id>, Option<SpeakerRole>)> = labeled
+    let attribution: Vec<(Option<Id>, Option<coaching_relationship_kind::Role>)> = labeled
         .segments
         .iter()
         .map(|s| (s.speaker_user_id, s.speaker_role))
@@ -159,10 +163,19 @@ fn each_segment_carries_its_user_and_role() {
     assert_eq!(
         attribution,
         vec![
-            (Some(coach.id), Some(SpeakerRole::Coach)),
-            (Some(coachee.id), Some(SpeakerRole::Coachee)),
+            (
+                Some(coach.id),
+                Some(coaching_relationship_kind::Role::Coach)
+            ),
+            (
+                Some(coachee.id),
+                Some(coaching_relationship_kind::Role::Coachee)
+            ),
             (None, None),
-            (Some(coach.id), Some(SpeakerRole::Coach)),
+            (
+                Some(coach.id),
+                Some(coaching_relationship_kind::Role::Coach)
+            ),
         ]
     );
 }
@@ -225,7 +238,7 @@ fn a_typed_name_that_matches_a_profile_name_gets_a_suffix() {
     assert_eq!(labels(&labeled.speakers), vec!["Jim H (2)", "Jim H"]);
     assert_eq!(
         roles(&labeled.speakers),
-        vec![None, Some(SpeakerRole::Coach)]
+        vec![None, Some(coaching_relationship_kind::Role::Coach)]
     );
 }
 
@@ -328,7 +341,11 @@ fn roles_follow_the_relationship_as_it_is_now() {
     );
     assert_eq!(
         roles(&labeled.speakers),
-        vec![Some(SpeakerRole::Coachee), Some(SpeakerRole::Coach), None]
+        vec![
+            Some(coaching_relationship_kind::Role::Coachee),
+            Some(coaching_relationship_kind::Role::Coach),
+            None
+        ]
     );
 }
 
@@ -437,8 +454,12 @@ fn render_unfiltered_pins_the_exact_body_and_filename() {
 
 #[test]
 fn render_filtered_to_coach_keeps_only_coach_lines() {
-    let rendered = render_plain_text(date(), &three_speaker_labeled(), &[SpeakerRole::Coach])
-        .expect("renders");
+    let rendered = render_plain_text(
+        date(),
+        &three_speaker_labeled(),
+        &[coaching_relationship_kind::Role::Coach],
+    )
+    .expect("renders");
     assert_eq!(
         rendered.body,
         "Coaching session transcript\n\
@@ -456,7 +477,10 @@ fn render_filtered_to_both_roles_drops_guests() {
     let rendered = render_plain_text(
         date(),
         &three_speaker_labeled(),
-        &[SpeakerRole::Coachee, SpeakerRole::Coach],
+        &[
+            coaching_relationship_kind::Role::Coachee,
+            coaching_relationship_kind::Role::Coach,
+        ],
     )
     .expect("renders");
     assert!(rendered.body.contains("Speakers: Jim H, Caleb Bourg\n"));
@@ -480,10 +504,18 @@ fn coach_named(display: &str) -> Labeled {
 
 #[test]
 fn a_filtered_filename_names_the_selected_people() {
-    let coach_only = render_plain_text(date(), &three_speaker_labeled(), &[SpeakerRole::Coach])
-        .expect("renders");
-    let coachee_only = render_plain_text(date(), &three_speaker_labeled(), &[SpeakerRole::Coachee])
-        .expect("renders");
+    let coach_only = render_plain_text(
+        date(),
+        &three_speaker_labeled(),
+        &[coaching_relationship_kind::Role::Coach],
+    )
+    .expect("renders");
+    let coachee_only = render_plain_text(
+        date(),
+        &three_speaker_labeled(),
+        &[coaching_relationship_kind::Role::Coachee],
+    )
+    .expect("renders");
 
     assert_eq!(coach_only.filename, "transcript-2026-09-21-jim-h.txt");
     assert_eq!(
@@ -498,7 +530,7 @@ fn a_filtered_filename_slugs_punctuation_and_keeps_non_ascii_letters() {
     let rendered = render_plain_text(
         date(),
         &coach_named("José  O'Brien-Smith!"),
-        &[SpeakerRole::Coach],
+        &[coaching_relationship_kind::Role::Coach],
     )
     .expect("renders");
 
@@ -510,8 +542,12 @@ fn a_filtered_filename_slugs_punctuation_and_keeps_non_ascii_letters() {
 
 #[test]
 fn a_name_with_nothing_usable_falls_back_to_the_role() {
-    let rendered =
-        render_plain_text(date(), &coach_named("🙂 !!"), &[SpeakerRole::Coach]).expect("renders");
+    let rendered = render_plain_text(
+        date(),
+        &coach_named("🙂 !!"),
+        &[coaching_relationship_kind::Role::Coach],
+    )
+    .expect("renders");
 
     assert_eq!(rendered.filename, "transcript-2026-09-21-coach.txt");
 }
@@ -532,22 +568,25 @@ fn names_that_slug_alike_carry_their_role() {
     ];
     let labeled = label_transcript(&[coach_p, coachee_p], &segments, &coach, &coachee);
 
-    let filename = |filter: &[SpeakerRole]| {
+    let filename = |filter: &[coaching_relationship_kind::Role]| {
         render_plain_text(date(), &labeled, filter)
             .expect("renders")
             .filename
     };
 
     assert_eq!(
-        filename(&[SpeakerRole::Coach]),
+        filename(&[coaching_relationship_kind::Role::Coach]),
         "transcript-2026-09-21-ann-marie-coach.txt"
     );
     assert_eq!(
-        filename(&[SpeakerRole::Coachee]),
+        filename(&[coaching_relationship_kind::Role::Coachee]),
         "transcript-2026-09-21-ann-marie-coachee.txt"
     );
     assert_eq!(
-        filename(&[SpeakerRole::Coach, SpeakerRole::Coachee]),
+        filename(&[
+            coaching_relationship_kind::Role::Coach,
+            coaching_relationship_kind::Role::Coachee
+        ]),
         "transcript-2026-09-21-ann-marie-coach-ann-marie-coachee.txt"
     );
 }
@@ -567,7 +606,8 @@ fn render_filters_by_attribution_not_by_label_text() {
     ];
     let labeled = label_transcript(&[impostor, real], &segments, &coach, &coachee);
 
-    let rendered = render_plain_text(date(), &labeled, &[SpeakerRole::Coach]).expect("renders");
+    let rendered = render_plain_text(date(), &labeled, &[coaching_relationship_kind::Role::Coach])
+        .expect("renders");
 
     assert!(rendered.body.contains("[0:05] Jim H: Coach line.\n"));
     assert!(!rendered.body.contains("Impostor line."));
@@ -637,7 +677,10 @@ fn render_fails_when_a_requested_role_has_no_speaker() {
     let err = render_plain_text(
         date(),
         &labeled,
-        &[SpeakerRole::Coach, SpeakerRole::Coachee],
+        &[
+            coaching_relationship_kind::Role::Coach,
+            coaching_relationship_kind::Role::Coachee,
+        ],
     )
     .expect_err("nobody is attributed to the coachee");
 
@@ -645,7 +688,7 @@ fn render_fails_when_a_requested_role_has_no_speaker() {
         err.error_kind,
         DomainErrorKind::Internal(InternalErrorKind::Entity(
             EntityErrorKind::SpeakerNotIdentified {
-                role: SpeakerRole::Coachee,
+                role: coaching_relationship_kind::Role::Coachee,
                 labels: vec!["Jim H".to_owned(), "Pat".to_owned()],
             }
         ))
@@ -666,15 +709,15 @@ fn render_unfiltered_never_fails_without_attribution() {
 #[test]
 fn speaker_role_serializes_lowercase() {
     assert_eq!(
-        serde_json::to_string(&SpeakerRole::Coach).unwrap(),
+        serde_json::to_string(&coaching_relationship_kind::Role::Coach).unwrap(),
         "\"coach\""
     );
     assert_eq!(
-        serde_json::from_str::<SpeakerRole>("\"coachee\"").unwrap(),
-        SpeakerRole::Coachee
+        serde_json::from_str::<coaching_relationship_kind::Role>("\"coachee\"").unwrap(),
+        coaching_relationship_kind::Role::Coachee
     );
-    assert!(serde_json::from_str::<SpeakerRole>("\"Coach\"").is_err());
-    assert!(serde_json::from_str::<SpeakerRole>("\"bob\"").is_err());
+    assert!(serde_json::from_str::<coaching_relationship_kind::Role>("\"Coach\"").is_err());
+    assert!(serde_json::from_str::<coaching_relationship_kind::Role>("\"bob\"").is_err());
 }
 
 #[test]

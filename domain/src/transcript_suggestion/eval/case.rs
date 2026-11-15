@@ -7,7 +7,8 @@ use chrono::{NaiveDate, NaiveTime, TimeZone, Utc, Weekday};
 use chrono_tz::Tz;
 use serde::{Deserialize, Deserializer};
 
-use crate::transcript_export::{LabeledSegment, SpeakerRole};
+use crate::coaching_relationship_kind;
+use crate::transcript_export::LabeledSegment;
 use crate::transcript_suggestion::actions::Role;
 use crate::transcript_suggestion::{Existing, NextSession, People, Session};
 use crate::Id;
@@ -136,22 +137,25 @@ impl Transcript {
             .iter()
             .map(|line| {
                 let role = match line.speaker.as_str() {
-                    "Coach" => Some(SpeakerRole::Coach),
-                    "Coachee" => Some(SpeakerRole::Coachee),
+                    "Coach" => Some(coaching_relationship_kind::Role::Coach),
+                    "Coachee" => Some(coaching_relationship_kind::Role::Coachee),
                     _ => None,
                 };
                 let label = match role {
-                    Some(SpeakerRole::Coach) => self.coach_name.clone(),
-                    Some(SpeakerRole::Coachee) => self.coachee_name.clone(),
-                    None => line.speaker.clone(),
+                    Some(coaching_relationship_kind::Role::Coach) => self.coach_name.clone(),
+                    Some(coaching_relationship_kind::Role::Coachee) => self.coachee_name.clone(),
+                    Some(coaching_relationship_kind::Role::Colleague) | None => {
+                        line.speaker.clone()
+                    }
                 };
                 LabeledSegment {
                     id: Id::new_v4(),
                     transcription_id: Id::nil(),
                     speaker_label: label,
-                    speaker_user_id: role.map(|r| match r {
-                        SpeakerRole::Coach => people.coach_id,
-                        SpeakerRole::Coachee => people.coachee_id,
+                    speaker_user_id: role.and_then(|r| match r {
+                        coaching_relationship_kind::Role::Coach => Some(people.coach_id),
+                        coaching_relationship_kind::Role::Coachee => Some(people.coachee_id),
+                        coaching_relationship_kind::Role::Colleague => None,
                     }),
                     speaker_role: role,
                     text: line.text.clone(),

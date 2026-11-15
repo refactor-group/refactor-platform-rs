@@ -6,7 +6,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use axum_extra::extract::{Query, QueryRejection};
-use domain::transcript_export::SpeakerRole;
+use domain::coaching_relationship_kind;
 use domain::transcription as TranscriptionApi;
 use domain::Id;
 use log::*;
@@ -14,7 +14,7 @@ use serde::Deserialize;
 use service::config::ApiVersion;
 
 use crate::controller::ApiResponse;
-use crate::error::WebErrorKind;
+use crate::error::{accepted_speakers, WebErrorKind};
 use crate::extractors::{
     coaching_session_access::CoachingSessionAccess, compare_api_version::CompareApiVersion,
 };
@@ -24,7 +24,7 @@ use crate::{AppState, Error};
 #[derive(Debug, Deserialize)]
 pub(crate) struct SpeakerParams {
     #[serde(default)]
-    speaker: Vec<SpeakerRole>,
+    speaker: Vec<coaching_relationship_kind::Role>,
 }
 
 /// The representation the caller's `Accept` header asked for.
@@ -81,14 +81,14 @@ pub async fn read_latest(
         ApiVersion,
         ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
         ("transcription_id" = Uuid, Path, description = "Transcription id"),
-        ("speaker" = Option<Vec<SpeakerRole>>, Query, explode, description = "Limit the plain-text transcript to these participants. Repeat the parameter for both. Omitted means every speaker. An invalid value is rejected with 400 for every representation; valid values are applied only to text/plain."),
+        ("speaker" = Option<Vec<coaching_relationship_kind::Role>>, Query, explode, description = "Limit the plain-text transcript to these participants. Repeat the parameter for both. Omitted means every speaker. An invalid value is rejected with 400 for every representation; valid values are applied only to text/plain."),
     ),
     responses(
         (status = 200, description = "JSON metadata with labeled speakers, or the plain-text transcript file when `Accept: text/plain`", content(
             (domain::transcription::WithSpeakers = "application/json"),
             (String = "text/plain", example = json!("Coaching session transcript\nDate: 2026-09-21\nSpeakers: Jim Hodapp, Caleb Bourg\n\n[0:00] Jim Hodapp: Good morning.\n"))
         )),
-        (status = 400, description = "`invalid_speaker`: speaker is not `coach` or `coachee`"),
+        (status = 400, description = format!("`invalid_speaker`: speaker is not one of {}", accepted_speakers())),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Caller is not a participant in the coaching session"),
         (status = 404, description = "`transcription_not_found`: no such transcription under this session"),
