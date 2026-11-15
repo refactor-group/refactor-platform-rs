@@ -193,6 +193,22 @@ async fn participants_read_their_relationship_with_names() {
     .await;
 }
 
+/// REL-08
+#[tokio::test]
+async fn a_relationship_read_carries_its_kind() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, r1) = (app.fixture.o1, app.fixture.r1);
+        let path = format!("/organizations/{o1}/coaching_relationships/{r1}");
+
+        let reply = app.send(Caller::Coach, Method::GET, &path, None).await;
+
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(reply.body["data"]["kind"], json!("coaching"));
+    })
+    .await;
+}
+
 /// REL-09
 #[tokio::test]
 async fn non_participants_cannot_read_a_relationship() {

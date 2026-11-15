@@ -22,7 +22,7 @@ use sea_orm::{
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
 use slugify::slugify;
-use utoipa::openapi::{ObjectBuilder, RefOr, Schema};
+use utoipa::openapi::{ObjectBuilder, Ref, RefOr, Schema};
 use utoipa::{PartialSchema, ToSchema};
 
 /// Creates a coaching relationship of `kind` between a coach and a coachee in an
@@ -268,6 +268,7 @@ fn with_user_names(
         id: coaching_relationship.id,
         coach_id: coaching_relationship.coach_id,
         coachee_id: coaching_relationship.coachee_id,
+        kind: coaching_relationship.kind,
         coach_first_name: coach.first_name.clone(),
         coach_last_name: coach.last_name.clone(),
         coachee_first_name: coachee.first_name.clone(),
@@ -481,6 +482,7 @@ pub async fn find_by_organization_with_user_names(
         .column(coaching_relationships::Column::OrganizationId)
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
+        .column(coaching_relationships::Column::Kind)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -522,6 +524,7 @@ pub async fn find_by_user_and_organization_with_user_names(
         .column(coaching_relationships::Column::OrganizationId)
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
+        .column(coaching_relationships::Column::Kind)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -557,6 +560,7 @@ pub async fn get_relationship_with_user_names(
         .column(coaching_relationships::Column::OrganizationId)
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
+        .column(coaching_relationships::Column::Kind)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -689,6 +693,7 @@ pub async fn find_by_user_id_with_user_names(
         .column(coaching_relationships::Column::OrganizationId)
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
+        .column(coaching_relationships::Column::Kind)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -707,6 +712,7 @@ pub struct CoachingRelationshipWithUserNames {
     pub id: Id,
     pub coach_id: Id,
     pub coachee_id: Id,
+    pub kind: Kind,
     pub coach_first_name: String,
     pub coach_last_name: String,
     pub coachee_first_name: String,
@@ -720,10 +726,14 @@ pub struct CoachingRelationshipWithUserNames {
 /// By hand: the derive would nest `membership` under `allOf`, but the wire lists its fields.
 impl PartialSchema for CoachingRelationshipWithUserNames {
     fn schema() -> RefOr<Schema> {
-        let fields: [(&str, RefOr<Schema>); 9] = [
+        let fields: [(&str, RefOr<Schema>); 10] = [
             ("id", utoipa::schema!(Uuid).into()),
             ("coach_id", utoipa::schema!(Uuid).into()),
             ("coachee_id", utoipa::schema!(Uuid).into()),
+            (
+                "kind",
+                Ref::from_schema_name(<Kind as ToSchema>::name()).into(),
+            ),
             ("coach_first_name", utoipa::schema!(String).into()),
             ("coach_last_name", utoipa::schema!(String).into()),
             ("coachee_first_name", utoipa::schema!(String).into()),
@@ -755,6 +765,10 @@ impl ToSchema for CoachingRelationshipWithUserNames {
     fn name() -> Cow<'static, str> {
         Cow::Borrowed("domain.coaching_relationship.CoachingRelationshipWithUserNames")
     }
+
+    fn schemas(schemas: &mut Vec<(String, RefOr<Schema>)>) {
+        schemas.push((<Kind as ToSchema>::name().into_owned(), Kind::schema()));
+    }
 }
 
 // serialize the CoachingRelationshipUserWithNames struct so that it can be used in the API
@@ -764,10 +778,11 @@ impl Serialize for CoachingRelationshipWithUserNames {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("CoachingRelationship", 11)?;
+        let mut state = serializer.serialize_struct("CoachingRelationship", 12)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("coach_id", &self.coach_id)?;
         state.serialize_field("coachee_id", &self.coachee_id)?;
+        state.serialize_field("kind", &self.kind)?;
         state.serialize_field("coach_first_name", &self.coach_first_name)?;
         state.serialize_field("coach_last_name", &self.coach_last_name)?;
         state.serialize_field("coachee_first_name", &self.coachee_first_name)?;
@@ -792,6 +807,7 @@ mod wire_tests {
             id: Id::new_v4(),
             coach_id: Id::new_v4(),
             coachee_id: Id::new_v4(),
+            kind: Kind::Coaching,
             coach_first_name: String::new(),
             coach_last_name: String::new(),
             coachee_first_name: String::new(),
@@ -813,6 +829,8 @@ mod wire_tests {
         let required: BTreeSet<&str> = schema.required.iter().map(String::as_str).collect();
         assert_eq!(keys, properties);
         assert_eq!(keys, required);
+        assert_eq!(wire["kind"], "coaching");
+        assert!(required.contains("kind"));
     }
 }
 
@@ -910,7 +928,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."created_at", "coaching_relationships"."updated_at", coaches.first_name AS "coach_first_name", coaches.last_name AS "coach_last_name", coachees.first_name AS "coachee_first_name", coachees.last_name AS "coachee_last_name", EXISTS(SELECT 1 FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = "coaching_relationships"."coach_id" AND ("user_roles"."organization_id" = "coaching_relationships"."organization_id" OR ("user_roles"."role" = (CAST($1 AS "role")) AND "user_roles"."organization_id" IS NULL))) AS "coach_is_member", EXISTS(SELECT 1 FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = "coaching_relationships"."coachee_id" AND ("user_roles"."organization_id" = "coaching_relationships"."organization_id" OR ("user_roles"."role" = (CAST($2 AS "role")) AND "user_roles"."organization_id" IS NULL))) AS "coachee_is_member" FROM "refactor_platform"."coaching_relationships" JOIN "refactor_platform"."users" AS "coaches" ON "coaching_relationships"."coach_id" = "coaches"."id" JOIN "refactor_platform"."users" AS "coachees" ON "coaching_relationships"."coachee_id" = "coachees"."id" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $3)"#,
+                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", CAST("coaching_relationships"."kind" AS "text"), "coaching_relationships"."created_at", "coaching_relationships"."updated_at", coaches.first_name AS "coach_first_name", coaches.last_name AS "coach_last_name", coachees.first_name AS "coachee_first_name", coachees.last_name AS "coachee_last_name", EXISTS(SELECT 1 FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = "coaching_relationships"."coach_id" AND ("user_roles"."organization_id" = "coaching_relationships"."organization_id" OR ("user_roles"."role" = (CAST($1 AS "role")) AND "user_roles"."organization_id" IS NULL))) AS "coach_is_member", EXISTS(SELECT 1 FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = "coaching_relationships"."coachee_id" AND ("user_roles"."organization_id" = "coaching_relationships"."organization_id" OR ("user_roles"."role" = (CAST($2 AS "role")) AND "user_roles"."organization_id" IS NULL))) AS "coachee_is_member" FROM "refactor_platform"."coaching_relationships" JOIN "refactor_platform"."users" AS "coaches" ON "coaching_relationships"."coach_id" = "coaches"."id" JOIN "refactor_platform"."users" AS "coachees" ON "coaching_relationships"."coachee_id" = "coachees"."id" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $3)"#,
                 [
                     "super_admin".into(),
                     "super_admin".into(),
