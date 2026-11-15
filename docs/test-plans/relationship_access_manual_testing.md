@@ -629,7 +629,7 @@ between the 1a migration and 1b's code, so both hold on a database that ran the 
 
 Phase 2 gives each relationship a `kind` (`coaching` or `colleague`) and names what a participant
 is (`coach`, `coachee` or `colleague`) with one type. Every relationship is `coaching` until
-phase 4 adds a gated way to make a colleague one, and no request can set `kind`. That holds for
+phase 4 adds a way to make a colleague one, and no request can set `kind`. That holds for
 every path that creates a relationship, including adding a person to an organization with a
 `coach_id` (ORG-01, ORG-03): each passes its kind to the one create, and none assumes an invited
 person is coached. Who may do what
