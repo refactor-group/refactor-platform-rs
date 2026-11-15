@@ -241,11 +241,12 @@ row) and the frontend reruns its coach/coachee Playwright rows.
   (A coaching B and B coaching A stays allowed). Phase 2 already makes `create` refuse to reuse
   a pair's relationship of another kind; this phase adds the either-direction check.
   The rule lives in `entity_api::coaching_relationship::create`, so the invite path
-  (`domain/src/user.rs`, `user_role.rs`) hits it too, and runs under
-  `pg_advisory_xact_lock` on org plus the sorted pair.
-- No config flag (decided): production can't make a colleague relationship until its frontend
-  offers the choice, which ships with the phase 6 deploy after the wording step. Only an admin
-  calling the API directly could make one earlier. The FE admin-screen contract
+  (`domain/src/user.rs`, `user_role.rs`) hits it too. It runs in one transaction under
+  `pg_advisory_xact_lock` on org plus the sorted pair, taken only on Postgres (the SQLite test
+  tier has no advisory locks and one connection).
+- No config flag (decided): phase 4 ships to production with its frontend PR, and the Resend
+  templates switch right after it deploys, before anyone creates a colleague relationship. The
+  FE admin-screen contract
   (choose kind, flip with "who becomes coach", and the phase 5 confirmation dialog that shows
 the 409's consequences before re-sending with `confirmed: true`) is posted at the start of this phase.
 - Both colleagues see every action; both get reminders, each by their own notice stamp.
@@ -256,7 +257,7 @@ the 409's consequences before re-sending with `confirmed: true`) is posted at th
   no link. The recorded link creator is whoever's account made it.
 - `assignee=coach|coachee` against a colleague relationship is an error.
 - Emails say "colleague" through a role-word variable in the existing Resend templates.
-- **Wording, required before phase 6 ships colleagues to production.** Every email and calendar text a colleague
+- **Wording, required before anyone creates a colleague relationship in production.** Every email and calendar text a colleague
   can receive stops assuming coaching:
   - Welcome (invite): `coach_first_name` / `coach_full_name` hold the inviter; rename to
     `inviter_*` (as the added-to-organization email already does) and make the copy neutral.
@@ -278,17 +279,21 @@ the 409's consequences before re-sending with `confirmed: true`) is posted at th
   The copy lives in the Resend dashboard, not this repository, so a renamed variable ships in
   three steps: the backend sends the old and new names for one release, each template switches
   to the new names and neutral copy, then a later release drops the old names. Verify every
-  template against a mock Resend payload with a colleague relationship before phase 6 ships.
+  template against a mock Resend payload with a colleague relationship before the switch.
 
 Handoffs, one PR:
 
 | Handoff | Scope |
 |---|---|
-| 4-1 | Relationship POST takes `kind`; the same-pair rule under an advisory lock |
+| 4-1 | Relationship POST takes `kind`; the same-pair rule under an advisory lock on the pair |
 | 4-2 | Invites take `relationship: { with_user_id, kind }`, same-pair rule; the ORG-01 and ORG-03 baseline tests change only their request bodies (sanctioned) |
-| 4-3 | Colleague scheduling: both reminded; scheduler's zone for colleague series and `.ics`; meeting link from the scheduler's account, then the other's; the 409 names the other participant |
+| 4-3 | Colleague scheduling: both reminded; scheduler's zone for colleague series and `.ics`; meeting link from the scheduler's account, then the other's; the 409 names the other participant; the suggestion sweep skips colleague sessions until 4b |
 | 4-4 | `assignee=coach|coachee` on a colleague relationship is a 422 |
 | 4-5 | Wording step 1: send `inviter_*` and `other_user_*`/`other_user_role` beside the old names; `.ics` names the other participant by role |
+
+Phase 4 ships to production on its own (decided): useful before 4b, 5 and 6, so neither side
+holds it behind a flag. Right after it deploys, the Resend templates switch to the new
+variables, before anyone creates a colleague relationship.
 
 Each handoff adds its colleague rows to the access test plan, with SQLite tests. Afterwards: the
 manual access matrix (coach, coachee and colleague rows), the frontend Playwright pass, and the
@@ -340,14 +345,13 @@ through the phase E event log (who, when, from and to kind, new coach).
   sessions and transcripts show the participants under the new kind's roles. The data is
   unchanged; only its labels follow the switch.
 
-**6. Frontend contract and coordinated deploy.** Blocked on phase 4's wording step: every Resend
-template and the `.ics` text is verified with a colleague relationship before it ships.
+**6. Frontend contract and coordinated deploy.**
 Built from the phase 0 wire inventory: session lists replace `coach` with `participants`;
 relationship `role` filter and `coach_first_name`/`coachee_first_name`; `coachee_actions`;
 transcript `speaker`. The frontend
 also stops deriving a participant's role from `coach_id === userId` and reads the role the
 backend computes (agreed in phase 2, when both sides unified their role types). One
-coordinated FE+BE deploy, which is when production can first make a colleague relationship.
+coordinated FE+BE deploy.
 
 Deferred to its own issue after phase 5: renaming `coach_id`/`coachee_id` (about 960
 references, wire-visible), so no permission change hides in a rename diff.

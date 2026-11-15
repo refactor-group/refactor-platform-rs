@@ -9,9 +9,10 @@ Rows record what the code does today, plus the rules tightened by the relationsh
 authorization security PR (`fix/relationship-scoped-authorization`), which lands before the
 rs#399 baseline is frozen. Rows it changes or adds are marked `[tightened]`; their
 `Enforced at` cells point at the new checks. Row ids are stable; never renumber them.
-Phase 4 adds colleague rows; there are none yet. Phase 1 adds the `SCHED` rows (4.15): what
-each schedule change records, with no change to who may make it. Phase 2 adds the `KIND` rows
-(4.16): every relationship is `coaching`, and nothing a caller sends can make it anything else.
+Phase 1 adds the `SCHED` rows (4.15): what each schedule change records, with no change to who
+may make it. Phase 2 adds the `KIND` rows (4.16): each relationship's kind and the one participant
+role type. Phase 4 adds colleague rows, starting with creating one (KIND-04, KIND-11 to KIND-14);
+coach and coachee rows answer as before.
 
 Rows marked `[membership]` change in phase M (org membership consistency), which also lands
 before the baseline. Their expected results already show the phase M rule:
