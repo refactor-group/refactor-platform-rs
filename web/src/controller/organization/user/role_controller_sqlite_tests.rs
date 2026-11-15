@@ -7,9 +7,12 @@
 //! `web/src/test_utils/README.md` describes the people and the database.
 
 use axum::http::{Method, StatusCode};
+use domain::coaching_relationship_kind::Kind;
 use domain::test_utils::sqlite::fixture::{record_removal, set_role};
-use domain::test_utils::sqlite::read_back::{holds_role, relationships_between, role_in};
-use domain::test_utils::sqlite::{seed_membership, within_time_limit, Caller};
+use domain::test_utils::sqlite::read_back::{
+    holds_role, relationship_kinds_between, relationships_between, role_in,
+};
+use domain::test_utils::sqlite::{seed_membership, seed_user, within_time_limit, Caller};
 use domain::users::Role;
 use domain::Id;
 use serde_json::json;
@@ -53,6 +56,35 @@ async fn admins_attach_a_member_with_a_coach() {
                 "{caller:?}: R3 is reused"
             );
         }
+    })
+    .await;
+}
+
+/// Attaching a member with a new coach stores a coaching relationship.
+#[tokio::test]
+async fn attaching_a_member_with_a_new_coach_stores_a_coaching_relationship() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, coach) = (app.fixture.o1, app.fixture.user(Caller::Coach));
+        // A former O1 member with no relationship, so ADMIN may see them.
+        let target = seed_user(app.db()).await;
+        record_removal(app.db(), target, o1).await;
+
+        let reply = app
+            .send(
+                Caller::Admin,
+                Method::POST,
+                &format!("/organizations/{o1}/users/{target}/role"),
+                Some(json!({ "role": "User", "coach_id": coach })),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(reply.body["status_code"], 201);
+        assert_eq!(
+            relationship_kinds_between(app.db(), coach, target).await,
+            vec![Kind::Coaching]
+        );
     })
     .await;
 }

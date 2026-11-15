@@ -8,9 +8,11 @@
 use std::collections::BTreeSet;
 
 use axum::http::{Method, StatusCode};
+use domain::coaching_relationship_kind::Kind;
 use domain::test_utils::sqlite::fixture::set_role;
 use domain::test_utils::sqlite::read_back::{
-    holds_role, relationships_between, role_in, user_exists, user_with_email,
+    holds_role, relationship_kinds_between, relationships_between, role_in, user_exists,
+    user_with_email,
 };
 use domain::test_utils::sqlite::{seed_membership, seed_user, within_time_limit, Caller};
 use domain::users::Role;
@@ -81,6 +83,34 @@ async fn admins_add_a_member_with_a_coach() {
                 "{caller:?}"
             );
         }
+    })
+    .await;
+}
+
+/// Adding a member with a coach stores a coaching relationship.
+#[tokio::test]
+async fn adding_a_member_with_a_coach_stores_a_coaching_relationship() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, coach) = (app.fixture.o1, app.fixture.user(Caller::Coach));
+
+        let reply = app
+            .send(
+                Caller::Admin,
+                Method::POST,
+                &format!("/organizations/{o1}/users"),
+                Some(new_member_body(coach)),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::OK);
+        let user = user_with_email(app.db(), NEW_EMAIL)
+            .await
+            .expect("the member is stored");
+        assert_eq!(
+            relationship_kinds_between(app.db(), coach, user).await,
+            vec![Kind::Coaching]
+        );
     })
     .await;
 }

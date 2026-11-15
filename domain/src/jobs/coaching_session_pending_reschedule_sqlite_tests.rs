@@ -354,6 +354,7 @@ async fn moved_session_between_two(db: &DatabaseConnection, members: Members) ->
         organization_id: Set(organization_id),
         coach_id: Set(coach_id),
         coachee_id: Set(coachee_id),
+        kind: Set(crate::coaching_relationship_kind::Kind::Coaching),
         slug: Set(format!("relationship-{relationship_id}")),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),

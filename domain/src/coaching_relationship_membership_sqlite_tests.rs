@@ -33,6 +33,7 @@ async fn seeded() -> Seeded {
         organization_id: Set(organization),
         coach_id: Set(coach),
         coachee_id: Set(coachee),
+        kind: Set(crate::coaching_relationship_kind::Kind::Coaching),
         slug: Set("membership".to_string()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),

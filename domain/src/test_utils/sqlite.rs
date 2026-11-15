@@ -119,6 +119,7 @@ const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 /// (table, or `None` for every table; column; SQLite default expression).
 const MIGRATION_DEFAULTS: &[(Option<&str>, &str, &str)] = &[
     (None, "id", "randomblob(16)"),
+    (Some("coaching_relationships"), "kind", "'coaching'"),
     (Some("coaching_session_series"), "ical_sequence", "0"),
     (Some("coaching_sessions"), "ical_sequence", "0"),
     (Some("coaching_sessions"), "duration_minutes", "60"),
@@ -351,6 +352,7 @@ pub async fn seed_coaching_session(db: &DatabaseConnection) -> (Id, Id) {
         organization_id: Set(organization_id),
         coach_id: Set(user_id),
         coachee_id: Set(user_id),
+        kind: Set(crate::coaching_relationship_kind::Kind::Coaching),
         slug: Set(format!("relationship-{relationship_id}")),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
@@ -626,6 +628,7 @@ pub async fn seed_lapsed_membership(
             organization_id: Set(organization_id),
             coach_id: Set(coach_id),
             coachee_id: Set(coachee_id),
+            kind: Set(crate::coaching_relationship_kind::Kind::Coaching),
             slug: Set(format!("relationship-{relationship_id}")),
             created_at: Set(now.into()),
             updated_at: Set(now.into()),

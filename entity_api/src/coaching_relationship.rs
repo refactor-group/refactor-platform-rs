@@ -9,6 +9,7 @@ use crate::user_role::is_member;
 use chrono::Utc;
 use entity::{
     coachees, coaches,
+    coaching_relationship_kind::Kind,
     coaching_relationships::{self, ActiveModel, Entity, Model, Visibility},
     coaching_sessions, users, Id,
 };
@@ -24,7 +25,8 @@ use slugify::slugify;
 use utoipa::openapi::{ObjectBuilder, RefOr, Schema};
 use utoipa::{PartialSchema, ToSchema};
 
-/// Creates a coaching relationship between a coach and a coachee in an organization.
+/// Creates a coaching relationship of `kind` between a coach and a coachee in an
+/// organization. The Model's own kind is ignored.
 ///
 /// Returns the existing relationship when one already exists for that coach, coachee
 /// and organization.
@@ -32,6 +34,7 @@ pub async fn create(
     db: &impl ConnectionTrait,
     organization_id: Id,
     coaching_relationship_model: Model,
+    kind: Kind,
 ) -> Result<CoachingRelationshipWithUserNames, Error> {
     debug!("New Coaching Relationship Model to be inserted: {coaching_relationship_model:?}");
 
@@ -109,6 +112,7 @@ pub async fn create(
         organization_id: Set(organization_id),
         coach_id: Set(coaching_relationship_model.coach_id),
         coachee_id: Set(coaching_relationship_model.coachee_id),
+        kind: Set(kind),
         slug: Set(slug),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
@@ -829,7 +833,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."id" = $1 LIMIT $2"#,
+                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", CAST("coaching_relationships"."kind" AS "text"), "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."id" = $1 LIMIT $2"#,
                 [
                     coaching_relationship_id.into(),
                     sea_orm::Value::BigUnsigned(Some(1))
@@ -867,7 +871,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
+                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", CAST("coaching_relationships"."kind" AS "text"), "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
                 [user_id.into(), user_id.into()]
             )]
         );
@@ -886,7 +890,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $1)"#,
+                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", CAST("coaching_relationships"."kind" AS "text"), "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $1)"#,
                 [organization_id.into()]
             )]
         );
@@ -954,7 +958,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT COUNT(*) AS num_items FROM (SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND EXISTS(SELECT 1 FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id")) AS "sub_query""#,
+                r#"SELECT COUNT(*) AS num_items FROM (SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", CAST("coaching_relationships"."kind" AS "text"), "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at" FROM "refactor_platform"."coaching_relationships" WHERE ("coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2) AND EXISTS(SELECT 1 FROM "refactor_platform"."coaching_sessions" WHERE "coaching_sessions"."coaching_relationship_id" = "coaching_relationships"."id")) AS "sub_query""#,
                 [user_id.into(), user_id.into()]
             )]
         );
@@ -988,12 +992,13 @@ mod tests {
             organization_id,
             coach_id: Id::new_v4(),
             coachee_id: Id::new_v4(),
+            kind: Kind::Coaching,
             slug: String::new(),
             created_at: now.into(),
             updated_at: now.into(),
         };
 
-        let result = create(&db, organization_id, model).await;
+        let result = create(&db, organization_id, model, Kind::Coaching).await;
 
         let err = result.expect_err("expected archived-org rejection");
         assert!(matches!(
@@ -1015,12 +1020,13 @@ mod tests {
             organization_id,
             coach_id: user_id,
             coachee_id: user_id,
+            kind: Kind::Coaching,
             slug: String::new(),
             created_at: now.into(),
             updated_at: now.into(),
         };
 
-        let err = create(&db, organization_id, model)
+        let err = create(&db, organization_id, model, Kind::Coaching)
             .await
             .expect_err("expected self-coaching rejection");
 

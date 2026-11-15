@@ -19,11 +19,12 @@ use crate::router::ApiDoc;
 use crate::AppState;
 
 /// Every key the relationship object carried before the membership fields.
-const RELATIONSHIP_KEYS: [&str; 7] = [
+const RELATIONSHIP_KEYS: [&str; 8] = [
     "id",
     "organization_id",
     "coach_id",
     "coachee_id",
+    "kind",
     "slug",
     "created_at",
     "updated_at",
@@ -44,6 +45,7 @@ fn included_row(w: &Fixture, members: &[Id]) -> BTreeMap<String, Value> {
         ("organization_id".to_string(), r.organization_id.into()),
         ("coach_id".to_string(), r.coach_id.into()),
         ("coachee_id".to_string(), r.coachee_id.into()),
+        ("kind".to_string(), "coaching".into()),
         ("slug".to_string(), r.slug.clone().into()),
         ("created_at".to_string(), r.created_at.into()),
         ("updated_at".to_string(), r.updated_at.into()),

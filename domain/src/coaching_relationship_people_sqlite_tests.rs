@@ -16,6 +16,7 @@ async fn relationship(db: &DatabaseConnection, coach_id: Id, coachee_id: Id) -> 
         organization_id: Set(seed_organization(db).await),
         coach_id: Set(coach_id),
         coachee_id: Set(coachee_id),
+        kind: Set(crate::coaching_relationship_kind::Kind::Coaching),
         slug: Set(format!("relationship-{id}")),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),

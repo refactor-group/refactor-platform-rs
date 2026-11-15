@@ -881,6 +881,7 @@ mod tests {
             organization_id,
             coach_id,
             coachee_id: Id::new_v4(),
+            kind: crate::coaching_relationship_kind::Kind::Coaching,
             slug: "test-slug".to_string(),
             created_at: now.into(),
             updated_at: now.into(),

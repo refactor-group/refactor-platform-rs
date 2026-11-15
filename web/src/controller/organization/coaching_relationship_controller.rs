@@ -13,6 +13,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use domain::coaching_relationship::CoachingRelationshipWithUserNames;
+use domain::coaching_relationship_kind::Kind;
 use domain::{
     action as ActionApi, coaching_relationship as CoachingRelationshipApi, coaching_relationships,
     goal_progress as GoalProgressApi,
@@ -58,6 +59,8 @@ pub async fn create(
         app_state.db_conn_ref(),
         organization.id,
         coaching_relationship_model,
+        // No request chooses a kind yet.
+        Kind::Coaching,
     )
     .await?;
 

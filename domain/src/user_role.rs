@@ -10,6 +10,7 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::coaching_relationship_kind::Kind;
 use crate::error::Error;
 use crate::user::{new_coaching_relationship, Role};
 use crate::{user_roles, users, Actor, Id};
@@ -79,6 +80,8 @@ pub async fn attach_to_organization(
             &txn,
             organization_id,
             new_coaching_relationship(coach_id, user_id),
+            // No request chooses a kind yet.
+            Kind::Coaching,
         )
         .await?;
     }

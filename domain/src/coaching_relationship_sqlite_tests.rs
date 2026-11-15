@@ -1,20 +1,23 @@
 //! Exercises the production ON CONFLICT DO NOTHING insert behind creating a coaching
 //! relationship against a real SQL engine, so a conflict's outcome is what SeaORM reports,
-//! and the organization membership rule of `is_coach_of` and a user's own relationship list.
+//! the kind that creating one stores, and the organization membership rule of `is_coach_of` and a user's own relationship list.
 
 use std::collections::BTreeSet;
 
 use chrono::Utc;
-use entity::coaching_relationships::{ActiveModel, Entity, Visibility};
+use entity::coaching_relationship_kind::Kind;
+use entity::coaching_relationships::{ActiveModel, Entity, Model, Visibility};
 use entity::Id;
-use entity_api::coaching_relationship::insert_unless_exists;
+use entity_api::coaching_relationship::{create, insert_unless_exists};
 use sea_orm::{ActiveModelTrait, ConnectionTrait, DatabaseConnection, EntityTrait, Set};
 
 use super::{find_by_user_id_with_user_names, is_coach_of, RoleFilterable};
 
+use crate::test_utils::sqlite::read_back::relationship_kinds_between;
 use crate::test_utils::sqlite::{
-    self, seed_lapsed_membership, seed_organization, seed_user, within_time_limit,
+    self, seed_lapsed_membership, seed_membership, seed_organization, seed_user, within_time_limit,
 };
+use crate::user::new_coaching_relationship;
 
 /// The synced schema plus the relationships table's production unique index.
 async fn database() -> DatabaseConnection {
@@ -42,6 +45,7 @@ fn relationship(
         organization_id: Set(organization_id),
         coach_id: Set(coach_id),
         coachee_id: Set(coachee_id),
+        kind: Set(Kind::Coaching),
         slug: Set(slug.to_string()),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
@@ -104,6 +108,42 @@ async fn an_insert_outside_the_conflict_target_is_written() {
         assert_eq!(rows.len(), 2, "both inserts are written");
         let ids: BTreeSet<Id> = rows.into_iter().map(|row| row.id).collect();
         assert_eq!(ids, BTreeSet::from([a, other]));
+    })
+    .await
+}
+
+#[tokio::test]
+async fn create_stores_the_kind_it_is_given() {
+    within_time_limit(async {
+        let db = sqlite::database().await;
+        sqlite::mirror_migration_defaults(&db).await;
+        let o = seed_organization(&db).await;
+        let (coach, colleague, coachee) = (
+            seed_user(&db).await,
+            seed_user(&db).await,
+            seed_user(&db).await,
+        );
+        for user in [coach, colleague, coachee] {
+            seed_membership(&db, user, o).await;
+        }
+
+        for (other, model_kind, given) in [
+            (colleague, Kind::Coaching, Kind::Colleague),
+            (coachee, Kind::Colleague, Kind::Coaching),
+        ] {
+            let model = Model {
+                kind: model_kind,
+                ..new_coaching_relationship(coach, other)
+            };
+            create(&db, o, model, given)
+                .await
+                .expect("the relationship is created");
+            assert_eq!(
+                relationship_kinds_between(&db, coach, other).await,
+                vec![given],
+                "given {given:?}"
+            );
+        }
     })
     .await
 }

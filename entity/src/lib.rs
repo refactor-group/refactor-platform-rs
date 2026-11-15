@@ -8,6 +8,7 @@ pub mod actions_users;
 pub mod agreements;
 pub mod coachees;
 pub mod coaches;
+pub mod coaching_relationship_kind;
 pub mod coaching_relationships;
 pub mod coaching_session_images;
 pub mod coaching_session_notices;

@@ -48,6 +48,7 @@ fn relationship(organization_id: Id, coach_id: Id, coachee_id: Id) -> Model {
         organization_id,
         coach_id,
         coachee_id,
+        kind: Kind::Coaching,
         slug: "coach-coachee".to_owned(),
         created_at: now.into(),
         updated_at: now.into(),
@@ -109,6 +110,7 @@ async fn returns_the_winner_when_a_concurrent_insert_wins_the_race() -> Result<(
         &db,
         organization_id,
         relationship(organization_id, coach.id, coachee.id),
+        Kind::Coaching,
     )
     .await?;
 

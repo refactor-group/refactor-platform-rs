@@ -9,8 +9,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use axum::http::{Method, StatusCode};
+use domain::coaching_relationship_kind::Kind;
 use domain::test_utils::sqlite::fixture::set_role;
-use domain::test_utils::sqlite::read_back::relationships_between;
+use domain::test_utils::sqlite::read_back::{relationship_kinds_between, relationships_between};
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::users::Role;
 use domain::Id;
@@ -285,6 +286,31 @@ async fn admins_create_a_relationship_once_per_pair() {
                 "{caller:?} again"
             );
         }
+    })
+    .await;
+}
+
+/// An admin's create stores a coaching relationship whatever kind the body names.
+#[tokio::test]
+async fn a_create_request_cannot_choose_the_kind() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (coach, member) = (
+            app.fixture.user(Caller::Coach),
+            app.fixture.user(Caller::Member),
+        );
+        let path = format!("/organizations/{}/coaching_relationships", app.fixture.o1);
+        let body = json!({ "coach_id": coach, "coachee_id": member, "kind": "colleague" });
+
+        let created = app
+            .send(Caller::Admin, Method::POST, &path, Some(body))
+            .await;
+        assert_eq!(created.status, StatusCode::OK);
+        assert_eq!(created.body["status_code"], 201);
+        assert_eq!(
+            relationship_kinds_between(app.db(), coach, member).await,
+            vec![Kind::Coaching]
+        );
     })
     .await;
 }

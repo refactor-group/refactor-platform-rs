@@ -68,6 +68,7 @@ mod m20261114_000002_create_coaching_session_notices;
 mod m20261114_000003_drop_notes;
 mod m20261114_000004_require_scheduled_by_on_coaching_sessions;
 mod m20261114_000005_drop_notice_given_at_from_coaching_sessions;
+mod m20261115_000000_add_kind_to_coaching_relationships;
 
 pub struct Migrator;
 
@@ -145,6 +146,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261114_000003_drop_notes::Migration),
             Box::new(m20261114_000004_require_scheduled_by_on_coaching_sessions::Migration),
             Box::new(m20261114_000005_drop_notice_given_at_from_coaching_sessions::Migration),
+            Box::new(m20261115_000000_add_kind_to_coaching_relationships::Migration),
         ]
     }
 }

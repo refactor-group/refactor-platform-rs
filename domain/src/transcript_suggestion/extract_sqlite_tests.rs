@@ -146,6 +146,7 @@ async fn fixture() -> Fixture {
         organization_id: Set(seed_organization(&db).await),
         coach_id: Set(coach.id),
         coachee_id: Set(coachee.id),
+        kind: Set(crate::coaching_relationship_kind::Kind::Coaching),
         slug: Set(format!("relationship-{relationship_id}")),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),

@@ -173,6 +173,7 @@ async fn fixture_in(db: DatabaseConnection) -> Fixture {
         organization_id: Set(organization_id),
         coach_id: Set(coach.id),
         coachee_id: Set(coachee.id),
+        kind: Set(crate::coaching_relationship_kind::Kind::Coaching),
         slug: Set(format!("relationship-{relationship_id}")),
         created_at: Set(at.into()),
         updated_at: Set(at.into()),

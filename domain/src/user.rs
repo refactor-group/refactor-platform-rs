@@ -9,6 +9,7 @@ use entity_api::{
 };
 
 use crate::{
+    coaching_relationship_kind::Kind,
     coaching_relationships,
     error::Error,
     error::{reason, DomainErrorKind, EntityErrorKind, InternalErrorKind},
@@ -158,6 +159,8 @@ pub async fn create_in_organization(
             &txn,
             organization_id,
             new_coaching_relationship(coach_id, new_user.id),
+            // No request chooses a kind yet.
+            Kind::Coaching,
         )
         .await?;
     }
@@ -167,7 +170,7 @@ pub async fn create_in_organization(
     Ok(new_user)
 }
 
-/// A relationship model for insertion. `id`, `slug` and `organization_id` are
+/// A relationship model for insertion. `id`, `slug`, `organization_id` and `kind` are
 /// set by `coaching_relationship::create`.
 pub(crate) fn new_coaching_relationship(
     coach_id: Id,
@@ -177,6 +180,7 @@ pub(crate) fn new_coaching_relationship(
     coaching_relationships::Model {
         coach_id,
         coachee_id,
+        kind: Kind::Coaching,
         organization_id: Default::default(),
         id: Default::default(),
         slug: String::new(),
