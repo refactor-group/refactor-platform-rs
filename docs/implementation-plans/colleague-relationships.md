@@ -146,8 +146,24 @@ onto extractors: "is this my own user" on the `/users/{user_id}` routes becomes
   frontend never read it. Down re-adds the column, refills it from each session's coachee
   row, and drops NOT NULL; an image rollback runs the down migration first.
 
-**2. Add `kind`** (no visible change). Postgres enum, default `coaching`, owned by `refactor`.
-`has_authority(user_id)` on the Model. `kind` in the OpenAPI schema. Down migration.
+**2. Add `kind`** (no visible change). Postgres enum `coaching_relationship_kind`
+(`coaching`, `colleague`), default `coaching`, owned by `refactor`; read-only on the Model so
+no request can set it before phase 4's gate. Down migration. `kind` in relationship responses
+and the OpenAPI schema. The types live in `entity/src/coaching_relationship_kind.rs`:
+
+- `Kind`: what is stored.
+- `Seat` (`CoachId`, `CoacheeId`): which column a participant occupies.
+- `Role` (`Coach`, `Coachee`, `Colleague`): what a participant is, derived from kind and seat,
+  never stored; lowercase on the wire.
+- A `Rules` trait, one impl per kind (`Coaching`, `Colleague`), with `role(seat)` and
+  `has_authority(seat)`. No default methods, so a new capability can't ship until every kind
+  decides it; `Kind::rules()` is the one exhaustive match from a stored kind to its rules.
+- On the Model, `seat(user_id)`, `role(user_id)` and `has_authority(user_id)` look up the seat
+  and ask the rules. A non-participant has no seat, so no role and no authority.
+
+`Role` replaces the transcript export's `SpeakerRole` and the email copy's role strings, so a
+participant's role is one type with one spelling. The `assignee` and `role` query filters stay
+apart: they select a column, not a person's role, and phases 4 and 6 change them.
 
 **3. One source of truth for relationship permissions** (no visible change). Every check that
 decides view/edit/delete through a relationship asks the Model:
