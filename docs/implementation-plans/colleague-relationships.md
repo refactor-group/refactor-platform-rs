@@ -188,7 +188,10 @@ extractors make it; the domain functions that schedule, reschedule, cancel, rese
 require it as an argument and refuse a proof for another relationship, so calling one without
 the full check does not compile, and `can_manage_sessions` is never used alone. The coach-named
 extractors (`CoachingSessionCoachAccess`, `CoachingSessionSeriesCoachAccess`) become
-manager-named ones that produce it.
+manager-named ones that produce it. The phase 0b tests call those domain functions directly
+and must not change, so the functions keep their signatures as `pub(crate)` and the public,
+proof-taking versions live in an `as_manager` submodule (`coaching_session::as_manager::delete`),
+the only path from `web`.
 
 The phase 0c extractors left these hand checks, the whole phase 3 inventory:
 
