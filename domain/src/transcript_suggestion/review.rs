@@ -18,6 +18,7 @@ use super::{
 };
 use crate::action::{self, ActionWithAssignees};
 use crate::coaching_relationship::ensure_assignees_are_members;
+use crate::coaching_relationship_kind::Seat;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::events::EventPublisher;
 use crate::status::Status as ActionStatus;
@@ -36,11 +37,13 @@ pub(crate) const MAX_LISTED: u64 = 200;
 /// date is due when no later session is scheduled.
 const FALLBACK_DUE_DAYS: i64 = 7;
 
-/// Who is acting in the session.
+/// A participant reviewing the session's suggestions, as the relationship's rules see them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Actor {
-    Coach,
-    Coachee,
+pub struct Reviewer {
+    pub user_id: Id,
+    /// The relationship's other participant.
+    pub other_id: Id,
+    pub sees_all_actions: bool,
 }
 
 /// Where a default due date came from.
@@ -181,31 +184,27 @@ pub struct Scan {
     pub status: ScanStatus,
 }
 
-/// Which participant `user_id` is; `None` when neither.
-pub fn actor_of(user_id: Id, people: People) -> Option<Actor> {
-    if user_id == people.coach_id {
-        Some(Actor::Coach)
-    } else if user_id == people.coachee_id {
-        Some(Actor::Coachee)
-    } else {
-        None
-    }
+/// `user_id` as a reviewer of `relationship`; `None` when they aren't in it.
+pub fn reviewer_of(user_id: Id, relationship: &coaching_relationships::Model) -> Option<Reviewer> {
+    relationship.seat(user_id).map(|seat| Reviewer {
+        user_id,
+        other_id: match seat {
+            Seat::CoachId => relationship.coachee_id,
+            Seat::CoacheeId => relationship.coach_id,
+        },
+        sees_all_actions: relationship.kind.rules().sees_all_actions(seat),
+    })
 }
 
-/// Whether `actor` may act on a suggestion assigned to `stored`, optionally changing it to `requested`.
+/// Whether `reviewer` may act on a suggestion assigned to `stored`, optionally changing it to `requested`.
 ///
-/// The coach may always act. The coachee may not touch a coach-only suggestion, nor add or
-/// remove the coach.
-pub fn may_act(actor: Actor, people: People, stored: &[Id], requested: Option<&[Id]>) -> bool {
-    let has_coach = |ids: &[Id]| ids.contains(&people.coach_id);
-    match actor {
-        Actor::Coach => true,
-        Actor::Coachee => {
-            let coach_only = has_coach(stored) && !stored.contains(&people.coachee_id);
-            let moves_coach = requested.is_some_and(|r| has_coach(r) != has_coach(stored));
-            !coach_only && !moves_coach
-        }
-    }
+/// One who sees all actions may always act. Anyone else may not touch a suggestion assigned only
+/// to the other participant, nor add or remove the other participant.
+pub fn may_act(reviewer: Reviewer, stored: &[Id], requested: Option<&[Id]>) -> bool {
+    let has_other = |ids: &[Id]| ids.contains(&reviewer.other_id);
+    let others_only = has_other(stored) && !stored.contains(&reviewer.user_id);
+    let moves_other = requested.is_some_and(|r| has_other(r) != has_other(stored));
+    reviewer.sees_all_actions || (!others_only && !moves_other)
 }
 
 /// The due date accept applies when a suggestion has none.
@@ -549,11 +548,10 @@ async fn authorize(
     let (session, relationship) =
         coaching_session::find_by_id_with_coaching_relationship(db, suggestion.coaching_session_id)
             .await?;
-    let people = people_of(&relationship);
-    actor_of(user.id, people)
-        .filter(|actor| may_act(*actor, people, Actions::assignees(stored), requested))
+    reviewer_of(user.id, &relationship)
+        .filter(|reviewer| may_act(*reviewer, Actions::assignees(stored), requested))
         .map(|_| (session, relationship))
-        .ok_or_else(forbidden)
+        .ok_or_else(Error::forbidden)
 }
 
 fn people_of(relationship: &coaching_relationships::Model) -> People {
@@ -678,10 +676,6 @@ fn is_not_found(error: &Error) -> bool {
         error.error_kind,
         DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::NotFound))
     )
-}
-
-fn forbidden() -> Error {
-    entity_error(EntityErrorKind::Forbidden)
 }
 
 fn conflict(message: &str) -> Error {

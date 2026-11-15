@@ -9,8 +9,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use axum::http::{Method, StatusCode};
+use domain::coaching_relationship::{create, Draft};
 use domain::coaching_relationship_kind::Kind;
-use domain::test_utils::sqlite::fixture::set_role;
+use domain::test_utils::sqlite::fixture::{archive_organization, set_role};
 use domain::test_utils::sqlite::read_back::relationships_between;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::users::Role;
@@ -452,6 +453,94 @@ async fn an_admin_of_another_org_cannot_create_a_relationship() {
         assert!(relationships_between(app.db(), coach, member)
             .await
             .is_empty());
+    })
+    .await;
+}
+
+/// An admin's create is a conflict for a self pair, a participant outside the organization,
+/// a pair already related by another kind, or an archived organization, and stores nothing.
+#[tokio::test]
+async fn an_unrelatable_pair_is_a_conflict() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let fixture = &app.fixture;
+        let (o1, admin) = (fixture.o1, fixture.user(Caller::Admin));
+        let (coach, member, outsider) = (
+            fixture.user(Caller::Coach),
+            fixture.user(Caller::Member),
+            fixture.user(Caller::Outsider),
+        );
+        let path = format!("/organizations/{o1}/coaching_relationships");
+        create(
+            app.db(),
+            o1,
+            Draft {
+                coach_id: coach,
+                coachee_id: member,
+                kind: Kind::Colleague,
+            },
+        )
+        .await
+        .expect("the colleague relationship is seeded");
+
+        for (case, coachee_id) in [
+            ("self", coach),
+            ("outsider", outsider),
+            ("another kind", member),
+        ] {
+            let before = relationships_between(app.db(), coach, coachee_id).await;
+            let (status, _) = app
+                .expect(
+                    Caller::Admin,
+                    Method::POST,
+                    &path,
+                    Some(json!({ "coach_id": coach, "coachee_id": coachee_id })),
+                )
+                .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{case}");
+            assert_eq!(
+                relationships_between(app.db(), coach, coachee_id).await,
+                before,
+                "{case}"
+            );
+        }
+
+        let other_coach = app.fixture.user(Caller::OtherCoach);
+        archive_organization(app.db(), o1, admin).await;
+        let (status, _) = app
+            .expect(
+                Caller::Admin,
+                Method::POST,
+                &path,
+                Some(json!({ "coach_id": other_coach, "coachee_id": member })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CONFLICT, "archived");
+        assert!(relationships_between(app.db(), other_coach, member)
+            .await
+            .is_empty());
+    })
+    .await;
+}
+
+/// An admin's create naming an unknown user is not found.
+#[tokio::test]
+async fn a_create_naming_an_unknown_user_is_not_found() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let coach = app.fixture.user(Caller::Coach);
+        let path = format!("/organizations/{}/coaching_relationships", app.fixture.o1);
+
+        let (status, _) = app
+            .expect(
+                Caller::Admin,
+                Method::POST,
+                &path,
+                Some(json!({ "coach_id": coach, "coachee_id": Id::new_v4() })),
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
     })
     .await;
 }

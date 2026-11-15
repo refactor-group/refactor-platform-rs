@@ -432,7 +432,7 @@ pub async fn create(...) -> Result<impl IntoResponse, Error> {
 
 **Why**: Busy controller code obscures responsibility boundary leaks. When side-effect handling accumulates in controllers, it becomes harder to spot when they are doing work that belongs in a lower layer. Domain functions that perform best-effort operations (like sending emails) should return `()` and handle errors internally.
 
-**Body-carried ids.** An extractor sees only the path and query, so when the resource that grants access is named in the JSON body (a `create` naming its `coaching_session_id` or `coaching_relationship_id`), the handler authorizes inline as its first statement, with a shared `authorize_*` helper from `web/src/extractors/` (such as `authorize_session` or `authorize_relationship_coach`). Every other check, such as whether two ids in the body belong together, is a business rule and goes in the domain function.
+**Body-carried ids.** An extractor sees only the path and query, so when the resource that grants access is named in the JSON body (a `create` naming its `coaching_session_id` or `coaching_relationship_id`), the handler authorizes inline as its first statement, with a shared `authorize_*` helper from `web/src/extractors/` (such as `authorize_session` or `authorize_scheduling`). Every other check, such as whether two ids in the body belong together, is a business rule and goes in the domain function.
 
 ### Visibility Rules
 

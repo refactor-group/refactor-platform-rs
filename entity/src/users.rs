@@ -86,7 +86,7 @@ impl Model {
     /// no organization. An organization-scoped `SuperAdmin` row does not count.
     ///
     /// The single definition every authorization check uses, so that a decision
-    /// made per-row (`coaching_relationships::Model::grants_access_to`) and one made
+    /// made per-row (`coaching_relationships::Model::is_participant_and_member`) and one made
     /// corpus-wide (search's `Visibility`) can never disagree. Reads the preloaded
     /// `roles`, so it is `false` for a user loaded without them.
     pub fn is_super_admin(&self) -> bool {

@@ -108,3 +108,34 @@ async fn sd_03_a_session_without_content_is_deleted_with_its_topics_and_views() 
     })
     .await;
 }
+
+/// A proof for one relationship cannot delete another's session.
+#[tokio::test]
+async fn a_permit_for_another_relationship_cannot_delete_the_session() {
+    within_time_limit(async {
+        let db = database().await;
+        let (theirs, _) = seed_coaching_session(&db).await;
+        let (target, _) = seed_coaching_session(&db).await;
+        let their_relationship = read(&db, theirs)
+            .await
+            .expect("their session exists")
+            .coaching_relationship_id;
+        let permit = crate::test_utils::proof::coach_permit(
+            coaching_relationship::find_by_id(&db, their_relationship)
+                .await
+                .expect("their relationship reads"),
+        );
+        let session = read(&db, target).await.expect("the session exists");
+
+        let err = with_permit::delete(&db, &Config::default(), &permit, &session)
+            .await
+            .expect_err("another relationship's session is refused");
+
+        assert!(matches!(
+            err.error_kind,
+            DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Forbidden))
+        ));
+        assert_eq!(read(&db, target).await, Some(session));
+    })
+    .await;
+}

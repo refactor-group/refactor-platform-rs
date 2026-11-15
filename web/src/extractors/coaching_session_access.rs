@@ -12,7 +12,10 @@ use crate::{
     extractors::{authenticated_user::AuthenticatedUser, lookup_rejection, RejectionType},
     AppState,
 };
-use domain::{coaching_relationships, coaching_sessions, users};
+use domain::{
+    coaching_relationships::{self, SchedulingPermit},
+    coaching_sessions, users,
+};
 use log::*;
 
 /// Extractor that verifies the authenticated user is a participant (coach or coachee)
@@ -36,10 +39,12 @@ pub(crate) struct CoachingSessionQueryAccess(
     pub coaching_relationships::Model,
 );
 
-/// Coach-only [`CoachingSessionContextAccess`]: the caller must coach the session's relationship.
-pub(crate) struct CoachingSessionCoachAccess(
+/// For routes that change a session's schedule (edit, cancel, re-invite): loads the session
+/// named in the path and issues the caller a scheduling permit for its relationship. 404 when
+/// the session doesn't exist, 403 when the caller may not schedule it.
+pub(crate) struct CoachingSessionSchedulingAccess(
     pub coaching_sessions::Model,
-    pub coaching_relationships::Model,
+    pub SchedulingPermit,
 );
 
 #[derive(Deserialize)]
@@ -76,7 +81,7 @@ where
 }
 
 #[async_trait]
-impl<S> FromRequestParts<S> for CoachingSessionCoachAccess
+impl<S> FromRequestParts<S> for CoachingSessionSchedulingAccess
 where
     AppState: FromRef<S>,
     S: Send + Sync,
@@ -84,23 +89,25 @@ where
     type Rejection = RejectionType;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let (session, relationship) = authorize(parts, &AppState::from_ref(state)).await?;
-        let AuthenticatedUser(user) = AuthenticatedUser::from_request_parts(parts, state).await?;
+        let state = AppState::from_ref(state);
+        let (user, coaching_session_id) = caller_and_path_session(parts, &state).await?;
+        let (session, relationship) = find_session(&state, coaching_session_id).await?;
         let operation = format!("{} {}", parts.method, parts.uri.path());
+        let relationship_id = relationship.id;
 
-        if relationship.coach_id != user.id {
+        let Some(permit) = SchedulingPermit::verify(relationship, &user) else {
             warn!(
-                "{operation} auth denied (not coach): coaching_session_id={} relationship_id={} user_id={}",
-                session.id, relationship.id, user.id
+                "{operation} auth denied (not permitted to schedule): coaching_session_id={} relationship_id={relationship_id} user_id={}",
+                session.id, user.id
             );
             return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
-        }
+        };
 
         debug!(
-            "{operation} auth passed: coaching_session_id={} relationship_id={} user_id={}",
-            session.id, relationship.id, user.id
+            "{operation} auth passed: coaching_session_id={} relationship_id={relationship_id} user_id={}",
+            session.id, user.id
         );
-        Ok(CoachingSessionCoachAccess(session, relationship))
+        Ok(CoachingSessionSchedulingAccess(session, permit))
     }
 }
 
@@ -127,11 +134,20 @@ where
 }
 
 /// Loads the session named in the path with its relationship, and admits the caller only if
-/// the relationship grants them access.
+/// they are a participant still in the relationship's organization.
 async fn authorize(
     parts: &mut Parts,
     state: &AppState,
 ) -> Result<(coaching_sessions::Model, coaching_relationships::Model), RejectionType> {
+    let (user, coaching_session_id) = caller_and_path_session(parts, state).await?;
+    authorize_session(state, &user, coaching_session_id).await
+}
+
+/// The authenticated caller and the session id named in the path.
+async fn caller_and_path_session(
+    parts: &mut Parts,
+    state: &AppState,
+) -> Result<(users::Model, Id), RejectionType> {
     let AuthenticatedUser(authenticated_user) =
         AuthenticatedUser::from_request_parts(parts, state).await?;
 
@@ -161,31 +177,39 @@ async fn authorize(
             )
         })?;
 
-    authorize_session(state, &authenticated_user, coaching_session_id).await
+    Ok((authenticated_user, coaching_session_id))
 }
 
-/// Loads the session and its relationship, and admits `user` only if the relationship
-/// grants them access.
+/// Loads the session and its relationship, and admits `user` only if they are a participant
+/// still in the relationship's organization.
 pub(crate) async fn authorize_session(
     state: &AppState,
     user: &users::Model,
     coaching_session_id: Id,
 ) -> Result<(coaching_sessions::Model, coaching_relationships::Model), RejectionType> {
-    debug!("Checking coaching session access for coaching_session_id={coaching_session_id}");
-
     let (coaching_session, coaching_relationship) =
-        coaching_session::find_by_id_with_coaching_relationship(
-            state.db_conn_ref(),
-            coaching_session_id,
-        )
-        .await
-        .map_err(lookup_rejection)?;
+        find_session(state, coaching_session_id).await?;
 
-    if !coaching_relationship.grants_access_to(user) {
+    if !coaching_relationship.is_participant_and_member(user) {
         return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
     }
 
     Ok((coaching_session, coaching_relationship))
+}
+
+/// Loads the session and its relationship; an unknown session is a 404.
+async fn find_session(
+    state: &AppState,
+    coaching_session_id: Id,
+) -> Result<(coaching_sessions::Model, coaching_relationships::Model), RejectionType> {
+    debug!("Checking coaching session access for coaching_session_id={coaching_session_id}");
+
+    coaching_session::find_by_id_with_coaching_relationship(
+        state.db_conn_ref(),
+        coaching_session_id,
+    )
+    .await
+    .map_err(lookup_rejection)
 }
 
 #[cfg(test)]

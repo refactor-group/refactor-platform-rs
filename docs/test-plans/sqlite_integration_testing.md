@@ -165,7 +165,7 @@ extractor cannot break one.
   only its own images, and deleting a user removes the images they uploaded.
 - **Search visibility** (`domain/src/search_sqlite_tests.rs`): over an access matrix
   across two organizations, the relationships search scopes on (`visible_to`) are exactly
-  the ones `grants_access_to` allows, for every caller except super admins, who search
+  the ones `is_participant_and_member` allows, for every caller except super admins, who search
   everything.
 - **Nearest sessions and the prior/next lookups**
   (`domain/src/coaching_session_sqlite_tests.rs`): the `/nearest` window keeps the sessions

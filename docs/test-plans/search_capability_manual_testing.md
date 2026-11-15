@@ -394,7 +394,7 @@ participant only in R1).
 ## 7. Scenario F: org admins get no relationship visibility
 
 Logged in as **Alex** (Acme admin, participant in nothing). Search mirrors
-direct access (`grants_access_to`): the `Admin` role grants no relationship
+direct access (`is_participant_and_member`): the `Admin` role grants no relationship
 visibility, so search never surfaces a session Alex would get a 403 opening.
 
 | Probe | Expected |

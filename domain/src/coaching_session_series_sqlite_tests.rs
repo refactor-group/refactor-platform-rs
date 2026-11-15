@@ -14,6 +14,7 @@ use sea_orm::prelude::DateTimeWithTimeZone;
 use sea_orm::{ActiveModelTrait, ActiveValue::Unchanged, DatabaseConnection, EntityTrait, Set};
 
 use super::*;
+use crate::error::{EntityErrorKind, InternalErrorKind};
 use crate::test_utils::sqlite::fixture::move_series_into_the_past;
 use crate::test_utils::sqlite::{
     database, mirror_migration_defaults, seed_action, seed_agreement, seed_coaching_session,
@@ -767,6 +768,41 @@ async fn a_following_reschedule_restamps_only_the_participants_it_reached() {
                 }
             }
         }
+    })
+    .await;
+}
+
+/// A proof for one relationship cannot delete another's series.
+#[tokio::test]
+async fn a_permit_for_another_relationship_cannot_delete_the_series() {
+    within_time_limit(async {
+        let db = database().await;
+        let theirs = seed_series(&db).await;
+        let target = seed_series(&db).await;
+        let permit = crate::test_utils::proof::coach_permit(
+            coaching_relationship::find_by_id(&db, theirs.relationship_id)
+                .await
+                .expect("their relationship reads"),
+        );
+        let series = find_by_id(&db, target.series_id)
+            .await
+            .expect("the series reads");
+
+        let err =
+            with_permit::delete_with_future_sessions(&db, &Config::default(), &permit, &series)
+                .await
+                .expect_err("another relationship's series is refused");
+
+        assert!(matches!(
+            err.error_kind,
+            DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Forbidden))
+        ));
+        assert_eq!(
+            find_by_id(&db, target.series_id)
+                .await
+                .expect("the series survives"),
+            series
+        );
     })
     .await;
 }

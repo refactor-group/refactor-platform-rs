@@ -19,29 +19,33 @@ use service::config::ApiVersion;
 
 use log::*;
 
-/// Used by the batch handler to gate the HTTP-layer `assignee` scope check:
-/// coach-anywhere callers bypass it; coachee-only callers go through it.
-fn caller_is_coach_in_any(relationships: &[coaching_relationships::Model], user_id: Id) -> bool {
+/// Used by the batch handler to gate the HTTP-layer `assignee` scope check: callers who
+/// see all actions in any relationship bypass it; everyone else goes through it.
+fn caller_sees_all_actions_in_any(
+    relationships: &[coaching_relationships::Model],
+    user_id: Id,
+) -> bool {
     relationships
         .iter()
-        .any(|relationship| relationship.coach_id == user_id)
+        .any(|relationship| relationship.sees_all_actions(user_id))
 }
 
-/// 403s a coachee caller that scopes `assignee` to anyone other than self.
+/// 403s a caller limited to their own actions that scopes `assignee` to anyone other than
+/// self.
 fn check_assignee_visibility(
     caller_id: Id,
     caller_visibility: &ActionApi::CallerVisibility,
     assignee_scope: Option<&ActionApi::AssigneeScope>,
 ) -> Result<(), Error> {
-    let coachee_self_id = match caller_visibility {
+    let own_id = match caller_visibility {
         ActionApi::CallerVisibility::Unrestricted => return Ok(()),
-        ActionApi::CallerVisibility::CoacheeSelf { user_id } => *user_id,
+        ActionApi::CallerVisibility::OwnAndUnassigned { user_id } => *user_id,
     };
 
     let permitted = match assignee_scope {
         None => true,
         Some(ActionApi::AssigneeScope::Coachee) => true,
-        Some(ActionApi::AssigneeScope::User(id)) => *id == coachee_self_id,
+        Some(ActionApi::AssigneeScope::User(id)) => *id == own_id,
         Some(ActionApi::AssigneeScope::Coach) => false,
     };
 
@@ -49,7 +53,7 @@ fn check_assignee_visibility(
         Ok(())
     } else {
         warn!(
-            "Coachee caller {caller_id} attempted to scope assignee outside their visibility: {assignee_scope:?}"
+            "Caller {caller_id}, limited to their own and unassigned actions, attempted to scope assignee outside them: {assignee_scope:?}"
         );
         Err(WebError::Web(WebErrorKind::ForbiddenAssigneeScope))
     }
@@ -162,13 +166,11 @@ pub async fn index(
     )
     .await?;
 
-    // Authorize the assignee scope against the caller's role in any of their
-    // relationships. If the caller is *only* a coachee across the returned
-    // relationships, an `assignee=coach` request is forbidden. If they are a
-    // coach in at least one relationship, the assignee scope is permitted.
-    if !caller_is_coach_in_any(&relationships, user.id) {
-        let coachee_visibility = ActionApi::CallerVisibility::CoacheeSelf { user_id: user.id };
-        check_assignee_visibility(user.id, &coachee_visibility, assignee_scope.as_ref())?;
+    // A caller who sees all actions in at least one relationship may use any assignee
+    // scope; one limited to their own actions everywhere may not scope to anyone else.
+    if !caller_sees_all_actions_in_any(&relationships, user.id) {
+        let own_visibility = ActionApi::CallerVisibility::OwnAndUnassigned { user_id: user.id };
+        check_assignee_visibility(user.id, &own_visibility, assignee_scope.as_ref())?;
     }
 
     let relationship_actions = ActionApi::find_by_user_relationships(
@@ -212,53 +214,53 @@ mod tests {
         }
     }
 
-    // ─── caller_is_coach_in_any tests ─────────────────────────────────
+    // ─── caller_sees_all_actions_in_any tests ─────────────────────────────────
 
     #[test]
-    fn caller_is_coach_in_any_empty_relationships_is_false() {
+    fn caller_sees_all_actions_in_any_empty_relationships_is_false() {
         let user_id = Id::new_v4();
-        assert!(!caller_is_coach_in_any(&[], user_id));
+        assert!(!caller_sees_all_actions_in_any(&[], user_id));
     }
 
     #[test]
-    fn caller_is_coach_in_any_only_coachee_is_false() {
+    fn caller_sees_all_actions_in_any_only_coachee_is_false() {
         let user_id = Id::new_v4();
         let other = Id::new_v4();
         let rels = vec![
             make_relationship(other, user_id),
             make_relationship(other, user_id),
         ];
-        assert!(!caller_is_coach_in_any(&rels, user_id));
+        assert!(!caller_sees_all_actions_in_any(&rels, user_id));
     }
 
     #[test]
-    fn caller_is_coach_in_any_coach_in_at_least_one_is_true() {
+    fn caller_sees_all_actions_in_any_coach_in_at_least_one_is_true() {
         let user_id = Id::new_v4();
         let other = Id::new_v4();
         let rels = vec![
             make_relationship(other, user_id), // coachee here
             make_relationship(user_id, other), // coach here
         ];
-        assert!(caller_is_coach_in_any(&rels, user_id));
+        assert!(caller_sees_all_actions_in_any(&rels, user_id));
     }
 
     #[test]
-    fn caller_is_coach_in_any_coach_in_all_is_true() {
+    fn caller_sees_all_actions_in_any_coach_in_all_is_true() {
         let user_id = Id::new_v4();
         let rels = vec![
             make_relationship(user_id, Id::new_v4()),
             make_relationship(user_id, Id::new_v4()),
         ];
-        assert!(caller_is_coach_in_any(&rels, user_id));
+        assert!(caller_sees_all_actions_in_any(&rels, user_id));
     }
 
     #[test]
-    fn caller_is_coach_in_any_unrelated_user_is_false() {
+    fn caller_sees_all_actions_in_any_unrelated_user_is_false() {
         let user_id = Id::new_v4();
         let other_coach = Id::new_v4();
         let other_coachee = Id::new_v4();
         let rels = vec![make_relationship(other_coach, other_coachee)];
-        assert!(!caller_is_coach_in_any(&rels, user_id));
+        assert!(!caller_sees_all_actions_in_any(&rels, user_id));
     }
 
     #[test]
@@ -282,16 +284,16 @@ mod tests {
     }
 
     #[test]
-    fn coachee_self_allowed_when_assignee_omitted() {
+    fn own_and_unassigned_allowed_when_assignee_omitted() {
         let caller = Id::new_v4();
-        let vis = ActionApi::CallerVisibility::CoacheeSelf { user_id: caller };
+        let vis = ActionApi::CallerVisibility::OwnAndUnassigned { user_id: caller };
         assert!(check_assignee_visibility(caller, &vis, None).is_ok());
     }
 
     #[test]
-    fn coachee_self_allowed_with_coachee_scope() {
+    fn own_and_unassigned_allowed_with_coachee_scope() {
         let caller = Id::new_v4();
-        let vis = ActionApi::CallerVisibility::CoacheeSelf { user_id: caller };
+        let vis = ActionApi::CallerVisibility::OwnAndUnassigned { user_id: caller };
         assert!(
             check_assignee_visibility(caller, &vis, Some(&ActionApi::AssigneeScope::Coachee))
                 .is_ok()
@@ -299,9 +301,9 @@ mod tests {
     }
 
     #[test]
-    fn coachee_self_allowed_with_own_uuid_scope() {
+    fn own_and_unassigned_allowed_with_own_uuid_scope() {
         let caller = Id::new_v4();
-        let vis = ActionApi::CallerVisibility::CoacheeSelf { user_id: caller };
+        let vis = ActionApi::CallerVisibility::OwnAndUnassigned { user_id: caller };
         assert!(check_assignee_visibility(
             caller,
             &vis,
@@ -311,9 +313,9 @@ mod tests {
     }
 
     #[test]
-    fn coachee_self_forbidden_with_coach_scope() {
+    fn own_and_unassigned_forbidden_with_coach_scope() {
         let caller = Id::new_v4();
-        let vis = ActionApi::CallerVisibility::CoacheeSelf { user_id: caller };
+        let vis = ActionApi::CallerVisibility::OwnAndUnassigned { user_id: caller };
         assert_forbidden(check_assignee_visibility(
             caller,
             &vis,
@@ -322,10 +324,10 @@ mod tests {
     }
 
     #[test]
-    fn coachee_self_forbidden_with_other_user_uuid_scope() {
+    fn own_and_unassigned_forbidden_with_other_user_uuid_scope() {
         let caller = Id::new_v4();
         let other = Id::new_v4();
-        let vis = ActionApi::CallerVisibility::CoacheeSelf { user_id: caller };
+        let vis = ActionApi::CallerVisibility::OwnAndUnassigned { user_id: caller };
         assert_forbidden(check_assignee_visibility(
             caller,
             &vis,

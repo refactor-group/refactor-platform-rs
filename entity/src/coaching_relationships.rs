@@ -101,11 +101,19 @@ impl Model {
     }
 
     /// Whether `user_id` may schedule, reschedule, cancel, run series, set meeting links and
-    /// delete any topic in this relationship. Says nothing about organization membership:
-    /// combine with `grants_access_to` where that matters.
-    pub fn can_manage_sessions(&self, user_id: Id) -> bool {
+    /// delete any topic in this relationship. Says nothing about organization membership, so
+    /// outside callers use [`SchedulingPermit::verify`] rather than this alone.
+    pub fn can_schedule_sessions(&self, user_id: Id) -> bool {
         self.seat(user_id)
-            .is_some_and(|seat| self.kind.rules().can_manage_sessions(seat))
+            .is_some_and(|seat| self.kind.rules().can_schedule_sessions(seat))
+    }
+
+    /// Whether `user_id` sees every action in this relationship, not only their own and
+    /// unassigned ones. Says nothing about organization membership: combine with
+    /// `is_participant_and_member` where that matters.
+    pub fn sees_all_actions(&self, user_id: Id) -> bool {
+        self.seat(user_id)
+            .is_some_and(|seat| self.kind.rules().sees_all_actions(seat))
     }
 
     /// Returns `true` if the given user may access this relationship's data.
@@ -114,7 +122,7 @@ impl Model {
     /// organization, so a user removed from the organization loses access to
     /// coaching history they took part in. A global SuperAdmin participant keeps
     /// access without holding an organization role.
-    pub fn grants_access_to(&self, user: &users::Model) -> bool {
+    pub fn is_participant_and_member(&self, user: &users::Model) -> bool {
         self.includes_user(user.id)
             && (user.is_super_admin()
                 || user
@@ -124,9 +132,42 @@ impl Model {
     }
 }
 
+/// Permission for one user to create, edit, reschedule, cancel and re-invite one relationship's
+/// sessions. Only [`SchedulingPermit::verify`] makes one, after checking the user is in the
+/// relationship, still in its organization, and in a seat whose rules let them schedule.
+/// Functions that change the schedule take a permit, so they can't be called without that check.
+#[derive(Debug, Clone)]
+pub struct SchedulingPermit {
+    relationship: Model,
+    user_id: Id,
+}
+
+impl SchedulingPermit {
+    /// Issues `user` a permit for `relationship`, or `None` when they may not schedule its
+    /// sessions: not in it, no longer in its organization, or in a seat that can't schedule.
+    pub fn verify(relationship: Model, user: &users::Model) -> Option<SchedulingPermit> {
+        (relationship.is_participant_and_member(user)
+            && relationship.can_schedule_sessions(user.id))
+        .then_some(SchedulingPermit {
+            relationship,
+            user_id: user.id,
+        })
+    }
+
+    /// The relationship whose sessions this permit lets its user schedule.
+    pub fn relationship(&self) -> &Model {
+        &self.relationship
+    }
+
+    /// The user this permit was issued to.
+    pub fn user_id(&self) -> Id {
+        self.user_id
+    }
+}
+
 /// A caller's relationship visibility, derived once per request from their
 /// preloaded roles (see `domain::search::visibility_for`). Input to [`visible_to`], the
-/// corpus-wide query form of [`Model::grants_access_to`].
+/// corpus-wide query form of [`Model::is_participant_and_member`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Visibility {
     pub user_id: Id,
@@ -139,14 +180,14 @@ pub struct Visibility {
     pub member_org_ids: Vec<Id>,
 }
 
-/// The query form of [`Model::grants_access_to`]: a `Condition` selecting every
+/// The query form of [`Model::is_participant_and_member`]: a `Condition` selecting every
 /// coaching relationship the caller may access, evaluated corpus-wide.
 ///
-/// Mirrors `grants_access_to` exactly — participant (coach or coachee) AND
+/// Mirrors `is_participant_and_member` exactly — participant (coach or coachee) AND
 /// current member of the relationship's organization. Super admins skip this condition
 /// entirely (callers must not apply it when `visibility.is_super_admin`).
 ///
-/// Kept beside `grants_access_to` deliberately: these are the two expressions
+/// Kept beside `is_participant_and_member` deliberately: these are the two expressions
 /// of one rule, and `domain/src/search_sqlite_tests.rs` pins them together over
 /// an access matrix. Change one, mirror the other. The equivalence holds for
 /// every caller except super admins, who skip this condition and search every
@@ -246,18 +287,21 @@ mod tests {
             relationship.role(coach),
             Some(coaching_relationship_kind::Role::Coach)
         );
-        assert!(relationship.can_manage_sessions(coach));
+        assert!(relationship.can_schedule_sessions(coach));
 
         assert_eq!(relationship.seat(coachee), Some(Seat::CoacheeId));
         assert_eq!(
             relationship.role(coachee),
             Some(coaching_relationship_kind::Role::Coachee)
         );
-        assert!(!relationship.can_manage_sessions(coachee));
+        assert!(!relationship.can_schedule_sessions(coachee));
+        assert!(relationship.sees_all_actions(coach));
+        assert!(!relationship.sees_all_actions(coachee));
 
         assert_eq!(relationship.seat(stranger), None);
         assert_eq!(relationship.role(stranger), None);
-        assert!(!relationship.can_manage_sessions(stranger));
+        assert!(!relationship.can_schedule_sessions(stranger));
+        assert!(!relationship.sees_all_actions(stranger));
     }
 
     #[test]
@@ -270,7 +314,7 @@ mod tests {
             relationship.role(user),
             Some(coaching_relationship_kind::Role::Coach)
         );
-        assert!(relationship.can_manage_sessions(user));
+        assert!(relationship.can_schedule_sessions(user));
     }
 
     #[test]
@@ -284,11 +328,13 @@ mod tests {
                 relationship.role(user),
                 Some(coaching_relationship_kind::Role::Colleague)
             );
-            assert!(relationship.can_manage_sessions(user));
+            assert!(relationship.can_schedule_sessions(user));
+            assert!(relationship.sees_all_actions(user));
         }
         assert_eq!(relationship.seat(stranger), None);
         assert_eq!(relationship.role(stranger), None);
-        assert!(!relationship.can_manage_sessions(stranger));
+        assert!(!relationship.can_schedule_sessions(stranger));
+        assert!(!relationship.sees_all_actions(stranger));
     }
 
     #[test]
@@ -304,7 +350,7 @@ mod tests {
             (&solo, coach),
         ] {
             assert_eq!(
-                relationship.can_manage_sessions(user),
+                relationship.can_schedule_sessions(user),
                 user == relationship.coach_id,
                 "{user}"
             );

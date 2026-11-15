@@ -1,4 +1,5 @@
 pub(crate) mod recurrence;
+pub mod with_permit;
 
 use crate::coaching_relationship::{coachee_not_a_member, ensure_coachee_is_member};
 use crate::coaching_relationships;
@@ -81,7 +82,7 @@ impl SessionDate {
 
 /// Creates a standalone session scheduled by `acting_user_id`. Any scheduler or link creator
 /// on `coaching_session_model` is ignored.
-pub async fn create(
+pub(crate) async fn create(
     db: &DatabaseConnection,
     config: &Config,
     event_publisher: &EventPublisher,
@@ -188,7 +189,7 @@ pub async fn create(
 /// `coaching_session_series` row (`series_id`); the [`crate::coaching_session_series`]
 /// orchestration module is the only call-site that should reach this helper
 /// directly.
-pub async fn bulk_create_recurring(
+pub(crate) async fn bulk_create_recurring(
     db: &impl sea_orm::ConnectionTrait,
     coaching_relationship_id: Id,
     coach_id: Id,
@@ -408,7 +409,7 @@ where
 
 /// Applies `params` to session `id`. A change to its start or length records
 /// `acting_user_id` as its scheduler, and a change to its link as the link's creator.
-pub async fn update(
+pub(crate) async fn update(
     db: &DatabaseConnection,
     id: Id,
     acting_user_id: Id,
@@ -561,7 +562,7 @@ pub async fn update_title(
     Ok(coaching_session)
 }
 
-pub async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<(), Error> {
+pub(crate) async fn delete(db: &DatabaseConnection, config: &Config, id: Id) -> Result<(), Error> {
     let coaching_session = find_by_id(db, id).await?;
     debug!(
         "Domain delete coaching_session id={id} relationship_id={} tiptap_doc={:?}",
@@ -629,7 +630,11 @@ async fn delete_notes_document(config: &Config, coaching_session_id: Id, documen
 /// invite is the series', so it is resent from there. A legacy member never had a series
 /// invite and goes out standalone. Refused when the coachee is no longer in the
 /// organization.
-pub async fn resend_invite(db: &DatabaseConnection, config: &Config, id: Id) -> Result<(), Error> {
+pub(crate) async fn resend_invite(
+    db: &DatabaseConnection,
+    config: &Config,
+    id: Id,
+) -> Result<(), Error> {
     let session = find_by_id(db, id).await?;
     if session.date <= chrono::Utc::now().naive_utc() {
         return Err(Error::conflict_because(

@@ -5,7 +5,11 @@ use axum::{
     extract::{FromRef, FromRequestParts, Path, Query},
     http::{request::Parts, StatusCode},
 };
-use domain::{coaching_relationship as CoachingRelationshipApi, coaching_relationships, users, Id};
+use domain::{
+    coaching_relationship as CoachingRelationshipApi,
+    coaching_relationships::{self, SchedulingPermit},
+    users, Id,
+};
 use serde::Deserialize;
 
 use crate::{
@@ -79,7 +83,7 @@ where
             }
         }
 
-        if !relationship.grants_access_to(&authenticated_user) {
+        if !relationship.is_participant_and_member(&authenticated_user) {
             return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
         }
 
@@ -123,39 +127,45 @@ where
     }
 }
 
-/// Loads the relationship and admits `user` only if it grants them access.
+/// Loads the relationship and admits `user` only if they are a participant still in its
+/// organization.
 pub(crate) async fn authorize_relationship(
     state: &AppState,
     user: &users::Model,
     coaching_relationship_id: Id,
 ) -> Result<coaching_relationships::Model, RejectionType> {
-    debug!("Checking coaching relationship access for relationship_id={coaching_relationship_id}");
+    let relationship = find_relationship(state, coaching_relationship_id).await?;
 
-    let relationship =
-        CoachingRelationshipApi::find_by_id(state.db_conn_ref(), coaching_relationship_id)
-            .await
-            .map_err(|e| lookup_rejection(e.into()))?;
-
-    if !relationship.grants_access_to(user) {
+    if !relationship.is_participant_and_member(user) {
         return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
     }
 
     Ok(relationship)
 }
 
-/// `authorize_relationship`, then admits only the relationship's coach.
-pub(crate) async fn authorize_relationship_coach(
+/// Loads the relationship and issues `user` a scheduling permit for it. 404 when the relationship
+/// doesn't exist, 403 when `user` may not schedule its sessions.
+pub(crate) async fn authorize_scheduling(
     state: &AppState,
     user: &users::Model,
     coaching_relationship_id: Id,
+) -> Result<SchedulingPermit, RejectionType> {
+    let relationship = find_relationship(state, coaching_relationship_id).await?;
+
+    SchedulingPermit::verify(relationship, user)
+        .ok_or_else(|| (StatusCode::FORBIDDEN, "FORBIDDEN".to_string()))
+}
+
+/// Loads the relationship; an unknown one is a 404.
+async fn find_relationship(
+    state: &AppState,
+    coaching_relationship_id: Id,
 ) -> Result<coaching_relationships::Model, RejectionType> {
-    let relationship = authorize_relationship(state, user, coaching_relationship_id).await?;
+    debug!("Checking coaching relationship access for relationship_id={coaching_relationship_id}");
 
-    if relationship.coach_id != user.id {
-        return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
-    }
-
-    Ok(relationship)
+    CoachingRelationshipApi::find_by_id(state.db_conn_ref(), coaching_relationship_id)
+        .await
+        .map_err(|e| lookup_rejection(e.into()))
 }
 
 #[cfg(test)]

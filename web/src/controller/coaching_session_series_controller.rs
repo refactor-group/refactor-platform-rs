@@ -1,10 +1,10 @@
 use crate::controller::ApiResponse;
 use crate::extractors::coaching_session_series_access::{
-    CoachingSessionSeriesAccess, CoachingSessionSeriesCoachAccess,
+    CoachingSessionSeriesAccess, CoachingSessionSeriesSchedulingAccess,
 };
 use crate::extractors::{
     authenticated_user::AuthenticatedUser,
-    coaching_relationship_access::{authorize_relationship_coach, CoachingRelationshipQueryAccess},
+    coaching_relationship_access::{authorize_scheduling, CoachingRelationshipQueryAccess},
     compare_api_version::CompareApiVersion,
 };
 use crate::params::coaching_session_series::{
@@ -41,7 +41,7 @@ pub struct SeriesWithSessions {
     responses(
         (status = 201, description = "Series created", body = SeriesWithSessions),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden — not the coach on the target relationship"),
+        (status = 403, description = "Forbidden — not permitted to schedule the target relationship's sessions"),
         (status = 404, description = "Coaching relationship not found"),
         (status = 409, description = "The coachee is no longer a member of the organization; `details.reason` is `coachee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status = 422, description = "Invalid recurrence rule"),
@@ -57,21 +57,20 @@ pub async fn create(
 ) -> Result<Response, Error> {
     debug!("POST create coaching_session_series: {params:?}");
 
-    if let Err(rejection) =
-        authorize_relationship_coach(&app_state, &user, params.coaching_relationship_id).await
-    {
-        return Ok(rejection.into_response());
-    }
+    let permit =
+        match authorize_scheduling(&app_state, &user, params.coaching_relationship_id).await {
+            Ok(permit) => permit,
+            Err(rejection) => return Ok(rejection.into_response()),
+        };
 
     let db = app_state.db_conn_ref();
 
     let requested_duration = CoachingSessionApi::parse_duration_minutes(params.duration_minutes)?;
 
-    let (series, sessions) = CoachingSessionSeriesApi::create_with_sessions(
+    let (series, sessions) = CoachingSessionSeriesApi::with_permit::create_with_sessions(
         db,
         &app_state.config,
-        params.coaching_relationship_id,
-        user.id,
+        &permit,
         params.start_at,
         params.recurrence,
         requested_duration,
@@ -156,7 +155,7 @@ pub async fn index(
     responses(
         (status = 200, description = "Rescheduled", body = SeriesWithSessions),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden — not the coach on the relationship"),
+        (status = 403, description = "Forbidden — not permitted to schedule the relationship's sessions"),
         (status = 409, description = "The coachee is no longer a member of the organization; `details.reason` is `coachee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status = 422, description = "Invalid recurrence rule")
     ),
@@ -164,9 +163,8 @@ pub async fn index(
 )]
 pub async fn update(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    CoachingSessionSeriesCoachAccess(series): CoachingSessionSeriesCoachAccess,
+    CoachingSessionSeriesSchedulingAccess(series, permit): CoachingSessionSeriesSchedulingAccess,
     Json(params): Json<RescheduleParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!(
@@ -177,11 +175,11 @@ pub async fn update(
     let db = app_state.db_conn_ref();
     let requested_duration = CoachingSessionApi::parse_duration_minutes(params.duration_minutes)?;
 
-    let rescheduled = CoachingSessionSeriesApi::reschedule(
+    let rescheduled = CoachingSessionSeriesApi::with_permit::reschedule(
         db,
         &app_state.config,
-        series.id,
-        user.id,
+        &permit,
+        &series,
         params.start_at,
         params.recurrence,
         requested_duration,
@@ -215,7 +213,7 @@ pub async fn update(
         (status = 200, description = "Rescheduled; `series` holds the moved sessions", body = SeriesWithSessions),
         (status = 400, description = "Missing or unsupported API version header (plain text)"),
         (status = 401, description = "Unauthorized (plain text)"),
-        (status = 403, description = "Forbidden: not the coach on the relationship (plain text)"),
+        (status = 403, description = "Forbidden: not permitted to schedule the relationship's sessions (plain text)"),
         (status = 404, description = "Not found (plain text)"),
         (status = 409, description = "Leftover sessions have content. JSON `{status_code, error: \"conflict\", message, details: {reason: \"sessions_have_content\", coaching_session_ids}}`, or the coachee is no longer a member of the organization: `details: {reason: \"coachee_not_a_member\", user_id, organization_id}`"),
         (status = 422, description = "Invalid session, start, duration or recurrence rule. JSON `{status_code, error: \"validation_error\", message}`, or plain text for a malformed body")
@@ -224,9 +222,8 @@ pub async fn update(
 )]
 pub async fn reschedule_following(
     CompareApiVersion(_v): CompareApiVersion,
-    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
-    CoachingSessionSeriesCoachAccess(series): CoachingSessionSeriesCoachAccess,
+    CoachingSessionSeriesSchedulingAccess(series, permit): CoachingSessionSeriesSchedulingAccess,
     Json(params): Json<RescheduleFollowingParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!(
@@ -234,11 +231,11 @@ pub async fn reschedule_following(
         series.id
     );
 
-    let rescheduled = CoachingSessionSeriesApi::reschedule_following(
+    let rescheduled = CoachingSessionSeriesApi::with_permit::reschedule_following(
         app_state.db_conn_ref(),
         &app_state.config,
-        series.id,
-        user.id,
+        &permit,
+        &series,
         CoachingSessionSeriesApi::FollowingReschedule {
             coaching_session_id: params.coaching_session_id,
             start_at: params.start_at,
@@ -269,19 +266,20 @@ pub async fn reschedule_following(
     responses(
         (status = 204, description = "Deleted"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden — not the coach on the relationship")
+        (status = 403, description = "Forbidden — not permitted to schedule the relationship's sessions")
     ),
     security(("cookie_auth" = []))
 )]
 pub async fn delete(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    CoachingSessionSeriesCoachAccess(series): CoachingSessionSeriesCoachAccess,
+    CoachingSessionSeriesSchedulingAccess(series, permit): CoachingSessionSeriesSchedulingAccess,
 ) -> Result<impl IntoResponse, Error> {
-    CoachingSessionSeriesApi::delete_with_future_sessions(
+    CoachingSessionSeriesApi::with_permit::delete_with_future_sessions(
         app_state.db_conn_ref(),
         &app_state.config,
-        series.id,
+        &permit,
+        &series,
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -300,7 +298,7 @@ pub async fn delete(
         (status = 204, description = "Invite resent"),
         (status = 400, description = "Missing or unsupported API version header"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden — not the coach on the relationship"),
+        (status = 403, description = "Forbidden — not permitted to schedule the relationship's sessions"),
         (status = 404, description = "Not found"),
         (status = 409, description = "Not resendable; `details.reason` is `no_upcoming_sessions`, `legacy_series`, or `coachee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status = 502, description = "The invite did not reach the coachee")
@@ -310,10 +308,15 @@ pub async fn delete(
 pub async fn resend_invite(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    CoachingSessionSeriesCoachAccess(series): CoachingSessionSeriesCoachAccess,
+    CoachingSessionSeriesSchedulingAccess(series, permit): CoachingSessionSeriesSchedulingAccess,
 ) -> Result<impl IntoResponse, Error> {
-    CoachingSessionSeriesApi::resend_invite(app_state.db_conn_ref(), &app_state.config, series.id)
-        .await?;
+    CoachingSessionSeriesApi::with_permit::resend_invite(
+        app_state.db_conn_ref(),
+        &app_state.config,
+        &permit,
+        &series,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

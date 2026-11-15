@@ -5,12 +5,15 @@ use axum::{
     extract::{FromRef, FromRequestParts, Path},
     http::{request::Parts, StatusCode},
 };
-use domain::{coaching_session_series as CoachingSessionSeriesApi, Id};
+use domain::{
+    coaching_relationships::SchedulingPermit, coaching_session_series as CoachingSessionSeriesApi,
+    Id,
+};
 
 use crate::{
     extractors::{
         authenticated_user::AuthenticatedUser,
-        coaching_relationship_access::{authorize_relationship, authorize_relationship_coach},
+        coaching_relationship_access::{authorize_relationship, authorize_scheduling},
         lookup_rejection, RejectionType,
     },
     AppState,
@@ -38,12 +41,17 @@ where
     }
 }
 
-/// Coach-only variant. Used by write routes: `PUT` (reschedule) and `DELETE`
-/// on `/coaching_session_series/:id`.
-pub(crate) struct CoachingSessionSeriesCoachAccess(pub CoachingSessionSeriesApi::Model);
+/// For routes that change a series (`PUT`, reschedule-following, `DELETE` and resend invite on
+/// `/coaching_session_series/:id`): loads the series and issues the caller a scheduling permit
+/// for its relationship. 404 when the series doesn't exist, 403 when the caller may not schedule
+/// it.
+pub(crate) struct CoachingSessionSeriesSchedulingAccess(
+    pub CoachingSessionSeriesApi::Model,
+    pub SchedulingPermit,
+);
 
 #[async_trait]
-impl<S> FromRequestParts<S> for CoachingSessionSeriesCoachAccess
+impl<S> FromRequestParts<S> for CoachingSessionSeriesSchedulingAccess
 where
     AppState: FromRef<S>,
     S: Send + Sync,
@@ -52,8 +60,8 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let (state, series, user) = resolve(parts, state).await?;
-        authorize_relationship_coach(&state, &user, series.coaching_relationship_id).await?;
-        Ok(CoachingSessionSeriesCoachAccess(series))
+        let permit = authorize_scheduling(&state, &user, series.coaching_relationship_id).await?;
+        Ok(CoachingSessionSeriesSchedulingAccess(series, permit))
     }
 }
 
@@ -122,7 +130,7 @@ mod tests {
         "extracted_success"
     }
 
-    async fn change_series(_access: CoachingSessionSeriesCoachAccess) -> &'static str {
+    async fn change_series(_access: CoachingSessionSeriesSchedulingAccess) -> &'static str {
         "extracted_success"
     }
 

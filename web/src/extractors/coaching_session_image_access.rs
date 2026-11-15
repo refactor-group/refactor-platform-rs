@@ -52,7 +52,7 @@ where
             .await
             .map_err(lookup_rejection)?;
 
-        if !coaching_relationship.grants_access_to(&authenticated_user) {
+        if !coaching_relationship.is_participant_and_member(&authenticated_user) {
             return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
         }
 
