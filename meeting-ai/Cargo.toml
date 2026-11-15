@@ -13,3 +13,6 @@ serde_json = "1.0"
 [dev-dependencies]
 tokio = { version = "1.0", features = ["full"] }
 mockall = "0.13"
+
+[lints]
+workspace = true

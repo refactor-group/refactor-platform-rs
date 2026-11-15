@@ -38,7 +38,7 @@ const SNIFF_BYTES: u64 = 8 * 1024;
 
 /// Why uploaded bytes were refused. A value, not an error variant: the web layer
 /// maps it to 413/415, which `DomainErrorKind` has no representation for.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageRejection {
     TooLarge,
     UnsupportedType,

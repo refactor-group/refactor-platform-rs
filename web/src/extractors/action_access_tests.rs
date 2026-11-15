@@ -91,7 +91,7 @@ async fn assert_refused(
 ) {
     let db = Arc::new(db.into_connection());
     let response = send(&db, email, method, uri, body).await;
-    assert_refusal(row, &db, response, expected);
+    assert_refusal(row, &db, &response, expected);
 }
 
 #[tokio::test]

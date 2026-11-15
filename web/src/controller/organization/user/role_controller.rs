@@ -88,7 +88,7 @@ pub(crate) async fn attach_role(
         Actor::new(authenticated_user.id),
         organization.id,
         user_id,
-        params.role.clone(),
+        params.role,
         params.coach_id,
     )
     .await?;
@@ -202,7 +202,7 @@ pub(crate) async fn update_role(
         Actor::new(authenticated_user.id),
         organization.id,
         user_id,
-        params.role.clone(),
+        params.role,
     )
     .await?;
     // Silent on a no-op: nothing was written, and the audit table has no row to

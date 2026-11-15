@@ -31,3 +31,6 @@ serial_test = "3"
 
 [build-dependencies]
 utoipa-config = "0.1"
+
+[lints]
+workspace = true

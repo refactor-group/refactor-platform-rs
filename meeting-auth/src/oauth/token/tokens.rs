@@ -56,8 +56,8 @@ impl Tokens {
     /// to be stored or passed to external APIs as plain strings.
     pub fn into_plain(self) -> Plain {
         Plain {
-            access_token: self.access_token.expose_secret().to_string(),
-            refresh_token: self.refresh_token.map(|rt| rt.expose_secret().to_string()),
+            access_token: self.access_token.expose_secret().clone(),
+            refresh_token: self.refresh_token.map(|rt| rt.expose_secret().clone()),
             expires_at: self.expires_at,
         }
     }

@@ -102,7 +102,7 @@ pub async fn create(
             "Coaching relationship {} already exists for coach {}, coachee {} in organization {organization_id}; returning it",
             existing.id, existing.coach_id, existing.coachee_id
         );
-        return Ok(with_user_names(existing, &coach, &coachee));
+        return Ok(with_user_names(&existing, &coach, &coachee));
     }
 
     let now = Utc::now();
@@ -120,7 +120,7 @@ pub async fn create(
     };
 
     match insert_unless_exists(db, coaching_relationship_active_model).await? {
-        Some(inserted) => Ok(with_user_names(inserted, &coach, &coachee)),
+        Some(inserted) => Ok(with_user_names(&inserted, &coach, &coachee)),
         None => {
             let winner = find_for_pair(
                 db,
@@ -137,7 +137,7 @@ pub async fn create(
                 "Coaching relationship for coach {}, coachee {} in organization {organization_id} was created by a concurrent request; returning that one ({})",
                 winner.coach_id, winner.coachee_id, winner.id
             );
-            Ok(with_user_names(winner, &coach, &coachee))
+            Ok(with_user_names(&winner, &coach, &coachee))
         }
     }
 }
@@ -260,7 +260,7 @@ pub(crate) fn select_membership<Q: QuerySelect>(query: Q) -> Q {
 ///
 /// Only `create` builds one, after refusing unless both hold a role in the organization.
 fn with_user_names(
-    coaching_relationship: Model,
+    coaching_relationship: &Model,
     coach: &users::Model,
     coachee: &users::Model,
 ) -> CoachingRelationshipWithUserNames {
@@ -582,7 +582,7 @@ pub async fn by_coaching_relationship(
         .filter(entity::coaching_relationships::Column::Id.eq(id))
         .into_query();
 
-    query.filter(coaching_relationships::Column::Id.in_subquery(relationship_subsquery.to_owned()))
+    query.filter(coaching_relationships::Column::Id.in_subquery(relationship_subsquery))
 }
 
 async fn by_organization(
@@ -595,10 +595,7 @@ async fn by_organization(
         .filter(entity::organizations::Column::Id.eq(organization_id))
         .into_query();
 
-    query.filter(
-        coaching_relationships::Column::OrganizationId
-            .in_subquery(organization_subquery.to_owned()),
-    )
+    query.filter(coaching_relationships::Column::OrganizationId.in_subquery(organization_subquery))
 }
 
 /// Deletes every relationship `user_id` coaches or is coached in.

@@ -93,9 +93,9 @@ fn role_change_row(
     }
 }
 
-fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
+fn build_app(db: &Arc<sea_orm::DatabaseConnection>) -> Router {
     let app_state = AppState::new(
-        service::AppState::new(Config::default(), &db),
+        service::AppState::new(Config::default(), db),
         Arc::new(sse::Manager::default()),
         domain::events::EventPublisher::default(),
         None,
@@ -107,7 +107,7 @@ fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
         .with_secure(false)
         .with_expiry(Expiry::OnInactivity(Duration::days(1)))
         .with_always_save(true);
-    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(&db), session_layer).build();
+    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(db), session_layer).build();
 
     Router::new()
         .route(
@@ -219,7 +219,7 @@ async fn attach_returns_409_for_an_org_admin_whose_only_visible_users_are_member
             .into_connection(),
     );
 
-    let app = build_app(db);
+    let app = build_app(&db);
     let cookie = login_cookie(&app).await;
 
     let response = role_request(
@@ -243,7 +243,7 @@ async fn attach_rejects_a_super_admin_role_in_the_body() {
 
     let db = Arc::new(mock_through_extractor(&user, &role, organization_id).into_connection());
 
-    let app = build_app(db);
+    let app = build_app(&db);
     let cookie = login_cookie(&app).await;
 
     let response = role_request(
@@ -267,7 +267,7 @@ async fn attach_rejects_an_unknown_field_in_the_body() {
 
     let db = Arc::new(mock_through_extractor(&user, &role, organization_id).into_connection());
 
-    let app = build_app(db);
+    let app = build_app(&db);
     let cookie = login_cookie(&app).await;
 
     let response = role_request(
@@ -309,7 +309,7 @@ async fn attach_forwards_the_requested_coach_to_the_domain_call() {
             .into_connection(),
     );
 
-    let app = build_app(db);
+    let app = build_app(&db);
     let cookie = login_cookie(&app).await;
 
     let response = role_request(
@@ -340,15 +340,11 @@ fn mock_update_through_domain(
     current: users::Role,
     requested: users::Role,
 ) -> MockDatabase {
-    let updated = test_role(target_id, Some(organization_id), requested.clone());
+    let updated = test_role(target_id, Some(organization_id), requested);
 
     mock.append_query_results([vec![test_organization(organization_id)]])
         .append_query_results([vec![requester()]])
-        .append_query_results([vec![test_role(
-            target_id,
-            Some(organization_id),
-            current.clone(),
-        )]])
+        .append_query_results([vec![test_role(target_id, Some(organization_id), current)]])
         .append_query_results([vec![updated.clone()]])
         .append_query_results([vec![role_change_row(
             actor_id,
@@ -380,7 +376,7 @@ async fn read_returns_the_members_role_with_its_ids() {
             .into_connection(),
     );
 
-    let app = build_app(db);
+    let app = build_app(&db);
     let cookie = login_cookie(&app).await;
 
     let response = role_request(
@@ -418,7 +414,7 @@ async fn update_returns_the_member_with_the_granted_role() {
         .into_connection(),
     );
 
-    let app = build_app(db);
+    let app = build_app(&db);
     let cookie = login_cookie(&app).await;
 
     let response = role_request(
@@ -451,7 +447,7 @@ async fn update_rejects_a_super_admin_role_in_the_body() {
 
     let db = Arc::new(mock_through_extractor(&user, &role, organization_id).into_connection());
 
-    let app = build_app(db);
+    let app = build_app(&db);
     let cookie = login_cookie(&app).await;
 
     let response = role_request(
@@ -475,7 +471,7 @@ async fn update_rejects_an_unknown_field_in_the_body() {
 
     let db = Arc::new(mock_through_extractor(&user, &role, organization_id).into_connection());
 
-    let app = build_app(db);
+    let app = build_app(&db);
     let cookie = login_cookie(&app).await;
 
     let response = role_request(
@@ -520,7 +516,7 @@ async fn update_returns_409_when_demoting_the_only_admin() {
             .into_connection(),
     );
 
-    let app = build_app(db);
+    let app = build_app(&db);
     let cookie = login_cookie(&app).await;
 
     let response = role_request(
@@ -552,7 +548,7 @@ async fn update_returns_404_for_a_user_who_holds_no_role_here() {
             .into_connection(),
     );
 
-    let app = build_app(db);
+    let app = build_app(&db);
     let cookie = login_cookie(&app).await;
 
     let response = role_request(

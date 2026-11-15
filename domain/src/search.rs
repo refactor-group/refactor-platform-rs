@@ -232,7 +232,7 @@ fn apply_session_titles(hits: &mut [Hit], titles: &HashMap<Id, String>) {
         .filter_map(Hit::session_title_slot)
         .for_each(|(id, slot)| {
             if let Some(title) = titles.get(&id) {
-                *slot = title.clone();
+                slot.clone_from(title);
             }
         });
 }

@@ -23,7 +23,7 @@ impl SseDomainEventHandler {
     }
 
     /// Send an SSE message to all specified users.
-    fn send_to_users(&self, sse_event: SseEvent, user_ids: &[events::Id]) {
+    fn send_to_users(&self, sse_event: &SseEvent, user_ids: &[events::Id]) {
         let event_type = sse_event.event_type();
 
         for user_id in user_ids {
@@ -53,7 +53,7 @@ impl EventHandler for SseDomainEventHandler {
                     goal: goal.clone(),
                 };
 
-                self.send_to_users(sse_event, notify_user_ids);
+                self.send_to_users(&sse_event, notify_user_ids);
             }
 
             DomainEvent::GoalUpdated {
@@ -66,7 +66,7 @@ impl EventHandler for SseDomainEventHandler {
                     goal: goal.clone(),
                 };
 
-                self.send_to_users(sse_event, notify_user_ids);
+                self.send_to_users(&sse_event, notify_user_ids);
             }
 
             DomainEvent::GoalDeleted {
@@ -79,7 +79,7 @@ impl EventHandler for SseDomainEventHandler {
                     goal_id: goal_id.to_string(),
                 };
 
-                self.send_to_users(sse_event, notify_user_ids);
+                self.send_to_users(&sse_event, notify_user_ids);
             }
 
             DomainEvent::CoachingSessionGoalCreated {
@@ -94,7 +94,7 @@ impl EventHandler for SseDomainEventHandler {
                     goal_id: goal_id.to_string(),
                 };
 
-                self.send_to_users(sse_event, notify_user_ids);
+                self.send_to_users(&sse_event, notify_user_ids);
             }
 
             DomainEvent::CoachingSessionGoalDeleted {
@@ -109,7 +109,7 @@ impl EventHandler for SseDomainEventHandler {
                     goal_id: goal_id.to_string(),
                 };
 
-                self.send_to_users(sse_event, notify_user_ids);
+                self.send_to_users(&sse_event, notify_user_ids);
             }
 
             DomainEvent::AgreementCreated {
@@ -122,7 +122,7 @@ impl EventHandler for SseDomainEventHandler {
                     agreement: agreement.clone(),
                 };
 
-                self.send_to_users(sse_event, notify_user_ids);
+                self.send_to_users(&sse_event, notify_user_ids);
             }
 
             DomainEvent::ActionCreated {
@@ -135,7 +135,7 @@ impl EventHandler for SseDomainEventHandler {
                     action: action.clone(),
                 };
 
-                self.send_to_users(sse_event, notify_user_ids);
+                self.send_to_users(&sse_event, notify_user_ids);
             }
 
             DomainEvent::AgreementUpdated {
@@ -148,7 +148,7 @@ impl EventHandler for SseDomainEventHandler {
                     agreement: agreement.clone(),
                 };
 
-                self.send_to_users(sse_event, notify_user_ids);
+                self.send_to_users(&sse_event, notify_user_ids);
             }
 
             DomainEvent::ActionUpdated {
@@ -161,7 +161,7 @@ impl EventHandler for SseDomainEventHandler {
                     action: action.clone(),
                 };
 
-                self.send_to_users(sse_event, notify_user_ids);
+                self.send_to_users(&sse_event, notify_user_ids);
             }
 
             DomainEvent::AgreementDeleted {
@@ -174,7 +174,7 @@ impl EventHandler for SseDomainEventHandler {
                     agreement_id: agreement_id.to_string(),
                 };
 
-                self.send_to_users(sse_event, notify_user_ids);
+                self.send_to_users(&sse_event, notify_user_ids);
             }
 
             DomainEvent::ActionDeleted {
@@ -187,7 +187,7 @@ impl EventHandler for SseDomainEventHandler {
                     action_id: action_id.to_string(),
                 };
 
-                self.send_to_users(sse_event, notify_user_ids);
+                self.send_to_users(&sse_event, notify_user_ids);
             }
 
             DomainEvent::MeetingRecordingUpdated {
@@ -198,7 +198,7 @@ impl EventHandler for SseDomainEventHandler {
                     coaching_session_id: coaching_session_id.to_string(),
                 };
 
-                self.send_to_users(sse_event, notify_user_ids);
+                self.send_to_users(&sse_event, notify_user_ids);
             }
 
             DomainEvent::TopicsChanged {
@@ -209,7 +209,7 @@ impl EventHandler for SseDomainEventHandler {
                     coaching_session_id: coaching_session_id.to_string(),
                 };
 
-                self.send_to_users(sse_event, notify_user_ids);
+                self.send_to_users(&sse_event, notify_user_ids);
             }
 
             DomainEvent::CoachingSessionTitleUpdated {
@@ -220,7 +220,7 @@ impl EventHandler for SseDomainEventHandler {
                     coaching_session_id: coaching_session_id.to_string(),
                 };
 
-                self.send_to_users(sse_event, notify_user_ids);
+                self.send_to_users(&sse_event, notify_user_ids);
             }
 
             DomainEvent::TranscriptionUpdated {
@@ -231,7 +231,7 @@ impl EventHandler for SseDomainEventHandler {
                     coaching_session_id: coaching_session_id.to_string(),
                 };
 
-                self.send_to_users(sse_event, notify_user_ids);
+                self.send_to_users(&sse_event, notify_user_ids);
             }
 
             DomainEvent::TranscriptSuggestionsChanged {
@@ -244,7 +244,7 @@ impl EventHandler for SseDomainEventHandler {
                     target: target.clone(),
                 };
 
-                self.send_to_users(sse_event, notify_user_ids);
+                self.send_to_users(&sse_event, notify_user_ids);
             }
         }
     }

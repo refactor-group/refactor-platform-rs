@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use super::*;
 
 /// One Recall transcript entry: a participant and the words they spoke, times in seconds.
-fn entry(participant: Value, words: &[(&str, f64, f64)]) -> Value {
+fn entry(participant: &Value, words: &[(&str, f64, f64)]) -> Value {
     json!({
         "participant": participant,
         "language_code": "en",
@@ -49,7 +49,7 @@ fn meet_coachee() -> Value {
 /// Every field Recall reports is kept, and the Zoom account id is lifted out of `extra_data`.
 #[test]
 fn participants_keep_every_reported_field() {
-    let entries = parse(vec![entry(zoom_coach(), &[("Morning", 0.0, 0.4)])]);
+    let entries = parse(vec![entry(&zoom_coach(), &[("Morning", 0.0, 0.4)])]);
 
     let participants = participants_of(&entries);
 
@@ -71,7 +71,7 @@ fn participants_keep_every_reported_field() {
 /// Meet exposes no stable account id, so none is invented from `static_participant_id`.
 #[test]
 fn meet_participants_have_no_account_id() {
-    let entries = parse(vec![entry(meet_coachee(), &[("Hi", 0.0, 0.3)])]);
+    let entries = parse(vec![entry(&meet_coachee(), &[("Hi", 0.0, 0.3)])]);
 
     let participants = participants_of(&entries);
 
@@ -83,7 +83,7 @@ fn meet_participants_have_no_account_id() {
 #[test]
 fn missing_extra_data_means_no_account_id() {
     let entries = parse(vec![entry(
-        json!({ "id": 300, "name": "Dial-in", "is_host": null, "platform": null, "email": null, "extra_data": null }),
+        &json!({ "id": 300, "name": "Dial-in", "is_host": null, "platform": null, "email": null, "extra_data": null }),
         &[("Hello", 0.0, 0.3)],
     )]);
 
@@ -97,7 +97,7 @@ fn missing_extra_data_means_no_account_id() {
 #[test]
 fn a_blank_name_becomes_none() {
     let entries = parse(vec![entry(
-        json!({ "id": 400, "name": "   ", "is_host": false, "platform": "phone", "email": null, "extra_data": null }),
+        &json!({ "id": 400, "name": "   ", "is_host": false, "platform": "phone", "email": null, "extra_data": null }),
         &[("Hello", 0.0, 0.3)],
     )]);
 
@@ -108,9 +108,9 @@ fn a_blank_name_becomes_none() {
 #[test]
 fn participants_are_listed_once_in_first_appearance_order() {
     let entries = parse(vec![
-        entry(meet_coachee(), &[("Hi", 0.0, 0.3)]),
-        entry(zoom_coach(), &[("Morning", 1.0, 1.4)]),
-        entry(meet_coachee(), &[("Again", 5.0, 5.3)]),
+        entry(&meet_coachee(), &[("Hi", 0.0, 0.3)]),
+        entry(&zoom_coach(), &[("Morning", 1.0, 1.4)]),
+        entry(&meet_coachee(), &[("Again", 5.0, 5.3)]),
     ]);
 
     let ids: Vec<String> = participants_of(&entries)
@@ -127,8 +127,8 @@ fn same_name_different_participants_stay_separate() {
     let first = json!({ "id": 1, "name": "Jim", "is_host": true, "platform": "desktop", "email": null, "extra_data": null });
     let second = json!({ "id": 2, "name": "Jim", "is_host": false, "platform": "desktop", "email": null, "extra_data": null });
     let entries = parse(vec![
-        entry(first, &[("Hello", 0.0, 0.4)]),
-        entry(second, &[("there", 0.5, 0.9)]),
+        entry(&first, &[("Hello", 0.0, 0.4)]),
+        entry(&second, &[("there", 0.5, 0.9)]),
     ]);
 
     let segments = coalesce_entries(entries);
@@ -144,8 +144,8 @@ fn same_name_different_participants_stay_separate() {
 #[test]
 fn segments_carry_their_participant() {
     let entries = parse(vec![
-        entry(zoom_coach(), &[("Good", 0.0, 0.3), ("morning", 0.35, 0.8)]),
-        entry(meet_coachee(), &[("Hi", 3.0, 3.3)]),
+        entry(&zoom_coach(), &[("Good", 0.0, 0.3), ("morning", 0.35, 0.8)]),
+        entry(&meet_coachee(), &[("Hi", 3.0, 3.3)]),
     ]);
 
     let segments = coalesce_entries(entries);
@@ -164,8 +164,8 @@ fn participants_without_an_id_get_a_stable_key() {
     let named = json!({ "id": null, "name": "Guest", "is_host": null, "platform": null, "email": null, "extra_data": null });
     let nameless = json!({ "id": null, "name": null, "is_host": null, "platform": null, "email": null, "extra_data": null });
     let entries = parse(vec![
-        entry(named, &[("Hi", 0.0, 0.3)]),
-        entry(nameless, &[("Hello", 3.0, 3.3)]),
+        entry(&named, &[("Hi", 0.0, 0.3)]),
+        entry(&nameless, &[("Hello", 3.0, 3.3)]),
     ]);
 
     let ids: Vec<String> = participants_of(&entries)
@@ -183,9 +183,9 @@ fn participants_without_an_id_get_a_stable_key() {
 #[test]
 fn every_segment_participant_is_listed() {
     let entries = parse(vec![
-        entry(zoom_coach(), &[("Good", 0.0, 0.3)]),
-        entry(meet_coachee(), &[("Hi", 1.0, 1.3)]),
-        entry(zoom_coach(), &[("Bye", 9.0, 9.3)]),
+        entry(&zoom_coach(), &[("Good", 0.0, 0.3)]),
+        entry(&meet_coachee(), &[("Hi", 1.0, 1.3)]),
+        entry(&zoom_coach(), &[("Bye", 9.0, 9.3)]),
     ]);
 
     let listed: Vec<String> = participants_of(&entries)

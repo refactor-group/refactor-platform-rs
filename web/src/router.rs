@@ -308,7 +308,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(coaching_session_series_routes(app_state.clone()))
         .merge(search_routes(app_state.clone()))
         .merge(jwt_routes(app_state.clone()))
-        .merge(tiptap_metrics_routes(app_state.clone()))
+        .merge(tiptap_metrics_routes(app_state))
         // **** FIXME: protect the OpenAPI web UI
         .merge(RapiDoc::with_openapi("/api-docs/openapi2.json", ApiDoc::openapi()).path("/rapidoc"))
         .fallback_service(static_routes())

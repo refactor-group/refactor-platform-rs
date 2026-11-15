@@ -56,7 +56,7 @@ pub async fn delete_by_user_id(
             Some(actor),
             user_id,
             role.organization_id,
-            Some(role.role.clone()),
+            Some(role.role),
             None,
         )
         .await?;
@@ -139,7 +139,7 @@ pub async fn create(
     let granted = ActiveModel {
         user_id: Set(user_id),
         organization_id: Set(Some(organization_id)),
-        role: Set(role.clone()),
+        role: Set(role),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         ..Default::default()
@@ -194,7 +194,7 @@ pub async fn update_role(
     }
 
     let updated = ActiveModel {
-        role: Set(role.clone()),
+        role: Set(role),
         updated_at: Set(Utc::now().into()),
         ..membership.clone().into_active_model()
     }
@@ -207,7 +207,7 @@ pub async fn update_role(
         Some(actor),
         membership.user_id,
         membership.organization_id,
-        Some(membership.role.clone()),
+        Some(membership.role),
         Some(role),
     )
     .await?;
@@ -254,7 +254,7 @@ pub async fn delete(
         Some(actor),
         membership.user_id,
         membership.organization_id,
-        Some(membership.role.clone()),
+        Some(membership.role),
         None,
     )
     .await

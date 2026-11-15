@@ -91,13 +91,13 @@ fn app_state(db: &Arc<sea_orm::DatabaseConnection>) -> AppState {
     )
 }
 
-fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
-    let state = app_state(&db);
+fn build_app(db: &Arc<sea_orm::DatabaseConnection>) -> Router {
+    let state = app_state(db);
     let session_layer = SessionManagerLayer::new(MemoryStore::default())
         .with_secure(false)
         .with_expiry(Expiry::OnInactivity(Duration::days(1)))
         .with_always_save(true);
-    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(&db), session_layer).build();
+    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(db), session_layer).build();
 
     Router::new()
         .route(
@@ -165,7 +165,7 @@ async fn view_returns_200_for_participant() {
             .into_connection(),
     );
 
-    let app = build_app(db);
+    let app = build_app(&db);
     let cookie = login_cookie(&app).await;
 
     let request = Request::builder()

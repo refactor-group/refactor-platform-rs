@@ -11,10 +11,11 @@ fn user_json(extra: serde_json::Value) -> serde_json::Value {
         "first_name": "Wor",
         "last_name": "King",
     });
-    let (Some(base_map), Some(extra_map)) = (base.as_object_mut(), extra.as_object()) else {
+    let (Some(base_map), serde_json::Value::Object(extra_map)) = (base.as_object_mut(), extra)
+    else {
         panic!("test payloads are JSON objects");
     };
-    base_map.extend(extra_map.clone());
+    base_map.extend(extra_map);
     base
 }
 

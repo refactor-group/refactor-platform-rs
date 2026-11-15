@@ -89,9 +89,9 @@ fn logged_in(user: &users::Model) -> MockDatabase {
         .append_query_results([row])
 }
 
-fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
+fn build_app(db: &Arc<sea_orm::DatabaseConnection>) -> Router {
     let state = AppState::new(
-        service::AppState::new(Config::default(), &db),
+        service::AppState::new(Config::default(), db),
         Arc::new(sse::Manager::default()),
         domain::events::EventPublisher::default(),
         None,
@@ -102,7 +102,7 @@ fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
         .with_secure(false)
         .with_expiry(Expiry::OnInactivity(Duration::days(1)))
         .with_always_save(true);
-    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(&db), session_layer).build();
+    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(db), session_layer).build();
 
     Router::new()
         .route(
@@ -163,7 +163,7 @@ fn window_query(relationship_id: Id) -> String {
 #[tokio::test]
 async fn an_invalid_window_is_a_400_with_the_invalid_nearest_window_slug() {
     let user = test_user();
-    let app = build_app(Arc::new(logged_in(&user).into_connection()));
+    let app = build_app(&Arc::new(logged_in(&user).into_connection()));
 
     let response = get_nearest(&app, user.id, "around=2026-10-30T14:00:00&before=2&after=3").await;
 
@@ -189,7 +189,7 @@ async fn the_windows_sessions_come_back_in_the_list_endpoints_shape() {
         // View markers, first topic bodies, first goal titles.
         .append_query_results::<coaching_sessions::Model, Vec<_>, _>(vec![vec![], vec![], vec![]])
         .into_connection();
-    let app = build_app(Arc::new(db));
+    let app = build_app(&Arc::new(db));
 
     let response = get_nearest(&app, user.id, &window_query(relationship_id)).await;
 
@@ -215,7 +215,7 @@ async fn the_windows_sessions_come_back_in_the_list_endpoints_shape() {
 #[tokio::test]
 async fn include_is_passed_through_to_the_query() {
     let user = test_user();
-    let app = build_app(Arc::new(logged_in(&user).into_connection()));
+    let app = build_app(&Arc::new(logged_in(&user).into_connection()));
 
     let query = format!("{}&include=organization", window_query(Id::new_v4()));
     let response = get_nearest(&app, user.id, &query).await;
@@ -227,7 +227,7 @@ async fn include_is_passed_through_to_the_query() {
 #[tokio::test]
 async fn an_unknown_include_is_a_plain_400_like_the_list_endpoint() {
     let user = test_user();
-    let app = build_app(Arc::new(logged_in(&user).into_connection()));
+    let app = build_app(&Arc::new(logged_in(&user).into_connection()));
 
     let query = format!("{}&include=bogus", window_query(Id::new_v4()));
     let response = get_nearest(&app, user.id, &query).await;

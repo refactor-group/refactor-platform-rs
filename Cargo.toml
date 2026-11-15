@@ -11,6 +11,16 @@ members = [".", "entity_api", "entity", "events", "migration", "service", "web",
 # crates that should not be built or deployed with the main application.
 default-members = [".", "entity_api", "entity", "events", "migration", "service", "web", "domain", "sse", "meeting-auth", "meeting-ai"]
 
+# Clones a borrow or a move would avoid. CI's `-D warnings` makes these errors.
+[workspace.lints.clippy]
+assigning_clones = "warn"
+implicit_clone = "warn"
+needless_pass_by_value = "warn"
+redundant_clone = "warn"
+
+[lints]
+workspace = true
+
 [dependencies]
 domain = { path = "domain" }
 events = { path = "events" }
