@@ -227,8 +227,7 @@ mod tests {
             created_at: now,
             updated_at: now,
             hydrated_at: None,
-            notice_given_at: chrono::Utc::now().into(),
-            scheduled_by_user_id: None,
+            scheduled_by_user_id: Id::nil(),
             meeting_url_created_by_user_id: None,
         };
         let relationship = coaching_relationships::Model {

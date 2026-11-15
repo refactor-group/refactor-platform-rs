@@ -2111,7 +2111,7 @@ async fn send_recurring_sessions_scheduled_email(
 /// to the series, which the snapshot is built from.
 ///
 /// A delivered send must clear each session's pending reschedule (via
-/// `coaching_session::record_notice` or `coaching_session::record_announced`).
+/// `coaching_session::record_announced`).
 pub(crate) async fn send_series_invite_resend(
     db: &DatabaseConnection,
     config: &Config,
@@ -2147,7 +2147,7 @@ pub(crate) async fn send_series_invite_resend(
 /// `ical_sequence`.
 ///
 /// A delivered send must clear the session's pending reschedule (via
-/// `coaching_session::record_notice` or `coaching_session::record_announced`).
+/// `coaching_session::record_announced`).
 pub(crate) async fn send_session_invite_resend(
     db: &DatabaseConnection,
     config: &Config,
@@ -2378,7 +2378,7 @@ pub struct FollowingRescheduleNotice<'a> {
 /// participant; the coachee's decides whether the moved sessions count as noticed.
 ///
 /// A delivered send must clear each session's pending reschedule (via
-/// `coaching_session::record_notice` or `coaching_session::record_announced`).
+/// `coaching_session::record_announced`).
 pub async fn notify_recurring_sessions_rescheduled_following(
     db: &DatabaseConnection,
     config: &Config,

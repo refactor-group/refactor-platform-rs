@@ -132,12 +132,19 @@ onto extractors: "is this my own user" on the `/users/{user_id}` routes becomes
   deployed right after 1a (traffic is low enough that rows written between the two deploys
   are not worth a catch-up in 1b). 1b keeps writing `coaching_sessions.notice_given_at` too,
   so rolling back to the previous image stays safe until 1c, and its reminder sweep takes the
-  later of a person's row and that column. 1c, the cleanup migration, settles the gap before
-  it drops anything: it fills a null `scheduled_by_user_id` with the coach, a null
-  `meeting_url_created_by_user_id` with the coach where there is a link, and adds or raises
-  notice rows to the column's value; then it makes `scheduled_by_user_id` NOT NULL and drops
-  `coaching_sessions.notice_given_at`. Every migration has a working down migration; 1c's
-  refills the column from each session's latest notice row.
+  later of a person's row and that column. 1a and 1b are deployed; no session was written
+  between the two deploys, so production has no gap to settle.
+- 1c, one PR (the backend is down while migrations run, so no old image reads the dropped
+  column): the code stops reading and writing `coaching_sessions.notice_given_at` and the
+  migration drops it. The migration first settles anything that slipped in: a null
+  `scheduled_by_user_id` gets the coach, a null `meeting_url_created_by_user_id` gets the
+  coach where there is a link, and a missing notice row is added from the column. Then
+  `scheduled_by_user_id` becomes NOT NULL (and `Id` on the Model). Insert stamps the notice
+  rows at one time taken at the insert. The reminder sweep reads only the coachee's row, and a
+  session with no coachee row is reminded rather than skipped, erring toward a reminder over
+  silence. `notice_given_at` leaves the session response and the OpenAPI schema; the
+  frontend never read it. Down re-adds the column, refills it from each session's coachee
+  row, and drops NOT NULL; an image rollback runs the down migration first.
 
 **2. Add `kind`** (no visible change). Postgres enum, default `coaching`, owned by `refactor`.
 `has_authority(user_id)` on the Model. `kind` in the OpenAPI schema. Down migration.

@@ -26,8 +26,7 @@ fn session(coaching_relationship_id: Id) -> coaching_sessions::Model {
         created_at: now.into(),
         updated_at: now.into(),
         hydrated_at: None,
-        notice_given_at: now.into(),
-        scheduled_by_user_id: None,
+        scheduled_by_user_id: Id::nil(),
         meeting_url_created_by_user_id: None,
     }
 }

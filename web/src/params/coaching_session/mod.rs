@@ -169,8 +169,8 @@ impl CreateParams {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
-            notice_given_at: chrono::Utc::now().into(),
-            scheduled_by_user_id: None,
+            // Domain create records the acting user as scheduler.
+            scheduled_by_user_id: Id::nil(),
             meeting_url_created_by_user_id: None,
         }
     }

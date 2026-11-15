@@ -167,7 +167,7 @@ async fn moving_a_session_records_the_acting_user_as_scheduler() {
 
         assert_eq!(
             read(&db, session_id).await.scheduled_by_user_id,
-            Some(acting_user)
+            acting_user
         );
     })
     .await;
@@ -179,11 +179,13 @@ async fn a_title_edit_leaves_the_scheduler_as_it_was() {
         let db = database().await;
         let (session_id, _) = upcoming_session(&db).await;
 
+        let before = read(&db, session_id).await.scheduled_by_user_id;
+
         crate::coaching_session::update(&db, session_id, seed_user(&db).await, title("Renamed"))
             .await
             .expect("the edit succeeds");
 
-        assert_eq!(read(&db, session_id).await.scheduled_by_user_id, None);
+        assert_eq!(read(&db, session_id).await.scheduled_by_user_id, before);
     })
     .await;
 }
@@ -284,29 +286,6 @@ async fn an_edit_that_changes_nothing_records_nothing() {
 
         edit(&db, session_id, date(start)).await;
 
-        assert_eq!(pending(&db, session_id).await, None);
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn recording_notice_clears_the_pending_change() {
-    within_time_limit(async {
-        let db = database().await;
-        let (session_id, start) = upcoming_session(&db).await;
-        let before = coaching_sessions::Entity::find_by_id(session_id)
-            .one(&db)
-            .await
-            .expect("the session reads")
-            .expect("the session exists")
-            .notice_given_at;
-
-        let sent = edit(&db, session_id, date(start + TimeDelta::hours(1))).await;
-        let stamped = crate::coaching_session::record_notice(&db, &sent)
-            .await
-            .expect("notice records");
-
-        assert!(stamped.notice_given_at > before);
         assert_eq!(pending(&db, session_id).await, None);
     })
     .await;

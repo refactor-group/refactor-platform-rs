@@ -121,7 +121,7 @@ const MIGRATION_DEFAULTS: &[(Option<&str>, &str, &str)] = &[
     (None, "id", "randomblob(16)"),
     (Some("coaching_session_series"), "ical_sequence", "0"),
     (Some("coaching_sessions"), "ical_sequence", "0"),
-    (Some("coaching_sessions"), "notice_given_at", NOW),
+    (Some("coaching_sessions"), "duration_minutes", "60"),
     (Some("coaching_session_topics"), "status", "'open'"),
     (Some("users"), "timezone", "'UTC'"),
     (
@@ -314,6 +314,16 @@ pub async fn seed_role(
     .expect("the role is seeded");
 }
 
+/// The coach of `relationship_id`.
+pub async fn coach_of(db: &DatabaseConnection, relationship_id: Id) -> Id {
+    coaching_relationships::Entity::find_by_id(relationship_id)
+        .one(db)
+        .await
+        .expect("the relationship reads")
+        .expect("the relationship exists")
+        .coach_id
+}
+
 /// The organization a session's relationship belongs to.
 pub async fn organization_of(db: &DatabaseConnection, session_id: Id) -> Id {
     let session = coaching_sessions::Entity::find_by_id(session_id)
@@ -364,8 +374,7 @@ pub async fn seed_coaching_session(db: &DatabaseConnection) -> (Id, Id) {
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         hydrated_at: Set(None),
-        notice_given_at: Set(now.into()),
-        scheduled_by_user_id: Set(None),
+        scheduled_by_user_id: Set(user_id),
         meeting_url_created_by_user_id: Set(None),
     }
     .insert(db)
@@ -641,8 +650,7 @@ pub async fn seed_lapsed_membership(
             created_at: Set(now.into()),
             updated_at: Set(now.into()),
             hydrated_at: Set(None),
-            notice_given_at: Set(now.into()),
-            scheduled_by_user_id: Set(None),
+            scheduled_by_user_id: Set(coach_id),
             meeting_url_created_by_user_id: Set(None),
         }
         .insert(db)
