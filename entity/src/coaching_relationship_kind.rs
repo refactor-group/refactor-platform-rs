@@ -71,7 +71,7 @@ pub trait Rules {
     /// What the person in `seat` is.
     fn role(&self, seat: Seat) -> Role;
     /// May schedule, reschedule, cancel, run series, set meeting links and delete any topic.
-    fn has_authority(&self, seat: Seat) -> bool;
+    fn can_manage_sessions(&self, seat: Seat) -> bool;
 }
 
 /// One person coaches the other.
@@ -85,7 +85,7 @@ impl Rules for Coaching {
         }
     }
 
-    fn has_authority(&self, seat: Seat) -> bool {
+    fn can_manage_sessions(&self, seat: Seat) -> bool {
         match seat {
             Seat::CoachId => true,
             Seat::CoacheeId => false,
@@ -101,7 +101,7 @@ impl Rules for Colleague {
         Role::Colleague
     }
 
-    fn has_authority(&self, _seat: Seat) -> bool {
+    fn can_manage_sessions(&self, _seat: Seat) -> bool {
         true
     }
 }
@@ -133,9 +133,9 @@ mod tests {
     fn coaching_gives_the_coach_seat_alone_authority() {
         let rules = Kind::Coaching.rules();
         assert_eq!(rules.role(Seat::CoachId), Role::Coach);
-        assert!(rules.has_authority(Seat::CoachId));
+        assert!(rules.can_manage_sessions(Seat::CoachId));
         assert_eq!(rules.role(Seat::CoacheeId), Role::Coachee);
-        assert!(!rules.has_authority(Seat::CoacheeId));
+        assert!(!rules.can_manage_sessions(Seat::CoacheeId));
     }
 
     #[test]
@@ -143,7 +143,7 @@ mod tests {
         let rules = Kind::Colleague.rules();
         for seat in [Seat::CoachId, Seat::CoacheeId] {
             assert_eq!(rules.role(seat), Role::Colleague, "{seat:?}");
-            assert!(rules.has_authority(seat), "{seat:?}");
+            assert!(rules.can_manage_sessions(seat), "{seat:?}");
         }
     }
 

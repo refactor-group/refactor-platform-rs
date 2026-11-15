@@ -103,9 +103,9 @@ impl Model {
     /// Whether `user_id` may schedule, reschedule, cancel, run series, set meeting links and
     /// delete any topic in this relationship. Says nothing about organization membership:
     /// combine with `grants_access_to` where that matters.
-    pub fn has_authority(&self, user_id: Id) -> bool {
+    pub fn can_manage_sessions(&self, user_id: Id) -> bool {
         self.seat(user_id)
-            .is_some_and(|seat| self.kind.rules().has_authority(seat))
+            .is_some_and(|seat| self.kind.rules().can_manage_sessions(seat))
     }
 
     /// Returns `true` if the given user may access this relationship's data.
@@ -246,18 +246,18 @@ mod tests {
             relationship.role(coach),
             Some(coaching_relationship_kind::Role::Coach)
         );
-        assert!(relationship.has_authority(coach));
+        assert!(relationship.can_manage_sessions(coach));
 
         assert_eq!(relationship.seat(coachee), Some(Seat::CoacheeId));
         assert_eq!(
             relationship.role(coachee),
             Some(coaching_relationship_kind::Role::Coachee)
         );
-        assert!(!relationship.has_authority(coachee));
+        assert!(!relationship.can_manage_sessions(coachee));
 
         assert_eq!(relationship.seat(stranger), None);
         assert_eq!(relationship.role(stranger), None);
-        assert!(!relationship.has_authority(stranger));
+        assert!(!relationship.can_manage_sessions(stranger));
     }
 
     #[test]
@@ -270,7 +270,7 @@ mod tests {
             relationship.role(user),
             Some(coaching_relationship_kind::Role::Coach)
         );
-        assert!(relationship.has_authority(user));
+        assert!(relationship.can_manage_sessions(user));
     }
 
     #[test]
@@ -284,11 +284,11 @@ mod tests {
                 relationship.role(user),
                 Some(coaching_relationship_kind::Role::Colleague)
             );
-            assert!(relationship.has_authority(user));
+            assert!(relationship.can_manage_sessions(user));
         }
         assert_eq!(relationship.seat(stranger), None);
         assert_eq!(relationship.role(stranger), None);
-        assert!(!relationship.has_authority(stranger));
+        assert!(!relationship.can_manage_sessions(stranger));
     }
 
     #[test]
@@ -304,7 +304,7 @@ mod tests {
             (&solo, coach),
         ] {
             assert_eq!(
-                relationship.has_authority(user),
+                relationship.can_manage_sessions(user),
                 user == relationship.coach_id,
                 "{user}"
             );

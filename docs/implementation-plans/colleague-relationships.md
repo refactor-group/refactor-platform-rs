@@ -1,14 +1,14 @@
 # Colleague relationships (rs#399)
 
 Two people hold 1:1 sessions as equals, with identical privileges. Modeled as a `kind` on the
-existing coaching relationship, with a neutral `has_authority(user_id)` check, rather than a
+existing coaching relationship, with a neutral `can_manage_sessions(user_id)` check, rather than a
 new entity or two mirrored coaching rows.
 
 ## Today and target
 
 - **Today:** "coach" is whoever sits in `coach_id`. That person alone can reschedule, cancel,
   run series, set meeting links and delete any topic. Many checks compare `coach_id` by hand.
-- **Target:** `kind = coaching | colleague`. For coaching, `has_authority` is exactly "is the
+- **Target:** `kind = coaching | colleague`. For coaching, `can_manage_sessions` is exactly "is the
   coach", so nothing changes. For colleagues, it is true for both people.
 
 ## Hard requirement: no regressions for coaching
@@ -18,7 +18,7 @@ Every coach and coachee permission works exactly as it does today when this is d
 | Check | When |
 |---|---|
 | Baseline suite (phase 0b): today's coach/coachee access as automated tests, passing on `main` before any change | Every phase. Must stay green with zero edits; review confirms `git diff main` does not touch the tests named in section 6 of the access matrix. |
-| `kind` defaults to `coaching`; for coaching, `has_authority` equals "is the coach" | Phase 2, pinned by a unit test |
+| `kind` defaults to `coaching`; for coaching, `can_manage_sessions` equals "is the coach" | Phase 2, pinned by a unit test |
 | Phase 0c moves checks, never changes them; any diff that adds or removes a caller is sent back | Phase 0c, per handoff |
 | Phase 3 switches each check to a Model method that, for coaching, admits exactly the same callers | Phase 3, per handoff |
 | Manual access matrix run against the local API, all coach/coachee rows | After phase 3, and before phase 5 ships |
@@ -40,7 +40,7 @@ the phase 0b baseline records the corrected behavior. Notes, agreements, actions
 goal links require a participant of the relationship who is still an org member; action
 assignees must be the relationship's coach or coachee; the batch session-goals read
 authorizes every id; `POST /coaching_sessions` is coach only (colleagues later get session and
-series creation through `has_authority`); series creation also requires org membership; a
+series creation through `can_manage_sessions`); series creation also requires org membership; a
 coach reading a user's actions sees only their own relationship with that user. One commit per
 area, each test first. The access matrix marks every changed row `[tightened]`.
 
@@ -161,9 +161,9 @@ transcripts take each participant's role from the kind and their seat. The types
 - `Role` (`Coach`, `Coachee`, `Colleague`): what a participant is, derived from kind and seat,
   never stored; lowercase on the wire.
 - A `Rules` trait, one impl per kind (`Coaching`, `Colleague`), with `role(seat)` and
-  `has_authority(seat)`. No default methods, so a new capability can't ship until every kind
+  `can_manage_sessions(seat)`. No default methods, so a new capability can't ship until every kind
   decides it; `Kind::rules()` is the one exhaustive match from a stored kind to its rules.
-- On the Model, `seat(user_id)`, `role(user_id)` and `has_authority(user_id)` look up the seat
+- On the Model, `seat(user_id)`, `role(user_id)` and `can_manage_sessions(user_id)` look up the seat
   and ask the rules. A non-participant has no seat, so no role and no authority.
 
 `Role` replaces the transcript export's `SpeakerRole` and the email copy's role strings, so a
@@ -173,11 +173,20 @@ apart: they select a column, not a person's role, and phases 4 and 6 change them
 **3. One source of truth for relationship permissions** (no visible change). Every check that
 decides view/edit/delete through a relationship asks the Model:
 
-- `grants_access_to(user)`: may see and work in the relationship
-- `has_authority(user)`: may schedule, reschedule, cancel, run series, set meeting links,
-  delete any topic
+- `is_participant_and_member(user)` (today's `grants_access_to`, renamed here): a participant who
+  is still in the relationship's organization, so may see and work in it. Distinct from
+  `includes_user(user_id)`, which says only that their id is on the relationship.
+- `can_manage_sessions(user_id)`: may schedule, reschedule, cancel, run series, set meeting links
+  and delete any topic. A role check alone, saying nothing about membership.
 - `sees_all_actions(user)`: action visibility (replaces `CallerVisibility::for_relationship`'s
-  hand comparison)
+  hand comparison), a new required `Rules` method.
+
+Session-managing checks take a proof, not a bool: a `SessionManager` value that only the access
+extractors can make, and only after both `is_participant_and_member` and `can_manage_sessions`
+pass. Domain functions that schedule, reschedule, cancel or run series require it as an
+argument, so calling one without the full check does not compile, and `can_manage_sessions` is
+never used alone. The coach-named extractors (`CoachingSessionCoachAccess`,
+`CoachingSessionSeriesCoachAccess`) become manager-named ones that produce it.
 
 One handoff per check site: the extractors from phase 0c; the existing
 `coaching_session_access`, `coaching_session_series_access` and `coaching_session_topic_access`
@@ -312,6 +321,9 @@ other person as a colleague, never a coach.
 ## Decisions
 
 - Name: "colleague" everywhere.
+- Relationship permission names: `includes_user` (on the relationship),
+  `is_participant_and_member` (may work in it now), `can_manage_sessions` (may run its sessions),
+  and the `SessionManager` proof that the last two passed.
 - Reminder notice: tracked per person.
 - Colleague cancels: calendar update and cancel email, same as coaching; no who-cancelled record.
 - #419: record who created each meeting link (phase 1).
