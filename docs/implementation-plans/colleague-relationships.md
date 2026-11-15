@@ -230,6 +230,11 @@ the 409's consequences before re-sending with `confirmed: true`) is posted at th
     participant by role.
   - Already neutral: added to organization (`inviter_*`), action assigned (`assigner_*`),
     password reset.
+  - Frontend copy, in the phase 4 frontend PRs: every label picked for a coaching relationship
+    (the member card's "Assign Coach" / "Assign Coachee" menu and dialog, the "Coachee Actions"
+    header, "Coach (optional)" when adding a member, the coachee-oriented dashboard empty state)
+    is chosen from the participant's role (`coach`, `coachee`, `colleague`), and from `kind` only
+    where the copy is about the relationship itself.
 
   The copy lives in the Resend dashboard, not this repository, so a renamed variable ships in
   three steps: the backend sends the old and new names for one release, each template switches
