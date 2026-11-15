@@ -204,7 +204,8 @@ switch to the Model method.
   path that would produce a colleague relationship (POST, the phase 5 switch, the invite path)
   returns 422. New env var, wired through every passthrough layer. Production turns it on in
   the phase 6 deploy. The FE admin-screen contract
-  (choose kind, flip with "who becomes coach") is posted at the start of this phase.
+  (choose kind, flip with "who becomes coach", and the phase 5 confirmation dialog that shows
+the 409's consequences before re-sending with `confirmed: true`) is posted at the start of this phase.
 - Both colleagues see every action; both get reminders, each by their own notice stamp.
 - Colleagues only (coaching keeps using the coach): the .ics timezone comes from whoever
   scheduled. Meeting link: reuse the relationship's existing persistent link first, as today;
@@ -260,6 +261,23 @@ reminder recipient, so the switch writes suppression rows in `coaching_session_r
 sessions already inside the reminder window, in the same transaction. SSE event to both people. The switch is recorded
 through the phase E event log (who, when, from and to kind, new coach).
 
+- **Confirmation, enforced by the backend.** A switch changes what people can see and do, so the
+  admin confirms its consequences first. A request without `confirmed: true` changes nothing and
+  returns 409 with `details` listing them; the frontend shows that as a warning and re-sends with
+  the confirmation. A client that skips the dialog cannot switch by accident. The consequences:
+  - Actions that become visible: coaching to colleague shows the former coachee every action,
+    including those assigned to the coach that they could not see before (count, and to whom).
+  - Authority that moves: who gains the right to schedule, reschedule, cancel and run series,
+    and who loses it (a former colleague who becomes the coachee keeps what they already
+    created).
+- **Calendars update.** After the switch commits, every future session and series in the
+  relationship gets its invite re-sent to both people (the existing resend: same `UID`, higher
+  `SEQUENCE`), so calendar text such as the `.ics` participant label follows the new kind. Sent
+  only to participants still in the organization, never twice for one switch.
+- **History is relabeled, by design.** Roles are derived from the kind, never stored, so past
+  sessions and transcripts show the participants under the new kind's roles. The data is
+  unchanged; only its labels follow the switch.
+
 **6. Frontend contract and coordinated deploy.** Blocked on phase 4's wording step: every Resend
 template and the `.ics` text is verified with a colleague relationship before the gate lifts.
 Built from the phase 0 wire inventory: session lists replace `coach` with `participants`;
@@ -296,7 +314,9 @@ other person as a colleague, never a coach.
 - Same pair: no coaching plus colleague for one pair in one org.
 - Columns keep `coach_id`/`coachee_id` until the separate rename.
 
-- Kind switch: no email; open pages refresh.
+- Kind switch: the admin confirms its consequences (actions that become visible, authority that
+  moves), enforced by a 409 until confirmed; invites for future sessions and series are re-sent
+  so calendars relabel; open pages refresh; past sessions are relabeled, not preserved.
 - A removed member is inactive in that org; their data is kept and returns when they are
   re-added. Read-only access (#482) is a separate state: it needs its own write check beside
   `is_member`, never a reuse of it, or a read-only user would pass write checks.
