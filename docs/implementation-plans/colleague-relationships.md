@@ -146,12 +146,15 @@ onto extractors: "is this my own user" on the `/users/{user_id}` routes becomes
   frontend never read it. Down re-adds the column, refills it from each session's coachee
   row, and drops NOT NULL; an image rollback runs the down migration first.
 
-**2. Add `kind`** (no visible change). Postgres enum `coaching_relationship_kind`
-(`coaching`, `colleague`), default `coaching`, owned by `refactor`; read-only on the Model so
-no request can set it before phase 4's gate. `entity_api::coaching_relationship::create` takes
-the kind as an argument and every caller (the relationship POST and both invite paths) passes
-`coaching` for now: no layer assumes a new relationship is coaching. Down migration. `kind` in relationship responses
-and the OpenAPI schema. The types live in `entity/src/coaching_relationship_kind.rs`:
+**2. Add `kind`** (no change in who may do what; an additive API change). Postgres enum
+`coaching_relationship_kind` (`coaching`, `colleague`), default `coaching`, owned by
+`refactor`; read-only on the Model so no request can set it before phase 4's gate.
+`entity_api::coaching_relationship::create` takes the kind once, in its input, and every caller
+(the relationship POST and both invite paths) passes `coaching` for now: no layer assumes a new
+relationship is coaching. It refuses (409) to reuse a pair's existing relationship of another
+kind. Down migration. `kind` in relationship responses and the OpenAPI schema. Emails and
+transcripts take each participant's role from the kind and their seat. The types live in
+`entity/src/coaching_relationship_kind.rs`:
 
 - `Kind`: what is stored.
 - `Seat` (`CoachId`, `CoacheeId`): which column a participant occupies.
@@ -196,7 +199,8 @@ switch to the Model method.
 - Same pair: a colleague relationship is refused if the pair has any relationship in the org,
   either direction. A coaching create runs the same check under the same lock and refuses only
   when the pair already holds a colleague relationship; otherwise coaching's rule is unchanged
-  (A coaching B and B coaching A stays allowed).
+  (A coaching B and B coaching A stays allowed). Phase 2 already makes `create` refuse to reuse
+  a pair's relationship of another kind; this phase adds the either-direction check.
   The rule lives in `entity_api::coaching_relationship::create`, so the invite path
   (`domain/src/user.rs`, `user_role.rs`) hits it too, and runs under
   `pg_advisory_xact_lock` on org plus the sorted pair.
@@ -220,8 +224,8 @@ the 409's consequences before re-sending with `confirmed: true`) is posted at th
   - Session reminder: `coach_first_name` / `coach_full_name` become the other participant
     (`other_user_*` plus `other_user_role`), since both colleagues are reminded.
   - Session scheduled, rescheduled, cancelled and their three series versions: `other_user_role`
-    already comes from `Role` (phase 2) and will be `colleague`; check each template's copy reads
-    naturally with it.
+    comes from the relationship's kind and the person's seat (phase 2), so it is `colleague` for
+    colleagues with no code change; check each template's copy reads naturally with it.
   - `.ics` DESCRIPTION's `Coach: {name}` line (`domain/src/gateway/ical.rs`) names the other
     participant by role.
   - Already neutral: added to organization (`inviter_*`), action assigned (`assigner_*`),
@@ -234,8 +238,8 @@ the 409's consequences before re-sending with `confirmed: true`) is posted at th
 
 **4b. Transcripts and suggested actions.** Speaker attribution
 (`domain/src/transcript_attribution.rs`) uses the recorded meeting-link creator and attributes
-colleague speakers to people, not roles. In the transcript download, colleague speakers get a
-`colleague` role; each line's `speaker_user_id` tells the two apart. Colleague sessions get suggested actions: a colleague-aware
+colleague speakers to people, not roles. Their `colleague` role already comes from the
+relationship's kind (phase 2); each line's `speaker_user_id` tells the two apart. Colleague sessions get suggested actions: a colleague-aware
 prompt (assignees and due-date timezone no longer assume a coach), the paid eval run, and a
 new `baseline.json` in which coaching results do not regress. Colleague suggestion due dates use
 each assignee's own timezone; unassigned ones use the scheduler's.
