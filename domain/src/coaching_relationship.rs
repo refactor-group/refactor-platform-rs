@@ -1,4 +1,4 @@
-use crate::coaching_relationship_kind::Kind;
+use crate::coaching_relationship_kind::{Kind, Role, Seat};
 use crate::coaching_relationships::{Model, SchedulingPermit};
 use crate::error::{reason, DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::Id;
@@ -98,27 +98,52 @@ pub async fn find_by_organization_for_user_with_user_names(
     Ok(coaching_relationships)
 }
 
-/// A 409 when the coachee is not among `member_ids`, the relationship's participants still
-/// in its organization: anything sent on the relationship would not reach them.
-pub(crate) fn ensure_coachee_is_member(
+/// A 409 for the first participant, coach seat first, whose seat must still be in the
+/// organization for sessions to be scheduled or changed but who is not among `member_ids`,
+/// the relationship's participants still in its organization.
+pub(crate) fn ensure_required_participants_are_members(
     relationship: &Model,
     member_ids: &[Id],
 ) -> Result<(), Error> {
-    match member_ids.contains(&relationship.coachee_id) {
-        true => Ok(()),
-        false => Err(coachee_not_a_member(relationship)),
-    }
+    let rules = relationship.kind.rules();
+    [
+        (Seat::CoachId, relationship.coach_id),
+        (Seat::CoacheeId, relationship.coachee_id),
+    ]
+    .into_iter()
+    .find(|&(seat, user_id)| {
+        rules.must_be_member_to_schedule(seat) && !member_ids.contains(&user_id)
+    })
+    .map_or(Ok(()), |(seat, _)| {
+        Err(participant_not_a_member(relationship, seat))
+    })
 }
 
-/// The 409 for a relationship whose coachee no longer belongs to its organization.
-pub(crate) fn coachee_not_a_member(relationship: &Model) -> Error {
-    not_a_member(
-        "Your coachee is no longer a member of this organization. Re-add them to the \
-         organization first.",
-        reason::COACHEE_NOT_A_MEMBER,
-        relationship.organization_id,
-        relationship.coachee_id,
-    )
+/// The 409 for a relationship whose participant in `seat` no longer belongs to its
+/// organization, its reason named by that participant's role.
+pub(crate) fn participant_not_a_member(relationship: &Model, seat: Seat) -> Error {
+    let (message, reason) = match relationship.kind.rules().role(seat) {
+        Role::Coachee => (
+            "Your coachee is no longer a member of this organization. Re-add them to the \
+             organization first.",
+            reason::COACHEE_NOT_A_MEMBER,
+        ),
+        Role::Colleague => (
+            "Your colleague is no longer a member of this organization. Re-add them to the \
+             organization first.",
+            reason::PARTICIPANT_NOT_A_MEMBER,
+        ),
+        Role::Coach => (
+            "Your coach is no longer a member of this organization. Re-add them to the \
+             organization first.",
+            reason::PARTICIPANT_NOT_A_MEMBER,
+        ),
+    };
+    let user_id = match seat {
+        Seat::CoachId => relationship.coach_id,
+        Seat::CoacheeId => relationship.coachee_id,
+    };
+    not_a_member(message, reason, relationship.organization_id, user_id)
 }
 
 /// Refuses (403) a permit for a different relationship than the session or series being
@@ -203,12 +228,16 @@ mod tests {
 
     /// M8-02: absent from `member_ids` is the 409; present is `Ok`. No database.
     #[test]
-    fn m8_02_ensure_coachee_is_member_reads_only_the_member_ids() {
+    fn m8_02_ensure_required_participants_are_members_reads_only_the_member_ids() {
         let relationship = relationship();
 
-        assert!(ensure_coachee_is_member(&relationship, &[relationship.coachee_id]).is_ok());
+        assert!(ensure_required_participants_are_members(
+            &relationship,
+            &[relationship.coachee_id]
+        )
+        .is_ok());
 
-        let err = ensure_coachee_is_member(&relationship, &[relationship.coach_id])
+        let err = ensure_required_participants_are_members(&relationship, &[relationship.coach_id])
             .expect_err("a coachee missing from member_ids is refused");
         let DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Conflict {
             details: Some(details),

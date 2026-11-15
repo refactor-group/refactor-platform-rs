@@ -1,7 +1,10 @@
 pub(crate) mod recurrence;
 pub mod with_permit;
 
-use crate::coaching_relationship::{coachee_not_a_member, ensure_coachee_is_member};
+use crate::coaching_relationship::{
+    ensure_required_participants_are_members, participant_not_a_member,
+};
+use crate::coaching_relationship_kind::Seat;
 use crate::coaching_relationships;
 use crate::coaching_session_hydration::{
     run_coaching_session_hydration_tasks, CoachingSessionHydrationContext,
@@ -103,7 +106,7 @@ pub(crate) async fn create(
         });
     }
     let member_ids = coaching_relationship::notify_member_ids(db, &coaching_relationship).await?;
-    ensure_coachee_is_member(&coaching_relationship, &member_ids)?;
+    ensure_required_participants_are_members(&coaching_relationship, &member_ids)?;
     let coach_id = coaching_relationship.coach_id;
 
     coaching_session_model.date = SessionDate::new(coaching_session_model.date)?.into_inner();
@@ -455,7 +458,7 @@ async fn apply_update(
         let relationship =
             coaching_relationship::find_by_id(&txn, old.coaching_relationship_id).await?;
         let member_ids = coaching_relationship::notify_member_ids(&txn, &relationship).await?;
-        ensure_coachee_is_member(&relationship, &member_ids)?;
+        ensure_required_participants_are_members(&relationship, &member_ids)?;
         if let Some(scheduler) = acting_user {
             update_map.insert("scheduled_by_user_id".to_string(), Some(scheduler.into()));
         }
@@ -654,7 +657,7 @@ pub(crate) async fn resend_invite(
     let relationship =
         coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
     let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
-    ensure_coachee_is_member(&relationship, &member_ids)?;
+    ensure_required_participants_are_members(&relationship, &member_ids)?;
 
     // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
     let bumped = coaching_session::increment_ical_sequence(db, id).await?;
@@ -684,7 +687,9 @@ pub(crate) fn ensure_coachee_reached(
 ) -> Result<(), Error> {
     match delivered.coachee {
         emails::Delivery::Sent => Ok(()),
-        emails::Delivery::NoLongerAMember => Err(coachee_not_a_member(relationship)),
+        emails::Delivery::NoLongerAMember => {
+            Err(participant_not_a_member(relationship, Seat::CoacheeId))
+        }
         emails::Delivery::Failed => Err(Error {
             source: None,
             error_kind: DomainErrorKind::External(ExternalErrorKind::Network),

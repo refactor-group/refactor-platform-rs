@@ -3,6 +3,7 @@ use crate::coaching_relationship::{accessible_to, select_membership, WithMembers
 use crate::duration::Duration;
 use crate::mutate::UpdateMap;
 use chrono::NaiveDateTime;
+use entity::coaching_relationship_kind::{Kind, Seat};
 use entity::{
     actions, agreements, coaching_relationships,
     coaching_relationships::Visibility,
@@ -17,8 +18,9 @@ use sea_orm::{
     entity::prelude::*,
     sea_query::{Expr, Func, IntoCondition, Query, SelectStatement, UnionType},
     ActiveValue::Unchanged,
-    ConnectionTrait, DatabaseBackend, DatabaseConnection, ExprTrait, FromQueryResult, JoinType,
-    Order, QueryOrder, QuerySelect, QueryTrait, Select, Set, Statement, TryIntoModel, Value,
+    ConnectionTrait, DatabaseBackend, DatabaseConnection, ExprTrait, FromQueryResult, Iterable,
+    JoinType, Order, QueryOrder, QuerySelect, QueryTrait, Select, Set, Statement, TryIntoModel,
+    Value,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -429,15 +431,85 @@ struct ClaimedPair {
     claim_id: Id,
 }
 
+/// The participant column for `seat`, as the reminder claim's raw SQL names it.
+fn reminder_seat_column(seat: Seat) -> &'static str {
+    match seat {
+        Seat::CoachId => "cr.coach_id",
+        Seat::CoacheeId => "cr.coachee_id",
+    }
+}
+
+/// Each due `(session, user, date)` for every participant [`entity::coaching_relationship_kind::Rules::is_reminded`] names.
+///
+/// One `SELECT` per seat, limited to the kinds whose rules remind that seat, so the SQL
+/// follows the rules rather than restating them. `UNION` drops the second row when one
+/// person holds both seats. Each candidate's claim, notice and membership are their own.
+fn due_reminder_candidates() -> String {
+    [Seat::CoacheeId, Seat::CoachId]
+        .into_iter()
+        .filter_map(|seat| {
+            let kinds = Kind::iter()
+                .filter(|kind| kind.rules().is_reminded(seat))
+                .map(|kind| format!("'{}'", kind.to_value()))
+                .collect::<Vec<_>>();
+            (!kinds.is_empty()).then(|| due_reminders_for(reminder_seat_column(seat), &kinds))
+        })
+        .collect::<Vec<_>>()
+        .join("\n               UNION\n")
+}
+
+/// The due reminders for the participant in `user_column`, on relationships of `kinds`.
+fn due_reminders_for(user_column: &str, kinds: &[String]) -> String {
+    format!(
+        r#"
+               SELECT cs.id AS coaching_session_id, {user_column} AS user_id, cs.date
+               FROM refactor_platform.coaching_sessions cs
+               JOIN refactor_platform.coaching_relationships cr
+                 ON cr.id = cs.coaching_relationship_id
+               LEFT JOIN refactor_platform.coaching_session_reminders csr
+                 ON csr.coaching_session_id = cs.id
+                AND csr.user_id = {user_column}
+               LEFT JOIN refactor_platform.coaching_session_notices n
+                 ON n.coaching_session_id = cs.id
+                AND n.user_id = {user_column}
+               WHERE cs.date > $1
+                 AND cs.date <= $2
+                 -- Notice already given: skip a session starting less than a lead after
+                 -- the recipient was last told its time, since the email that told them
+                 -- said the same thing a reminder would. No row for them means remind.
+                 -- `$2 - $1` is the lead, so this cannot drift from the window above.
+                 AND (n.notice_given_at IS NULL OR cs.date > (n.notice_given_at AT TIME ZONE 'UTC')
+                      + ($2::timestamp - $1::timestamp))
+                 AND csr.sent_for_start IS DISTINCT FROM cs.date
+                 -- A reminder must not announce a time participants haven't been told.
+                 AND NOT EXISTS (
+                     SELECT 1 FROM refactor_platform.coaching_session_pending_reschedules p
+                     WHERE p.coaching_session_id = cs.id
+                 )
+                 AND EXISTS (
+                     SELECT 1
+                     FROM refactor_platform.user_roles ur
+                     WHERE ur.user_id = {user_column}
+                       AND (
+                           ur.organization_id = cr.organization_id
+                           OR (ur.organization_id IS NULL AND ur.role = 'super_admin')
+                       )
+                 )
+                 AND cr.kind IN ({kinds})"#,
+        kinds = kinds.join(", ")
+    )
+}
+
 /// Atomically claims the reminders that are now due and returns them.
 ///
-/// Due means: the session starts in `(now, now + lead]`, it gave more than `lead` notice,
-/// the recipient still holds a role in its organization, and no claim row already holds
-/// the session's current `date`.
+/// Each due session yields one claim per participant its relationship's rules remind
+/// ([`due_reminder_candidates`]). Due means: the session starts in `(now, now + lead]`, it
+/// gave that recipient more than `lead` notice, the recipient still holds a role in its
+/// organization, and no claim row of theirs already holds the session's current `date`.
 ///
 /// A session with a pending reschedule is skipped until participants are told its time.
 ///
-/// Notice is `date` minus when the coachee, the reminder's recipient, was last told its
+/// Notice is `date` minus when the reminder's recipient was last told its
 /// time, at booking and again on every reschedule that reached them: their own row in
 /// `coaching_session_notices`. A session with no row for them is reminded, erring toward a
 /// reminder over silence. The row is joined on its unique key, so it adds no rows to the
@@ -471,41 +543,11 @@ pub async fn claim_due_reminders(
 
     let claimed = ClaimedPair::find_by_statement(Statement::from_sql_and_values(
         DatabaseBackend::Postgres,
-        r#"WITH due AS (
-               SELECT cs.id AS coaching_session_id, cr.coachee_id AS user_id, cs.date
-               FROM refactor_platform.coaching_sessions cs
-               JOIN refactor_platform.coaching_relationships cr
-                 ON cr.id = cs.coaching_relationship_id
-               LEFT JOIN refactor_platform.coaching_session_reminders csr
-                 ON csr.coaching_session_id = cs.id
-                AND csr.user_id = cr.coachee_id
-               LEFT JOIN refactor_platform.coaching_session_notices n
-                 ON n.coaching_session_id = cs.id
-                AND n.user_id = cr.coachee_id
-               WHERE cs.date > $1
-                 AND cs.date <= $2
-                 -- Notice already given: skip a session starting less than a lead after
-                 -- the coachee was last told its time, since the email that told them
-                 -- said the same thing a reminder would. No row for them means remind.
-                 -- `$2 - $1` is the lead, so this cannot drift from the window above.
-                 AND (n.notice_given_at IS NULL OR cs.date > (n.notice_given_at AT TIME ZONE 'UTC')
-                      + ($2::timestamp - $1::timestamp))
-                 AND csr.sent_for_start IS DISTINCT FROM cs.date
-                 -- A reminder must not announce a time participants haven't been told.
-                 AND NOT EXISTS (
-                     SELECT 1 FROM refactor_platform.coaching_session_pending_reschedules p
-                     WHERE p.coaching_session_id = cs.id
-                 )
-                 AND EXISTS (
-                     SELECT 1
-                     FROM refactor_platform.user_roles ur
-                     WHERE ur.user_id = cr.coachee_id
-                       AND (
-                           ur.organization_id = cr.organization_id
-                           OR (ur.organization_id IS NULL AND ur.role = 'super_admin')
-                       )
-                 )
-               ORDER BY cs.date
+        format!(
+            r#"WITH due AS (
+               SELECT coaching_session_id, user_id, date
+               FROM ({candidates}) candidates
+               ORDER BY date
                LIMIT $3
            )
            INSERT INTO refactor_platform.coaching_session_reminders
@@ -518,6 +560,8 @@ pub async fn claim_due_reminders(
                WHERE coaching_session_reminders.sent_for_start
                      IS DISTINCT FROM EXCLUDED.sent_for_start
            RETURNING coaching_session_id, user_id, sent_for_start, claim_id"#,
+            candidates = due_reminder_candidates()
+        ),
         [now.into(), cutoff.into(), (limit as i64).into()],
     ))
     .all(db)
@@ -1968,6 +2012,91 @@ mod tests {
             !sql.contains("FOR UPDATE"),
             "locking the session row would make two recipients contend, got: {sql}"
         );
+
+        Ok(())
+    }
+
+    /// The SQL text of one claim, read back from the mock.
+    async fn claim_sql() -> Result<String, Error> {
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![Vec::<Model>::new()])
+            .into_connection();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+
+        claim_due_reminders(&db, now, chrono::Duration::hours(24), 200).await?;
+
+        Ok(db.into_transaction_log()[0].statements()[0].sql.clone())
+    }
+
+    /// The candidate `SELECT` for the participant in `column`, if the claim has one.
+    fn candidate_for<'a>(sql: &'a str, column: &str) -> Option<&'a str> {
+        sql.split("UNION")
+            .find(|branch| branch.contains(&format!("{column} AS user_id")))
+    }
+
+    /// The kinds a candidate `SELECT` is limited to.
+    fn kinds_of(candidate: &str) -> Vec<String> {
+        let (_, kinds) = candidate
+            .split_once("cr.kind IN (")
+            .expect("each candidate is limited by kind");
+        let (kinds, _) = kinds.split_once(')').expect("the kind list closes");
+        kinds
+            .split(", ")
+            .map(|kind| kind.trim_matches('\'').to_string())
+            .collect()
+    }
+
+    /// JOB-06: both colleagues are reminded, each on their own claim, notice and membership,
+    /// while coaching still reminds only the coachee.
+    #[tokio::test]
+    async fn claim_due_reminders_also_reminds_the_coach_seat_of_a_colleague_relationship(
+    ) -> Result<(), Error> {
+        let sql = claim_sql().await?;
+
+        let coachee = candidate_for(&sql, "cr.coachee_id").expect("the coachee is reminded");
+        assert_eq!(kinds_of(coachee), ["coaching", "colleague"], "{coachee}");
+
+        let coach = candidate_for(&sql, "cr.coach_id").expect("a colleague is reminded");
+        assert_eq!(kinds_of(coach), ["colleague"], "{coach}");
+        for key in [
+            "csr.user_id = cr.coach_id",
+            "n.user_id = cr.coach_id",
+            "ur.user_id = cr.coach_id",
+        ] {
+            assert!(coach.contains(key), "{key}: {coach}");
+        }
+        assert!(
+            !coach.contains("cr.coachee_id"),
+            "the coach's candidate must not read the coachee's rows, got: {coach}"
+        );
+        assert!(
+            sql.contains(") candidates\n               ORDER BY date\n               LIMIT $3"),
+            "one limit spans every candidate, got: {sql}"
+        );
+
+        Ok(())
+    }
+
+    /// The claim's candidates are what `Rules::is_reminded` says for every kind and seat.
+    #[tokio::test]
+    async fn claim_due_reminders_candidates_mirror_is_reminded() -> Result<(), Error> {
+        let sql = claim_sql().await?;
+
+        for seat in [Seat::CoachId, Seat::CoacheeId] {
+            let listed = candidate_for(&sql, reminder_seat_column(seat))
+                .map(kinds_of)
+                .unwrap_or_default();
+            for kind in Kind::iter() {
+                assert_eq!(
+                    listed.contains(&kind.to_value()),
+                    kind.rules().is_reminded(seat),
+                    "{kind:?} {seat:?}: {sql}"
+                );
+            }
+        }
 
         Ok(())
     }

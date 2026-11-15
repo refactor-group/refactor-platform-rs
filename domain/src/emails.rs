@@ -8,8 +8,9 @@ use sea_orm::DatabaseConnection;
 use service::config::Config;
 
 use crate::{
-    actions, coaching_relationship, coaching_relationship_kind, coaching_relationships,
-    coaching_session, coaching_session_series,
+    actions, coaching_relationship,
+    coaching_relationship_kind::{self, Seat},
+    coaching_relationships, coaching_session, coaching_session_series,
     coaching_session_series::SeriesRule,
     coaching_sessions,
     error::Error,
@@ -1339,7 +1340,19 @@ pub async fn send_session_rescheduled(
     Ok((relationship, outcome))
 }
 
-/// Send the upcoming-session reminder to the coachee.
+/// Whether a reminder attempt actually mailed anyone.
+///
+/// A skip is not a failure: the recipient is no longer entitled to the session's details,
+/// or their relationship does not remind them, so there is nothing to retry and nothing to
+/// report as broken.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReminderOutcome {
+    Sent,
+    RecipientNoLongerAMember,
+    RecipientNotReminded,
+}
+
+/// Send the upcoming-session reminder to `recipient_id`, the participant the sweep claimed it for.
 ///
 /// Unlike the other `notify_*` entry points this returns `Result` rather than swallowing
 /// failures. Its caller is the reminder sweep, not a controller: the sweep has already
@@ -1347,37 +1360,45 @@ pub async fn send_session_rescheduled(
 /// back for a later retry. Logging and discarding the error here would silently drop the
 /// reminder instead.
 ///
-/// The coach is not a recipient — they already hold the invite from the scheduled send,
-/// and the copy is written from the coachee's side ("your coach, ...").
+/// Only a participant whose seat the relationship's rules remind gets one; for coaching
+/// that is the coachee, since the coach already holds the invite from the scheduled send.
+/// The `coach_*` variables name the other participant.
 ///
 /// No `.ics` rides along: the calendar event was delivered when the session was
 /// scheduled, and re-sending the same `UID`/`SEQUENCE` pair is a no-op for a calendar
 /// client at best and a duplicate event at worst.
-/// Whether a reminder attempt actually mailed anyone.
-///
-/// A skip is not a failure: the recipient is no longer entitled to the session's details,
-/// so there is nothing to retry and nothing to report as broken.
-#[derive(Debug, PartialEq, Eq)]
-pub enum ReminderOutcome {
-    Sent,
-    RecipientNoLongerAMember,
-}
-
 pub async fn send_session_reminder(
     db: &DatabaseConnection,
     config: &Config,
     session: &coaching_sessions::Model,
+    recipient_id: Id,
 ) -> Result<ReminderOutcome, Error> {
     let relationship =
         coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
 
+    // By seat, not `seat()`: a self-coached coachee also holds the coach seat.
+    let rules = relationship.kind.rules();
+    let Some(seat) = [
+        (Seat::CoachId, relationship.coach_id),
+        (Seat::CoacheeId, relationship.coachee_id),
+    ]
+    .into_iter()
+    .find(|&(seat, user_id)| user_id == recipient_id && rules.is_reminded(seat))
+    .map(|(seat, _)| seat) else {
+        return Ok(ReminderOutcome::RecipientNotReminded);
+    };
+
     let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
     let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
     let organization = organization::find_by_id(db, relationship.organization_id).await?;
+    let (recipient, other) = match seat {
+        Seat::CoachId => (&coach, &coachee),
+        Seat::CoacheeId => (&coachee, &coach),
+    };
 
     info!(
-        "Initiating session reminder email for session {} (coachee: {})",
-        session.id, coachee.id
+        "Initiating session reminder email for session {} (recipient: {})",
+        session.id, recipient.id
     );
 
     let email_config = ResolvedEmailConfig::new::<SessionReminder>(config).await?;
@@ -1390,11 +1411,11 @@ pub async fn send_session_reminder(
     // accepting the request, is inherent rather than unfinished: no transaction spans an
     // outbound call, and holding a lock across one would trade a rare stale email for
     // pool exhaustion.
-    if !recipient_still_notified(db, &relationship, coachee.id).await? {
+    if !recipient_still_notified(db, &relationship, recipient.id).await? {
         return Ok(ReminderOutcome::RecipientNoLongerAMember);
     }
 
-    send_session_reminder_email(&email_config, &coachee, &coach, session, &organization).await?;
+    send_session_reminder_email(&email_config, recipient, other, session, &organization).await?;
 
     Ok(ReminderOutcome::Sent)
 }
@@ -1414,35 +1435,35 @@ async fn recipient_still_notified(
         .contains(&recipient_id))
 }
 
-/// Build and send the reminder to one coachee.
+/// Build and send the reminder to `recipient`, naming `other`, the session's other participant.
 async fn send_session_reminder_email(
     email_config: &ResolvedEmailConfig,
-    coachee: &users::Model,
-    coach: &users::Model,
+    recipient: &users::Model,
+    other: &users::Model,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
 ) -> Result<(), Error> {
-    let (session_date, session_time) = format_session_date_time(session.date, &coachee.timezone);
+    let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
     let session_duration =
         crate::duration::Duration::from_minutes_unchecked(session.duration_minutes).to_string();
-    let coach_full_name = format!("{} {}", coach.first_name, coach.last_name);
+    let other_full_name = format!("{} {}", other.first_name, other.last_name);
 
     let email_request = SendEmailRequestBuilder::new()
         .from(FROM_ADDRESS)
         .to_with_name(
-            &coachee.email,
-            format!("{} {}", coachee.first_name, coachee.last_name),
+            &recipient.email,
+            format!("{} {}", recipient.first_name, recipient.last_name),
         )
         .template_id(&email_config.template_id)
-        .add_variable("first_name", coachee.first_name.as_str())
-        .add_variable("coach_first_name", coach.first_name.as_str())
-        .add_variable("coach_full_name", coach_full_name.as_str())
+        .add_variable("first_name", recipient.first_name.as_str())
+        .add_variable("coach_first_name", other.first_name.as_str())
+        .add_variable("coach_full_name", other_full_name.as_str())
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_date", session_date.as_str())
         .add_variable("session_time", session_time.as_str())
         .add_variable(
             "session_when",
-            format_session_when(session.date, &coachee.timezone),
+            format_session_when(session.date, &recipient.timezone),
         )
         .add_variable("session_duration", session_duration.as_str())
         .add_variable(

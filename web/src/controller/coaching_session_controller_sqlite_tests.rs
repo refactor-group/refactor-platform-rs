@@ -981,3 +981,51 @@ async fn non_participants_cannot_update_a_colleague_session() {
     })
     .await;
 }
+
+/// SES-46: a colleague who left the organization blocks scheduling for the one who stayed,
+/// whichever seat they held, with nothing written and nobody mailed.
+#[tokio::test]
+async fn a_colleague_cannot_schedule_with_a_colleague_who_left() {
+    within_time_limit(async {
+        for (removed, remaining) in [
+            (Caller::Coach, Caller::Coachee),
+            (Caller::Coachee, Caller::Coach),
+        ] {
+            let mut app = TestApp::new().await;
+            let r1 = app.fixture.r1;
+            make_colleagues(app.db(), r1).await;
+            let removed_id = app.fixture.user(removed);
+            remove_roles(app.db(), removed_id, app.fixture.o1).await;
+            let before = relationship_sessions(app.db(), r1).await;
+            let documents = app.expect_tiptap("POST", 0).await;
+            app.take_emailed();
+
+            let reply = app
+                .send(
+                    remaining,
+                    Method::POST,
+                    "/coaching_sessions",
+                    Some(create_body(r1)),
+                )
+                .await;
+
+            assert_eq!(reply.status, StatusCode::CONFLICT, "{removed:?}");
+            let details = &reply.body["details"];
+            assert_eq!(details["reason"], "participant_not_a_member", "{removed:?}");
+            assert_eq!(details["user_id"], removed_id.to_string(), "{removed:?}");
+            assert_eq!(
+                details["organization_id"],
+                app.fixture.o1.to_string(),
+                "{removed:?}"
+            );
+            assert_eq!(
+                relationship_sessions(app.db(), r1).await,
+                before,
+                "{removed:?}"
+            );
+            assert_eq!(app.take_emailed(), Vec::<String>::new(), "{removed:?}");
+            documents.assert_async().await;
+        }
+    })
+    .await;
+}

@@ -74,6 +74,13 @@ pub trait Rules {
     fn can_schedule_sessions(&self, seat: Seat) -> bool;
     /// Sees every action in the relationship, not only their own and unassigned ones.
     fn sees_all_actions(&self, seat: Seat) -> bool;
+    /// Gets the upcoming-session reminder.
+    fn is_reminded(&self, seat: Seat) -> bool;
+    /// Must still be in the organization for the relationship's sessions to be scheduled or
+    /// changed.
+    fn must_be_member_to_schedule(&self, seat: Seat) -> bool;
+    /// Transcripts of its sessions are scanned for suggested actions.
+    fn suggests_actions(&self) -> bool;
 }
 
 /// One person coaches the other.
@@ -100,6 +107,24 @@ impl Rules for Coaching {
             Seat::CoacheeId => false,
         }
     }
+
+    fn is_reminded(&self, seat: Seat) -> bool {
+        match seat {
+            Seat::CoachId => false,
+            Seat::CoacheeId => true,
+        }
+    }
+
+    fn must_be_member_to_schedule(&self, seat: Seat) -> bool {
+        match seat {
+            Seat::CoachId => false,
+            Seat::CoacheeId => true,
+        }
+    }
+
+    fn suggests_actions(&self) -> bool {
+        true
+    }
 }
 
 /// Two equals with identical privileges.
@@ -116,6 +141,18 @@ impl Rules for Colleague {
 
     fn sees_all_actions(&self, _seat: Seat) -> bool {
         true
+    }
+
+    fn is_reminded(&self, _seat: Seat) -> bool {
+        true
+    }
+
+    fn must_be_member_to_schedule(&self, _seat: Seat) -> bool {
+        true
+    }
+
+    fn suggests_actions(&self) -> bool {
+        false
     }
 }
 
@@ -151,6 +188,26 @@ mod tests {
         assert_eq!(rules.role(Seat::CoacheeId), Role::Coachee);
         assert!(!rules.can_schedule_sessions(Seat::CoacheeId));
         assert!(!rules.sees_all_actions(Seat::CoacheeId));
+    }
+
+    #[test]
+    fn coaching_reminds_and_requires_membership_of_the_coachee_alone() {
+        let rules = Kind::Coaching.rules();
+        assert!(!rules.is_reminded(Seat::CoachId));
+        assert!(!rules.must_be_member_to_schedule(Seat::CoachId));
+        assert!(rules.is_reminded(Seat::CoacheeId));
+        assert!(rules.must_be_member_to_schedule(Seat::CoacheeId));
+        assert!(rules.suggests_actions());
+    }
+
+    #[test]
+    fn colleague_reminds_and_requires_membership_of_both_seats_and_suggests_nothing() {
+        let rules = Kind::Colleague.rules();
+        for seat in [Seat::CoachId, Seat::CoacheeId] {
+            assert!(rules.is_reminded(seat), "{seat:?}");
+            assert!(rules.must_be_member_to_schedule(seat), "{seat:?}");
+        }
+        assert!(!rules.suggests_actions());
     }
 
     #[test]

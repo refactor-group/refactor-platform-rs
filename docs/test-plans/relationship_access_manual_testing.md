@@ -248,6 +248,7 @@ How to read the tables:
 | SES-43 | GET /users/{REMOVED_ID}/coaching_sessions/nearest?coaching_relationship_ids=R3 | REMOVED | 200, empty list | `web/src/extractors/user_self_access.rs:28`; `entity_api/src/coaching_session.rs:1245`; `entity_api/src/coaching_relationship.rs:426` | [membership] R3's sessions are left out, as in SES-30 |
 | SES-44 | GET /users/{SUPER_ID}/coaching_sessions | SUPER, once they also coach OUTSIDER in a new O2 relationship R5 with one session | 200, R5's session | `web/src/extractors/user_self_access.rs:28`; `web/src/controller/user/coaching_session_controller.rs:93`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in |
 | SES-45 | GET /users/{SUPER_ID}/coaching_sessions/nearest?coaching_relationship_ids=R5 | SUPER, once they also coach OUTSIDER in a new O2 relationship R5 with one session | 200, R5's session | `web/src/extractors/user_self_access.rs:28`; `web/src/controller/user/coaching_session_controller.rs:162`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in |
+| SES-46 | POST /coaching_sessions `{coaching_relationship_id: RC}`, RC the KIND-04 colleague relationship of COACH and MEMBER, after MEMBER's O1 role is removed (ORG-04) | COACH | 409 `participant_not_a_member`, `details.user_id` MEMBER, nothing written, no email | `domain/src/coaching_relationship.rs:104` | [membership] Either seat's colleague leaving refuses the other. Restore MEMBER's role afterwards |
 
 ### 4.3 Series (`SER`)
 
@@ -276,6 +277,7 @@ How to read the tables:
 | SER-21 | DELETE /coaching_session_series/SR3 | COACH | 204 | `web/src/extractors/coaching_session_series_access.rs:63` | [membership] Cancelling stays allowed. Sends MAIL-08 to both COACH and REMOVED. Run after SER-18 to SER-20 |
 | SER-22 | GET /coaching_session_series/{unknown}; POST its `/resend_invite`, `/reschedule` | COACH | 404, no email | `web/src/extractors/coaching_session_series_access.rs:110` | |
 | SER-23 | any /coaching_session_series route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
+| SER-24 | POST /coaching_session_series `{coaching_relationship_id: RC}`, RC the KIND-04 colleague relationship of COACH and MEMBER, after MEMBER's O1 role is removed (ORG-04) | COACH | 409 `participant_not_a_member`, `details.user_id` MEMBER, nothing written, no email | `domain/src/coaching_relationship.rs:104` | [membership] Restore MEMBER's role afterwards |
 
 ### 4.4 Agreements (`AGR`)
 
@@ -440,6 +442,8 @@ How to read the tables:
 | TRN-27 | GET, DELETE, POST restore /coaching_session_images/IMG1 | non-participants | 403 | `web/src/extractors/coaching_session_image_access.rs:55` | Unknown image: 404 |
 | TRN-28 | POST /coaching_sessions/S3/transcript_suggestions/SG3/accept | COACH | 409 `assignee_not_a_member`, no action written, no email | `domain/src/transcript_suggestion/review.rs:339` | [membership] |
 | TRN-29 | any transcription, suggestion, recording or image route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
+| TRN-30 | Transcript suggestions sweep (JOB-03) with a pending analysis for a colleague session's completed transcript and one for a coaching session | operator | the coaching analysis is claimed and completed; the colleague one stays `pending`, `attempts = 0` (psql) | `entity_api/src/transcript_analysis.rs:31`, `:50` | Excluded where work is claimed, so no attempt is spent |
+| TRN-31 | GET, POST /coaching_sessions/{RC session}/transcript_suggestions/scan, RC the KIND-04 colleague relationship, its session with a completed transcript | COACH, MEMBER | GET 200 `status: unavailable`; POST 422, no analysis written | `domain/src/transcript_suggestion/review.rs:515` | The status the route already gives when nothing can be scanned |
 
 ### 4.9 Meeting links and OAuth-dependent flows (`MEET`)
 
@@ -685,6 +689,7 @@ SELECT typowner::regrole FROM pg_type WHERE typname = 'coaching_relationship_kin
 | JOB-03 | Transcript suggestions sweep (`domain/src/jobs/transcript_suggestions.rs:74`) | No email. SSE to participants still members (SSE-05). Prompt names coach and coachee | `domain/src/transcript_suggestion/extract.rs:240`, `:115` | |
 | JOB-04 | Note image purge (`domain/src/jobs/coaching_session_image_purge.rs`) | None | not relationship-scoped | |
 | JOB-05 | Password reset token cleanup (`domain/src/jobs/password_reset.rs`) | None | not relationship-scoped | |
+| JOB-06 | Session reminder sweep (JOB-01) on a colleague relationship, both colleagues O1 members, no notice rows | Both colleagues, one claim and one email each per start; a second sweep sends nothing. A coaching relationship still reminds only its coachee | `entity_api/src/coaching_session.rs:447` (`Rules::is_reminded` per seat); `domain/src/emails.rs:1386` | Automated: SQL-shape mock and the sweep with mock Resend; check recipients by hand on Postgres. |
 | MAIL-01 | Session scheduled: `POST /coaching_sessions` (`domain/src/coaching_session.rs:149`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:1056` | |
 | MAIL-02 | Session rescheduled (JOB-02) | COACH and COACHEE, each only if still an org member; none if both left | `domain/src/emails.rs:1286` | |
 | MAIL-03 | Session cancelled: `DELETE /coaching_sessions/{id}` (`domain/src/coaching_session.rs:541`); also orphan cancels in series edits (`domain/src/emails.rs:2640`) | COACH and COACHEE, members or not [membership]; nothing for a past session. In a series edit a removed participant gets only the cancel, not the reschedule | `domain/src/emails.rs:1612`, `:2623`, `:2640` | |
@@ -699,6 +704,7 @@ SELECT typowner::regrole FROM pg_type WHERE typname = 'coaching_relationship_kin
 | MAIL-12 | Welcome (magic link): ORG-01 and `POST /organizations/{id}/users/{user}/resend-invite` | The new user; `coach_first_name` is whoever sent the invite | `domain/src/emails.rs:249`, `:297` | The variable names the inviter, who need not be the new user's coach (an admin inviting someone else's coachee) and won't be one in a phase 4 colleague invite |
 | MAIL-13 | Added to organization: ORG-03 | The attached user | `domain/src/emails.rs:319` | |
 | MAIL-14 | Password reset: `POST /password-reset/request` | The account owner | `domain/src/password_reset.rs:236`; not relationship-related | |
+| MAIL-15 | Session reminder to a colleague (JOB-06) | Each colleague still an org member, once per start; `coach_first_name` and `coach_full_name` name the other colleague | `domain/src/emails.rs:1370`, `:1386` | Automated: the sweep with mock Resend; check recipients by hand. |
 
 ## 6. Automated checks
 
@@ -1058,3 +1064,9 @@ a frozen `domain` test, or by hand with the reason.
 | KIND-16 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::admins_attach_a_member_as_a_colleague` |
 | KIND-17 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::a_refused_relationship_grants_no_role` |
 | KIND-18 | `web/src/controller/organization/user_controller_sqlite_tests.rs::a_refused_relationship_adds_no_member_and_sends_no_email` |
+| JOB-06 | by hand: raw Postgres SQL; SQL shape in `entity_api/src/coaching_session.rs::tests::claim_due_reminders_also_reminds_the_coach_seat_of_a_colleague_relationship`, `entity_api/src/coaching_session.rs::tests::claim_due_reminders_candidates_mirror_is_reminded`; the sweep in `domain/src/jobs/session_reminder_tests.rs::both_colleagues_are_reminded_once_each_naming_the_other`, `domain/src/jobs/session_reminder_tests.rs::a_coach_is_not_reminded_of_a_coaching_session` |
+| MAIL-15 | `domain/src/jobs/session_reminder_tests.rs::both_colleagues_are_reminded_once_each_naming_the_other` |
+| SES-46 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_colleague_cannot_schedule_with_a_colleague_who_left` |
+| SER-24 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_series_with_a_colleague_who_left_is_refused` |
+| TRN-30 | `domain/src/jobs/transcript_suggestions_sqlite_tests.rs::a_colleague_sessions_analysis_is_never_claimed` |
+| TRN-31 | `domain/src/transcript_suggestion/review_sqlite_tests.rs::a_colleague_session_cannot_be_scanned` |

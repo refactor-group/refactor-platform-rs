@@ -1,12 +1,13 @@
+use entity::coaching_relationship_kind::Kind;
 use entity::transcript_analysis::{ActiveModel, Column, Entity, Model, Status};
 use entity::transcript_suggestion_target::Target;
-use entity::Id;
+use entity::{coaching_relationships, coaching_sessions, transcription, Id};
 use log::debug;
 use sea_orm::{
     entity::prelude::*,
-    sea_query::{Expr, ExprTrait},
+    sea_query::{Expr, ExprTrait, Query, SelectStatement},
     ActiveValue::Set,
-    ColumnTrait, Condition, ConnectionTrait, Order, QueryOrder, QuerySelect,
+    ColumnTrait, Condition, ConnectionTrait, Iterable, Order, QueryOrder, QuerySelect,
 };
 
 use super::error::{EntityApiErrorKind, Error};
@@ -25,17 +26,44 @@ fn held(claimed: &Model) -> Condition {
         .add(claim_time)
 }
 
-/// Rows a worker may take: pending, or processing past `stale_before`, with attempts left.
+/// Rows a worker may take: pending, or processing past `stale_before`, with attempts left,
+/// of a transcript whose relationship suggests actions.
 fn claimable(stale_before: DateTimeWithTimeZone, max_attempts: i16) -> Condition {
-    Condition::all().add(Column::Attempts.lt(max_attempts)).add(
-        Condition::any()
-            .add(Column::Status.eq(Status::Pending))
-            .add(
-                Condition::all()
-                    .add(Column::Status.eq(Status::Processing))
-                    .add(Column::ClaimedAt.lt(stale_before)),
-            ),
-    )
+    Condition::all()
+        .add(Column::Attempts.lt(max_attempts))
+        .add(
+            Condition::any()
+                .add(Column::Status.eq(Status::Pending))
+                .add(
+                    Condition::all()
+                        .add(Column::Status.eq(Status::Processing))
+                        .add(Column::ClaimedAt.lt(stale_before)),
+                ),
+        )
+        .add(Column::TranscriptionId.not_in_subquery(transcriptions_without_suggestions()))
+}
+
+/// Transcriptions of sessions in relationships whose rules suggest no actions.
+///
+/// Excluded rather than included, so an analysis whose session is gone still reaches a
+/// worker and fails rather than waiting forever.
+fn transcriptions_without_suggestions() -> SelectStatement {
+    let kinds = Kind::iter().filter(|kind| !kind.rules().suggests_actions());
+    let relationships = Query::select()
+        .column(coaching_relationships::Column::Id)
+        .from(coaching_relationships::Entity)
+        .and_where(coaching_relationships::Column::Kind.is_in(kinds))
+        .to_owned();
+    let sessions = Query::select()
+        .column(coaching_sessions::Column::Id)
+        .from(coaching_sessions::Entity)
+        .and_where(coaching_sessions::Column::CoachingRelationshipId.in_subquery(relationships))
+        .to_owned();
+    Query::select()
+        .column(transcription::Column::Id)
+        .from(transcription::Entity)
+        .and_where(transcription::Column::CoachingSessionId.in_subquery(sessions))
+        .to_owned()
 }
 
 /// The analyses with these ids, in one query; ids with no analysis are skipped.

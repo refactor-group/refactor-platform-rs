@@ -171,6 +171,7 @@ impl Error {
 /// The `details.reason` values a 409 can carry.
 pub(crate) mod reason {
     pub(crate) const COACHEE_NOT_A_MEMBER: &str = "coachee_not_a_member";
+    pub(crate) const PARTICIPANT_NOT_A_MEMBER: &str = "participant_not_a_member";
     pub(crate) const ASSIGNEE_NOT_A_MEMBER: &str = "assignee_not_a_member";
     pub(crate) const USER_HAS_COACHING_HISTORY: &str = "user_has_coaching_history";
     pub(crate) const SESSIONS_HAVE_CONTENT: &str = "sessions_have_content";

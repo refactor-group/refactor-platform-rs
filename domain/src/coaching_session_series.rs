@@ -7,7 +7,7 @@
 
 pub mod with_permit;
 
-use crate::coaching_relationship::{self, ensure_coachee_is_member};
+use crate::coaching_relationship::{self, ensure_required_participants_are_members};
 use crate::coaching_relationships;
 use crate::coaching_session;
 use crate::coaching_session_image;
@@ -95,7 +95,7 @@ pub(crate) async fn create_with_sessions(
     let relationship =
         entity_api::coaching_relationship::find_by_id(db, coaching_relationship_id).await?;
     let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
-    ensure_coachee_is_member(&relationship, &member_ids)?;
+    ensure_required_participants_are_members(&relationship, &member_ids)?;
     let coach_id = relationship.coach_id;
     let zone = publication_zone(db, coach_id).await?;
 
@@ -252,7 +252,7 @@ pub(crate) async fn reschedule(
     }
 
     let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
-    ensure_coachee_is_member(&relationship, &member_ids)?;
+    ensure_required_participants_are_members(&relationship, &member_ids)?;
 
     let new_rule = serde_json::to_value(&new_rule)?;
 
@@ -648,7 +648,7 @@ pub(crate) async fn reschedule_following(
     }
 
     let member_ids = coaching_relationship::notify_member_ids(&txn, &relationship).await?;
-    ensure_coachee_is_member(&relationship, &member_ids)?;
+    ensure_required_participants_are_members(&relationship, &member_ids)?;
 
     let leftover_ids = plan.leftover_ids();
     entity_api::coaching_session::lock_for_update(&txn, &leftover_ids).await?;
@@ -911,7 +911,7 @@ pub(crate) async fn resend_invite(
     let relationship =
         coaching_relationship::find_by_id(db, series.coaching_relationship_id).await?;
     let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
-    ensure_coachee_is_member(&relationship, &member_ids)?;
+    ensure_required_participants_are_members(&relationship, &member_ids)?;
 
     // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
     // Members are raised with the series because Google drops an override whose SEQUENCE
