@@ -155,14 +155,14 @@ fn app_state_with(config: Config, db: &Arc<DatabaseConnection>) -> AppState {
 }
 
 /// The login route plus `routes` behind sign-in.
-fn build_app(config: Config, db: Arc<DatabaseConnection>, routes: Router<AppState>) -> Router {
-    let app_state = app_state_with(config, &db);
+fn build_app(config: Config, db: &Arc<DatabaseConnection>, routes: Router<AppState>) -> Router {
+    let app_state = app_state_with(config, db);
 
     let session_layer = SessionManagerLayer::new(MemoryStore::default())
         .with_secure(false)
         .with_expiry(Expiry::OnInactivity(Duration::days(1)))
         .with_always_save(true);
-    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(&db), session_layer).build();
+    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(db), session_layer).build();
 
     Router::new()
         .route(
@@ -196,7 +196,7 @@ pub(crate) async fn send_with(
     uri: &str,
     body: Option<serde_json::Value>,
 ) -> Response {
-    let app = build_app(config, db.clone(), routes);
+    let app = build_app(config, db, routes);
     let login = Request::builder()
         .uri("/login")
         .method("POST")
@@ -248,7 +248,7 @@ fn wrote(db: &DatabaseConnection) -> bool {
 pub(crate) fn assert_refusal(
     row: &str,
     db: &DatabaseConnection,
-    response: Response,
+    response: &Response,
     expected: StatusCode,
 ) {
     assert_eq!(response.status(), expected, "{row}");

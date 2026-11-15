@@ -21,7 +21,7 @@ impl Manager {
         user_id: UserId,
         sender: tokio::sync::mpsc::UnboundedSender<Result<Event, std::convert::Infallible>>,
     ) -> ConnectionId {
-        let connection_id = self.registry.register(user_id.clone(), sender);
+        let connection_id = self.registry.register(user_id, sender);
         info!("Registered new SSE connection");
         connection_id
     }
@@ -48,10 +48,10 @@ impl Manager {
 
         match message.scope {
             MessageScope::User { user_id } => {
-                self.registry.send_to_user(&user_id, event);
+                self.registry.send_to_user(&user_id, &event);
             }
             MessageScope::Broadcast => {
-                self.registry.broadcast(event);
+                self.registry.broadcast(&event);
             }
         }
     }

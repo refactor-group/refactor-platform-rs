@@ -129,9 +129,9 @@ mod tests {
         }
     }
 
-    fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
+    fn build_app(db: &Arc<sea_orm::DatabaseConnection>) -> Router {
         let config = Config::default();
-        let service_state = service::AppState::new(config, &db);
+        let service_state = service::AppState::new(config, db);
         let sse_manager = Arc::new(sse::Manager::new());
         let event_publisher = EventPublisher::new();
         let app_state = crate::AppState::new(
@@ -148,7 +148,7 @@ mod tests {
             .with_secure(false)
             .with_expiry(Expiry::OnInactivity(TimeDuration::days(1)));
 
-        let backend = Backend::new(&db);
+        let backend = Backend::new(db);
         let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
         Router::new()
@@ -185,7 +185,7 @@ mod tests {
                 .into_connection(),
         );
 
-        let app = build_app(db);
+        let app = build_app(&db);
 
         let request = Request::builder()
             .uri("/magic-link/complete-setup")
@@ -221,7 +221,7 @@ mod tests {
                 .into_connection(),
         );
 
-        let app = build_app(db);
+        let app = build_app(&db);
 
         let request = Request::builder()
             .uri("/magic-link/complete-setup")
@@ -251,7 +251,7 @@ mod tests {
                 .into_connection(),
         );
 
-        let app = build_app(db);
+        let app = build_app(&db);
 
         let request = Request::builder()
             .uri("/magic-link/complete-setup")
@@ -276,7 +276,7 @@ mod tests {
     async fn complete_setup_returns_422_for_mismatched_passwords() {
         let db = Arc::new(MockDatabase::new(DatabaseBackend::Postgres).into_connection());
 
-        let app = build_app(db);
+        let app = build_app(&db);
 
         let request = Request::builder()
             .uri("/magic-link/complete-setup")

@@ -368,7 +368,7 @@ mod tests {
     }
 
     /// The `invalid_nearest_window` message, or a panic for any other outcome.
-    fn rejection(params: NearestParams) -> String {
+    fn rejection(params: &NearestParams) -> String {
         match params.compile() {
             Err(Error::Web(WebErrorKind::InvalidParam {
                 error: "invalid_nearest_window",
@@ -427,14 +427,14 @@ mod tests {
     /// An unencoded `+` decodes to a space, so a `+hh:mm` offset must be sent as `%2B`.
     #[test]
     fn around_with_an_unencoded_plus_is_rejected() {
-        assert!(rejection(nearest(&valid("2026-10-30T19:30:00+05:30"))).contains("`around`"));
+        assert!(rejection(&nearest(&valid("2026-10-30T19:30:00+05:30"))).contains("`around`"));
     }
 
     #[test]
     fn around_that_is_not_a_datetime_is_rejected() {
         for around in ["2026-10-30", "14:00", "yesterday", ""] {
             assert!(
-                rejection(nearest(&valid(around))).contains("`around`"),
+                rejection(&nearest(&valid(around))).contains("`around`"),
                 "{around}"
             );
         }
@@ -445,7 +445,7 @@ mod tests {
         for field in ["around", "before", "after"] {
             let query = query_with(field, None);
             assert_eq!(
-                rejection(nearest(&query)),
+                rejection(&nearest(&query)),
                 format!("`{field}` is required.")
             );
         }
@@ -456,7 +456,7 @@ mod tests {
     fn a_missing_relationship_names_the_list_param() {
         let query = query_with("coaching_relationship_id", None);
         assert_eq!(
-            rejection(nearest(&query)),
+            rejection(&nearest(&query)),
             "`coaching_relationship_ids` is required."
         );
     }
@@ -506,7 +506,7 @@ mod tests {
     fn an_empty_or_oversized_list_is_rejected() {
         for list in [String::new(), ",".to_string(), joined(&ids(51))] {
             assert_eq!(
-                rejection(with_ids(&list)),
+                rejection(&with_ids(&list)),
                 "`coaching_relationship_ids` must list 1 to 50 relationships.",
                 "{list}"
             );
@@ -517,7 +517,7 @@ mod tests {
     fn a_list_with_a_non_uuid_is_rejected() {
         let list = format!("{RELATIONSHIP_ID},nope");
         assert_eq!(
-            rejection(with_ids(&list)),
+            rejection(&with_ids(&list)),
             "`coaching_relationship_ids` must be comma-separated UUIDs."
         );
     }
@@ -528,13 +528,13 @@ mod tests {
             "{}&coaching_relationship_ids={RELATIONSHIP_ID}",
             valid("2026-10-30T14:00:00")
         ));
-        assert!(rejection(params).contains("not both"));
+        assert!(rejection(&params).contains("not both"));
     }
 
     #[test]
     fn a_malformed_relationship_id_is_rejected() {
         let query = query_with("coaching_relationship_id", Some("nope"));
-        assert!(rejection(nearest(&query)).contains("`coaching_relationship_id`"));
+        assert!(rejection(&nearest(&query)).contains("`coaching_relationship_id`"));
     }
 
     #[test]
@@ -558,7 +558,7 @@ mod tests {
             ("after", "2.5"),
         ] {
             assert_eq!(
-                rejection(nearest(&query_with(field, Some(value)))),
+                rejection(&nearest(&query_with(field, Some(value)))),
                 format!("`{field}` must be a whole number from 0 to 10."),
                 "{field}={value}"
             );

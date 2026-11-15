@@ -268,7 +268,7 @@ fn coalesce_entries(entries: Vec<ParticipantEntry>) -> Vec<transcription_types::
     }
 
     let mut all_words: Vec<WordEntry> = Vec::new();
-    for entry in &entries {
+    for entry in entries {
         let key = participant_key(&entry.participant);
         let speaker = entry
             .participant
@@ -279,13 +279,13 @@ fn coalesce_entries(entries: Vec<ParticipantEntry>) -> Vec<transcription_types::
             .or_else(|| entry.participant.id.map(|id| id.to_string()))
             .unwrap_or_else(|| "Unknown".to_string());
 
-        for word in &entry.words {
+        for word in entry.words {
             let start_s = word.start_timestamp.relative.unwrap_or(0.0);
             let end_s = word.end_timestamp.relative.unwrap_or(start_s);
             all_words.push(WordEntry {
                 key: key.clone(),
                 speaker: speaker.clone(),
-                text: word.text.clone(),
+                text: word.text,
                 start_s,
                 end_s,
             });
@@ -299,33 +299,34 @@ fn coalesce_entries(entries: Vec<ParticipantEntry>) -> Vec<transcription_types::
     });
 
     let mut segments: Vec<transcription_types::Segment> = Vec::new();
-    if let Some(first) = all_words.first() {
-        let mut seg_key = first.key.clone();
-        let mut seg_speaker = first.speaker.clone();
-        let mut seg_words: Vec<String> = vec![first.text.clone()];
+    let mut words = all_words.into_iter();
+    if let Some(first) = words.next() {
+        let mut seg_key = first.key;
+        let mut seg_speaker = first.speaker;
+        let mut seg_words: Vec<String> = vec![first.text];
         let mut seg_start = first.start_s;
         let mut seg_end = first.end_s;
 
-        for word in all_words.iter().skip(1) {
+        for word in words {
             let same_speaker = word.key == seg_key;
             let small_gap = word.start_s - seg_end < SEGMENT_GAP_SECS;
 
             if same_speaker && small_gap {
-                seg_words.push(word.text.clone());
+                seg_words.push(word.text);
                 seg_end = word.end_s;
             } else {
                 segments.push(transcription_types::Segment {
                     text: seg_words.join(" "),
-                    speaker: seg_speaker.clone(),
-                    participant_id: Some(seg_key.clone()),
+                    speaker: seg_speaker,
+                    participant_id: Some(seg_key),
                     start_ms: (seg_start * 1000.0) as i64,
                     end_ms: (seg_end * 1000.0) as i64,
                     confidence: 0.0,
                     words: vec![],
                 });
-                seg_key = word.key.clone();
-                seg_speaker = word.speaker.clone();
-                seg_words = vec![word.text.clone()];
+                seg_key = word.key;
+                seg_speaker = word.speaker;
+                seg_words = vec![word.text];
                 seg_start = word.start_s;
                 seg_end = word.end_s;
             }

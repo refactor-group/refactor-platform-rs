@@ -20,3 +20,6 @@ entity_api = { path = "../entity_api" }
 [dependencies.sea-orm-migration]
 version = "2.0.3"
 features = ["runtime-tokio-rustls", "sqlx-postgres"]
+
+[lints]
+workspace = true

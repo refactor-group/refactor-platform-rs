@@ -237,9 +237,9 @@ mod tests {
         }
     }
 
-    fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
+    fn build_app(db: &Arc<sea_orm::DatabaseConnection>) -> Router {
         let config = Config::default();
-        let service_state = service::AppState::new(config, &db);
+        let service_state = service::AppState::new(config, db);
         let app_state = AppState::new(
             service_state,
             Arc::new(sse::Manager::new()),
@@ -255,7 +255,7 @@ mod tests {
             .with_expiry(Expiry::OnInactivity(Duration::days(1)))
             .with_always_save(true);
 
-        let backend = Backend::new(&db);
+        let backend = Backend::new(db);
         let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
         Router::new()
@@ -340,7 +340,7 @@ mod tests {
                 .into_connection(),
         );
 
-        let app = build_app(Arc::clone(&db));
+        let app = build_app(&db);
         let cookie = do_login(&app, "coach@example.com", "password123").await;
 
         let req = Request::builder()
@@ -402,7 +402,7 @@ mod tests {
                 .into_connection(),
         );
 
-        let app = build_app(Arc::clone(&db));
+        let app = build_app(&db);
         let cookie = do_login(&app, "coach@example.com", "password123").await;
 
         let req = Request::builder()

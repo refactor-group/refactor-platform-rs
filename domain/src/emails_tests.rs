@@ -2605,16 +2605,8 @@ fn snapshot(
     let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/Chicago");
     let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
     let dtstamp = at(2026, 9, 1, 12);
-    let ics = build_series_snapshot_ics(
-        &coach,
-        &coachee,
-        series,
-        members,
-        &[],
-        "desc".into(),
-        dtstamp,
-    )
-    .unwrap();
+    let ics =
+        build_series_snapshot_ics(&coach, &coachee, series, members, &[], "desc", dtstamp).unwrap();
     unfold(&ics)
 }
 
@@ -2713,7 +2705,7 @@ fn a_reused_override_address_is_reissued_above_the_old_override() {
             &current,
             &snapshot_members(&current),
             &reissued,
-            "desc".into(),
+            "desc",
             at(2026, 9, 1, 12),
         )
         .unwrap(),
@@ -2745,7 +2737,7 @@ fn an_override_the_new_invite_no_longer_addresses_is_stale() {
     // A split publishes under a new UID, so every old override is stale.
     let split_off = coaching_session_series::Model {
         id: Id::new_v4(),
-        ..current.clone()
+        ..current
     };
     assert_eq!(
         retire(&previous, &split_off),
@@ -4005,7 +3997,7 @@ fn only_a_previously_invited_legacy_series_member_is_an_orphaned_standalone() {
 
     let standalone = coaching_sessions::Model {
         coaching_session_series_id: None,
-        ..legacy_invited.clone()
+        ..legacy_invited
     };
     assert!(
         !is_orphaned_standalone(&standalone),
@@ -4869,7 +4861,7 @@ fn snapshot_across_dst_uses_the_stored_series_zone() {
             &series,
             &members,
             &[],
-            "desc".into(),
+            "desc",
             at(2026, 10, 20, 12),
         )
         .unwrap(),
@@ -4931,7 +4923,7 @@ fn snapshot_of_a_stored_late_month_series_still_builds() {
             &series,
             &members,
             &[],
-            "desc".into(),
+            "desc",
             at(2026, 12, 1, 12),
         )
         .unwrap(),

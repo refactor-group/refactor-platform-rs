@@ -59,5 +59,5 @@ async fn goal_04b_unknown_status_value_is_refused() {
         None,
     )
     .await;
-    assert_refusal("GOAL-04b", &db, response, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_refusal("GOAL-04b", &db, &response, StatusCode::UNPROCESSABLE_ENTITY);
 }

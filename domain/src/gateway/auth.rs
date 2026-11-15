@@ -15,8 +15,8 @@ pub(crate) trait Authenticator {
 
 /// The combinator every scheme funnels through: wrap a string as a sensitive
 /// `Authorization` header map.
-fn authorization(value: String) -> Result<HeaderMap, Error> {
-    HeaderValue::from_str(&value)
+fn authorization(value: &str) -> Result<HeaderMap, Error> {
+    HeaderValue::from_str(value)
         .map(|mut header| {
             header.set_sensitive(true);
             let mut headers = HeaderMap::new();
@@ -48,6 +48,6 @@ impl SecretAuth {
 
 impl Authenticator for SecretAuth {
     fn headers(&self) -> Result<HeaderMap, Error> {
-        authorization(self.secret.clone())
+        authorization(&self.secret)
     }
 }

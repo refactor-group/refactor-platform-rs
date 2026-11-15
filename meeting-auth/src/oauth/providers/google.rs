@@ -153,7 +153,7 @@ impl crate::oauth::Provider for Provider {
         let request = TokenExchangeRequest {
             code: code.to_string(),
             client_id: self.client_id.clone(),
-            client_secret: self.client_secret.expose_secret().to_string(),
+            client_secret: self.client_secret.expose_secret().clone(),
             redirect_uri: self.redirect_uri.clone(),
             grant_type: "authorization_code".to_string(),
             code_verifier: pkce_verifier.map(|s| s.to_string()),
@@ -208,7 +208,7 @@ impl crate::oauth::Provider for Provider {
         let request = TokenRefreshRequest {
             refresh_token: refresh_token.to_string(),
             client_id: self.client_id.clone(),
-            client_secret: self.client_secret.expose_secret().to_string(),
+            client_secret: self.client_secret.expose_secret().clone(),
             grant_type: "refresh_token".to_string(),
         };
 

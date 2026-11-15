@@ -43,9 +43,9 @@ fn requester() -> users::Model {
 }
 
 /// The production user routes behind a login, so the real guards run.
-fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
+fn build_app(db: &Arc<sea_orm::DatabaseConnection>) -> Router {
     let app_state = AppState::new(
-        service::AppState::new(Config::default(), &db),
+        service::AppState::new(Config::default(), db),
         Arc::new(sse::Manager::default()),
         domain::events::EventPublisher::default(),
         None,
@@ -57,7 +57,7 @@ fn build_app(db: Arc<sea_orm::DatabaseConnection>) -> Router {
         .with_secure(false)
         .with_expiry(Expiry::OnInactivity(Duration::days(1)))
         .with_always_save(true);
-    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(&db), session_layer).build();
+    let auth_layer = AuthManagerLayerBuilder::new(Backend::new(db), session_layer).build();
 
     Router::new()
         .route(
@@ -104,7 +104,7 @@ async fn put_own_user_with_an_off_step_start_returns_422() {
             .append_query_results([vec![(user.clone(), role)]])
             .into_connection(),
     );
-    let app = build_app(db);
+    let app = build_app(&db);
     let cookie = login_cookie(&app).await;
 
     let request = Request::builder()
@@ -196,7 +196,7 @@ async fn put_own_user_saves_valid_working_hours() {
         db.append_query_results([vec![(user.clone(), role_for(&user))]])
             .append_query_results([vec![saved]])
     });
-    let app = build_app(db.clone());
+    let app = build_app(&db);
     let cookie = login_cookie(&app).await;
 
     let response = put_user(

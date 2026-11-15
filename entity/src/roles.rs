@@ -5,6 +5,7 @@ use utoipa::ToSchema;
 #[derive(
     Debug,
     Clone,
+    Copy,
     Eq,
     PartialEq,
     EnumIter,

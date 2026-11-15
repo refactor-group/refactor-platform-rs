@@ -32,7 +32,7 @@ where
             .ok()
             .unwrap_or_else(|| HeaderValue::from_static(ApiVersion::default_version()));
 
-        Ok(is_current_api_version(version, api_version)?)
+        Ok(is_current_api_version(version, &api_version)?)
     }
 }
 
@@ -54,10 +54,10 @@ fn normalize_version(value: &HeaderValue) -> String {
 
 fn is_current_api_version(
     version: HeaderValue,
-    api_version: HeaderValue,
+    api_version: &HeaderValue,
 ) -> Result<CompareApiVersion, RejectionType> {
     let version_str = normalize_version(&version);
-    let api_version_str = normalize_version(&api_version);
+    let api_version_str = normalize_version(api_version);
     trace!(
         "API version comparison {:?} == {:?}: {}",
         version_str,
