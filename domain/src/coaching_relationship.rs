@@ -1,3 +1,4 @@
+use crate::coaching_relationship_kind::Kind;
 use crate::coaching_relationships::{Model, SchedulingPermit};
 use crate::error::{reason, DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::Id;
@@ -14,6 +15,25 @@ pub use entity_api::coaching_relationship::{
     is_coach_of, CoachingRelationshipWithUserNames, Draft, Membership, RoleFilterable,
     WithMembership,
 };
+
+/// The relationship to create for a person joining an organization: with whom, and what kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InviteeRelationship {
+    /// The other person; for coaching, the coach.
+    pub with_user_id: Id,
+    pub kind: Kind,
+}
+
+impl InviteeRelationship {
+    /// The draft placing `with_user_id` in the coach seat and the invitee in the coachee seat.
+    pub fn draft_for(self, invitee_id: Id) -> Draft {
+        Draft {
+            coach_id: self.with_user_id,
+            coachee_id: invitee_id,
+            kind: self.kind,
+        }
+    }
+}
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
 where

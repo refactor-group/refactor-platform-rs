@@ -369,7 +369,10 @@ async fn attach_to_organization_commits_the_role_and_the_coach_together() -> Res
         organization_id,
         user_id,
         Role::User,
-        Some(coach_id),
+        Some(InviteeRelationship {
+            with_user_id: coach_id,
+            kind: crate::coaching_relationship_kind::Kind::Coaching,
+        }),
     )
     .await?;
 
@@ -402,7 +405,10 @@ async fn attach_to_organization_rolls_back_the_role_when_the_coach_assignment_fa
         organization_id,
         user_id,
         Role::User,
-        Some(coach_id),
+        Some(InviteeRelationship {
+            with_user_id: coach_id,
+            kind: crate::coaching_relationship_kind::Kind::Coaching,
+        }),
     )
     .await
     .expect_err("expected the failed coach assignment to fail the whole call");

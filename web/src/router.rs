@@ -168,6 +168,7 @@ use utoipa_rapidoc::RapiDoc;
                 crate::params::action::SortField,
                 crate::params::agreement::SortField,
                 crate::params::coaching_relationship::CreateParams,
+                crate::params::coaching_relationship::InviteeRelationshipParams,
                 crate::params::coaching_relationship::goal_progress::SortField,
                 crate::params::coaching_session::SortField,
                 crate::params::coaching_session::goal::LinkParams,

@@ -5,11 +5,12 @@ pub(crate) mod goal;
 
 use domain::error::Error;
 use domain::user::{self as UserApi, WorkingHoursPatch};
-use domain::{users, users::Role, Id, IntoUpdateMap, UpdateMap};
+use domain::{users, users::Role, IntoUpdateMap, UpdateMap};
 use sea_orm::Value;
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
+use super::coaching_relationship::InviteeRelationshipParams;
 use super::deserialize_clearable;
 
 /// Query parameters for an exact-match user lookup by email.
@@ -26,14 +27,14 @@ pub struct LookupParams {
 #[serde(deny_unknown_fields)]
 pub struct AttachRoleParams {
     pub role: Role,
-    /// Coach to assign in the same transaction as the membership.
-    pub coach_id: Option<Id>,
+    /// Relationship to create in the same transaction as the membership.
+    pub relationship: Option<InviteeRelationshipParams>,
 }
 
 /// Body for changing the role a user holds within an organization.
 ///
-/// Unknown fields are rejected so a client sending `coach_id` is refused rather
-/// than led to believe a coach was assigned; this endpoint changes a role only.
+/// Unknown fields are rejected so a client sending `relationship` is refused rather
+/// than led to believe a relationship was created; this endpoint changes a role only.
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateRoleParams {
@@ -49,8 +50,8 @@ pub struct UpdateRoleParams {
 pub struct CreateMemberParams {
     #[serde(flatten)]
     pub user: users::Model,
-    /// Coach to assign in the same transaction as the new account.
-    pub coach_id: Option<Id>,
+    /// Relationship to create in the same transaction as the new account.
+    pub relationship: Option<InviteeRelationshipParams>,
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]

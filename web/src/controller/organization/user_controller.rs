@@ -49,7 +49,9 @@ pub async fn index(
 /// CREATE a User for an organization
 ///
 /// Creates a new user associated with the specified organization, optionally
-/// assigning them a coach in the same transaction.
+/// creating their relationship with an existing member in the same transaction:
+/// for `coaching`, `relationship.with_user_id` coaches the new user; for
+/// `colleague`, the two are colleagues.
 #[utoipa::path(
     post,
     path = "/organizations/{organization_id}/users",
@@ -62,7 +64,7 @@ pub async fn index(
         (status = 201, description = "User created successfully", body = domain::users::Model),
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
-        (status = 422, description = "The requested coach cannot be assigned"),
+        (status = 409, description = "The relationship is refused, and nothing is created and no email sent: the organization is archived, the person named in `relationship` is not a member of it, or the two people already have a relationship of the other kind in the organization (`details.reason` `pair_already_related`, `details.relationship_id` the existing relationship)"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -83,7 +85,7 @@ pub(crate) async fn create(
         Actor::new(authenticated_user.id),
         organization.id,
         params.user,
-        params.coach_id,
+        params.relationship.map(Into::into),
     )
     .await?;
     // Id only. The Debug form of the model carries the hashed password.
@@ -96,7 +98,7 @@ pub(crate) async fn create(
         Role::User
     );
 
-    // Must stay after the commit: a failed coach assignment invites nobody.
+    // Must stay after the commit: a refused relationship invites nobody.
     EmailsAPI::notify_welcome_email(
         app_state.db_conn_ref(),
         &app_state.config,

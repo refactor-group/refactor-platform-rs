@@ -26,12 +26,14 @@ use crate::{controller::ApiResponse, AppState, Error};
 /// ATTACH an existing User to an organization with a role.
 ///
 /// Grants the user a role in the organization without creating an account,
-/// optionally assigning them a coach in the same transaction. The caller must
+/// optionally creating their relationship with another member in the same
+/// transaction: for `coaching`, `relationship.with_user_id` coaches the user; for
+/// `colleague`, the two are colleagues. The caller must
 /// administer the organization and must already be able to see the target user,
 /// otherwise the response is indistinguishable from a missing user.
 ///
-/// A coaching relationship surviving an earlier removal is reused, so re-adding a
-/// member with their original coach restores their history rather than conflicting.
+/// A relationship of the same kind surviving an earlier removal is reused, so re-adding
+/// a member with their original coach restores their history rather than conflicting.
 #[utoipa::path(
     post,
     path = "/organizations/{organization_id}/users/{user_id}/role",
@@ -46,8 +48,8 @@ use crate::{controller::ApiResponse, AppState, Error};
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Caller does not administer the organization"),
         (status = 404, description = "No such user, or a user the caller may not see"),
-        (status = 409, description = "User already belongs to the organization"),
-        (status = 422, description = "SuperAdmin cannot be granted within an organization, or the requested coach is not a member of it"),
+        (status = 409, description = "User already belongs to the organization, or the relationship is refused and no role is granted: the organization is archived, the person named in `relationship` is the user or not a member of the organization, or the two people already have a relationship of the other kind in the organization (`details.reason` `pair_already_related`, `details.relationship_id` the existing relationship)"),
+        (status = 422, description = "SuperAdmin cannot be granted within an organization, or the body has an unknown field"),
     ),
     security(
         ("cookie_auth" = [])
@@ -89,7 +91,7 @@ pub(crate) async fn attach_role(
         organization.id,
         user_id,
         params.role,
-        params.coach_id,
+        params.relationship.map(Into::into),
     )
     .await?;
     info!(
@@ -97,7 +99,7 @@ pub(crate) async fn attach_role(
         authenticated_user.id, user_id, organization.id, params.role
     );
 
-    // Must stay after the commit: a failed coach assignment notifies nobody.
+    // Must stay after the commit: a refused relationship notifies nobody.
     EmailsAPI::notify_added_to_organization(
         &app_state.config,
         &user,

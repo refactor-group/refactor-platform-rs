@@ -255,7 +255,10 @@ async fn create_in_organization_rolls_back_when_the_relationship_insert_fails() 
         Actor::new(actor_user_id),
         organization_id,
         new_user,
-        Some(coach.id),
+        Some(InviteeRelationship {
+            with_user_id: coach.id,
+            kind: crate::coaching_relationship_kind::Kind::Coaching,
+        }),
     )
     .await
     .expect_err("expected the failed relationship insert to fail the whole call");
@@ -313,7 +316,10 @@ async fn create_in_organization_commits_the_user_and_the_relationship_together()
         Actor::new(actor_user_id),
         organization_id,
         new_user,
-        Some(coach.id),
+        Some(InviteeRelationship {
+            with_user_id: coach.id,
+            kind: crate::coaching_relationship_kind::Kind::Coaching,
+        }),
     )
     .await?;
 

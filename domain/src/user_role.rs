@@ -10,7 +10,7 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::coaching_relationship_kind::Kind;
+use crate::coaching_relationship::InviteeRelationship;
 use crate::error::Error;
 use crate::user::Role;
 use crate::{user_roles, users, Actor, Id};
@@ -27,24 +27,25 @@ pub struct UserLookupResult {
     pub email: String,
 }
 
-/// Grants an existing user a role in an organization, optionally pre-assigning
-/// them a coach in the same transaction.
+/// Grants an existing user a role in an organization, optionally creating their
+/// relationship with another member in the same transaction.
 ///
-/// The coaching relationship shares the membership's transaction so that callers
-/// can notify the user only once both have committed.
+/// The relationship shares the membership's transaction so that callers can
+/// notify the user only once both have committed, and a refused relationship
+/// grants no role.
 ///
 /// # Errors
 ///
 /// `NotFound` when the organization or user does not exist, `OrganizationArchived`
 /// when the organization is archived, `UserAlreadyInOrganization` when the user
-/// already holds a role there, plus any error from the coach assignment.
+/// already holds a role there, plus any error from the relationship create.
 pub async fn attach_to_organization(
     db: &DatabaseConnection,
     actor: Actor,
     organization_id: Id,
     user_id: Id,
     role: Role,
-    coach_id: Option<Id>,
+    relationship: Option<InviteeRelationship>,
 ) -> Result<users::Model, Error> {
     let txn = db.begin().await.map_err(EntityApiError::from)?;
 
@@ -75,18 +76,9 @@ pub async fn attach_to_organization(
 
     user_role::create(&txn, actor, user_id, organization_id, role).await?;
 
-    if let Some(coach_id) = coach_id {
-        coaching_relationship::create(
-            &txn,
-            organization_id,
-            coaching_relationship::Draft {
-                coach_id,
-                coachee_id: user_id,
-                // No request chooses a kind yet.
-                kind: Kind::Coaching,
-            },
-        )
-        .await?;
+    if let Some(relationship) = relationship {
+        coaching_relationship::create(&txn, organization_id, relationship.draft_for(user_id))
+            .await?;
     }
 
     let mut attached_user = user::find_by_id(&txn, user_id).await?;
