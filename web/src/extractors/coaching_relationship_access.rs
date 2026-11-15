@@ -7,7 +7,7 @@ use axum::{
 };
 use domain::{
     coaching_relationship as CoachingRelationshipApi,
-    coaching_relationships::{self, SessionManager},
+    coaching_relationships::{self, SchedulingPermit},
     users, Id,
 };
 use serde::Deserialize;
@@ -143,15 +143,15 @@ pub(crate) async fn authorize_relationship(
     Ok(relationship)
 }
 
-/// Loads the relationship and admits only a session manager, whose proof it returns.
-pub(crate) async fn authorize_session_manager(
+/// Loads the relationship and admits only a user permitted to schedule its sessions.
+pub(crate) async fn authorize_scheduling(
     state: &AppState,
     user: &users::Model,
     coaching_relationship_id: Id,
-) -> Result<SessionManager, RejectionType> {
+) -> Result<SchedulingPermit, RejectionType> {
     let relationship = find_relationship(state, coaching_relationship_id).await?;
 
-    SessionManager::verify(relationship, user)
+    SchedulingPermit::verify(relationship, user)
         .ok_or_else(|| (StatusCode::FORBIDDEN, "FORBIDDEN".to_string()))
 }
 

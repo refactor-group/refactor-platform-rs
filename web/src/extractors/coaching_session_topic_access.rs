@@ -4,7 +4,7 @@ use axum::{
     http::request::Parts,
 };
 use domain::{
-    coaching_relationships::SessionManager, coaching_session, coaching_session_topic,
+    coaching_relationships::SchedulingPermit, coaching_session, coaching_session_topic,
     coaching_session_topics,
 };
 
@@ -56,9 +56,9 @@ where
 }
 
 /// Authorizes a topic delete. Composes `CoachingSessionTopicAccess` (participant + topic belongs
-/// to the path session), then allows the caller only if they are the topic's author OR a session
-/// manager of the session's relationship. So a session manager may delete any topic in the
-/// session, while any other participant may delete only their own and gets 404 otherwise.
+/// to the path session), then allows the caller only if they are the topic's author OR permitted
+/// to schedule the session's relationship's sessions. So a scheduling permit holder may delete
+/// any topic, while any other participant may delete only their own and gets 404 otherwise.
 pub(crate) struct CoachingSessionTopicDeleteAccess(pub coaching_session_topics::Model);
 
 #[async_trait]
@@ -83,7 +83,7 @@ where
             return Ok(CoachingSessionTopicDeleteAccess(topic));
         }
 
-        // Otherwise only a session manager of the session's relationship may delete it.
+        // Otherwise only a user permitted to schedule the relationship's sessions may delete it.
         let (_session, relationship) = coaching_session::find_by_id_with_coaching_relationship(
             app_state.db_conn_ref(),
             topic.coaching_session_id,
@@ -91,7 +91,7 @@ where
         .await
         .map_err(lookup_rejection)?;
 
-        SessionManager::verify(relationship, &user)
+        SchedulingPermit::verify(relationship, &user)
             .map(|_| CoachingSessionTopicDeleteAccess(topic))
             .ok_or_else(not_found)
     }

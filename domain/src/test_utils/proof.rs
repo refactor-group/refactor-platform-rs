@@ -1,12 +1,12 @@
-//! A [`SessionManager`] built without a database, for tests of the functions that take one.
+//! A [`SchedulingPermit`] built without a database, for tests of the functions that take one.
 
 use entity::roles::Role;
 
-use crate::coaching_relationships::{self, SessionManager};
+use crate::coaching_relationships::{self, SchedulingPermit};
 use crate::{user_roles, users};
 
 /// The proof for `relationship`'s coach, a member of its organization.
-pub(crate) fn coach_manages(relationship: coaching_relationships::Model) -> SessionManager {
+pub(crate) fn coach_permit(relationship: coaching_relationships::Model) -> SchedulingPermit {
     let now = chrono::Utc::now().fixed_offset();
     let coach = users::Model {
         id: relationship.coach_id,
@@ -33,5 +33,5 @@ pub(crate) fn coach_manages(relationship: coaching_relationships::Model) -> Sess
         created_at: now,
         updated_at: now,
     };
-    SessionManager::verify(relationship, &coach).expect("a member coach manages sessions")
+    SchedulingPermit::verify(relationship, &coach).expect("a member coach may schedule sessions")
 }

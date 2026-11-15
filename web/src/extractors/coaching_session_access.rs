@@ -13,7 +13,7 @@ use crate::{
     AppState,
 };
 use domain::{
-    coaching_relationships::{self, SessionManager},
+    coaching_relationships::{self, SchedulingPermit},
     coaching_sessions, users,
 };
 use log::*;
@@ -39,9 +39,12 @@ pub(crate) struct CoachingSessionQueryAccess(
     pub coaching_relationships::Model,
 );
 
-/// [`CoachingSessionContextAccess`] for a session manager of the session's relationship,
-/// yielding their proof.
-pub(crate) struct CoachingSessionManagerAccess(pub coaching_sessions::Model, pub SessionManager);
+/// [`CoachingSessionContextAccess`] for a user permitted to schedule the session's
+/// relationship's sessions, yielding their scheduling permit.
+pub(crate) struct CoachingSessionSchedulingAccess(
+    pub coaching_sessions::Model,
+    pub SchedulingPermit,
+);
 
 #[derive(Deserialize)]
 struct SessionQueryParams {
@@ -77,7 +80,7 @@ where
 }
 
 #[async_trait]
-impl<S> FromRequestParts<S> for CoachingSessionManagerAccess
+impl<S> FromRequestParts<S> for CoachingSessionSchedulingAccess
 where
     AppState: FromRef<S>,
     S: Send + Sync,
@@ -91,9 +94,9 @@ where
         let operation = format!("{} {}", parts.method, parts.uri.path());
         let relationship_id = relationship.id;
 
-        let Some(manager) = SessionManager::verify(relationship, &user) else {
+        let Some(permit) = SchedulingPermit::verify(relationship, &user) else {
             warn!(
-                "{operation} auth denied (not a session manager): coaching_session_id={} relationship_id={relationship_id} user_id={}",
+                "{operation} auth denied (not permitted to schedule): coaching_session_id={} relationship_id={relationship_id} user_id={}",
                 session.id, user.id
             );
             return Err((StatusCode::FORBIDDEN, "FORBIDDEN".to_string()));
@@ -103,7 +106,7 @@ where
             "{operation} auth passed: coaching_session_id={} relationship_id={relationship_id} user_id={}",
             session.id, user.id
         );
-        Ok(CoachingSessionManagerAccess(session, manager))
+        Ok(CoachingSessionSchedulingAccess(session, permit))
     }
 }
 

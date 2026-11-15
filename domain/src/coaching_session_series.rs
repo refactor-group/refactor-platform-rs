@@ -5,7 +5,7 @@
 //! This module owns the JSONB rule serialization: callers interact with the
 //! typed [`SeriesRule`] struct, never with `serde_json::Value` directly.
 
-pub mod as_manager;
+pub mod with_permit;
 
 use crate::coaching_relationship::{self, ensure_coachee_is_member};
 use crate::coaching_relationships;

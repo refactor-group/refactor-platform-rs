@@ -774,12 +774,12 @@ async fn a_following_reschedule_restamps_only_the_participants_it_reached() {
 
 /// A proof for one relationship cannot delete another's series.
 #[tokio::test]
-async fn a_manager_of_another_relationship_cannot_delete_the_series() {
+async fn a_permit_for_another_relationship_cannot_delete_the_series() {
     within_time_limit(async {
         let db = database().await;
         let theirs = seed_series(&db).await;
         let target = seed_series(&db).await;
-        let manager = crate::test_utils::proof::coach_manages(
+        let permit = crate::test_utils::proof::coach_permit(
             coaching_relationship::find_by_id(&db, theirs.relationship_id)
                 .await
                 .expect("their relationship reads"),
@@ -789,7 +789,7 @@ async fn a_manager_of_another_relationship_cannot_delete_the_series() {
             .expect("the series reads");
 
         let err =
-            as_manager::delete_with_future_sessions(&db, &Config::default(), &manager, &series)
+            with_permit::delete_with_future_sessions(&db, &Config::default(), &permit, &series)
                 .await
                 .expect_err("another relationship's series is refused");
 

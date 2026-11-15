@@ -102,10 +102,10 @@ impl Model {
 
     /// Whether `user_id` may schedule, reschedule, cancel, run series, set meeting links and
     /// delete any topic in this relationship. Says nothing about organization membership, so
-    /// outside callers use [`SessionManager::verify`] rather than this alone.
-    pub fn can_manage_sessions(&self, user_id: Id) -> bool {
+    /// outside callers use [`SchedulingPermit::verify`] rather than this alone.
+    pub fn can_schedule_sessions(&self, user_id: Id) -> bool {
         self.seat(user_id)
-            .is_some_and(|seat| self.kind.rules().can_manage_sessions(seat))
+            .is_some_and(|seat| self.kind.rules().can_schedule_sessions(seat))
     }
 
     /// Whether `user_id` sees every action in this relationship, not only their own and
@@ -132,22 +132,23 @@ impl Model {
     }
 }
 
-/// Proof that `user_id` may run this relationship's sessions: a participant still in its
-/// organization whose seat can manage sessions.
+/// Proof that `user_id` may schedule this relationship's sessions: a participant still in its
+/// organization whose seat can schedule sessions.
 #[derive(Debug, Clone)]
-pub struct SessionManager {
+pub struct SchedulingPermit {
     relationship: Model,
     user_id: Id,
 }
 
-impl SessionManager {
-    /// The proof for `user` when they are a participant and member who can manage sessions.
-    pub fn verify(relationship: Model, user: &users::Model) -> Option<SessionManager> {
-        (relationship.is_participant_and_member(user) && relationship.can_manage_sessions(user.id))
-            .then_some(SessionManager {
-                relationship,
-                user_id: user.id,
-            })
+impl SchedulingPermit {
+    /// The proof for `user` when they are a participant and member who can schedule sessions.
+    pub fn verify(relationship: Model, user: &users::Model) -> Option<SchedulingPermit> {
+        (relationship.is_participant_and_member(user)
+            && relationship.can_schedule_sessions(user.id))
+        .then_some(SchedulingPermit {
+            relationship,
+            user_id: user.id,
+        })
     }
 
     /// The relationship this proof is for.
@@ -283,20 +284,20 @@ mod tests {
             relationship.role(coach),
             Some(coaching_relationship_kind::Role::Coach)
         );
-        assert!(relationship.can_manage_sessions(coach));
+        assert!(relationship.can_schedule_sessions(coach));
 
         assert_eq!(relationship.seat(coachee), Some(Seat::CoacheeId));
         assert_eq!(
             relationship.role(coachee),
             Some(coaching_relationship_kind::Role::Coachee)
         );
-        assert!(!relationship.can_manage_sessions(coachee));
+        assert!(!relationship.can_schedule_sessions(coachee));
         assert!(relationship.sees_all_actions(coach));
         assert!(!relationship.sees_all_actions(coachee));
 
         assert_eq!(relationship.seat(stranger), None);
         assert_eq!(relationship.role(stranger), None);
-        assert!(!relationship.can_manage_sessions(stranger));
+        assert!(!relationship.can_schedule_sessions(stranger));
         assert!(!relationship.sees_all_actions(stranger));
     }
 
@@ -310,7 +311,7 @@ mod tests {
             relationship.role(user),
             Some(coaching_relationship_kind::Role::Coach)
         );
-        assert!(relationship.can_manage_sessions(user));
+        assert!(relationship.can_schedule_sessions(user));
     }
 
     #[test]
@@ -324,12 +325,12 @@ mod tests {
                 relationship.role(user),
                 Some(coaching_relationship_kind::Role::Colleague)
             );
-            assert!(relationship.can_manage_sessions(user));
+            assert!(relationship.can_schedule_sessions(user));
             assert!(relationship.sees_all_actions(user));
         }
         assert_eq!(relationship.seat(stranger), None);
         assert_eq!(relationship.role(stranger), None);
-        assert!(!relationship.can_manage_sessions(stranger));
+        assert!(!relationship.can_schedule_sessions(stranger));
         assert!(!relationship.sees_all_actions(stranger));
     }
 
@@ -346,7 +347,7 @@ mod tests {
             (&solo, coach),
         ] {
             assert_eq!(
-                relationship.can_manage_sessions(user),
+                relationship.can_schedule_sessions(user),
                 user == relationship.coach_id,
                 "{user}"
             );

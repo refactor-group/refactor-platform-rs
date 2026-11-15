@@ -6,13 +6,14 @@ use axum::{
     http::{request::Parts, StatusCode},
 };
 use domain::{
-    coaching_relationships::SessionManager, coaching_session_series as CoachingSessionSeriesApi, Id,
+    coaching_relationships::SchedulingPermit, coaching_session_series as CoachingSessionSeriesApi,
+    Id,
 };
 
 use crate::{
     extractors::{
         authenticated_user::AuthenticatedUser,
-        coaching_relationship_access::{authorize_relationship, authorize_session_manager},
+        coaching_relationship_access::{authorize_relationship, authorize_scheduling},
         lookup_rejection, RejectionType,
     },
     AppState,
@@ -40,16 +41,16 @@ where
     }
 }
 
-/// Series access for a session manager of its relationship, yielding their proof. Used by
-/// write routes: `PUT` (reschedule), reschedule-following, `DELETE` and resend invite on
-/// `/coaching_session_series/:id`.
-pub(crate) struct CoachingSessionSeriesManagerAccess(
+/// Series access for a user permitted to schedule its relationship's sessions, yielding their
+/// scheduling permit. Used by write routes: `PUT` (reschedule), reschedule-following, `DELETE`
+/// and resend invite on `/coaching_session_series/:id`.
+pub(crate) struct CoachingSessionSeriesSchedulingAccess(
     pub CoachingSessionSeriesApi::Model,
-    pub SessionManager,
+    pub SchedulingPermit,
 );
 
 #[async_trait]
-impl<S> FromRequestParts<S> for CoachingSessionSeriesManagerAccess
+impl<S> FromRequestParts<S> for CoachingSessionSeriesSchedulingAccess
 where
     AppState: FromRef<S>,
     S: Send + Sync,
@@ -58,9 +59,8 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let (state, series, user) = resolve(parts, state).await?;
-        let manager =
-            authorize_session_manager(&state, &user, series.coaching_relationship_id).await?;
-        Ok(CoachingSessionSeriesManagerAccess(series, manager))
+        let permit = authorize_scheduling(&state, &user, series.coaching_relationship_id).await?;
+        Ok(CoachingSessionSeriesSchedulingAccess(series, permit))
     }
 }
 
@@ -129,7 +129,7 @@ mod tests {
         "extracted_success"
     }
 
-    async fn change_series(_access: CoachingSessionSeriesManagerAccess) -> &'static str {
+    async fn change_series(_access: CoachingSessionSeriesSchedulingAccess) -> &'static str {
         "extracted_success"
     }
 

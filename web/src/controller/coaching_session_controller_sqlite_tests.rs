@@ -929,7 +929,7 @@ async fn signed_out_callers_cannot_reach_sessions() {
     .await;
 }
 
-/// In a colleague relationship, the person in the coachee seat manages sessions too.
+/// In a colleague relationship, the person in the coachee seat may schedule sessions too.
 #[tokio::test]
 async fn the_colleague_in_the_coachee_seat_updates_a_session() {
     within_time_limit(async {
@@ -956,7 +956,7 @@ async fn the_colleague_in_the_coachee_seat_updates_a_session() {
     .await;
 }
 
-/// Colleagues manage their own relationship's sessions, nobody else's.
+/// Colleagues schedule their own relationship's sessions, nobody else's.
 #[tokio::test]
 async fn non_participants_cannot_update_a_colleague_session() {
     within_time_limit(async {

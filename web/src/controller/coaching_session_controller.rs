@@ -1,10 +1,10 @@
 use crate::controller::ApiResponse;
 use crate::extractors::coaching_session_access::{
-    CoachingSessionAccess, CoachingSessionContextAccess, CoachingSessionManagerAccess,
+    CoachingSessionAccess, CoachingSessionContextAccess, CoachingSessionSchedulingAccess,
 };
 use crate::extractors::{
     authenticated_user::AuthenticatedUser,
-    coaching_relationship_access::{authorize_session_manager, CoachingRelationshipQueryAccess},
+    coaching_relationship_access::{authorize_scheduling, CoachingRelationshipQueryAccess},
     compare_api_version::CompareApiVersion,
 };
 use crate::params::coaching_session::{
@@ -183,9 +183,9 @@ pub async fn create(
 ) -> Result<Response, Error> {
     debug!("POST Create a new Coaching Session from: {params:?}");
 
-    let manager =
-        match authorize_session_manager(&app_state, &user, params.coaching_relationship_id).await {
-            Ok(manager) => manager,
+    let permit =
+        match authorize_scheduling(&app_state, &user, params.coaching_relationship_id).await {
+            Ok(permit) => permit,
             Err(rejection) => return Ok(rejection.into_response()),
         };
 
@@ -194,11 +194,11 @@ pub async fn create(
     let requested_duration = CoachingSessionApi::parse_duration_minutes(params.duration_minutes)?;
     let coaching_session_model = params.into_model();
 
-    let coaching_session = CoachingSessionApi::as_manager::create(
+    let coaching_session = CoachingSessionApi::with_permit::create(
         app_state.db_conn_ref(),
         &app_state.config,
         app_state.event_publisher.as_ref(),
-        &manager,
+        &permit,
         coaching_session_model,
         requested_duration,
     )
@@ -234,14 +234,14 @@ pub async fn create(
     )
 )]
 pub async fn update(
-    CoachingSessionManagerAccess(coaching_session, manager): CoachingSessionManagerAccess,
+    CoachingSessionSchedulingAccess(coaching_session, permit): CoachingSessionSchedulingAccess,
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
     Json(params): Json<UpdateParams>,
 ) -> Result<impl IntoResponse, Error> {
-    CoachingSessionApi::as_manager::update(
+    CoachingSessionApi::with_permit::update(
         app_state.db_conn_ref(),
-        &manager,
+        &permit,
         &coaching_session,
         params,
     )
@@ -251,9 +251,9 @@ pub async fn update(
 
 /// PATCH update only the title of a Coaching Session.
 ///
-/// Either participant may edit the title; the scheduling fields stay on the session manager's
-/// `PUT /coaching_sessions/{id}`. Authorization is the `CoachingSessionAccess`
-/// extractor (participant-gated). Returns the updated session.
+/// Either participant may edit the title; the scheduling fields stay on
+/// `PUT /coaching_sessions/{id}`, which needs a scheduling permit. Authorization is the
+/// `CoachingSessionAccess` extractor (participant-gated). Returns the updated session.
 #[utoipa::path(
     patch,
     path = "/coaching_sessions/{id}/title",
@@ -305,14 +305,14 @@ pub async fn update_title(
     )
 )]
 pub async fn delete(
-    CoachingSessionManagerAccess(coaching_session, manager): CoachingSessionManagerAccess,
+    CoachingSessionSchedulingAccess(coaching_session, permit): CoachingSessionSchedulingAccess,
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
-    CoachingSessionApi::as_manager::delete(
+    CoachingSessionApi::with_permit::delete(
         app_state.db_conn_ref(),
         &app_state.config,
-        &manager,
+        &permit,
         &coaching_session,
     )
     .await?;
@@ -330,7 +330,7 @@ pub async fn delete(
         (status = 204, description = "Invite resent"),
         (status = 400, description = "Missing or unsupported API version header"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden — not a session manager of the relationship"),
+        (status = 403, description = "Forbidden — not permitted to schedule the relationship's sessions"),
         (status = 404, description = "Coaching Session not found"),
         (status = 409, description = "Not resendable; `details.reason` is `no_upcoming_sessions`, `series_member`, or `coachee_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status = 502, description = "The invite did not reach the coachee"),
@@ -340,14 +340,14 @@ pub async fn delete(
     )
 )]
 pub async fn resend_invite(
-    CoachingSessionManagerAccess(coaching_session, manager): CoachingSessionManagerAccess,
+    CoachingSessionSchedulingAccess(coaching_session, permit): CoachingSessionSchedulingAccess,
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, Error> {
-    CoachingSessionApi::as_manager::resend_invite(
+    CoachingSessionApi::with_permit::resend_invite(
         app_state.db_conn_ref(),
         &app_state.config,
-        &manager,
+        &permit,
         &coaching_session,
     )
     .await?;

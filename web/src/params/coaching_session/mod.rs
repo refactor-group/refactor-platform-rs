@@ -110,7 +110,7 @@ impl IntoUpdateMap for UpdateParams {
 }
 
 /// Body for `PATCH /coaching_sessions/{id}/title`. Title-only so either participant can edit it,
-/// while scheduling fields (date, duration, meeting_url, provider) stay on the session manager's PUT.
+/// while scheduling fields (date, duration, meeting_url, provider) stay on the scheduling PUT.
 #[derive(Debug, Deserialize, ToSchema)]
 pub(crate) struct TitleUpdateParams {
     /// Absent -> leave unchanged. Explicit null -> clear. Value -> set.

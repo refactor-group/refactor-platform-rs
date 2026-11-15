@@ -189,14 +189,15 @@ fn member_of(relationship: &Model, user_id: Id) -> users::Model {
 }
 
 #[test]
-fn only_a_coaching_relationships_member_coach_gets_a_session_manager_proof() {
+fn only_a_coaching_relationships_member_coach_gets_a_scheduling_permit() {
     let (coach_id, coachee_id) = (Id::new_v4(), Id::new_v4());
     let relationship = create_test_relationship(coach_id, coachee_id);
 
-    let manager = SessionManager::verify(relationship.clone(), &member_of(&relationship, coach_id))
-        .expect("the member coach manages sessions");
-    assert_eq!(manager.user_id(), coach_id);
-    assert_eq!(manager.relationship().id, relationship.id);
+    let permit =
+        SchedulingPermit::verify(relationship.clone(), &member_of(&relationship, coach_id))
+            .expect("the member coach may schedule sessions");
+    assert_eq!(permit.user_id(), coach_id);
+    assert_eq!(permit.relationship().id, relationship.id);
 
     for (who, user) in [
         ("coachee", member_of(&relationship, coachee_id)),
@@ -204,14 +205,14 @@ fn only_a_coaching_relationships_member_coach_gets_a_session_manager_proof() {
         ("stranger", member_of(&relationship, Id::new_v4())),
     ] {
         assert!(
-            SessionManager::verify(relationship.clone(), &user).is_none(),
+            SchedulingPermit::verify(relationship.clone(), &user).is_none(),
             "{who}"
         );
     }
 }
 
 #[test]
-fn a_global_super_admin_coach_gets_a_session_manager_proof_without_an_org_role() {
+fn a_global_super_admin_coach_gets_a_scheduling_permit_without_an_org_role() {
     let coach_id = Id::new_v4();
     let relationship = create_test_relationship(coach_id, Id::new_v4());
     let user = create_test_user(
@@ -219,19 +220,19 @@ fn a_global_super_admin_coach_gets_a_session_manager_proof_without_an_org_role()
         vec![create_test_role(coach_id, Role::SuperAdmin, None)],
     );
 
-    assert!(SessionManager::verify(relationship, &user).is_some());
+    assert!(SchedulingPermit::verify(relationship, &user).is_some());
 }
 
 #[test]
-fn both_member_colleagues_get_a_session_manager_proof_and_one_who_left_does_not() {
+fn both_member_colleagues_get_a_scheduling_permit_and_one_who_left_does_not() {
     let (first, second) = (Id::new_v4(), Id::new_v4());
     let relationship = relationship_of(Kind::Colleague, first, second);
 
     for user_id in [first, second] {
-        let manager =
-            SessionManager::verify(relationship.clone(), &member_of(&relationship, user_id))
-                .expect("a member colleague manages sessions");
-        assert_eq!(manager.user_id(), user_id);
+        let permit =
+            SchedulingPermit::verify(relationship.clone(), &member_of(&relationship, user_id))
+                .expect("a member colleague may schedule sessions");
+        assert_eq!(permit.user_id(), user_id);
     }
-    assert!(SessionManager::verify(relationship, &create_test_user(second, vec![])).is_none());
+    assert!(SchedulingPermit::verify(relationship, &create_test_user(second, vec![])).is_none());
 }

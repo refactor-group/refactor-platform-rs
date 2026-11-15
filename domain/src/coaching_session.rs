@@ -1,5 +1,5 @@
-pub mod as_manager;
 pub(crate) mod recurrence;
+pub mod with_permit;
 
 use crate::coaching_relationship::{coachee_not_a_member, ensure_coachee_is_member};
 use crate::coaching_relationships;
