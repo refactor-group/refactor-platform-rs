@@ -132,8 +132,10 @@ impl Model {
     }
 }
 
-/// Proof that `user_id` may schedule this relationship's sessions: a participant still in its
-/// organization whose seat can schedule sessions.
+/// Permission for one user to create, edit, reschedule, cancel and re-invite one relationship's
+/// sessions. Only [`SchedulingPermit::verify`] makes one, after checking the user is in the
+/// relationship, still in its organization, and in a seat whose rules let them schedule.
+/// Functions that change the schedule take a permit, so they can't be called without that check.
 #[derive(Debug, Clone)]
 pub struct SchedulingPermit {
     relationship: Model,
@@ -141,7 +143,8 @@ pub struct SchedulingPermit {
 }
 
 impl SchedulingPermit {
-    /// The proof for `user` when they are a participant and member who can schedule sessions.
+    /// Issues `user` a permit for `relationship`, or `None` when they may not schedule its
+    /// sessions: not in it, no longer in its organization, or in a seat that can't schedule.
     pub fn verify(relationship: Model, user: &users::Model) -> Option<SchedulingPermit> {
         (relationship.is_participant_and_member(user)
             && relationship.can_schedule_sessions(user.id))
@@ -151,12 +154,12 @@ impl SchedulingPermit {
         })
     }
 
-    /// The relationship this proof is for.
+    /// The relationship whose sessions this permit lets its user schedule.
     pub fn relationship(&self) -> &Model {
         &self.relationship
     }
 
-    /// The user this proof admits.
+    /// The user this permit was issued to.
     pub fn user_id(&self) -> Id {
         self.user_id
     }

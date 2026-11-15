@@ -39,8 +39,9 @@ pub(crate) struct CoachingSessionQueryAccess(
     pub coaching_relationships::Model,
 );
 
-/// [`CoachingSessionContextAccess`] for a user permitted to schedule the session's
-/// relationship's sessions, yielding their scheduling permit.
+/// For routes that change a session's schedule (edit, cancel, re-invite): loads the session
+/// named in the path and issues the caller a scheduling permit for its relationship. 404 when
+/// the session doesn't exist, 403 when the caller may not schedule it.
 pub(crate) struct CoachingSessionSchedulingAccess(
     pub coaching_sessions::Model,
     pub SchedulingPermit,

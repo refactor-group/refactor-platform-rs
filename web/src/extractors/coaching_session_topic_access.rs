@@ -56,9 +56,9 @@ where
 }
 
 /// Authorizes a topic delete. Composes `CoachingSessionTopicAccess` (participant + topic belongs
-/// to the path session), then allows the caller only if they are the topic's author OR permitted
-/// to schedule the session's relationship's sessions. So a scheduling permit holder may delete
-/// any topic, while any other participant may delete only their own and gets 404 otherwise.
+/// to the path session), then lets the caller delete their own topic, or anyone's if they may
+/// schedule the relationship's sessions. Anyone else gets 404, so they can't learn the topic
+/// exists.
 pub(crate) struct CoachingSessionTopicDeleteAccess(pub coaching_session_topics::Model);
 
 #[async_trait]

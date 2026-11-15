@@ -41,9 +41,10 @@ where
     }
 }
 
-/// Series access for a user permitted to schedule its relationship's sessions, yielding their
-/// scheduling permit. Used by write routes: `PUT` (reschedule), reschedule-following, `DELETE`
-/// and resend invite on `/coaching_session_series/:id`.
+/// For routes that change a series (`PUT`, reschedule-following, `DELETE` and resend invite on
+/// `/coaching_session_series/:id`): loads the series and issues the caller a scheduling permit
+/// for its relationship. 404 when the series doesn't exist, 403 when the caller may not schedule
+/// it.
 pub(crate) struct CoachingSessionSeriesSchedulingAccess(
     pub CoachingSessionSeriesApi::Model,
     pub SchedulingPermit,

@@ -143,7 +143,8 @@ pub(crate) async fn authorize_relationship(
     Ok(relationship)
 }
 
-/// Loads the relationship and admits only a user permitted to schedule its sessions.
+/// Loads the relationship and issues `user` a scheduling permit for it. 404 when the relationship
+/// doesn't exist, 403 when `user` may not schedule its sessions.
 pub(crate) async fn authorize_scheduling(
     state: &AppState,
     user: &users::Model,

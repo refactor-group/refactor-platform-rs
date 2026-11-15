@@ -203,31 +203,31 @@ How to read the tables:
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
 | SES-01 | GET /coaching_sessions?coaching_relationship_id=R1&from_date=2000-01-01&to_date=2100-01-01 | COACH, COACHEE | 200, S1 and SR1-* | `web/src/extractors/coaching_relationship_access.rs:139` | [rows] filtered by relationship id. `from_date` and `to_date` are required: 400 without them |
-| SES-02 | GET /coaching_sessions?coaching_relationship_id=R1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403 | `web/src/extractors/coaching_relationship_access.rs:139` | Unknown relationship id: 404 (`:167`). Missing param: 400 |
+| SES-02 | GET /coaching_sessions?coaching_relationship_id=R1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403 | `web/src/extractors/coaching_relationship_access.rs:139` | Unknown relationship id: 404 (`:168`). Missing param: 400 |
 | SES-03 | GET /coaching_sessions?coaching_relationship_id=R3 | REMOVED | 403 | `web/src/extractors/coaching_relationship_access.rs:139` | |
-| SES-04 | GET /coaching_sessions/S1 | COACH, COACHEE | 200, S1 plus `organization_id` O1 | `web/src/extractors/coaching_session_access.rs:192` | First read hydrates the session, see MEET-01 |
-| SES-05 | GET /coaching_sessions/S1 | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192` | Unknown session: 404 (`:211`) |
-| SES-06 | GET /coaching_sessions/S3 | REMOVED | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
-| SES-07 | POST /coaching_sessions/S1/view | COACH, COACHEE | 200, prior marker | `web/src/extractors/coaching_session_access.rs:192` | Per-caller marker |
-| SES-08 | POST /coaching_sessions/S1/view | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
-| SES-09 | POST /coaching_sessions `{coaching_relationship_id: R1}` | COACH | 200 (201), new session in R1 | `web/src/controller/coaching_session_controller.rs:187`; `web/src/extractors/coaching_relationship_access.rs:154` | [tightened] Coach only, still a member. Sends MAIL-01 |
-| SES-10 | POST /coaching_sessions `{coaching_relationship_id: R1}` | COACHEE | 403 | `web/src/controller/coaching_session_controller.rs:187`; `web/src/extractors/coaching_relationship_access.rs:154` | [tightened] Coachee cannot create; colleagues will (can_schedule_sessions, rs#399 phase 3) |
-| SES-11 | POST /coaching_sessions `{coaching_relationship_id: R1}` | MEMBER, OTHER_COACH | 403 | `web/src/controller/coaching_session_controller.rs:187`; `web/src/extractors/coaching_relationship_access.rs:154` | [tightened] Unknown relationship: 404 |
-| SES-12 | POST /coaching_sessions `{coaching_relationship_id: R1}` | ADMIN, SUPER | 403 | `web/src/controller/coaching_session_controller.rs:187`; `web/src/extractors/coaching_relationship_access.rs:154` | [tightened] |
-| SES-13 | POST /coaching_sessions `{coaching_relationship_id: R1}` | OUTSIDER | 403 | `web/src/controller/coaching_session_controller.rs:187`; `web/src/extractors/coaching_relationship_access.rs:154` | [tightened] |
-| SES-14 | POST /coaching_sessions `{coaching_relationship_id: R3}` | REMOVED | 403 | `web/src/controller/coaching_session_controller.rs:187`; `web/src/extractors/coaching_relationship_access.rs:154` | [tightened] Not the coach, and no longer a member |
-| SES-15 | PUT /coaching_sessions/S1 | COACH | 200 (204) | `web/src/extractors/coaching_session_access.rs:97` | Coach only. A date change queues JOB-02 |
-| SES-16 | PUT /coaching_sessions/S1 | COACHEE | 403 | `web/src/extractors/coaching_session_access.rs:97` | |
-| SES-17 | PUT /coaching_sessions/S1 | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192` | Unknown session: 404 |
-| SES-18 | PUT /coaching_sessions/S3 | COACH | 200 (204) | `web/src/extractors/coaching_session_access.rs:97` | Coach still a member after the coachee left. [membership] Only when `date` and `duration_minutes` are unchanged, see SES-34 |
-| SES-19 | PATCH /coaching_sessions/S1/title | COACH, COACHEE | 200, S1 with new title | `web/src/extractors/coaching_session_access.rs:192` | Either participant |
-| SES-20 | PATCH /coaching_sessions/S1/title | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
-| SES-21 | DELETE /coaching_sessions/S4 | COACH | 200 (204) | `web/src/extractors/coaching_session_access.rs:97` | Sends MAIL-03. A session with content: SES-37 |
-| SES-22 | DELETE /coaching_sessions/S4 | COACHEE | 403 | `web/src/extractors/coaching_session_access.rs:97` | |
-| SES-23 | DELETE /coaching_sessions/S4 | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
-| SES-24 | POST /coaching_sessions/S1/resend_invite | COACH | 204 | `web/src/extractors/coaching_session_access.rs:97` | 409 when past or a series member. Sends MAIL-04 |
-| SES-25 | POST /coaching_sessions/S1/resend_invite | COACHEE | 403 | `web/src/extractors/coaching_session_access.rs:97` | |
-| SES-26 | POST /coaching_sessions/S1/resend_invite | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
+| SES-04 | GET /coaching_sessions/S1 | COACH, COACHEE | 200, S1 plus `organization_id` O1 | `web/src/extractors/coaching_session_access.rs:193` | First read hydrates the session, see MEET-01 |
+| SES-05 | GET /coaching_sessions/S1 | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193` | Unknown session: 404 (`:212`) |
+| SES-06 | GET /coaching_sessions/S3 | REMOVED | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
+| SES-07 | POST /coaching_sessions/S1/view | COACH, COACHEE | 200, prior marker | `web/src/extractors/coaching_session_access.rs:193` | Per-caller marker |
+| SES-08 | POST /coaching_sessions/S1/view | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
+| SES-09 | POST /coaching_sessions `{coaching_relationship_id: R1}` | COACH | 200 (201), new session in R1 | `web/src/controller/coaching_session_controller.rs:187`; `web/src/extractors/coaching_relationship_access.rs:155` | [tightened] Coach only, still a member. Sends MAIL-01 |
+| SES-10 | POST /coaching_sessions `{coaching_relationship_id: R1}` | COACHEE | 403 | `web/src/controller/coaching_session_controller.rs:187`; `web/src/extractors/coaching_relationship_access.rs:155` | [tightened] Coachee cannot create; colleagues will (can_schedule_sessions, rs#399 phase 3) |
+| SES-11 | POST /coaching_sessions `{coaching_relationship_id: R1}` | MEMBER, OTHER_COACH | 403 | `web/src/controller/coaching_session_controller.rs:187`; `web/src/extractors/coaching_relationship_access.rs:155` | [tightened] Unknown relationship: 404 |
+| SES-12 | POST /coaching_sessions `{coaching_relationship_id: R1}` | ADMIN, SUPER | 403 | `web/src/controller/coaching_session_controller.rs:187`; `web/src/extractors/coaching_relationship_access.rs:155` | [tightened] |
+| SES-13 | POST /coaching_sessions `{coaching_relationship_id: R1}` | OUTSIDER | 403 | `web/src/controller/coaching_session_controller.rs:187`; `web/src/extractors/coaching_relationship_access.rs:155` | [tightened] |
+| SES-14 | POST /coaching_sessions `{coaching_relationship_id: R3}` | REMOVED | 403 | `web/src/controller/coaching_session_controller.rs:187`; `web/src/extractors/coaching_relationship_access.rs:155` | [tightened] Not the coach, and no longer a member |
+| SES-15 | PUT /coaching_sessions/S1 | COACH | 200 (204) | `web/src/extractors/coaching_session_access.rs:98` | Coach only. A date change queues JOB-02 |
+| SES-16 | PUT /coaching_sessions/S1 | COACHEE | 403 | `web/src/extractors/coaching_session_access.rs:98` | |
+| SES-17 | PUT /coaching_sessions/S1 | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193` | Unknown session: 404 |
+| SES-18 | PUT /coaching_sessions/S3 | COACH | 200 (204) | `web/src/extractors/coaching_session_access.rs:98` | Coach still a member after the coachee left. [membership] Only when `date` and `duration_minutes` are unchanged, see SES-34 |
+| SES-19 | PATCH /coaching_sessions/S1/title | COACH, COACHEE | 200, S1 with new title | `web/src/extractors/coaching_session_access.rs:193` | Either participant |
+| SES-20 | PATCH /coaching_sessions/S1/title | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
+| SES-21 | DELETE /coaching_sessions/S4 | COACH | 200 (204) | `web/src/extractors/coaching_session_access.rs:98` | Sends MAIL-03. A session with content: SES-37 |
+| SES-22 | DELETE /coaching_sessions/S4 | COACHEE | 403 | `web/src/extractors/coaching_session_access.rs:98` | |
+| SES-23 | DELETE /coaching_sessions/S4 | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
+| SES-24 | POST /coaching_sessions/S1/resend_invite | COACH | 204 | `web/src/extractors/coaching_session_access.rs:98` | 409 when past or a series member. Sends MAIL-04 |
+| SES-25 | POST /coaching_sessions/S1/resend_invite | COACHEE | 403 | `web/src/extractors/coaching_session_access.rs:98` | |
+| SES-26 | POST /coaching_sessions/S1/resend_invite | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
 | SES-27 | GET /users/{COACH_ID}/coaching_sessions | COACH | 200, S1 S3 SR1-* SR3-* | `web/src/extractors/user_self_access.rs:28`; `entity_api/src/coaching_session.rs:1178` | [rows] self only. `include=relationship` adds `coach`/`coachee` |
 | SES-28 | GET /users/{COACHEE_ID}/coaching_sessions | COACHEE | 200, S1 S2 SR1-* | same as SES-27 | [rows] |
 | SES-29 | GET /users/{COACHEE_ID}/coaching_sessions | COACH, MEMBER, ADMIN, SUPER | 403 | `web/src/extractors/user_self_access.rs:28` | Same gate for `/counts` and `/nearest` |
@@ -237,12 +237,12 @@ How to read the tables:
 | SES-33 | POST /coaching_sessions `{coaching_relationship_id: R3}` | COACH | 409 `coachee_not_a_member`, nothing written, no email | `domain/src/coaching_session.rs:102` | [membership] `details: {reason, organization_id, user_id}` |
 | SES-34 | PUT /coaching_sessions/S3 changing `date` or `duration_minutes` | COACH | 409 `coachee_not_a_member`, S3 unchanged | `domain/src/coaching_session.rs:390` | [membership] Other edits succeed (SES-18) |
 | SES-35 | POST /coaching_sessions/S3/resend_invite | COACH | 409 `coachee_not_a_member`, no email | `domain/src/coaching_session.rs:592` | [membership] |
-| SES-36 | DELETE /coaching_sessions/S5 | COACH | 200 (204) | `web/src/extractors/coaching_session_access.rs:97` | [membership] Deleting stays allowed. Sends MAIL-03 to both COACH and REMOVED |
+| SES-36 | DELETE /coaching_sessions/S5 | COACH | 200 (204) | `web/src/extractors/coaching_session_access.rs:98` | [membership] Deleting stays allowed. Sends MAIL-03 to both COACH and REMOVED |
 | SES-37 | DELETE /coaching_sessions/S1 | COACH | 409 `sessions_have_content`, `details: {reason, coaching_session_id}`; S1, its content and its notes document untouched, no email | `domain/src/coaching_session.rs:525` | S1 holds AG1 and A1 to A3 |
 | SES-38 | POST /coaching_sessions `{coaching_relationship_id: R1}` | COACH after removal from O1 | 403, nothing written, no email | `web/src/controller/coaching_session_controller.rs:187`; `web/src/extractors/coaching_relationship_access.rs:140` | [tightened] Restore the role afterwards |
-| SES-39 | POST /coaching_sessions `{coaching_relationship_id: unknown}` | COACH | 404, nothing written, no email | `web/src/extractors/coaching_relationship_access.rs:167` | |
-| SES-40 | GET /coaching_sessions/{unknown}, POST /coaching_sessions/{unknown}/resend_invite | COACH | 404, no email | `web/src/extractors/coaching_session_access.rs:211` | |
-| SES-41 | PUT /coaching_sessions/S1 | COACH after removal from O1 | 403, S1 unchanged | `web/src/extractors/coaching_session_access.rs:192` | [tightened] Restore the role afterwards |
+| SES-39 | POST /coaching_sessions `{coaching_relationship_id: unknown}` | COACH | 404, nothing written, no email | `web/src/extractors/coaching_relationship_access.rs:168` | |
+| SES-40 | GET /coaching_sessions/{unknown}, POST /coaching_sessions/{unknown}/resend_invite | COACH | 404, no email | `web/src/extractors/coaching_session_access.rs:212` | |
+| SES-41 | PUT /coaching_sessions/S1 | COACH after removal from O1 | 403, S1 unchanged | `web/src/extractors/coaching_session_access.rs:193` | [tightened] Restore the role afterwards |
 | SES-42 | any /coaching_sessions route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 | SES-43 | GET /users/{REMOVED_ID}/coaching_sessions/nearest?coaching_relationship_ids=R3 | REMOVED | 200, empty list | `web/src/extractors/user_self_access.rs:28`; `entity_api/src/coaching_session.rs:1245`; `entity_api/src/coaching_relationship.rs:426` | [membership] R3's sessions are left out, as in SES-30 |
 | SES-44 | GET /users/{SUPER_ID}/coaching_sessions | SUPER, once they also coach OUTSIDER in a new O2 relationship R5 with one session | 200, R5's session | `web/src/extractors/user_self_access.rs:28`; `web/src/controller/user/coaching_session_controller.rs:93`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in |
@@ -259,30 +259,30 @@ How to read the tables:
 | SER-05 | GET /coaching_session_series?coaching_relationship_id=R1 | non-participants | 403 | `web/src/extractors/coaching_relationship_access.rs:139` | |
 | SER-06 | GET /coaching_session_series/SR1 | COACH, COACHEE | 200, SR1 and its sessions | `web/src/extractors/coaching_session_series_access.rs:39` | |
 | SER-07 | GET /coaching_session_series/SR1 | non-participants | 403 | `web/src/extractors/coaching_session_series_access.rs:39` | Unknown series: 404 |
-| SER-08 | PUT /coaching_session_series/SR1 | COACH | 200 | `web/src/extractors/coaching_session_series_access.rs:62` | Sends MAIL-06 |
-| SER-09 | PUT /coaching_session_series/SR1 | COACHEE, non-participants | 403 | `web/src/extractors/coaching_session_series_access.rs:62` | |
-| SER-10 | POST /coaching_session_series/SR1/reschedule | COACH | 200 | `web/src/extractors/coaching_session_series_access.rs:62` | Sends MAIL-07 |
-| SER-11 | POST /coaching_session_series/SR1/reschedule | COACHEE, non-participants | 403 | `web/src/extractors/coaching_session_series_access.rs:62` | |
-| SER-12 | DELETE /coaching_session_series/SR1 | COACH | 204 | `web/src/extractors/coaching_session_series_access.rs:62` | Sends MAIL-08 |
-| SER-13 | DELETE /coaching_session_series/SR1 | COACHEE, non-participants | 403 | `web/src/extractors/coaching_session_series_access.rs:62` | |
-| SER-14 | POST /coaching_session_series/SR1/resend_invite | COACH | 204 | `web/src/extractors/coaching_session_series_access.rs:62` | Sends MAIL-09 |
-| SER-15 | POST /coaching_session_series/SR1/resend_invite | COACHEE, non-participants | 403 | `web/src/extractors/coaching_session_series_access.rs:62` | |
-| SER-16 | POST /coaching_session_series `{coaching_relationship_id: R1}` | COACH after removal from O1 | 403 | `web/src/controller/coaching_session_series_controller.rs:61`; `web/src/extractors/coaching_relationship_access.rs:154` | [tightened] Run last, or on a disposable relationship: remove the coach from O1 first |
+| SER-08 | PUT /coaching_session_series/SR1 | COACH | 200 | `web/src/extractors/coaching_session_series_access.rs:63` | Sends MAIL-06 |
+| SER-09 | PUT /coaching_session_series/SR1 | COACHEE, non-participants | 403 | `web/src/extractors/coaching_session_series_access.rs:63` | |
+| SER-10 | POST /coaching_session_series/SR1/reschedule | COACH | 200 | `web/src/extractors/coaching_session_series_access.rs:63` | Sends MAIL-07 |
+| SER-11 | POST /coaching_session_series/SR1/reschedule | COACHEE, non-participants | 403 | `web/src/extractors/coaching_session_series_access.rs:63` | |
+| SER-12 | DELETE /coaching_session_series/SR1 | COACH | 204 | `web/src/extractors/coaching_session_series_access.rs:63` | Sends MAIL-08 |
+| SER-13 | DELETE /coaching_session_series/SR1 | COACHEE, non-participants | 403 | `web/src/extractors/coaching_session_series_access.rs:63` | |
+| SER-14 | POST /coaching_session_series/SR1/resend_invite | COACH | 204 | `web/src/extractors/coaching_session_series_access.rs:63` | Sends MAIL-09 |
+| SER-15 | POST /coaching_session_series/SR1/resend_invite | COACHEE, non-participants | 403 | `web/src/extractors/coaching_session_series_access.rs:63` | |
+| SER-16 | POST /coaching_session_series `{coaching_relationship_id: R1}` | COACH after removal from O1 | 403 | `web/src/controller/coaching_session_series_controller.rs:61`; `web/src/extractors/coaching_relationship_access.rs:155` | [tightened] Run last, or on a disposable relationship: remove the coach from O1 first |
 | SER-17 | POST /coaching_session_series `{coaching_relationship_id: R3}` | COACH | 409 `coachee_not_a_member`, nothing written, no email | `domain/src/coaching_session_series.rs:103` | [membership] |
 | SER-18 | PUT /coaching_session_series/SR3 | COACH | 409 `coachee_not_a_member`, SR3 unchanged | `domain/src/coaching_session_series.rs:257` | [membership] |
 | SER-19 | POST /coaching_session_series/SR3/reschedule | COACH | 409 `coachee_not_a_member`, SR3 unchanged | `domain/src/coaching_session_series.rs:645` | [membership] |
 | SER-20 | POST /coaching_session_series/SR3/resend_invite | COACH | 409 `coachee_not_a_member`, no email | `domain/src/coaching_session_series.rs:913` | [membership] |
-| SER-21 | DELETE /coaching_session_series/SR3 | COACH | 204 | `web/src/extractors/coaching_session_series_access.rs:62` | [membership] Cancelling stays allowed. Sends MAIL-08 to both COACH and REMOVED. Run after SER-18 to SER-20 |
-| SER-22 | GET /coaching_session_series/{unknown}; POST its `/resend_invite`, `/reschedule` | COACH | 404, no email | `web/src/extractors/coaching_session_series_access.rs:109` | |
+| SER-21 | DELETE /coaching_session_series/SR3 | COACH | 204 | `web/src/extractors/coaching_session_series_access.rs:63` | [membership] Cancelling stays allowed. Sends MAIL-08 to both COACH and REMOVED. Run after SER-18 to SER-20 |
+| SER-22 | GET /coaching_session_series/{unknown}; POST its `/resend_invite`, `/reschedule` | COACH | 404, no email | `web/src/extractors/coaching_session_series_access.rs:110` | |
 | SER-23 | any /coaching_session_series route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 
 ### 4.4 Agreements (`AGR`)
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
-| AGR-01 | GET /agreements?coaching_session_id=S1 | COACH, COACHEE | 200, AG1 | `web/src/extractors/coaching_session_access.rs:192` | [rows] |
-| AGR-02 | GET /agreements?coaching_session_id=S1 | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
-| AGR-03 | GET /agreements?coaching_session_id=S3 | REMOVED | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
+| AGR-01 | GET /agreements?coaching_session_id=S1 | COACH, COACHEE | 200, AG1 | `web/src/extractors/coaching_session_access.rs:193` | [rows] |
+| AGR-02 | GET /agreements?coaching_session_id=S1 | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
+| AGR-03 | GET /agreements?coaching_session_id=S3 | REMOVED | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
 | AGR-04 | GET /agreements/AG1 | COACH, COACHEE | 200, AG1 | `web/src/extractors/agreement_access.rs:44` | [tightened] |
 | AGR-05 | POST /agreements `{coaching_session_id: S1}` | COACH, COACHEE | 200 (201), new agreement | `web/src/controller/agreement_controller.rs:51` | [tightened] |
 | AGR-06 | PUT /agreements/AG1 | COACH, COACHEE | 200, AG1 updated | `web/src/extractors/agreement_access.rs:44` | [tightened] |
@@ -310,10 +310,10 @@ How to read the tables:
 | ACT-11 | GET /organizations/O1/coaching_relationships/R1/actions | OUTSIDER | 403 | `web/src/extractors/organization_member_access.rs:91` | Member check runs first |
 | ACT-12 | GET /organizations/O1/coaching_relationships/R3/actions | REMOVED | 403 | `web/src/extractors/organization_member_access.rs:91` | |
 | ACT-13 | GET /organizations/O1/coaching_relationships/R3/actions | COACH | 200, A6 A7 | `web/src/extractors/coaching_relationship_access.rs:86` | [rows] |
-| ACT-14 | GET /actions?coaching_session_id=S1 | COACH | 200, A1 A2 A3 | `web/src/extractors/coaching_session_access.rs:192` | [rows] |
-| ACT-15 | GET /actions?coaching_session_id=S1 | COACHEE | 200, A1 A2 A3 | `web/src/extractors/coaching_session_access.rs:192`; `web/src/controller/action_controller.rs:361` | [rows] no assignee narrowing here |
-| ACT-16 | GET /actions?coaching_session_id=S1 | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
-| ACT-17 | GET /actions?coaching_session_id=S3 | REMOVED | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
+| ACT-14 | GET /actions?coaching_session_id=S1 | COACH | 200, A1 A2 A3 | `web/src/extractors/coaching_session_access.rs:193` | [rows] |
+| ACT-15 | GET /actions?coaching_session_id=S1 | COACHEE | 200, A1 A2 A3 | `web/src/extractors/coaching_session_access.rs:193`; `web/src/controller/action_controller.rs:361` | [rows] no assignee narrowing here |
+| ACT-16 | GET /actions?coaching_session_id=S1 | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
+| ACT-17 | GET /actions?coaching_session_id=S3 | REMOVED | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
 | ACT-18 | GET /users/{COACHEE_ID}/actions (scope=sessions, default) | COACHEE | 200, A1 A2 A3 A4 A5 | `web/src/extractors/user_actions_access.rs:36`; `entity_api/src/action.rs:391` | [rows] self access; no assignee narrowing |
 | ACT-19 | GET /users/{COACHEE_ID}/actions?scope=assigned | COACHEE | 200, A2 A5 | `web/src/extractors/user_actions_access.rs:36`; `entity_api/src/action.rs:349` | [rows] |
 | ACT-20 | GET /users/{COACH_ID}/actions (scope=sessions) | COACH | 200, A1 A2 A3 A6 A7 | `web/src/extractors/user_actions_access.rs:36`; `entity_api/src/action.rs:391` | [rows] `scope=assigned`: A1 |
@@ -356,8 +356,8 @@ How to read the tables:
 | GOAL-08 | PUT, DELETE /goals/G1 | non-participants | 403 | `web/src/extractors/goal_access.rs:45` | |
 | GOAL-09 | GET /goals/G1/sessions | COACH, COACHEE | 200, S1 | `web/src/extractors/goal_access.rs:45` | [rows] |
 | GOAL-10 | POST /goals `{coaching_relationship_id: R1}` | COACH, COACHEE | 200 (201), new goal | `web/src/controller/goal_controller.rs:85` | [tightened] Non-participants: GOAL-25 |
-| GOAL-11 | GET /coaching_sessions/S1/goals | COACH, COACHEE | 200, G1 | `web/src/extractors/coaching_session_access.rs:192` | [rows] |
-| GOAL-12 | GET /coaching_sessions/S1/goals | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
+| GOAL-11 | GET /coaching_sessions/S1/goals | COACH, COACHEE | 200, G1 | `web/src/extractors/coaching_session_access.rs:193` | [rows] |
+| GOAL-12 | GET /coaching_sessions/S1/goals | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
 | GOAL-13 | POST /coaching_sessions/SR1-1/goals `{goal_id: G1}` (an R1 session G1 isn't linked to yet) | COACH, COACHEE | 200 (201), link | `web/src/controller/coaching_session/goal_controller.rs:48` | [tightened] Non-participants: GOAL-26 |
 | GOAL-14 | DELETE /coaching_sessions/S1/goals/G1 | COACH, COACHEE | 200, `{goal_id}` | `web/src/controller/coaching_session/goal_controller.rs:98` | [tightened] Non-participants: GOAL-26 |
 | GOAL-15 | GET /coaching_sessions/goals?coaching_relationship_id=R1 | COACH, COACHEE | 200, `session_goals` S1 [G1], SR1-* [] | `web/src/extractors/coaching_session_goal_access.rs:45` | [rows] |
@@ -386,11 +386,11 @@ How to read the tables:
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
-| TOP-01 | GET /coaching_sessions/S1/topics | COACH, COACHEE | 200, T1 T2 | `web/src/extractors/coaching_session_access.rs:192` | [rows] |
-| TOP-02 | GET /coaching_sessions/S1/topics | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
-| TOP-03 | POST /coaching_sessions/S1/topics | COACH, COACHEE | 200 (201), new topic authored by caller | `web/src/extractors/coaching_session_access.rs:192` | |
-| TOP-04 | POST /coaching_sessions/S1/topics | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
-| TOP-05 | PATCH /coaching_sessions/S1/topics/reorder | COACH, COACHEE | 200, T1 T2 reordered | `web/src/extractors/coaching_session_access.rs:192` | |
+| TOP-01 | GET /coaching_sessions/S1/topics | COACH, COACHEE | 200, T1 T2 | `web/src/extractors/coaching_session_access.rs:193` | [rows] |
+| TOP-02 | GET /coaching_sessions/S1/topics | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
+| TOP-03 | POST /coaching_sessions/S1/topics | COACH, COACHEE | 200 (201), new topic authored by caller | `web/src/extractors/coaching_session_access.rs:193` | |
+| TOP-04 | POST /coaching_sessions/S1/topics | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
+| TOP-05 | PATCH /coaching_sessions/S1/topics/reorder | COACH, COACHEE | 200, T1 T2 reordered | `web/src/extractors/coaching_session_access.rs:193` | |
 | TOP-06 | PUT /coaching_sessions/S1/topics/T2 | COACH | 200, T2 | `web/src/extractors/coaching_session_topic_access.rs:41`, `:47` | Any participant edits any topic |
 | TOP-07 | PUT /coaching_sessions/S1/topics/T1 | COACHEE | 200, T1 | `web/src/extractors/coaching_session_topic_access.rs:41`, `:47` | |
 | TOP-08 | PUT /coaching_sessions/S1/topics/T1 | non-participants | 403 | `web/src/extractors/coaching_session_topic_access.rs:41` | Topic not in S1: 404 |
@@ -410,16 +410,16 @@ How to read the tables:
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
-| TRN-01 | GET /coaching_sessions/S1/transcriptions | COACH, COACHEE | 200, TR1 with `speakers` | `web/src/extractors/coaching_session_access.rs:192` | |
-| TRN-02 | GET /coaching_sessions/S1/transcriptions | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
-| TRN-03 | GET /coaching_sessions/S1/transcriptions/TR1 (`Accept: text/plain`, `speaker=coach`) | COACH, COACHEE | 200, coach lines only | `web/src/extractors/coaching_session_access.rs:192`; `domain/src/transcription.rs:579` | 422 if no speaker attributed to the role |
-| TRN-04 | GET /coaching_sessions/S1/transcriptions/TR1 | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192`; `domain/src/transcription.rs:554` | TR1 under another session: 404 `transcription_not_found` |
-| TRN-05 | GET /coaching_sessions/S1/transcriptions/TR1/transcription_segments | COACH, COACHEE | 200, TR1 segments | `web/src/extractors/coaching_session_access.rs:192` | |
-| TRN-06 | GET /coaching_sessions/S1/transcriptions/TR1/transcription_segments | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192`; `entity_api/src/transcript_segment.rs:41` | TR1 under another session: 200, no segments |
-| TRN-07 | GET /coaching_sessions/S1/transcript_suggestions | COACH, COACHEE | 200, SG1 SG2 | `web/src/extractors/coaching_session_access.rs:192`; `domain/src/transcript_suggestion/review.rs:247` | [rows] coachee also sees coach-only SG1 |
-| TRN-08 | GET /coaching_sessions/S1/transcript_suggestions | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
-| TRN-09 | GET, POST /coaching_sessions/S1/transcript_suggestions/scan | COACH, COACHEE | GET 200, POST 202; scan status | `web/src/extractors/coaching_session_access.rs:192` | POST: 409 if running or done |
-| TRN-10 | GET, POST /coaching_sessions/S1/transcript_suggestions/scan | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
+| TRN-01 | GET /coaching_sessions/S1/transcriptions | COACH, COACHEE | 200, TR1 with `speakers` | `web/src/extractors/coaching_session_access.rs:193` | |
+| TRN-02 | GET /coaching_sessions/S1/transcriptions | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
+| TRN-03 | GET /coaching_sessions/S1/transcriptions/TR1 (`Accept: text/plain`, `speaker=coach`) | COACH, COACHEE | 200, coach lines only | `web/src/extractors/coaching_session_access.rs:193`; `domain/src/transcription.rs:579` | 422 if no speaker attributed to the role |
+| TRN-04 | GET /coaching_sessions/S1/transcriptions/TR1 | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193`; `domain/src/transcription.rs:554` | TR1 under another session: 404 `transcription_not_found` |
+| TRN-05 | GET /coaching_sessions/S1/transcriptions/TR1/transcription_segments | COACH, COACHEE | 200, TR1 segments | `web/src/extractors/coaching_session_access.rs:193` | |
+| TRN-06 | GET /coaching_sessions/S1/transcriptions/TR1/transcription_segments | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193`; `entity_api/src/transcript_segment.rs:41` | TR1 under another session: 200, no segments |
+| TRN-07 | GET /coaching_sessions/S1/transcript_suggestions | COACH, COACHEE | 200, SG1 SG2 | `web/src/extractors/coaching_session_access.rs:193`; `domain/src/transcript_suggestion/review.rs:247` | [rows] coachee also sees coach-only SG1 |
+| TRN-08 | GET /coaching_sessions/S1/transcript_suggestions | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
+| TRN-09 | GET, POST /coaching_sessions/S1/transcript_suggestions/scan | COACH, COACHEE | GET 200, POST 202; scan status | `web/src/extractors/coaching_session_access.rs:193` | POST: 409 if running or done |
+| TRN-10 | GET, POST /coaching_sessions/S1/transcript_suggestions/scan | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
 | TRN-11 | POST /coaching_sessions/S1/transcript_suggestions/SG1/accept | COACH | 200 (201), new action | `domain/src/transcript_suggestion/review.rs:333`, `:553`, `:202` | Coach may always act. Sends MAIL-11 |
 | TRN-12 | POST /coaching_sessions/S1/transcript_suggestions/SG1/accept | COACHEE | 403 | `domain/src/transcript_suggestion/review.rs:206` | Coach-only suggestion |
 | TRN-13 | POST /coaching_sessions/S1/transcript_suggestions/SG2/accept | COACHEE | 200 (201), new action | `domain/src/transcript_suggestion/review.rs:206` | Edits that add or remove the coach: 403 |
@@ -427,13 +427,13 @@ How to read the tables:
 | TRN-15 | POST .../SG1/dismiss, .../SG1/restore | COACH | 204 | `domain/src/transcript_suggestion/review.rs:438`, `:553` | |
 | TRN-16 | POST .../SG1/dismiss, .../SG1/restore | COACHEE | 403 | `domain/src/transcript_suggestion/review.rs:206` | SG2: 204 |
 | TRN-17 | POST .../SG1/dismiss, .../SG1/restore | non-participants | 404 | `web/src/extractors/transcript_suggestion_access.rs:45`, `:55`, `:58` | SG1 under another session, or an unknown suggestion: 404 |
-| TRN-18 | GET /coaching_sessions/S1/meeting_recording | COACH, COACHEE | 200, latest recording or null | `web/src/extractors/coaching_session_access.rs:192` | |
-| TRN-19 | POST /coaching_sessions/S1/meeting_recording `{meeting_url}` | COACH, COACHEE | 200 (201), recording | `web/src/extractors/coaching_session_access.rs:192` | Either participant starts a bot; 409 if one is active |
-| TRN-20 | DELETE /coaching_sessions/S1/meeting_recording | COACH, COACHEE | 200 | `web/src/extractors/coaching_session_access.rs:192` | |
-| TRN-21 | GET, POST, DELETE /coaching_sessions/S1/meeting_recording | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
-| TRN-22 | GET, POST, DELETE /coaching_sessions/S3/meeting_recording | REMOVED | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
-| TRN-23 | POST /coaching_sessions/S1/images | COACH, COACHEE | 200 (201), image | `web/src/extractors/coaching_session_access.rs:192` | |
-| TRN-24 | POST /coaching_sessions/S1/images | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
+| TRN-18 | GET /coaching_sessions/S1/meeting_recording | COACH, COACHEE | 200, latest recording or null | `web/src/extractors/coaching_session_access.rs:193` | |
+| TRN-19 | POST /coaching_sessions/S1/meeting_recording `{meeting_url}` | COACH, COACHEE | 200 (201), recording | `web/src/extractors/coaching_session_access.rs:193` | Either participant starts a bot; 409 if one is active |
+| TRN-20 | DELETE /coaching_sessions/S1/meeting_recording | COACH, COACHEE | 200 | `web/src/extractors/coaching_session_access.rs:193` | |
+| TRN-21 | GET, POST, DELETE /coaching_sessions/S1/meeting_recording | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
+| TRN-22 | GET, POST, DELETE /coaching_sessions/S3/meeting_recording | REMOVED | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
+| TRN-23 | POST /coaching_sessions/S1/images | COACH, COACHEE | 200 (201), image | `web/src/extractors/coaching_session_access.rs:193` | |
+| TRN-24 | POST /coaching_sessions/S1/images | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
 | TRN-25 | GET /coaching_session_images/IMG1 | COACH, COACHEE | 302 to storage, or 200 bytes | `web/src/extractors/coaching_session_image_access.rs:55` | |
 | TRN-26 | DELETE, POST restore /coaching_session_images/IMG1 | COACH, COACHEE | 200, IMG1 | `web/src/extractors/coaching_session_image_access.rs:55` | Either participant, not only the uploader |
 | TRN-27 | GET, DELETE, POST restore /coaching_session_images/IMG1 | non-participants | 403 | `web/src/extractors/coaching_session_image_access.rs:55` | Unknown image: 404 |
@@ -444,10 +444,10 @@ How to read the tables:
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
-| MEET-01 | GET /coaching_sessions/SR1-x (not yet hydrated) | COACHEE | 200, session with provider and `meeting_url` from COACH's connection | `web/src/extractors/coaching_session_access.rs:192`; `domain/src/coaching_session.rs:268` | Hydration always uses the coach's account, whoever reads first; the link creator recorded is COACH (SCHED-09) |
+| MEET-01 | GET /coaching_sessions/SR1-x (not yet hydrated) | COACHEE | 200, session with provider and `meeting_url` from COACH's connection | `web/src/extractors/coaching_session_access.rs:193`; `domain/src/coaching_session.rs:268` | Hydration always uses the coach's account, whoever reads first; the link creator recorded is COACH (SCHED-09) |
 | MEET-02 | POST /coaching_sessions with `provider` | caller per SES-09 to SES-14 | as SES-09 to SES-14; a link is attached only on SES-09 | `domain/src/coaching_session.rs:116` | [tightened] Link comes from the coach's account or a reused relationship link (`:648`) |
-| MEET-03 | PUT /coaching_sessions/S1 `{meeting_url, provider}` | COACH | 200 (204) | `web/src/extractors/coaching_session_access.rs:97` | Coach only; COACHEE 403 (SES-16) |
-| MEET-04 | POST /coaching_sessions/S1/meeting_recording `{meeting_url}` | COACHEE | 200 (201) | `web/src/extractors/coaching_session_access.rs:192` | URL is caller supplied; not tied to an account |
+| MEET-03 | PUT /coaching_sessions/S1 `{meeting_url, provider}` | COACH | 200 (204) | `web/src/extractors/coaching_session_access.rs:98` | Coach only; COACHEE 403 (SES-16) |
+| MEET-04 | POST /coaching_sessions/S1/meeting_recording `{meeting_url}` | COACHEE | 200 (201) | `web/src/extractors/coaching_session_access.rs:193` | URL is caller supplied; not tied to an account |
 | MEET-05 | GET /oauth/connections, GET/DELETE /oauth/connections/{provider} | any authenticated caller | 200, caller's own connections | `web/src/router.rs:802`, `:804` (auth only) | Self scoped, no relationship data. Listed so MEET-01 has its prerequisite |
 | MEET-06 | GET /oauth/{provider}/authorize, GET /oauth/connections, GET/DELETE /oauth/connections/{provider} | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | The provider's callback takes no session |
 
@@ -475,9 +475,9 @@ relationship's org) via `entity_api/src/search/visibility.rs:18`; SuperAdmins sk
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
-| JWT-01 | GET /jwt/generate_collab_token?coaching_session_id=S1 | COACH, COACHEE | 200, token for S1's document | `web/src/extractors/coaching_session_access.rs:192` | |
-| JWT-02 | GET /jwt/generate_collab_token?coaching_session_id=S1 | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:192` | Unknown session: 404 |
-| JWT-03 | GET /jwt/generate_collab_token?coaching_session_id=S3 | REMOVED | 403 | `web/src/extractors/coaching_session_access.rs:192` | |
+| JWT-01 | GET /jwt/generate_collab_token?coaching_session_id=S1 | COACH, COACHEE | 200, token for S1's document | `web/src/extractors/coaching_session_access.rs:193` | |
+| JWT-02 | GET /jwt/generate_collab_token?coaching_session_id=S1 | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193` | Unknown session: 404 |
+| JWT-03 | GET /jwt/generate_collab_token?coaching_session_id=S3 | REMOVED | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
 | JWT-04 | GET /jwt/generate_collab_token?coaching_session_id=S1 | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 
 ### 4.12 Users (`USR`)

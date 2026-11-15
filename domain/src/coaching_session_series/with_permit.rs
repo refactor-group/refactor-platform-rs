@@ -1,5 +1,7 @@
-//! Series writes that require a [`SchedulingPermit`]: the only way to make them from outside
-//! this crate.
+//! Creating, rescheduling, cancelling and re-inviting recurring series. Each function takes the
+//! caller's [`SchedulingPermit`], so code outside this crate can't change a series without first
+//! proving the caller may. Each refuses (403) a permit for a different relationship than the
+//! series', then acts as the permit's user.
 
 use chrono::NaiveDateTime;
 use sea_orm::DatabaseConnection;
@@ -12,7 +14,8 @@ use crate::coaching_sessions;
 use crate::duration::Duration;
 use crate::error::Error;
 
-/// [`super::create_with_sessions`] in `permit`'s relationship.
+/// Creates a recurring series and all its sessions in `permit`'s relationship, and emails both
+/// participants the series invite.
 pub async fn create_with_sessions(
     db: &DatabaseConnection,
     config: &Config,
@@ -33,7 +36,8 @@ pub async fn create_with_sessions(
     .await
 }
 
-/// [`super::reschedule`] by `permit`; refused for a series of another relationship.
+/// Changes when the whole `series` recurs: replaces its future sessions with ones on the new
+/// schedule and emails both participants the updated invite.
 pub async fn reschedule(
     db: &DatabaseConnection,
     config: &Config,
@@ -56,7 +60,8 @@ pub async fn reschedule(
     .await
 }
 
-/// [`super::reschedule_following`] by `permit`; refused for a series of another relationship.
+/// Moves one session of `series` and every session after it ("this and following"), splitting
+/// the series when earlier sessions stay where they are, and emails both participants.
 pub async fn reschedule_following(
     db: &DatabaseConnection,
     config: &Config,
@@ -68,8 +73,8 @@ pub async fn reschedule_following(
     super::reschedule_following(db, config, series.id, permit.user_id(), request).await
 }
 
-/// [`super::delete_with_future_sessions`] by `permit`; refused for a series of another
-/// relationship.
+/// Cancels `series`: deletes it and its future sessions, keeps past ones, and emails both
+/// participants a cancellation.
 pub async fn delete_with_future_sessions(
     db: &DatabaseConnection,
     config: &Config,
@@ -80,7 +85,7 @@ pub async fn delete_with_future_sessions(
     super::delete_with_future_sessions(db, config, series.id).await
 }
 
-/// [`super::resend_invite`] by `permit`; refused for a series of another relationship.
+/// Re-sends `series`' calendar invite to both participants.
 pub async fn resend_invite(
     db: &DatabaseConnection,
     config: &Config,

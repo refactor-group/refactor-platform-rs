@@ -101,7 +101,8 @@ pub(crate) fn coachee_not_a_member(relationship: &Model) -> Error {
     )
 }
 
-/// `Ok` when `permit` is the proof for relationship `coaching_relationship_id`, else a 403.
+/// Refuses (403) a permit for a different relationship than the session or series being
+/// changed, so a permit for one relationship can't schedule in another.
 pub(crate) fn ensure_permits(
     permit: &SchedulingPermit,
     coaching_relationship_id: Id,

@@ -1,5 +1,7 @@
-//! Session writes that require a [`SchedulingPermit`]: the only way to make them from outside
-//! this crate.
+//! Creating, editing, cancelling and re-inviting single sessions. Each function takes the
+//! caller's [`SchedulingPermit`], so code outside this crate can't change a session's schedule
+//! without first proving the caller may. Each refuses (403) a permit for a different
+//! relationship than the session's, then acts as the permit's user.
 
 use entity_api::mutate;
 use sea_orm::DatabaseConnection;
@@ -12,7 +14,8 @@ use crate::duration::Duration;
 use crate::error::Error;
 use crate::events::EventPublisher;
 
-/// [`super::create`] by `permit`; refused for a session of another relationship.
+/// Schedules a new session in `permit`'s relationship and emails both participants an invite.
+/// The permit's user is recorded as who scheduled it.
 pub async fn create(
     db: &DatabaseConnection,
     config: &Config,
@@ -33,7 +36,8 @@ pub async fn create(
     .await
 }
 
-/// [`super::update`] by `permit`; refused for a session of another relationship.
+/// Edits `session`. Moving it or changing its length records the permit's user as who
+/// rescheduled it, and the participants are emailed once the change settles.
 pub async fn update(
     db: &DatabaseConnection,
     permit: &SchedulingPermit,
@@ -44,7 +48,8 @@ pub async fn update(
     super::update(db, session.id, permit.user_id(), params).await
 }
 
-/// [`super::delete`] by `permit`; refused for a session of another relationship.
+/// Cancels `session`: deletes it and, unless it's already past, emails both participants a
+/// cancellation.
 pub async fn delete(
     db: &DatabaseConnection,
     config: &Config,
@@ -55,7 +60,7 @@ pub async fn delete(
     super::delete(db, config, session.id).await
 }
 
-/// [`super::resend_invite`] by `permit`; refused for a session of another relationship.
+/// Re-sends `session`'s calendar invite to both participants.
 pub async fn resend_invite(
     db: &DatabaseConnection,
     config: &Config,
