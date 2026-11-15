@@ -13,8 +13,8 @@ process start rather than one interval later. Each tick:
 
 1. Selects sessions starting in `(now, now + lead]`, more than `lead` after the coachee
    was last told the time, whose coachee has no current claim. When the coachee was last
-   told is the later of their own row in `coaching_session_notices` and the session's
-   `notice_given_at` (kept until the phase 1c cleanup drops it).
+   told is their own row in `coaching_session_notices`; a coachee with no row counts as
+   never told, so the session is reminded.
 2. Claims them by upserting into `coaching_session_reminders`, keyed
    `(coaching_session_id, user_id)`, storing the session's `date` in `sent_for_start`.
 3. Emails the coachee for each claimed pair, then reports `processed N item(s)`.
@@ -132,8 +132,8 @@ After H1, move the session's `date` forward by 15 minutes (keeping it inside the
 ### H5. Notice already given suppresses the reminder
 
 Notice is how long before the session the coachee was last told its time: `date` minus the
-later of the coachee's notice row and the session's `notice_given_at`. Both are set at
-booking, restamped on every reschedule whose email reached the coachee, and on nothing else.
+coachee's notice row. It is set at booking, restamped on every reschedule whose email reached
+the coachee, and on nothing else.
 
 Create a session starting 20 minutes from now, with a 1 hour lead.
 
@@ -153,8 +153,8 @@ reminded about, because that email is a month stale by the time the session come
 Check the predicate without waiting on a tick:
 
 ```sql
-SELECT cs.date > (GREATEST(cs.notice_given_at, n.notice_given_at) AT TIME ZONE 'UTC')
-                 + INTERVAL '24 hours' AS would_remind
+SELECT n.notice_given_at IS NULL
+       OR cs.date > (n.notice_given_at AT TIME ZONE 'UTC') + INTERVAL '24 hours' AS would_remind
 FROM refactor_platform.coaching_sessions cs
 JOIN refactor_platform.coaching_relationships cr ON cr.id = cs.coaching_relationship_id
 LEFT JOIN refactor_platform.coaching_session_notices n
@@ -162,14 +162,14 @@ LEFT JOIN refactor_platform.coaching_session_notices n
 WHERE cs.id = '<session id>';
 ```
 
-(`GREATEST` ignores a null, so a session with no notice row falls back to the column.)
+(A session with no coachee row is reminded: missing notice errs toward a reminder.)
 
 ### H5a. Only a schedule change restamps the notice
 
 The one guarantee with no automated coverage at the database level, so worth doing by hand.
 
-Take a session booked well in advance and note its `notice_given_at` and both participants'
-notice rows (`coaching_session_notices`). Then, checking all three after each:
+Take a session booked well in advance and note both participants' notice rows
+(`coaching_session_notices`). Then, checking both after each:
 
 - **Edit the title** -> unchanged.
 - **Change the meeting URL** -> unchanged.
@@ -178,41 +178,38 @@ notice rows (`coaching_session_notices`). Then, checking all three after each:
 - **Move the start, or change the duration** -> restamped to now, but only once the
   reschedule email has actually gone out. Point the backend at the failing mock
   (`touch /tmp/resend_fail`) and move a session: the start changes, no email is sent, and
-  `notice_given_at` and both notice rows must be **unchanged**. Otherwise the coachee gets neither that email
-  nor the reminder it would have suppressed.
+  both notice rows must be **unchanged**. Otherwise the coachee gets neither that email nor
+  the reminder it would have suppressed.
 
 A restamp on any of the first three would silently eat the notice the coachee already had
 and suppress a reminder they are owed.
 
-### H5b. The migration backfills existing sessions
+### H5b. The 1c migration settles notice before dropping the column
 
-On a database that predates `notice_given_at`, apply the migration.
+On a database at `m20261114_000003_drop_notes` (before phase 1c), seed: a session with no
+notice rows, and one whose coachee row is a day older than its `coaching_sessions.notice_given_at`.
+Note each session's column value, then apply the migrations.
 
-- **Expect** every row has `notice_given_at = created_at` and none are null:
-
-```sql
-SELECT count(*) FILTER (WHERE notice_given_at = created_at) AS backfilled,
-       count(*) FILTER (WHERE notice_given_at IS NULL) AS nulls
-FROM refactor_platform.coaching_sessions;
-```
-
-Reschedules that happened before the migration are not recorded, so those sessions are
-treated as though their booking was the last word. That errs toward reminding rather than
-toward silence, which is the right direction to be wrong in.
+- **Expect** the first session has a row for each participant at its old column value.
+- **Expect** the second session's coachee row raised to its old column value, and its coach
+  row unchanged: the column followed the coachee, so the sweep's answer is the same after the
+  cutover.
+- **Expect** `coaching_sessions.notice_given_at` gone and `scheduled_by_user_id` NOT NULL.
+- `migrate down -n 2` -> the column is back, NOT NULL with default `now()`, each session's
+  value its coachee row's, or its `created_at` where it has none.
 
 ### H5c. Only the coachee's own notice counts
 
 The sweep reminds the coachee, so it measures the coachee's notice, not whoever was told
-last. Take a session 12 hours out with a 24 hour lead and both notice rows and the column
-stamped well in the past (set them with psql), so it would be reminded.
+last. Take a session 12 hours out with a 24 hour lead and both notice rows stamped well in
+the past (set them with psql), so it would be reminded.
 
 - Set **the coach's** notice row to now -> **still reminded**. The coach being told says
   nothing about the coachee.
-- Set **the coachee's** notice row to now, leaving the column old -> **not reminded**. This
-  is the row the sweep reads; the column alone would have reminded.
-- Delete the coachee's notice row, with the column old -> **reminded**; with the column set
-  to now -> **not reminded**. A session written between the 1a and 1b deploys has no rows,
-  and the column covers it until 1c.
+- Set **the coachee's** notice row to now -> **not reminded**. This is the row the sweep reads.
+- Delete the coachee's notice row -> **reminded**, even with the coach's row at now. A session
+  written outside the app (a repair script, a row deleted by hand) has no row, and a missing
+  notice errs toward a reminder rather than silence.
 
 Check each with the H5 query, or wait for a tick.
 
@@ -412,8 +409,8 @@ Run the migration's `down`.
 ## Automating this
 
 H1 through H5 and S2 through S5 are all reachable from SQL seeding plus log and capture
-assertions. H5 needs `notice_given_at` controlled rather than defaulted, so seed it
-explicitly instead of relying on insertion time, so they automate cleanly against the mock Resend. S1, S6, and S7 require a
+assertions. H5 needs the coachee's notice row controlled rather than stamped at insert, so
+seed it explicitly instead of relying on insertion time, so they automate cleanly against the mock Resend. S1, S6, and S7 require a
 process restart with different env, so they suit a shell-driven matrix rather than an
 in-process test. S8 and S9 need a database that has not had the migration applied. S11 cannot be driven from
 outside the process without the mock-side delay it describes.

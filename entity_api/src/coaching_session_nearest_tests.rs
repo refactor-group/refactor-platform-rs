@@ -17,7 +17,7 @@ fn viewer(user_id: Id) -> Visibility {
     }
 }
 
-const SESSION_COLUMNS: &str = r#""coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."notice_given_at", "coaching_sessions"."scheduled_by_user_id", "coaching_sessions"."meeting_url_created_by_user_id""#;
+const SESSION_COLUMNS: &str = r#""coaching_sessions"."id", "coaching_sessions"."coaching_relationship_id", "coaching_sessions"."coaching_session_series_id", "coaching_sessions"."ical_sequence", "coaching_sessions"."ical_recurrence_id", "coaching_sessions"."collab_document_name", "coaching_sessions"."date", "coaching_sessions"."duration_minutes", "coaching_sessions"."title", "coaching_sessions"."meeting_url", CAST("coaching_sessions"."provider" AS "text"), "coaching_sessions"."created_at", "coaching_sessions"."updated_at", "coaching_sessions"."hydrated_at", "coaching_sessions"."scheduled_by_user_id", "coaching_sessions"."meeting_url_created_by_user_id""#;
 
 fn around() -> NaiveDateTime {
     NaiveDate::from_ymd_opt(2026, 10, 30)
@@ -55,8 +55,7 @@ fn session(coaching_relationship_id: Id, day: u32) -> Model {
         created_at: now.into(),
         updated_at: now.into(),
         hydrated_at: None,
-        notice_given_at: now.into(),
-        scheduled_by_user_id: None,
+        scheduled_by_user_id: Id::nil(),
         meeting_url_created_by_user_id: None,
     }
 }

@@ -111,14 +111,14 @@ async fn user_row(db: &DatabaseConnection, id: Id) -> users::Model {
 }
 
 fn session_row(
-    relationship_id: Id,
+    relationship: &coaching_relationships::Model,
     series_id: Option<Id>,
     date: NaiveDateTime,
 ) -> coaching_sessions::ActiveModel {
     let now = Utc::now();
     coaching_sessions::ActiveModel {
         id: Set(Id::new_v4()),
-        coaching_relationship_id: Set(relationship_id),
+        coaching_relationship_id: Set(relationship.id),
         coaching_session_series_id: Set(series_id),
         ical_sequence: Set(0),
         ical_recurrence_id: Set(series_id.map(|_| date)),
@@ -131,8 +131,7 @@ fn session_row(
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         hydrated_at: Set(None),
-        notice_given_at: Set(now.into()),
-        scheduled_by_user_id: Set(None),
+        scheduled_by_user_id: Set(relationship.coach_id),
         meeting_url_created_by_user_id: Set(None),
     }
 }
@@ -154,7 +153,7 @@ async fn seed(db: &DatabaseConnection) -> Seeded {
     .insert(db)
     .await
     .expect("the relationship is seeded");
-    let session = session_row(relationship_id, None, next_week())
+    let session = session_row(&relationship, None, next_week())
         .insert(db)
         .await
         .expect("the session is seeded");
@@ -203,7 +202,7 @@ impl Seeded {
         for week in 0..2 {
             sessions.push(
                 session_row(
-                    self.relationship.id,
+                    &self.relationship,
                     Some(series.id),
                     start + TimeDelta::weeks(week),
                 )

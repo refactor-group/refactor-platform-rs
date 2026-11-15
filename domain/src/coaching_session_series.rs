@@ -783,7 +783,7 @@ pub async fn reschedule_following(
     )
     .await;
 
-    let moved = record_following_notice(db, &relationship, told, moved).await;
+    record_following_notice(db, &relationship, told, &moved).await;
 
     Ok(Rescheduled {
         series: target,
@@ -792,37 +792,25 @@ pub async fn reschedule_following(
     })
 }
 
-/// Records what a "this and following" email did for the moved sessions, returning them as
-/// the response carries them. Created sessions were stamped on insert. Each participant the
-/// email reached has their own notice restamped on the moved ones; the session's notice is
-/// stamped once it reached the coachee. A coachee no longer in the organization is owed
-/// nothing, so their pending reschedules settle unstamped.
+/// Records what a "this and following" email did for the `moved` sessions. Created sessions
+/// were stamped on insert. Each participant the email reached has their own notice restamped
+/// on the moved ones. The moves' pending reschedules settle once the coachee was told, or
+/// immediately when the coachee is no longer in the organization, since they are owed nothing.
 async fn record_following_notice(
     db: &DatabaseConnection,
     relationship: &coaching_relationships::Model,
     told: emails::Delivered,
-    moved: Vec<coaching_sessions::Model>,
-) -> Vec<coaching_sessions::Model> {
+    moved: &[coaching_sessions::Model],
+) {
     let moved_ids: Vec<Id> = moved.iter().map(|session| session.id).collect();
     coaching_session::record_delivered_notice(db, relationship, &told, &moved_ids).await;
-    match told.coachee {
-        emails::Delivery::Sent => {
-            stream::iter(moved)
-                .then(|session| async move {
-                    coaching_session::record_notice(db, &session)
-                        .await
-                        .unwrap_or(session)
-                })
-                .collect()
-                .await
-        }
-        emails::Delivery::NoLongerAMember => {
-            stream::iter(&moved)
-                .for_each(|session| coaching_session::record_announced(db, session))
-                .await;
-            moved
-        }
-        emails::Delivery::Failed => moved,
+    if matches!(
+        told.coachee,
+        emails::Delivery::Sent | emails::Delivery::NoLongerAMember
+    ) {
+        stream::iter(moved)
+            .for_each(|session| coaching_session::record_announced(db, session))
+            .await;
     }
 }
 
@@ -1123,8 +1111,7 @@ mod tests {
                     created_at: now.into(),
                     updated_at: now.into(),
                     hydrated_at: None,
-                    notice_given_at: now.into(),
-                    scheduled_by_user_id: None,
+                    scheduled_by_user_id: Id::nil(),
                     meeting_url_created_by_user_id: None,
                 }
             })
@@ -1246,11 +1233,9 @@ mod tests {
         )
         .append_query_results(vec![moved.clone()])
         .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
-        // the participants' notice stamp, then record_notice × 2
+        // the participants' notice stamp, then record_announced × 2
         .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
         .append_query_results(vec![vec![moved[0].clone()]])
-        .append_query_results(vec![vec![moved[0].clone()]])
-        .append_query_results(vec![vec![moved[1].clone()]])
         .append_query_results(vec![vec![moved[1].clone()]])
         .into_connection();
 
@@ -1355,8 +1340,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
-            notice_given_at: chrono::Utc::now().into(),
-            scheduled_by_user_id: None,
+            scheduled_by_user_id: Id::nil(),
             meeting_url_created_by_user_id: None,
         };
 
@@ -1500,8 +1484,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
-            notice_given_at: chrono::Utc::now().into(),
-            scheduled_by_user_id: None,
+            scheduled_by_user_id: Id::nil(),
             meeting_url_created_by_user_id: None,
         };
 
@@ -1646,8 +1629,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
-            notice_given_at: chrono::Utc::now().into(),
-            scheduled_by_user_id: None,
+            scheduled_by_user_id: Id::nil(),
             meeting_url_created_by_user_id: None,
         };
 
@@ -1733,8 +1715,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
-            notice_given_at: chrono::Utc::now().into(),
-            scheduled_by_user_id: None,
+            scheduled_by_user_id: Id::nil(),
             meeting_url_created_by_user_id: None,
         };
 
@@ -1820,8 +1801,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
-            notice_given_at: chrono::Utc::now().into(),
-            scheduled_by_user_id: None,
+            scheduled_by_user_id: Id::nil(),
             meeting_url_created_by_user_id: None,
         };
 
@@ -1913,8 +1893,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
-            notice_given_at: chrono::Utc::now().into(),
-            scheduled_by_user_id: None,
+            scheduled_by_user_id: Id::nil(),
             meeting_url_created_by_user_id: None,
         };
 
@@ -2005,8 +1984,7 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
             hydrated_at: None,
-            notice_given_at: chrono::Utc::now().into(),
-            scheduled_by_user_id: None,
+            scheduled_by_user_id: Id::nil(),
             meeting_url_created_by_user_id: None,
         };
 
@@ -2102,8 +2080,7 @@ mod tests {
                 created_at: now.into(),
                 updated_at: now.into(),
                 hydrated_at: None,
-                notice_given_at: now.into(),
-                scheduled_by_user_id: None,
+                scheduled_by_user_id: Id::nil(),
                 meeting_url_created_by_user_id: None,
             })
             .collect();
@@ -2458,7 +2435,7 @@ mod tests {
             coaching_session_series_id: Some(new_series.id),
             date: slot,
             ical_recurrence_id: Some(slot),
-            scheduled_by_user_id: Some(acting_user),
+            scheduled_by_user_id: acting_user,
             ..session.clone()
         };
         let week = |n| new_start + chrono::Duration::weeks(n);
@@ -2466,7 +2443,7 @@ mod tests {
             landed(&sessions[1], week(0)),
             coaching_sessions::Model {
                 date: own_date,
-                scheduled_by_user_id: None,
+                scheduled_by_user_id: Id::nil(),
                 ..landed(&sessions[2], week(1))
             },
         ];
@@ -2577,11 +2554,10 @@ mod tests {
         Ok(())
     }
 
-    /// Once the email reaches the coachee, each moved session is stamped as noticed, and
-    /// the response carries the stamped rows rather than the ones from before the stamp.
+    /// Once the email reaches the coachee, the response carries the moved sessions as
+    /// published.
     #[tokio::test]
-    async fn reschedule_following_returns_moved_sessions_as_stamped_once_told() -> Result<(), Error>
-    {
+    async fn reschedule_following_returns_the_moved_sessions_once_told() -> Result<(), Error> {
         let mut resend = mockito::Server::new_async().await;
         let sends = resend
             .mock("POST", "/emails")
@@ -2612,15 +2588,6 @@ mod tests {
                     ical_sequence: session.ical_sequence + 1,
                     ..session.clone()
                 }
-            })
-            .collect();
-        let stamped_at: chrono::DateTime<chrono::FixedOffset> =
-            (now + chrono::Duration::minutes(5)).into();
-        let stamped: Vec<_> = moved
-            .iter()
-            .map(|session| coaching_sessions::Model {
-                notice_given_at: stamped_at,
-                ..session.clone()
             })
             .collect();
         let (coach, coachee) = (coach_row("UTC"), coach_row("UTC"));
@@ -2674,13 +2641,11 @@ mod tests {
             .append_query_results(vec![vec![organization]])
             .append_query_results(vec![moved.clone()])
             .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
-            // the participants' notice stamp, then record_notice × 2: the locked re-read and
-            // its clear, then mark_notice_given
+            // the participants' notice stamp, then record_announced × 2: the locked re-read
+            // and its clear
             .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok()])
             .append_query_results(vec![vec![moved[0].clone()]])
-            .append_query_results(vec![vec![stamped[0].clone()]])
             .append_query_results(vec![vec![moved[1].clone()]])
-            .append_query_results(vec![vec![stamped[1].clone()]])
             .into_connection();
 
         let rescheduled = reschedule_following(
@@ -2702,7 +2667,7 @@ mod tests {
             rescheduled.series.id, series.id,
             "the first session replaces in place"
         );
-        assert_eq!(rescheduled.sessions, stamped);
+        assert_eq!(rescheduled.sessions, moved);
         // M5-04: the invite reuses the in-transaction membership check.
         let log = db.into_transaction_log();
         assert_eq!(membership_statements(&log), 1, "{log:?}");

@@ -153,11 +153,19 @@ INSERT INTO coaching_relationships (id, organization_id, coach_id, coachee_id, s
 
 -- Sessions: S1 (R1, titled), SB (R1, the bare titleless session), S2 (R2), SG (G1).
 -- S1's title has "harvest kumquat" in that order, so q="kumquat harvest" proves phrase order-sensitivity.
-INSERT INTO coaching_sessions (id, coaching_relationship_id, date, duration_minutes, title, created_at, updated_at) VALUES
-  ('0d000000-0000-4000-a000-000000000001', '0c000000-0000-4000-a000-000000000001', now()::timestamp, 60, 'Planning the harvest kumquat review', now(), now()),
-  ('0d000000-0000-4000-a000-000000000002', '0c000000-0000-4000-a000-000000000002', now()::timestamp, 60, 'Tamarind tasting session', now(), now()),
-  ('0d000000-0000-4000-a000-000000000003', '0c000000-0000-4000-a000-000000000003', now()::timestamp, 60, 'Yuzu strategy session', now(), now()),
-  ('0d000000-0000-4000-a000-000000000004', '0c000000-0000-4000-a000-000000000001', now()::timestamp, 60, NULL, now(), now());
+INSERT INTO coaching_sessions (id, coaching_relationship_id, date, duration_minutes, title, scheduled_by_user_id, created_at, updated_at) VALUES
+  ('0d000000-0000-4000-a000-000000000001', '0c000000-0000-4000-a000-000000000001', now()::timestamp, 60, 'Planning the harvest kumquat review', '0b000000-0000-4000-a000-000000000001', now(), now()),
+  ('0d000000-0000-4000-a000-000000000002', '0c000000-0000-4000-a000-000000000002', now()::timestamp, 60, 'Tamarind tasting session', '0b000000-0000-4000-a000-000000000003', now(), now()),
+  ('0d000000-0000-4000-a000-000000000003', '0c000000-0000-4000-a000-000000000003', now()::timestamp, 60, 'Yuzu strategy session', '0b000000-0000-4000-a000-000000000007', now(), now()),
+  ('0d000000-0000-4000-a000-000000000004', '0c000000-0000-4000-a000-000000000001', now()::timestamp, 60, NULL, '0b000000-0000-4000-a000-000000000001', now(), now());
+
+-- Each participant's notice, as the app stamps it at create (a session without one is reminded).
+INSERT INTO coaching_session_notices (coaching_session_id, user_id, notice_given_at)
+SELECT cs.id, participant.user_id, now()
+FROM coaching_sessions cs
+JOIN coaching_relationships cr ON cr.id = cs.coaching_relationship_id
+CROSS JOIN LATERAL (VALUES (cr.coach_id), (cr.coachee_id)) AS participant(user_id)
+WHERE cs.id::text LIKE '0d000000-%';
 
 -- Goals. R1's body contains the word "goal" (Scenario B's negation check).
 INSERT INTO goals (id, coaching_relationship_id, user_id, title, body, status, created_at, updated_at) VALUES
