@@ -130,7 +130,6 @@ pub async fn create_with_sessions(
     };
     let series = coaching_session_series::create(&txn, series_input).await?;
 
-    let inserted_at = chrono::Utc::now().into();
     let sessions = coaching_session::bulk_create_recurring(
         &txn,
         coaching_relationship_id,
@@ -141,7 +140,7 @@ pub async fn create_with_sessions(
         Some(resolved_duration),
     )
     .await?;
-    coaching_session::stamp_inserted_notice(&txn, &relationship, &sessions, inserted_at).await?;
+    coaching_session::stamp_inserted_notice(&txn, &relationship, &sessions).await?;
 
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
@@ -292,7 +291,6 @@ pub async fn reschedule(
 
     let updated_series = coaching_session_series::update_rule(&txn, series_id, new_rule).await?;
 
-    let inserted_at = chrono::Utc::now().into();
     let new_sessions = coaching_session::bulk_create_recurring(
         &txn,
         updated_series.coaching_relationship_id,
@@ -303,8 +301,7 @@ pub async fn reschedule(
         Some(resolved_duration),
     )
     .await?;
-    coaching_session::stamp_inserted_notice(&txn, &relationship, &new_sessions, inserted_at)
-        .await?;
+    coaching_session::stamp_inserted_notice(&txn, &relationship, &new_sessions).await?;
 
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
@@ -728,7 +725,6 @@ pub async fn reschedule_following(
         })
         .try_collect()
         .await?;
-    let inserted_at = chrono::Utc::now().into();
     let created = coaching_session::bulk_create_recurring(
         &txn,
         existing.coaching_relationship_id,
@@ -739,7 +735,7 @@ pub async fn reschedule_following(
         Some(plan.duration()),
     )
     .await?;
-    coaching_session::stamp_inserted_notice(&txn, &relationship, &created, inserted_at).await?;
+    coaching_session::stamp_inserted_notice(&txn, &relationship, &created).await?;
     entity_api::coaching_session::bulk_delete_by_ids(&txn, &leftover_ids).await?;
 
     let previous_overrides = plan.previous_overrides(&existing_rule);
@@ -787,7 +783,7 @@ pub async fn reschedule_following(
     )
     .await;
 
-    let moved = record_following_notice(db, &relationship, told, moved).await;
+    record_following_notice(db, &relationship, told, &moved).await;
 
     Ok(Rescheduled {
         series: target,
@@ -796,28 +792,26 @@ pub async fn reschedule_following(
     })
 }
 
-/// Records what a "this and following" email did for the moved sessions, returning them
-/// unchanged. Created sessions were stamped on insert. Each participant the email reached
-/// has their own notice restamped on the moved ones. The moves' pending reschedules settle
-/// once the coachee was told, or immediately when the coachee is no longer in the
-/// organization, since they are owed nothing.
+/// Records what a "this and following" email did for the `moved` sessions. Created sessions
+/// were stamped on insert. Each participant the email reached has their own notice restamped
+/// on the moved ones. The moves' pending reschedules settle once the coachee was told, or
+/// immediately when the coachee is no longer in the organization, since they are owed nothing.
 async fn record_following_notice(
     db: &DatabaseConnection,
     relationship: &coaching_relationships::Model,
     told: emails::Delivered,
-    moved: Vec<coaching_sessions::Model>,
-) -> Vec<coaching_sessions::Model> {
+    moved: &[coaching_sessions::Model],
+) {
     let moved_ids: Vec<Id> = moved.iter().map(|session| session.id).collect();
     coaching_session::record_delivered_notice(db, relationship, &told, &moved_ids).await;
     if matches!(
         told.coachee,
         emails::Delivery::Sent | emails::Delivery::NoLongerAMember
     ) {
-        stream::iter(&moved)
+        stream::iter(moved)
             .for_each(|session| coaching_session::record_announced(db, session))
             .await;
     }
-    moved
 }
 
 /// Delete the series row and its future sessions. Past sessions survive as

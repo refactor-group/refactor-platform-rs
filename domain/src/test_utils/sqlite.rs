@@ -121,6 +121,7 @@ const MIGRATION_DEFAULTS: &[(Option<&str>, &str, &str)] = &[
     (None, "id", "randomblob(16)"),
     (Some("coaching_session_series"), "ical_sequence", "0"),
     (Some("coaching_sessions"), "ical_sequence", "0"),
+    (Some("coaching_sessions"), "duration_minutes", "60"),
     (Some("coaching_session_topics"), "status", "'open'"),
     (Some("users"), "timezone", "'UTC'"),
     (
@@ -311,6 +312,16 @@ pub async fn seed_role(
     .insert(db)
     .await
     .expect("the role is seeded");
+}
+
+/// The coach of `relationship_id`.
+pub async fn coach_of(db: &DatabaseConnection, relationship_id: Id) -> Id {
+    coaching_relationships::Entity::find_by_id(relationship_id)
+        .one(db)
+        .await
+        .expect("the relationship reads")
+        .expect("the relationship exists")
+        .coach_id
 }
 
 /// The organization a session's relationship belongs to.

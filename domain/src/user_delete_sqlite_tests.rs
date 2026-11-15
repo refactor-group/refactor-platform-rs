@@ -9,7 +9,7 @@ use sea_orm::{
 use super::delete;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::test_utils::sqlite::{
-    database, seed_membership, seed_organization, seed_user, within_time_limit,
+    coach_of, database, seed_membership, seed_organization, seed_user, within_time_limit,
 };
 use crate::{
     coaching_relationships, coaching_sessions, goals, status, user_roles, users, Actor, Id,
@@ -84,7 +84,7 @@ async fn seed_session(db: &DatabaseConnection, coaching_relationship_id: Id) -> 
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         hydrated_at: Set(None),
-        scheduled_by_user_id: Set(Id::nil()),
+        scheduled_by_user_id: Set(coach_of(db, coaching_relationship_id).await),
         meeting_url_created_by_user_id: Set(None),
     }
     .insert(db)

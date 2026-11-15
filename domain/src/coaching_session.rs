@@ -23,7 +23,6 @@ use entity_api::{
     query::{IntoQueryFilterMap, QuerySort},
 };
 use log::*;
-use sea_orm::prelude::DateTimeWithTimeZone;
 use sea_orm::{ConnectionTrait, DatabaseConnection, IntoActiveModel, TransactionTrait};
 use service::config::Config;
 
@@ -107,7 +106,6 @@ pub async fn create(
     let coach_id = coaching_relationship.coach_id;
 
     coaching_session_model.date = SessionDate::new(coaching_session_model.date)?.into_inner();
-    coaching_session_model.scheduled_by_user_id = acting_user_id;
     // A link the request carries was set by hand; one attached below comes from the coach.
     coaching_session_model.meeting_url_created_by_user_id = coaching_session_model
         .meeting_url
@@ -133,17 +131,15 @@ pub async fn create(
     // deleting the Tiptap document we just created.
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
     let result: Result<(Model, Vec<DomainEvent>), Error> = async {
-        let now = Utc::now().into();
-        let session =
-            coaching_session::create(&txn, coaching_session_model, coach_id, requested_duration)
-                .await?;
-        stamp_inserted_notice(
+        let session = coaching_session::create(
             &txn,
-            &coaching_relationship,
-            std::slice::from_ref(&session),
-            now,
+            coaching_session_model,
+            coach_id,
+            acting_user_id,
+            requested_duration,
         )
         .await?;
+        stamp_inserted_notice(&txn, &coaching_relationship, std::slice::from_ref(&session)).await?;
 
         let ctx = CoachingSessionHydrationContext {
             txn: &txn,
@@ -213,15 +209,16 @@ pub async fn bulk_create_recurring(
     .await?)
 }
 
-/// Stamps both participants' notice on just-inserted `sessions`, all at `at`, the time taken
-/// for their insert.
+/// Stamps both participants' notice on just-inserted `sessions`, each at its own `created_at`.
 pub(crate) async fn stamp_inserted_notice(
     db: &impl ConnectionTrait,
     relationship: &coaching_relationships::Model,
     sessions: &[Model],
-    at: DateTimeWithTimeZone,
 ) -> Result<(), Error> {
-    let notices: Vec<_> = sessions.iter().map(|session| (session.id, at)).collect();
+    let notices: Vec<_> = sessions
+        .iter()
+        .map(|session| (session.id, session.created_at))
+        .collect();
     Ok(coaching_session_notice::stamp_many(
         db,
         &notices,

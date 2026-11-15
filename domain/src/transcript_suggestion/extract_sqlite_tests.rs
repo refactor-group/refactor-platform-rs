@@ -169,7 +169,7 @@ async fn fixture() -> Fixture {
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         hydrated_at: Set(None),
-        scheduled_by_user_id: Set(Id::nil()),
+        scheduled_by_user_id: Set(coach.id),
         meeting_url_created_by_user_id: Set(None),
     }
     .insert(&db)

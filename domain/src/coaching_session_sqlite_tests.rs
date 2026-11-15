@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{NaiveDate, Utc};
 use entity::meeting_provider::Provider;
-use entity::{coaching_relationships, coaching_sessions};
+use entity::{coaching_relationships, coaching_sessions, organizations};
 use mockito::{Matcher, Mock, Server, ServerGuard};
 use sea_orm::{ActiveModelTrait, ActiveValue::Unchanged, DatabaseConnection, EntityTrait, Set};
 
@@ -15,8 +15,8 @@ use crate::coaching_relationship::Membership;
 use crate::coaching_relationships::Visibility;
 use crate::test_utils::sqlite::fixture::set_google_meeting_url;
 use crate::test_utils::sqlite::{
-    database, mirror_migration_defaults, organization_of, seed_lapsed_membership, seed_membership,
-    seed_organization, seed_user, within_time_limit, LapsedMembership,
+    coach_of, database, mirror_migration_defaults, organization_of, seed_lapsed_membership,
+    seed_membership, seed_organization, seed_user, within_time_limit, LapsedMembership,
 };
 
 /// 2026-10-30 14:00 UTC, the window's center in every test.
@@ -90,7 +90,7 @@ async fn seed_session_with_id(
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         hydrated_at: Set(None),
-        scheduled_by_user_id: Set(Id::nil()),
+        scheduled_by_user_id: Set(coach_of(db, coaching_relationship_id).await),
         meeting_url_created_by_user_id: Set(None),
     }
     .insert(db)
@@ -669,16 +669,14 @@ async fn create_records_the_acting_user_as_scheduler() {
     .await;
 }
 
-/// Both participants' notice rows are stamped at one time taken for the insert.
+/// Both participants' notice rows are stamped at the session's `created_at`.
 #[tokio::test]
-async fn create_stamps_both_participants_notice_at_one_time() {
+async fn create_stamps_both_participants_notice_at_the_sessions_creation() {
     within_time_limit(async {
         let (db, rel) = scheduling_database().await;
         let (_server, _documents, config) = documents().await;
 
-        let earliest = Utc::now();
         let created = create_as(&db, &config, new_session(&rel, None), rel.coach_id).await;
-        let latest = Utc::now();
 
         let notices: BTreeMap<Id, _> =
             entity_api::coaching_session_notice::find_by_coaching_session(&db, created.id)
@@ -687,12 +685,65 @@ async fn create_stamps_both_participants_notice_at_one_time() {
                 .into_iter()
                 .map(|row| (row.user_id, row.notice_given_at))
                 .collect();
-        let at = notices[&rel.coach_id];
+        let at = created.created_at;
         assert_eq!(
             notices,
             BTreeMap::from([(rel.coach_id, at), (rel.coachee_id, at)])
         );
-        assert!((earliest..=latest).contains(&at.to_utc()));
+    })
+    .await;
+}
+
+/// Every seeded session holds a notice row for its coach and its coachee, so none is reminded.
+#[tokio::test]
+async fn seeded_sessions_notice_both_participants() {
+    within_time_limit(async {
+        let db = database().await;
+        mirror_migration_defaults(&db).await;
+        // The initial-admin migration creates this organization; the seed reuses it.
+        let now = Utc::now();
+        organizations::ActiveModel {
+            name: Set("Refactor Group".to_string()),
+            slug: Set("refactor-group".to_string()),
+            created_at: Set(now.into()),
+            updated_at: Set(now.into()),
+            ..Default::default()
+        }
+        .insert(&db)
+        .await
+        .expect("the organization is seeded");
+
+        entity_api::seed_database(&db).await;
+
+        let relationships: BTreeMap<Id, coaching_relationships::Model> =
+            coaching_relationships::Entity::find()
+                .all(&db)
+                .await
+                .expect("the relationships read")
+                .into_iter()
+                .map(|relationship| (relationship.id, relationship))
+                .collect();
+        let sessions = coaching_sessions::Entity::find()
+            .all(&db)
+            .await
+            .expect("the sessions read");
+        assert!(!sessions.is_empty());
+        for session in sessions {
+            let relationship = &relationships[&session.coaching_relationship_id];
+            let noticed: BTreeSet<Id> =
+                entity_api::coaching_session_notice::find_by_coaching_session(&db, session.id)
+                    .await
+                    .expect("the notices read")
+                    .into_iter()
+                    .map(|row| row.user_id)
+                    .collect();
+            assert_eq!(
+                noticed,
+                BTreeSet::from([relationship.coach_id, relationship.coachee_id]),
+                "session {}",
+                session.id
+            );
+        }
     })
     .await;
 }

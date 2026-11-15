@@ -121,11 +121,12 @@ pub fn normalize_title_in_update_map(update_map: &mut UpdateMap) {
 ///
 /// `requested_duration` resolves via the defaulting cascade (see
 /// `resolve_duration`). Any value already on `coaching_session_model.duration_minutes`
-/// is ignored — the resolved `Duration` wins.
+/// is ignored — the resolved `Duration` wins. `scheduled_by` is recorded as the scheduler.
 pub async fn create(
     db: &impl ConnectionTrait,
     coaching_session_model: Model,
     coach_id: Id,
+    scheduled_by: Id,
     requested_duration: Option<Duration>,
 ) -> Result<Model, Error> {
     debug!("New Coaching Session Model to be inserted: {coaching_session_model:?}");
@@ -146,7 +147,7 @@ pub async fn create(
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         hydrated_at: Set(coaching_session_model.hydrated_at),
-        scheduled_by_user_id: Set(coaching_session_model.scheduled_by_user_id),
+        scheduled_by_user_id: Set(scheduled_by),
         meeting_url_created_by_user_id: Set(coaching_session_model.meeting_url_created_by_user_id),
         ..Default::default()
     };

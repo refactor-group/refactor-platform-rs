@@ -1,4 +1,4 @@
-use chrono::{Days, Utc};
+use chrono::{DateTime, Days, Utc};
 use password_auth::generate_hash;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 
@@ -247,198 +247,110 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .unwrap();
 
     // jim@refactorgroup.com coaches james.hodapp@gmail.com (Refactor Group)
-    coaching_sessions::ActiveModel {
-        coaching_relationship_id: Set(jimrg_james_coaching_relationship.id.clone().unwrap()),
-        scheduled_by_user_id: Set(jimrg_james_coaching_relationship.coach_id.clone().unwrap()),
-        date: Set(now.naive_local()),
-        collab_document_name: Set(None),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
+    seed_session(
+        db,
+        &jimrg_james_coaching_relationship,
+        now.naive_local(),
+        now,
+    )
+    .await;
 
-    coaching_sessions::ActiveModel {
-        coaching_relationship_id: Set(jimrg_james_coaching_relationship.id.clone().unwrap()),
-        scheduled_by_user_id: Set(jimrg_james_coaching_relationship.coach_id.clone().unwrap()),
-        date: Set(now.naive_local().checked_sub_days(Days::new(7)).unwrap()),
-        collab_document_name: Set(None),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
+    seed_session(
+        db,
+        &jimrg_james_coaching_relationship,
+        now.naive_local().checked_sub_days(Days::new(7)).unwrap(),
+        now,
+    )
+    .await;
 
     // Caleb is coach
-    coaching_sessions::ActiveModel {
-        coaching_relationship_id: Set(caleb_jim_coaching_relationship.id.clone().unwrap()),
-        scheduled_by_user_id: Set(caleb_jim_coaching_relationship.coach_id.clone().unwrap()),
-        date: Set(now.naive_local()),
-        collab_document_name: Set(None),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
+    seed_session(db, &caleb_jim_coaching_relationship, now.naive_local(), now).await;
 
-    coaching_sessions::ActiveModel {
-        coaching_relationship_id: Set(caleb_jim_coaching_relationship.id.clone().unwrap()),
-        scheduled_by_user_id: Set(caleb_jim_coaching_relationship.coach_id.clone().unwrap()),
-        date: Set(now.naive_local()),
-        collab_document_name: Set(None),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
+    seed_session(db, &caleb_jim_coaching_relationship, now.naive_local(), now).await;
 
     // Caleb coaches Dinah
-    coaching_sessions::ActiveModel {
-        coaching_relationship_id: Set(caleb_dinah_coaching_relationship.id.clone().unwrap()),
-        scheduled_by_user_id: Set(caleb_dinah_coaching_relationship.coach_id.clone().unwrap()),
-        date: Set(now.naive_local()),
-        collab_document_name: Set(None),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
+    seed_session(
+        db,
+        &caleb_dinah_coaching_relationship,
+        now.naive_local(),
+        now,
+    )
+    .await;
 
-    coaching_sessions::ActiveModel {
-        coaching_relationship_id: Set(caleb_dinah_coaching_relationship.id.clone().unwrap()),
-        scheduled_by_user_id: Set(caleb_dinah_coaching_relationship.coach_id.clone().unwrap()),
-        date: Set(now.naive_local().checked_add_days(Days::new(7)).unwrap()),
-        collab_document_name: Set(None),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
+    seed_session(
+        db,
+        &caleb_dinah_coaching_relationship,
+        now.naive_local().checked_add_days(Days::new(7)).unwrap(),
+        now,
+    )
+    .await;
 
     // Jim is coach
-    coaching_sessions::ActiveModel {
-        coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
-        scheduled_by_user_id: Set(jim_caleb_coaching_relationship.coach_id.clone().unwrap()),
-        date: Set(now.naive_local()),
-        collab_document_name: Set(None),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
+    seed_session(db, &jim_caleb_coaching_relationship, now.naive_local(), now).await;
 
-    coaching_sessions::ActiveModel {
-        coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
-        scheduled_by_user_id: Set(jim_caleb_coaching_relationship.coach_id.clone().unwrap()),
-        date: Set(now.naive_local().checked_add_days(Days::new(7)).unwrap()),
-        collab_document_name: Set(None),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
+    seed_session(
+        db,
+        &jim_caleb_coaching_relationship,
+        now.naive_local().checked_add_days(Days::new(7)).unwrap(),
+        now,
+    )
+    .await;
 
-    coaching_sessions::ActiveModel {
-        coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
-        scheduled_by_user_id: Set(jim_caleb_coaching_relationship.coach_id.clone().unwrap()),
-        date: Set(now.naive_local().checked_add_days(Days::new(14)).unwrap()),
-        collab_document_name: Set(None),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
+    seed_session(
+        db,
+        &jim_caleb_coaching_relationship,
+        now.naive_local().checked_add_days(Days::new(14)).unwrap(),
+        now,
+    )
+    .await;
 
-    coaching_sessions::ActiveModel {
-        coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
-        scheduled_by_user_id: Set(jim_caleb_coaching_relationship.coach_id.clone().unwrap()),
-        date: Set(now.naive_local().checked_add_days(Days::new(21)).unwrap()),
-        collab_document_name: Set(None),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
+    seed_session(
+        db,
+        &jim_caleb_coaching_relationship,
+        now.naive_local().checked_add_days(Days::new(21)).unwrap(),
+        now,
+    )
+    .await;
 
-    coaching_sessions::ActiveModel {
-        coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
-        scheduled_by_user_id: Set(jim_caleb_coaching_relationship.coach_id.clone().unwrap()),
-        date: Set(now.naive_local().checked_sub_days(Days::new(7)).unwrap()),
-        collab_document_name: Set(None),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
+    seed_session(
+        db,
+        &jim_caleb_coaching_relationship,
+        now.naive_local().checked_sub_days(Days::new(7)).unwrap(),
+        now,
+    )
+    .await;
 
-    coaching_sessions::ActiveModel {
-        coaching_relationship_id: Set(jim_caleb_coaching_relationship.id.clone().unwrap()),
-        scheduled_by_user_id: Set(jim_caleb_coaching_relationship.coach_id.clone().unwrap()),
-        date: Set(now.naive_local().checked_sub_days(Days::new(14)).unwrap()),
-        collab_document_name: Set(None),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
+    seed_session(
+        db,
+        &jim_caleb_coaching_relationship,
+        now.naive_local().checked_sub_days(Days::new(14)).unwrap(),
+        now,
+    )
+    .await;
 
     // Jim coaches Other User (Acme): one past and one upcoming 1-off.
-    coaching_sessions::ActiveModel {
-        coaching_relationship_id: Set(jim_other_coaching_relationship.id.clone().unwrap()),
-        scheduled_by_user_id: Set(jim_other_coaching_relationship.coach_id.clone().unwrap()),
-        date: Set(now.naive_local().checked_sub_days(Days::new(3)).unwrap()),
-        collab_document_name: Set(None),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
+    seed_session(
+        db,
+        &jim_other_coaching_relationship,
+        now.naive_local().checked_sub_days(Days::new(3)).unwrap(),
+        now,
+    )
+    .await;
 
-    coaching_sessions::ActiveModel {
-        coaching_relationship_id: Set(jim_other_coaching_relationship.id.clone().unwrap()),
-        scheduled_by_user_id: Set(jim_other_coaching_relationship.coach_id.clone().unwrap()),
-        date: Set(now.naive_local().checked_add_days(Days::new(5)).unwrap()),
-        collab_document_name: Set(None),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    }
-    .save(db)
-    .await
-    .unwrap();
+    seed_session(
+        db,
+        &jim_other_coaching_relationship,
+        now.naive_local().checked_add_days(Days::new(5)).unwrap(),
+        now,
+    )
+    .await;
 
     // Recurring series (sessions linked via coaching_session_series_id).
     // Jim -> Caleb (Refactor Group): weekly for 4 weeks.
     seed_recurring_series(
         db,
-        jim_caleb_coaching_relationship.id.clone().unwrap(),
-        jim_hodapp.id.clone().unwrap(),
+        &jim_caleb_coaching_relationship,
+        now,
         now.naive_local().checked_add_days(Days::new(1)).unwrap(),
         "weekly",
         4,
@@ -448,8 +360,8 @@ pub async fn seed_database(db: &DatabaseConnection) {
     // Caleb -> Dinah (Acme): bi-weekly for 3 occurrences (~6 weeks).
     seed_recurring_series(
         db,
-        caleb_dinah_coaching_relationship.id.clone().unwrap(),
-        caleb_bourg.id.clone().unwrap(),
+        &caleb_dinah_coaching_relationship,
+        now,
         now.naive_local().checked_add_days(Days::new(2)).unwrap(),
         "biweekly",
         3,
@@ -459,8 +371,8 @@ pub async fn seed_database(db: &DatabaseConnection) {
     // jim@refactorgroup.com -> james.hodapp (Refactor Group): weekly for 4 weeks.
     seed_recurring_series(
         db,
-        jimrg_james_coaching_relationship.id.clone().unwrap(),
-        jim_refactor_group.id.clone().unwrap(),
+        &jimrg_james_coaching_relationship,
+        now,
         now.naive_local().checked_add_days(Days::new(3)).unwrap(),
         "weekly",
         4,
@@ -557,20 +469,55 @@ pub async fn seed_database(db: &DatabaseConnection) {
     .unwrap();
 }
 
+/// Seeds a session on `relationship` scheduled by its coach, with both participants noticed
+/// at `now` so the reminder sweep leaves it alone.
+async fn seed_session(
+    db: &DatabaseConnection,
+    relationship: &coaching_relationships::ActiveModel,
+    date: chrono::NaiveDateTime,
+    now: DateTime<Utc>,
+) {
+    let session = coaching_sessions::ActiveModel {
+        coaching_relationship_id: Set(relationship.id.clone().unwrap()),
+        scheduled_by_user_id: Set(relationship.coach_id.clone().unwrap()),
+        date: Set(date),
+        collab_document_name: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .insert(db)
+    .await
+    .unwrap();
+
+    coaching_session_notice::stamp(db, session.id, &participants(relationship), now.into())
+        .await
+        .unwrap();
+}
+
+/// The coach and coachee of a seeded `relationship`.
+fn participants(relationship: &coaching_relationships::ActiveModel) -> [Id; 2] {
+    [
+        relationship.coach_id.clone().unwrap(),
+        relationship.coachee_id.clone().unwrap(),
+    ]
+}
+
 /// Seed one recurring series: create the `coaching_session_series` row (with a
 /// rule matching what the API would persist), then materialize its
 /// weekly/bi-weekly sessions via the entity_api helper so each links back to the
 /// series. `frequency` is "weekly" or "biweekly"; duration follows the coach's
-/// default so the rule and the materialized rows agree.
+/// default so the rule and the materialized rows agree. Both participants are noticed at `now`.
 async fn seed_recurring_series(
     db: &DatabaseConnection,
-    relationship_id: Id,
-    coach_id: Id,
+    relationship: &coaching_relationships::ActiveModel,
+    now: DateTime<Utc>,
     start: chrono::NaiveDateTime,
     frequency: &str,
     count: u32,
 ) {
-    let now = Utc::now();
+    let relationship_id = relationship.id.clone().unwrap();
+    let coach_id = relationship.coach_id.clone().unwrap();
     let duration = coaching_session::resolve_duration(db, coach_id, None)
         .await
         .unwrap();
@@ -605,7 +552,7 @@ async fn seed_recurring_series(
         })
         .collect();
 
-    coaching_session::bulk_create_recurring(
+    let sessions = coaching_session::bulk_create_recurring(
         db,
         relationship_id,
         coach_id,
@@ -616,6 +563,14 @@ async fn seed_recurring_series(
     )
     .await
     .unwrap();
+
+    let notices: Vec<_> = sessions
+        .iter()
+        .map(|session| (session.id, now.into()))
+        .collect();
+    coaching_session_notice::stamp_many(db, &notices, &participants(relationship))
+        .await
+        .unwrap();
 }
 
 #[cfg(test)]

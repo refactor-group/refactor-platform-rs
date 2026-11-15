@@ -19,7 +19,9 @@ use sea_orm::{
 
 use super::*;
 use crate::events::{DomainEvent, EventHandler};
-use crate::test_utils::sqlite::{database, seed_membership, seed_organization, within_time_limit};
+use crate::test_utils::sqlite::{
+    coach_of, database, seed_membership, seed_organization, within_time_limit,
+};
 use crate::transcript_attribution::Attribution;
 use crate::transcript_participant::MatchSource;
 use crate::transcription::persist_completion;
@@ -125,7 +127,7 @@ async fn seed_session(
         created_at: Set(at.into()),
         updated_at: Set(at.into()),
         hydrated_at: Set(None),
-        scheduled_by_user_id: Set(Id::nil()),
+        scheduled_by_user_id: Set(coach_of(db, relationship_id).await),
         meeting_url_created_by_user_id: Set(None),
     }
     .insert(db)

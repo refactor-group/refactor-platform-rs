@@ -29,7 +29,9 @@ use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, Qu
 use crate::action::ActionWithAssignees;
 use crate::transcript_suggestion::ActionProposal;
 
-use super::{seed_action, seed_agreement, seed_organization, seed_role, seed_topic, seed_user_as};
+use super::{
+    coach_of, seed_action, seed_agreement, seed_organization, seed_role, seed_topic, seed_user_as,
+};
 
 /// The password every fixture person logs in with.
 pub const PASSWORD: &str = "kumquat-password";
@@ -478,7 +480,7 @@ async fn seed_session(
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         hydrated_at: Set(Some(now.into())),
-        scheduled_by_user_id: Set(Id::nil()),
+        scheduled_by_user_id: Set(coach_of(db, relationship_id).await),
         meeting_url_created_by_user_id: Set(None),
     }
     .insert(db)

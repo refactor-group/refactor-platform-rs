@@ -93,7 +93,7 @@ async fn seed_series_session_with_id(
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         hydrated_at: Set(Some(now.into())),
-        scheduled_by_user_id: Set(Id::nil()),
+        scheduled_by_user_id: Set(seeded.user_id),
         meeting_url_created_by_user_id: Set(None),
     }
     .insert(db)
@@ -399,15 +399,14 @@ async fn a_following_reschedule_skipping_the_coachee_settles_without_stamping_no
         let before = all_notices(&db, &moved).await;
 
         let relationship = relationship_of(&db, &moved[0]).await;
-        let returned = record_following_notice(
+        record_following_notice(
             &db,
             &relationship,
             told_both(emails::Delivery::NoLongerAMember),
-            moved.clone(),
+            &moved,
         )
         .await;
 
-        assert_eq!(returned, moved);
         for session in &moved {
             assert!(!pending(&db, session.id).await, "the move settles");
         }
@@ -429,15 +428,14 @@ async fn a_following_reschedule_that_told_the_coachee_settles_and_stamps_notice(
         let before = all_notices(&db, &moved).await;
 
         let relationship = relationship_of(&db, &moved[0]).await;
-        let returned = record_following_notice(
+        record_following_notice(
             &db,
             &relationship,
             told_both(emails::Delivery::Sent),
-            moved.clone(),
+            &moved,
         )
         .await;
 
-        assert_eq!(returned, moved);
         let after = all_notices(&db, &moved).await;
         for ((session, before), after) in moved.iter().zip(&before).zip(&after) {
             assert!(!pending(&db, session.id).await, "the move settles");
@@ -462,7 +460,7 @@ async fn a_following_reschedule_that_failed_records_nothing() {
             &db,
             &relationship,
             told_both(emails::Delivery::Failed),
-            moved.clone(),
+            &moved,
         )
         .await;
 
@@ -680,10 +678,10 @@ async fn all_notices(
         .await
 }
 
-/// Every created session holds a notice row for the coach and the coachee, all at one time
-/// taken for the insert.
+/// Every created session holds a notice row for the coach and the coachee, at its own
+/// `created_at`.
 #[tokio::test]
-async fn a_created_series_stamps_both_participants_notice_at_one_time() {
+async fn a_created_series_stamps_both_participants_notice_at_each_sessions_creation() {
     within_time_limit(async {
         let db = database().await;
         let (relationship_id, coach_id) = scheduling_relationship(&db).await;
@@ -703,8 +701,8 @@ async fn a_created_series_stamps_both_participants_notice_at_one_time() {
         let coachee_id = relationship_of(&db, &sessions[0]).await.coachee_id;
         assert_eq!(sessions.len(), 3);
         let stamped = all_notices(&db, &sessions).await;
-        let at = stamped[0][&coach_id];
-        for notices in stamped {
+        for (session, notices) in sessions.iter().zip(stamped) {
+            let at = reread(&db, session.id).await.created_at;
             assert_eq!(notices, BTreeMap::from([(coach_id, at), (coachee_id, at)]));
         }
     })
@@ -745,7 +743,7 @@ async fn a_following_reschedule_restamps_only_the_participants_it_reached() {
                 &db,
                 &relationship,
                 emails::Delivered { coachee, coach },
-                moved.clone(),
+                &moved,
             )
             .await;
 
