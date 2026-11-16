@@ -270,6 +270,20 @@ the 409's consequences before re-sending with `confirmed: true`) is posted at th
     participant by role.
   - Already neutral: added to organization (`inviter_*`), action assigned (`assigner_*`),
     password reset.
+  - Template checklist for the owner, once 4-5 deploys (the backend sends old and new names
+    side by side; the old ones are dropped one release later):
+    - Welcome (`WELCOME_EMAIL_TEMPLATE_ID`): replace `coach_first_name` with
+      `inviter_first_name` and `coach_full_name` with `inviter_full_name`. Check the copy no
+      longer calls the inviter a coach: an admin or a colleague may send it.
+    - Session reminder (`SESSION_REMINDER_EMAIL_TEMPLATE_ID`): replace `coach_first_name` with
+      `other_user_first_name` and `coach_full_name` with `other_user_first_name`
+      `other_user_last_name`. Use `other_user_role` (`coach`, `coachee` or `colleague`) wherever
+      the copy says "your coach", and check "your colleague" reads naturally.
+    - Session and series scheduled, rescheduled and cancelled (the six `SESSION_*` and
+      `RECURRING_SESSIONS_*` templates): no variable changes; check each sentence using
+      `other_user_role` reads naturally as "your colleague".
+    - `.ics` DESCRIPTION: no template. A colleague invite reads `Colleagues: {A} and {B}`; a
+      coaching one is unchanged (`Coach: {name}`).
   - Frontend copy, in the phase 4 frontend PRs: every label picked for a coaching relationship
     (the member card's "Assign Coach" / "Assign Coachee" menu and dialog, the "Coachee Actions"
     header, "Coach (optional)" when adding a member, the coachee-oriented dashboard empty state)

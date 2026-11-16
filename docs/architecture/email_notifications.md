@@ -111,13 +111,39 @@ scheduled send, and the copy is written from the coachee's side. It carries no `
 the calendar event was delivered when the session was scheduled, and re-sending the same
 `UID`/`SEQUENCE` pair either does nothing or duplicates the event.
 
-Template variables: `first_name`, `coach_first_name`, `coach_full_name`,
-`organization_name`, `session_date`, `session_time`, `session_when`, `session_duration`,
-`session_url`, plus `session_title` and `meeting_url` when the session has them (omitted
-rather than blanked, so the template's `fallback_value` fires).
+Template variables: `first_name`, `other_user_first_name`, `other_user_last_name`,
+`other_user_role` (the other participant and what they are to the recipient: `coach` in a
+coachee's reminder, `colleague` in a colleague's), `organization_name`, `session_date`,
+`session_time`, `session_when`, `session_duration`, `session_url`, plus `session_title` and
+`meeting_url` when the session has them (omitted rather than blanked, so the template's
+`fallback_value` fires). The template should use the `other_user_*` names; see
+[Renamed template variables](#renamed-template-variables) for the old `coach_*` ones.
 
 Leaving `SESSION_REMINDER_EMAIL_TEMPLATE_ID` unset disables the job — nothing is
 scheduled, rather than a job that logs a config error every few minutes.
+
+## Renamed template variables
+
+Resend templates live outside this repository, so a variable is renamed in three releases:
+the backend sends the new name beside the old one, the template switches to the new name,
+and a later release stops sending the old one. These old names are still sent, with the
+same values, for one release:
+
+| Template | Old variable, still sent | Use instead |
+|---|---|---|
+| Welcome | `coach_first_name` | `inviter_first_name` |
+| Welcome | `coach_full_name` | `inviter_full_name` |
+| Session Reminder | `coach_first_name` | `other_user_first_name` |
+| Session Reminder | `coach_full_name` | `other_user_first_name` and `other_user_last_name`, with `other_user_role` for the role word |
+
+Both welcome variables name whoever sent the invite, who may be an admin or a colleague
+rather than a coach. The session, series and reminder templates name the other participant
+by `other_user_role`, which is `colleague` in a colleague relationship.
+
+The `.ics` DESCRIPTION has no template. One invite goes to both participants, so it names
+the pair rather than "the other person": `Coach: {name}` for coaching, and
+`Colleagues: {name} and {name}` when both seats hold the same role
+(`Participants::description_line` in `domain/src/emails.rs`).
 
 ## Settled Reschedules
 

@@ -289,7 +289,7 @@ async fn send_welcome_email(
         .map(|b| b.build(TOKEN_PLACEHOLDER, magic_link_token))
         .unwrap_or_default();
 
-    let coach_full_name = format!("{} {}", inviter.first_name, inviter.last_name);
+    let inviter_full_name = format!("{} {}", inviter.first_name, inviter.last_name);
 
     debug!("Preparing template variables for {}", user.email);
 
@@ -303,7 +303,9 @@ async fn send_welcome_email(
         .add_variable("first_name", user.first_name.as_str())
         .add_variable("last_name", user.last_name.as_str())
         .add_variable("coach_first_name", inviter.first_name.as_str())
-        .add_variable("coach_full_name", coach_full_name.as_str())
+        .add_variable("coach_full_name", inviter_full_name.as_str())
+        .add_variable("inviter_first_name", inviter.first_name.as_str())
+        .add_variable("inviter_full_name", inviter_full_name.as_str())
         .add_variable("magic_link_url", magic_link_url.as_str())
         .build()
         .await?;
@@ -922,6 +924,17 @@ impl<'a> Participants<'a> {
         [self.coach.id, self.coachee.id]
     }
 
+    /// The `.ics` DESCRIPTION line naming the pair, which both participants read: the coach
+    /// seat's role and name when the seats differ, else both names under their shared role.
+    fn description_line(&self) -> String {
+        let label = capitalized(self.kind.rules().role(Seat::CoachId).as_str());
+        let coach = self.coach.preferred_name();
+        match self.kind.seats_differ() {
+            true => format!("{label}: {coach}"),
+            false => format!("{label}s: {coach} and {}", self.coachee.preferred_name()),
+        }
+    }
+
     /// Each participant's copy, coachee first, labelled with their role.
     fn copies(&self) -> [(coaching_relationship_kind::Role, Recipient<'a>); 2] {
         let rules = self.kind.rules();
@@ -946,6 +959,15 @@ impl<'a> Participants<'a> {
             ),
         ]
     }
+}
+
+/// `word` with its first letter in upper case.
+fn capitalized(word: &str) -> String {
+    let mut chars = word.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 /// Sends each of `copies` (coachee, then coach), skipping anyone not in `member_ids`. A failed
@@ -1057,7 +1079,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     let description = ical::compose_description(&DescriptionParts {
         session_url: email_config.build_session_url(&session.id)?,
         title: session.title.as_deref(),
-        coach_name: &coach.preferred_name(),
+        participants: &participants.description_line(),
         organization_name: &organization.name,
         topics: &topics,
         goal_titles: &goal_titles,
@@ -1379,7 +1401,7 @@ pub enum ReminderOutcome {
 ///
 /// Only a participant whose seat the relationship's rules remind gets one; for coaching
 /// that is the coachee, since the coach already holds the invite from the scheduled send.
-/// The `coach_*` variables name the other participant.
+/// The `coach_*` and `other_user_*` variables name the other participant.
 ///
 /// No `.ics` rides along: the calendar event was delivered when the session was
 /// scheduled, and re-sending the same `UID`/`SEQUENCE` pair is a no-op for a calendar
@@ -1408,14 +1430,20 @@ pub async fn send_session_reminder(
     let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
     let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
     let organization = organization::find_by_id(db, relationship.organization_id).await?;
-    let (recipient, other) = match seat {
-        Seat::CoachId => (&coach, &coachee),
-        Seat::CoacheeId => (&coachee, &coach),
+    let [coachee_copy, coach_copy] = Participants {
+        coach: &coach,
+        coachee: &coachee,
+        kind: relationship.kind,
+    }
+    .copies();
+    let (_, to) = match seat {
+        Seat::CoachId => coach_copy,
+        Seat::CoacheeId => coachee_copy,
     };
 
     info!(
         "Initiating session reminder email for session {} (recipient: {})",
-        session.id, recipient.id
+        session.id, to.user.id
     );
 
     let email_config = ResolvedEmailConfig::new::<SessionReminder>(config).await?;
@@ -1428,11 +1456,11 @@ pub async fn send_session_reminder(
     // accepting the request, is inherent rather than unfinished: no transaction spans an
     // outbound call, and holding a lock across one would trade a rare stale email for
     // pool exhaustion.
-    if !recipient_still_notified(db, &relationship, recipient.id).await? {
+    if !recipient_still_notified(db, &relationship, to.user.id).await? {
         return Ok(ReminderOutcome::RecipientNoLongerAMember);
     }
 
-    send_session_reminder_email(&email_config, recipient, other, session, &organization).await?;
+    send_session_reminder_email(&email_config, &to, session, &organization).await?;
 
     Ok(ReminderOutcome::Sent)
 }
@@ -1452,14 +1480,18 @@ async fn recipient_still_notified(
         .contains(&recipient_id))
 }
 
-/// Build and send the reminder to `recipient`, naming `other`, the session's other participant.
+/// Build and send the reminder to `to.user`, naming the session's other participant.
 async fn send_session_reminder_email(
     email_config: &ResolvedEmailConfig,
-    recipient: &users::Model,
-    other: &users::Model,
+    to: &Recipient<'_>,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
 ) -> Result<(), Error> {
+    let Recipient {
+        user: recipient,
+        other_user: other,
+        other_user_role,
+    } = *to;
     let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
     let session_duration =
         crate::duration::Duration::from_minutes_unchecked(session.duration_minutes).to_string();
@@ -1475,6 +1507,9 @@ async fn send_session_reminder_email(
         .add_variable("first_name", recipient.first_name.as_str())
         .add_variable("coach_first_name", other.first_name.as_str())
         .add_variable("coach_full_name", other_full_name.as_str())
+        .add_variable("other_user_first_name", other.first_name.as_str())
+        .add_variable("other_user_last_name", other.last_name.as_str())
+        .add_variable("other_user_role", other_user_role.as_str())
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_date", session_date.as_str())
         .add_variable("session_time", session_time.as_str())
@@ -2033,7 +2068,7 @@ async fn send_series_invite_email<N: EmailNotification>(
     let description = ical::compose_description(&DescriptionParts {
         session_url: email_config.build_session_url(&first.id)?,
         title: None,
-        coach_name: &coach.preferred_name(),
+        participants: &participants.description_line(),
         organization_name: &organization.name,
         topics: &[],
         goal_titles: &first_goal_titles,

@@ -725,6 +725,10 @@ SELECT typowner::regrole FROM pg_type WHERE typname = 'coaching_relationship_kin
 | MAIL-13 | Added to organization: ORG-03 | The attached user | `domain/src/emails.rs:319` | |
 | MAIL-14 | Password reset: `POST /password-reset/request` | The account owner | `domain/src/password_reset.rs:236`; not relationship-related | |
 | MAIL-15 | Session reminder to a colleague (JOB-06) | Each colleague still an org member, once per start; `coach_first_name` and `coach_full_name` name the other colleague | `domain/src/emails.rs:1370`, `:1386` | Automated: the sweep with mock Resend; check recipients by hand. |
+| MAIL-16 | Welcome to a colleague invitee: KIND-15 with a mock Resend | The new user; `inviter_first_name` / `inviter_full_name` name whoever sent the invite, and `coach_first_name` / `coach_full_name` still carry the same values | `domain/src/emails.rs:307` | Old `coach_*` names kept for one release |
+| MAIL-17 | Session reminder naming the other participant (JOB-01, JOB-06) | Each colleague's reminder carries `other_user_first_name`, `other_user_last_name` and `other_user_role` `colleague` naming the other colleague; a coachee's carries `other_user_role` `coach`; `coach_first_name` / `coach_full_name` still name the same person | `domain/src/emails.rs:1409`, `:1512` | Old `coach_*` names kept for one release |
+| MAIL-18 | Colleague session scheduled, rescheduled and cancelled, single and series (MAIL-01 to MAIL-03, MAIL-05 to MAIL-08 on RC) | Each colleague's email carries `other_user_role` `colleague` naming the other colleague | `domain/src/emails.rs:939` (`Participants::copies`) | No code change: the role comes from the relationship's rules |
+| MAIL-19 | `.ics` DESCRIPTION of any invite: MAIL-01, MAIL-02, MAIL-04 to MAIL-07, MAIL-09 | Coaching: `Coach: {coach name}`, unchanged. Colleagues (RC): `Colleagues: {coach-seat name} and {coachee-seat name}`, no `Coach:` line | `domain/src/emails.rs:929` (`Participants::description_line`); `domain/src/gateway/ical.rs:331` | Both participants receive the same `.ics` |
 
 ## 6. Automated checks
 
@@ -1110,3 +1114,7 @@ a frozen `domain` test, or by hand with the reason.
 | KIND-24 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::scheduling_is_blocked_by_the_participant_who_left`; `domain/src/coaching_relationship.rs::tests::scheduling_blocked_by_names_whom_the_scheduling_conflict_names` |
 | KIND-25 | `web/src/controller/user/coaching_relationships_controller_sqlite_tests.rs::a_coachee_is_told_what_they_may_do_in_each_listed_relationship` |
 | KIND-26 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_created_relationship_names_no_viewer_for_the_admin` |
+| MAIL-16 | `domain/src/emails_tests.rs::test_send_welcome_email_success`, `domain/src/emails_tests.rs::test_send_welcome_email_escapes_name_with_specials` |
+| MAIL-17 | `domain/src/jobs/session_reminder_tests.rs::each_colleagues_reminder_names_the_other_a_colleague`, `domain/src/jobs/session_reminder_tests.rs::a_coachees_reminder_names_their_coach`; `domain/src/emails_tests.rs::test_send_session_reminder_email_variables` |
+| MAIL-18 | `domain/src/emails_tests.rs::each_colleagues_scheduled_email_names_the_other_a_colleague`, `domain/src/emails_tests.rs::each_colleagues_rescheduled_email_names_the_other_a_colleague`, `domain/src/emails_tests.rs::each_colleagues_cancelled_email_names_the_other_a_colleague`; series sends share `Participants::copies` |
+| MAIL-19 | `domain/src/emails_tests.rs::a_coaching_description_names_the_coach_as_before`, `domain/src/emails_tests.rs::a_colleague_description_names_both_colleagues_and_no_coach`, `domain/src/emails_tests.rs::each_colleagues_scheduled_email_names_the_other_a_colleague` |

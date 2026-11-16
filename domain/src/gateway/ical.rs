@@ -82,7 +82,8 @@ pub struct OpenAction {
 pub struct DescriptionParts<'a> {
     pub session_url: String,
     pub title: Option<&'a str>,
-    pub coach_name: &'a str,
+    /// The line naming who the session is between, such as `Coach: Jim Hodapp`.
+    pub participants: &'a str,
     pub organization_name: &'a str,
     pub topics: &'a [String],
     pub goal_titles: &'a [String],
@@ -335,8 +336,8 @@ pub fn compose_description(parts: &DescriptionParts) -> String {
     }
 
     sections.push(format!(
-        "Coach: {}\nOrganization: {}",
-        parts.coach_name, parts.organization_name
+        "{}\nOrganization: {}",
+        parts.participants, parts.organization_name
     ));
 
     sections.push(format!("Join this session: {}", parts.session_url));

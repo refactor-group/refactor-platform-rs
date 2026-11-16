@@ -683,3 +683,97 @@ async fn a_coach_is_not_reminded_of_a_coaching_session() {
     to_coach.assert_async().await;
     to_coachee.assert_async().await;
 }
+
+/// A Resend mock expecting one reminder to `recipient` that names `other` as `role`, under
+/// both the `other_user_*` names and the old `coach_*` ones.
+async fn reminder_naming(
+    server: &mut mockito::ServerGuard,
+    recipient: &users::Model,
+    other: &users::Model,
+    role: &str,
+) -> mockito::Mock {
+    server
+        .mock("POST", "/emails")
+        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            "to": [format!("\"{} Smith\" <{}>", recipient.first_name, recipient.email)],
+            "template": { "variables": {
+                "coach_first_name": other.first_name,
+                "coach_full_name": format!("{} Smith", other.first_name),
+                "other_user_first_name": other.first_name,
+                "other_user_last_name": "Smith",
+                "other_user_role": role,
+            }},
+        })))
+        .with_status(200)
+        .with_body(r#"{"id":"sent"}"#)
+        .expect(1)
+        .create_async()
+        .await
+}
+
+/// Sends `recipient_id` the reminder for a session of `rel`.
+async fn remind(
+    server: &mockito::ServerGuard,
+    rel: &coaching_relationships::Model,
+    (coach, coachee): (&users::Model, &users::Model),
+    recipient_id: Id,
+) -> emails::ReminderOutcome {
+    let db = send_path(
+        MockDatabase::new(DatabaseBackend::Postgres),
+        rel,
+        coach,
+        coachee,
+    )
+    .into_connection();
+    let start = chrono::Utc::now().naive_utc() + chrono::Duration::hours(2);
+    emails::send_session_reminder(
+        &db,
+        &config_for(&server.url()),
+        &session(Id::new_v4(), rel.id, start),
+        recipient_id,
+    )
+    .await
+    .expect("the reminder sends")
+}
+
+/// MAIL-15: each colleague's reminder names the other as a colleague, and still carries the
+/// old `coach_*` names with the same person in them.
+#[tokio::test]
+async fn each_colleagues_reminder_names_the_other_a_colleague() {
+    let mut server = mockito::Server::new_async().await;
+    let (ann_id, bea_id) = (Id::new_v4(), Id::new_v4());
+    let ann = named(ann_id, "Ann", "ann@example.com");
+    let bea = named(bea_id, "Bea", "bea@example.com");
+    let to_ann = reminder_naming(&mut server, &ann, &bea, "colleague").await;
+    let to_bea = reminder_naming(&mut server, &bea, &ann, "colleague").await;
+    let rel = coaching_relationships::Model {
+        kind: crate::coaching_relationship_kind::Kind::Colleague,
+        ..relationship(Id::new_v4(), ann_id, bea_id)
+    };
+
+    for recipient_id in [ann_id, bea_id] {
+        assert_eq!(
+            remind(&server, &rel, (&ann, &bea), recipient_id).await,
+            emails::ReminderOutcome::Sent
+        );
+    }
+    to_ann.assert_async().await;
+    to_bea.assert_async().await;
+}
+
+/// MAIL-10: a coachee's reminder names their coach as `coach`.
+#[tokio::test]
+async fn a_coachees_reminder_names_their_coach() {
+    let mut server = mockito::Server::new_async().await;
+    let (coach_id, coachee_id) = (Id::new_v4(), Id::new_v4());
+    let coach = named(coach_id, "Cal", "cal@example.com");
+    let coachee = named(coachee_id, "Dee", "dee@example.com");
+    let to_coachee = reminder_naming(&mut server, &coachee, &coach, "coach").await;
+    let rel = relationship(Id::new_v4(), coach_id, coachee_id);
+
+    assert_eq!(
+        remind(&server, &rel, (&coach, &coachee), coachee_id).await,
+        emails::ReminderOutcome::Sent
+    );
+    to_coachee.assert_async().await;
+}
