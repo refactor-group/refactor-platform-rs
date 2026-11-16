@@ -37,6 +37,13 @@ impl Kind {
             Kind::Colleague => &Colleague,
         }
     }
+
+    /// Whether its two seats hold different roles, so that `coach` and `coachee` each name one
+    /// of the pair. Colleagues are equals, so for them neither does.
+    pub fn seats_differ(self) -> bool {
+        let rules = self.rules();
+        rules.role(Seat::CoachId) != rules.role(Seat::CoacheeId)
+    }
 }
 
 /// Which column a participant occupies. Not stored and not serialized.
@@ -275,6 +282,12 @@ mod tests {
         let rules = Kind::Colleague.rules();
         assert_eq!(rules.schedule_owner(), ScheduleOwner::Scheduler);
         assert!(rules.links_with_other_account());
+    }
+
+    #[test]
+    fn only_coaching_seats_differ() {
+        assert!(Kind::Coaching.seats_differ());
+        assert!(!Kind::Colleague.seats_differ());
     }
 
     #[test]

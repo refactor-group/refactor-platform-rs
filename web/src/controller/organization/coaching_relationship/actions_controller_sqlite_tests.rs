@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use axum::http::{Method, StatusCode};
-use domain::test_utils::sqlite::fixture::seed_relationship_with_actions;
+use domain::test_utils::sqlite::fixture::{make_colleagues, seed_relationship_with_actions};
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
 
@@ -280,6 +280,138 @@ async fn a_coachee_who_also_coaches_lists_each_relationship_by_their_role_in_it(
             batch_actions(&mut app, Caller::Coachee, "").await,
             (StatusCode::OK, expected)
         );
+    })
+    .await;
+}
+
+/// ACT-44
+#[tokio::test]
+async fn colleagues_cannot_scope_relationship_actions_to_a_seat() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let r1 = app.fixture.r1;
+        make_colleagues(app.db(), r1).await;
+
+        for caller in [Caller::Coach, Caller::Coachee] {
+            for scope in ["coach", "coachee"] {
+                let path = relationship_actions(&app, r1, &format!("?assignee={scope}"));
+                let reply = app.send(caller, Method::GET, &path, None).await;
+                assert_eq!(
+                    reply.status,
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "{caller:?} assignee={scope}"
+                );
+                assert_eq!(
+                    reply.body["details"]["reason"], "assignee_scope_not_applicable",
+                    "{caller:?} assignee={scope}: {}",
+                    reply.body
+                );
+            }
+        }
+    })
+    .await;
+}
+
+/// ACT-45
+#[tokio::test]
+async fn colleagues_list_relationship_actions_whole_or_by_user() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let r1 = app.fixture.r1;
+        make_colleagues(app.db(), r1).await;
+        let coachee = app.fixture.user(Caller::Coachee);
+        let fixture = &app.fixture;
+        let (a1, a2, a3) = (fixture.a1, fixture.a2, fixture.a3);
+
+        for caller in [Caller::Coach, Caller::Coachee] {
+            for (query, expected) in [
+                (String::new(), ids([a1, a2, a3])),
+                (format!("?assignee={coachee}"), ids([a2])),
+            ] {
+                let path = relationship_actions(&app, r1, &query);
+                assert_eq!(
+                    app.expect(caller, Method::GET, &path, None).await,
+                    (StatusCode::OK, expected),
+                    "{caller:?} {query}"
+                );
+            }
+        }
+    })
+    .await;
+}
+
+/// ACT-46
+#[tokio::test]
+async fn a_seat_scoped_batch_leaves_out_colleague_relationships() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (other_coach, member) = (
+            app.fixture.user(Caller::OtherCoach),
+            app.fixture.user(Caller::Member),
+        );
+        let (rc, rc_actions) =
+            seed_relationship_with_actions(app.db(), app.fixture.o1, other_coach, member).await;
+        make_colleagues(app.db(), rc).await;
+        let fixture = &app.fixture;
+        let (r2, a4, a5) = (fixture.r2, fixture.a4, fixture.a5);
+
+        assert_eq!(
+            batch_actions(&mut app, Caller::OtherCoach, "?assignee=coachee").await,
+            (StatusCode::OK, BTreeMap::from([(r2, ids([a5]))])),
+            "assignee=coachee"
+        );
+        assert_eq!(
+            batch_actions(&mut app, Caller::OtherCoach, "").await,
+            (
+                StatusCode::OK,
+                BTreeMap::from([(r2, ids([a4, a5])), (rc, ids(rc_actions))])
+            ),
+            "no assignee"
+        );
+    })
+    .await;
+}
+
+/// ACT-47
+#[tokio::test]
+async fn a_colleague_in_no_coaching_relationship_gets_an_empty_seat_scoped_batch() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (member, admin) = (
+            app.fixture.user(Caller::Member),
+            app.fixture.user(Caller::Admin),
+        );
+        let (rc, _) = seed_relationship_with_actions(app.db(), app.fixture.o1, member, admin).await;
+        make_colleagues(app.db(), rc).await;
+
+        for caller in [Caller::Member, Caller::Admin] {
+            for scope in ["coach", "coachee"] {
+                assert_eq!(
+                    batch_actions(&mut app, caller, &format!("?assignee={scope}")).await,
+                    (StatusCode::OK, BTreeMap::new()),
+                    "{caller:?} assignee={scope}"
+                );
+            }
+        }
+    })
+    .await;
+}
+
+/// ACT-48
+#[tokio::test]
+async fn a_coachee_who_is_also_a_colleague_cannot_scope_the_batch_to_the_coach() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (coachee, member) = (
+            app.fixture.user(Caller::Coachee),
+            app.fixture.user(Caller::Member),
+        );
+        let (rc, _) =
+            seed_relationship_with_actions(app.db(), app.fixture.o1, coachee, member).await;
+        make_colleagues(app.db(), rc).await;
+
+        let (status, _) = batch_actions(&mut app, Caller::Coachee, "?assignee=coach").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
     })
     .await;
 }

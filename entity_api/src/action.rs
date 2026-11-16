@@ -464,6 +464,24 @@ pub enum AssigneeScope {
     User(Id),
 }
 
+impl AssigneeScope {
+    /// The user this scope names in `relationship`, or `None` for `Coach` or `Coachee` on a
+    /// relationship whose seats hold the same role, where neither names anyone in particular.
+    pub fn user_id_in(&self, relationship: &entity::coaching_relationships::Model) -> Option<Id> {
+        match self {
+            AssigneeScope::Coach => relationship
+                .kind
+                .seats_differ()
+                .then_some(relationship.coach_id),
+            AssigneeScope::Coachee => relationship
+                .kind
+                .seats_differ()
+                .then_some(relationship.coachee_id),
+            AssigneeScope::User(id) => Some(*id),
+        }
+    }
+}
+
 /// Role-aware visibility narrowing layered on top of [`AssigneeFilter`] and
 /// `assignee_user_id` scoping. `Unrestricted` is the default to preserve
 /// pre-fix coach-equivalent behavior for callsites using `..Default::default()`.
@@ -596,7 +614,8 @@ pub async fn find_by_coaching_relationship(
 /// `caller_user_id` determines per-relationship [`CallerVisibility`], so
 /// mixed-role callers (coach in one rel, coachee in another) get correct
 /// narrowing per relationship. Keyed by relationship because a coachee can
-/// have several coaches in one organization.
+/// have several coaches in one organization. A relationship `assignee_scope` names
+/// no one in (see [`AssigneeScope::user_id_in`]) is left out.
 pub async fn find_by_user_relationships(
     db: &DatabaseConnection,
     relationships: &[entity::coaching_relationships::Model],
@@ -621,13 +640,17 @@ pub async fn find_by_user_relationships(
             continue;
         };
 
+        let assignee_user_id = match &assignee_scope {
+            Some(scope) => match scope.user_id_in(relationship) {
+                Some(user_id) => Some(user_id),
+                None => continue,
+            },
+            None => None,
+        };
+
         let relationship_params = FindByRelationshipParams {
             caller_visibility,
-            assignee_user_id: assignee_scope.as_ref().map(|scope| match scope {
-                AssigneeScope::Coach => relationship.coach_id,
-                AssigneeScope::Coachee => relationship.coachee_id,
-                AssigneeScope::User(id) => *id,
-            }),
+            assignee_user_id,
             ..params.clone()
         };
 

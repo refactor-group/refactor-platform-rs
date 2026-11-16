@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use axum::http::{Method, StatusCode};
 use domain::coaching_relationship::{create, Draft};
 use domain::coaching_relationship_kind::Kind;
-use domain::test_utils::sqlite::fixture::{archive_organization, set_role};
+use domain::test_utils::sqlite::fixture::{archive_organization, make_colleagues, set_role};
 use domain::test_utils::sqlite::read_back::relationships_between;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::users::Role;
@@ -98,6 +98,37 @@ async fn non_participants_cannot_read_the_relationships_goal_progress() {
             let (status, _) = app.expect(caller, Method::GET, &path, None).await;
             assert_eq!(status, StatusCode::FORBIDDEN, "{caller:?}");
         }
+    })
+    .await;
+}
+
+/// GOAL-36
+#[tokio::test]
+async fn colleagues_cannot_scope_goal_progress_to_a_seat() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        make_colleagues(app.db(), app.fixture.r1).await;
+        let g1 = app.fixture.g1;
+        let coachee = app.fixture.user(Caller::Coachee);
+
+        for scope in ["coach", "coachee"] {
+            let path = goal_progress(&app, &format!("?assignee={scope}"));
+            let reply = app.send(Caller::Coach, Method::GET, &path, None).await;
+            assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY, "{scope}");
+            assert_eq!(
+                reply.body["details"]["reason"], "assignee_scope_not_applicable",
+                "{scope}: {}",
+                reply.body
+            );
+        }
+
+        let path = goal_progress(&app, &format!("?assignee={coachee}"));
+        let reply = app.send(Caller::Coach, Method::GET, &path, None).await;
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(
+            field_ids(&reply.body["data"]["goal_progress"], "goal_id"),
+            ids([g1])
+        );
     })
     .await;
 }

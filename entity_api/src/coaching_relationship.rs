@@ -9,7 +9,7 @@ use crate::user_role::is_member;
 use chrono::Utc;
 use entity::{
     coachees, coaches,
-    coaching_relationship_kind::{Kind, Seat},
+    coaching_relationship_kind::Kind,
     coaching_relationships::{self, ActiveModel, Entity, Model, Visibility},
     coaching_sessions, users, Id,
 };
@@ -206,8 +206,7 @@ fn settle(draft: &Draft, existing: Vec<Model>) -> Result<Option<Model>, Error> {
             },
         });
     }
-    let rules = draft.kind.rules();
-    let unordered = rules.role(Seat::CoachId) == rules.role(Seat::CoacheeId);
+    let unordered = !draft.kind.seats_differ();
     Ok(existing
         .into_iter()
         .find(|related| unordered || related.coach_id == draft.coach_id))

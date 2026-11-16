@@ -346,6 +346,11 @@ How to read the tables:
 | ACT-41 | GET /organizations/O1/coaching_relationships/actions | COACHEE, once they also coach MEMBER in a new O1 relationship R4 whose session holds one action each for COACHEE, MEMBER and nobody | 200, R1 [A2 A3], R2 [A5], R4 [all three] | `entity_api/src/action.rs:615`, `:497` | [rows] Visibility is decided per relationship: everything where the caller coaches, own or unassigned where they are the coachee |
 | ACT-42 | any actions route (`/actions`, `/users/{id}/actions`, the organization action lists) | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 | ACT-43 | GET /users/{SUPER_ID}/actions (scope=sessions) | SUPER, once they also coach OUTSIDER in a new O2 relationship R5 whose session holds one action each for SUPER, OUTSIDER and nobody | 200, all three | `web/src/extractors/user_actions_access.rs:36`; `web/src/controller/user/action_controller.rs:88`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in. `scope=assigned`: SUPER's action |
+| ACT-44 | GET /organizations/O1/coaching_relationships/RC/actions?assignee=coach, and `?assignee=coachee`, RC the KIND-04 colleague relationship of COACH and MEMBER | COACH, MEMBER | 422, `details.reason` `assignee_scope_not_applicable` | `web/src/controller/organization/coaching_relationship/actions_controller.rs:134`; `domain/src/action.rs:24` | Colleagues hold no coach or coachee seat to scope to |
+| ACT-45 | GET /organizations/O1/coaching_relationships/RC/actions, and `?assignee={MEMBER_ID}` | COACH, MEMBER | 200, every RC action; with the id, only MEMBER's | `entity_api/src/action.rs:470` | [rows] Both colleagues see every action |
+| ACT-46 | GET /organizations/O1/coaching_relationships/actions?assignee=coachee, COACH coaching R1 and R3 and a colleague of MEMBER in RC | COACH | 200, R1 [A2], R3 [A6]; no RC key. Without `assignee`: R1, R3 and RC in full | `entity_api/src/action.rs:646` | [rows] The batch leaves colleague relationships out of a seat scope and never refuses for them |
+| ACT-47 | GET /organizations/O1/coaching_relationships/actions?assignee=coach (and `coachee`), MEMBER in RC and no other relationship | MEMBER | 200, empty object | `web/src/controller/organization/coaching_relationship/actions_controller.rs:36` | No 403: a colleague sees every action |
+| ACT-48 | GET /organizations/O1/coaching_relationships/actions?assignee=coach, COACHEE also a colleague of MEMBER in a new O1 relationship | COACHEE | 403 | `web/src/controller/organization/coaching_relationship/actions_controller.rs:36`, `:191` | ACT-06 still holds: the 403 is decided over the relationships the scope applies to |
 
 ### 4.6 Goals (`GOAL`)
 
@@ -386,6 +391,7 @@ How to read the tables:
 | GOAL-33 | any goal route (`/goals`, `/coaching_sessions/.../goals`, `/users/{id}/goals`, `goal_progress`) | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 | GOAL-34 | GET /users/{REMOVED_ID}/goals, REMOVED having created a goal in R3 | REMOVED | 200, empty list | `web/src/extractors/user_self_access.rs:28`; `entity_api/src/goal.rs:38`; `entity_api/src/coaching_relationship.rs:426` | [membership] self list leaves out goals in R3 |
 | GOAL-35 | GET /users/{SUPER_ID}/goals | SUPER, once they also coach OUTSIDER in a new O2 relationship R5, SUPER having created a goal in R5 | 200, that goal | `web/src/extractors/user_self_access.rs:28`; `web/src/controller/user/goal_controller.rs:56`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in |
+| GOAL-36 | GET /organizations/O1/coaching_relationships/RC/goal_progress?assignee=coach (and `coachee`), RC the KIND-04 colleague relationship | COACH | 422, `details.reason` `assignee_scope_not_applicable`; `?assignee={MEMBER_ID}`: 200 | `web/src/controller/organization/coaching_relationship_controller.rs:219`; `domain/src/action.rs:24` | Same rule as ACT-44 |
 
 ### 4.7 Topics (`TOP`)
 
@@ -1082,3 +1088,9 @@ a frozen `domain` test, or by hand with the reason.
 | SCHED-18 | `domain/src/coaching_session_sqlite_tests.rs::a_colleague_session_links_with_the_other_colleagues_account_when_the_scheduler_has_none`, `domain/src/coaching_session_sqlite_tests.rs::a_colleague_session_gets_no_link_when_neither_colleague_is_connected` |
 | SCHED-19 | `domain/src/coaching_session_sqlite_tests.rs::a_coaching_session_never_links_with_the_coachees_account` |
 | SCHED-20 | `domain/src/emails_tests.rs::a_colleague_sessions_invite_follows_its_schedulers_zone`, `domain/src/emails_tests.rs::a_coaching_sessions_invite_follows_the_coachs_zone_whoever_scheduled_it` |
+| ACT-44 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::colleagues_cannot_scope_relationship_actions_to_a_seat` |
+| ACT-45 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::colleagues_list_relationship_actions_whole_or_by_user` |
+| ACT-46 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::a_seat_scoped_batch_leaves_out_colleague_relationships` |
+| ACT-47 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::a_colleague_in_no_coaching_relationship_gets_an_empty_seat_scoped_batch` |
+| ACT-48 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::a_coachee_who_is_also_a_colleague_cannot_scope_the_batch_to_the_coach` |
+| GOAL-36 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::colleagues_cannot_scope_goal_progress_to_a_seat` |

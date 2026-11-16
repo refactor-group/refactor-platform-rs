@@ -178,7 +178,7 @@ pub async fn index(
         ("sort_by" = Option<crate::params::coaching_relationship::goal_progress::SortField>, Query, description = "Sort by field. Valid values: 'updated_at', 'status_changed_at', 'created_at'.", example = "updated_at"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc', 'desc'.", example = "desc"),
         ("limit" = Option<u32>, Query, description = "Cap on the number of goals returned. Values above 100 are silently clamped. Omit for unbounded results.", example = 3),
-        ("assignee" = Option<String>, Query, description = "Scope action counts / next-due to a specific assignee. Values: 'coach', 'coachee' (case-insensitive), or a user UUID. Omit for relationship-wide counts."),
+        ("assignee" = Option<String>, Query, description = "Scope action counts / next-due to a specific assignee. Values: 'coach', 'coachee' (case-insensitive), or a user UUID. 'coach' and 'coachee' are refused on a colleague relationship. Omit for relationship-wide counts."),
         ("coaching_session_id" = Option<Uuid>, Query, description = "Restrict to goals linked to this coaching session via the session↔goal join table."),
     ),
     responses(
@@ -186,6 +186,7 @@ pub async fn index(
         (status = 400, description = "Invalid query parameter value"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Coaching relationship not found"),
+        (status = 422, description = "`assignee=coach` or `assignee=coachee` on a colleague relationship; `details.reason` is `assignee_scope_not_applicable`"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -212,16 +213,10 @@ pub async fn goal_progress(
     // otherwise reject with 400 rather than silently returning zero-filled stats
     // (which would expose a probe oracle for arbitrary user ids).
     query_params.assignee_user_id = match assignee_scope {
-        Some(ActionApi::AssigneeScope::Coach) => Some(relationship.coach_id),
-        Some(ActionApi::AssigneeScope::Coachee) => Some(relationship.coachee_id),
-        Some(ActionApi::AssigneeScope::User(id))
-            if id == relationship.coach_id || id == relationship.coachee_id =>
-        {
-            Some(id)
-        }
-        Some(ActionApi::AssigneeScope::User(_)) => {
+        Some(ActionApi::AssigneeScope::User(id)) if !relationship.includes_user(id) => {
             return Err(Error::Web(WebErrorKind::Input));
         }
+        Some(scope) => Some(ActionApi::assignee_user_id(&relationship, &scope)?),
         None => None,
     };
 

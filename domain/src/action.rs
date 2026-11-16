@@ -1,6 +1,7 @@
 use crate::actions::Model;
+use crate::coaching_relationships;
 use crate::coaching_session;
-use crate::error::Error;
+use crate::error::{reason, Error};
 use crate::events::{DomainEvent, EventPublisher};
 use crate::Id;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
@@ -17,6 +18,20 @@ pub use entity_api::action::{
     ActionWithAssignees, AssigneeFilter, AssigneeScope, CallerVisibility, FindByRelationshipParams,
     FindByUserParams, Scope,
 };
+
+/// The user `scope` names in `relationship`. Refuses with a 422 (`assignee_scope_not_applicable`)
+/// a `Coach` or `Coachee` scope on a relationship whose seats hold the same role.
+pub fn assignee_user_id(
+    relationship: &coaching_relationships::Model,
+    scope: &AssigneeScope,
+) -> Result<Id, Error> {
+    scope.user_id_in(relationship).ok_or_else(|| {
+        Error::invalid_because(
+            reason::ASSIGNEE_SCOPE_NOT_APPLICABLE,
+            "assignee=coach and assignee=coachee do not apply to this relationship, whose participants share one role; scope by user id instead.",
+        )
+    })
+}
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
 where

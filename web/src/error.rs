@@ -161,6 +161,21 @@ impl Error {
                 }
                 (StatusCode::CONFLICT, Json(body)).into_response()
             }
+            EntityErrorKind::Unprocessable {
+                ref message,
+                ref details,
+            } => {
+                warn!(
+                    "EntityErrorKind::Unprocessable: Responding with 422 Unprocessable Entity. Error: {self:?}"
+                );
+                let body = serde_json::json!({
+                    "status_code": 422,
+                    "error": "validation_error",
+                    "message": message,
+                    "details": details,
+                });
+                (StatusCode::UNPROCESSABLE_ENTITY, Json(body)).into_response()
+            }
             EntityErrorKind::CannotLinkCompletedGoal => {
                 warn!(
                     "EntityErrorKind::CannotLinkCompletedGoal: Responding with 422 Unprocessable Entity. Error: {self:?}"
