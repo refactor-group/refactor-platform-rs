@@ -53,7 +53,10 @@ use log::*;
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    OrganizationAdminAccess { organization, .. }: OrganizationAdminAccess,
+    OrganizationAdminAccess {
+        organization,
+        authenticated_user,
+    }: OrganizationAdminAccess,
     Json(params): Json<CreateParams>,
 ) -> Result<impl IntoResponse, Error> {
     debug!("CREATE new Coaching Relationship from: {params:?}");
@@ -67,7 +70,8 @@ pub async fn create(
             kind: params.kind.unwrap_or(Kind::Coaching),
         },
     )
-    .await?;
+    .await?
+    .for_caller(&authenticated_user);
 
     debug!(
         "Newly created Coaching Relationship: {:?}",
@@ -105,6 +109,7 @@ pub async fn create(
 )]
 pub async fn read(
     CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     CoachingRelationshipAccess(coaching_relationship): CoachingRelationshipAccess,
 ) -> Result<impl IntoResponse, Error> {
@@ -116,7 +121,8 @@ pub async fn read(
             app_state.db_conn_ref(),
             relationship_id,
         )
-        .await?;
+        .await?
+        .map(|relationship| relationship.for_caller(&user));
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), relationship)))
 }
@@ -150,13 +156,16 @@ pub async fn index(
         user.id, organization_id
     );
 
-    let coaching_relationships =
+    let coaching_relationships: Vec<CoachingRelationshipWithUserNames> =
         CoachingRelationshipApi::find_by_organization_for_user_with_user_names(
             app_state.db_conn_ref(),
             user.id,
             organization_id,
         )
-        .await?;
+        .await?
+        .into_iter()
+        .map(|relationship| relationship.for_caller(&user))
+        .collect();
 
     debug!("Found CoachingRelationships: {coaching_relationships:?}");
 

@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 
 use axum::http::{Method, StatusCode};
 use domain::test_utils::sqlite::{within_time_limit, Caller};
+use serde_json::json;
 
 use crate::test_utils::sqlite::{ids, seed_super_coaching, TestApp};
 
@@ -126,6 +127,30 @@ async fn a_super_admin_lists_their_own_relationship_in_an_org_they_hold_no_role_
             app.expect(Caller::Super, Method::GET, &path, None).await,
             (StatusCode::OK, expected)
         );
+    })
+    .await;
+}
+
+/// KIND-25
+#[tokio::test]
+async fn a_coachee_is_told_what_they_may_do_in_each_listed_relationship() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let coachee = app.fixture.user(Caller::Coachee);
+        let path = format!("/users/{coachee}/coaching-relationships");
+
+        let reply = app.send(Caller::Coachee, Method::GET, &path, None).await;
+
+        assert_eq!(reply.status, StatusCode::OK);
+        let listed = reply.body["data"].as_array().expect("a list of relationships");
+        assert_eq!(listed.len(), 2, "{}", reply.body);
+        for relationship in listed {
+            assert_eq!(
+                relationship["viewer"],
+                json!({ "role": "coachee", "can_schedule_sessions": false, "sees_all_actions": false }),
+                "{relationship}"
+            );
+        }
     })
     .await;
 }

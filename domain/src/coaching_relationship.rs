@@ -12,8 +12,8 @@ pub use entity_api::coaching_relationship::{
     create, find_by_coach_and_organization, find_by_id, find_by_organization_with_user_names,
     find_by_user, find_by_user_and_organization, find_by_user_and_organization_with_user_names,
     find_by_user_id_with_user_names, find_coach_and_coachee, get_relationship_with_user_names,
-    is_coach_of, CoachingRelationshipWithUserNames, Draft, Membership, RoleFilterable,
-    WithMembership,
+    is_coach_of, Capabilities, CoachingRelationshipWithUserNames, Draft, Membership,
+    RoleFilterable, WithMembership,
 };
 
 /// The relationship to create for a person joining an organization: with whom, and what kind.
@@ -105,18 +105,11 @@ pub(crate) fn ensure_required_participants_are_members(
     relationship: &Model,
     member_ids: &[Id],
 ) -> Result<(), Error> {
-    let rules = relationship.kind.rules();
-    [
-        (Seat::CoachId, relationship.coach_id),
-        (Seat::CoacheeId, relationship.coachee_id),
-    ]
-    .into_iter()
-    .find(|&(seat, user_id)| {
-        rules.must_be_member_to_schedule(seat) && !member_ids.contains(&user_id)
-    })
-    .map_or(Ok(()), |(seat, _)| {
-        Err(participant_not_a_member(relationship, seat))
-    })
+    relationship
+        .seat_blocking_scheduling(member_ids)
+        .map_or(Ok(()), |seat| {
+            Err(participant_not_a_member(relationship, seat))
+        })
 }
 
 /// The 409 for a relationship whose participant in `seat` no longer belongs to its
@@ -139,11 +132,12 @@ pub(crate) fn participant_not_a_member(relationship: &Model, seat: Seat) -> Erro
             reason::PARTICIPANT_NOT_A_MEMBER,
         ),
     };
-    let user_id = match seat {
-        Seat::CoachId => relationship.coach_id,
-        Seat::CoacheeId => relationship.coachee_id,
-    };
-    not_a_member(message, reason, relationship.organization_id, user_id)
+    not_a_member(
+        message,
+        reason,
+        relationship.organization_id,
+        relationship.participant(seat),
+    )
 }
 
 /// Refuses (403) a permit for a different relationship than the session or series being
@@ -210,6 +204,8 @@ mod membership_sqlite_tests;
 
 #[cfg(test)]
 mod tests {
+    use sea_orm::Iterable;
+
     use super::*;
 
     fn relationship() -> Model {
@@ -251,6 +247,49 @@ mod tests {
             details["user_id"],
             serde_json::json!(relationship.coachee_id)
         );
+    }
+
+    /// KIND-24: for every kind and every set of participants still in the organization,
+    /// `scheduling_blocked_by` names the user the scheduling 409 names, and `None` when it passes.
+    #[test]
+    fn scheduling_blocked_by_names_whom_the_scheduling_conflict_names() {
+        for kind in Kind::iter() {
+            let relationship = Model {
+                kind,
+                ..relationship()
+            };
+            let caller = crate::test_utils::proof::member_coach(&relationship);
+            for (coach_is_member, coachee_is_member) in
+                [(true, true), (true, false), (false, true), (false, false)]
+            {
+                let membership = Membership {
+                    coach_is_member,
+                    coachee_is_member,
+                };
+                let refused = ensure_required_participants_are_members(
+                    &relationship,
+                    &membership.member_ids(&relationship),
+                )
+                .err()
+                .map(|err| match err.error_kind {
+                    DomainErrorKind::Internal(InternalErrorKind::Entity(
+                        EntityErrorKind::Conflict {
+                            details: Some(details),
+                            ..
+                        },
+                    )) => details["user_id"].clone(),
+                    other => panic!("expected a conflict, got {other:?}"),
+                });
+
+                assert_eq!(
+                    Capabilities::for_caller(&relationship, membership, &caller)
+                        .scheduling_blocked_by
+                        .map(|user_id| serde_json::json!(user_id)),
+                    refused,
+                    "{kind:?} {membership:?}"
+                );
+            }
+        }
     }
 
     /// A permit admits its own relationship and refuses any other with a 403.

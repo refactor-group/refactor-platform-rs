@@ -11,7 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use axum::http::{Method, StatusCode};
 use domain::coaching_relationship::{create, Draft};
 use domain::coaching_relationship_kind::Kind;
-use domain::test_utils::sqlite::fixture::{archive_organization, make_colleagues, set_role};
+use domain::test_utils::sqlite::fixture::{
+    archive_organization, make_colleagues, remove_roles, set_role,
+};
 use domain::test_utils::sqlite::read_back::relationships_between;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::users::Role;
@@ -762,5 +764,131 @@ async fn signed_out_callers_cannot_reach_relationships() {
             ),
         ]
     }))
+    .await;
+}
+
+/// GETs `relationship` in O1 as `caller` and returns its data.
+async fn read_as(app: &mut TestApp, caller: Caller, relationship: Id) -> serde_json::Value {
+    let path = format!(
+        "/organizations/{}/coaching_relationships/{relationship}",
+        app.fixture.o1
+    );
+    let reply = app.send(caller, Method::GET, &path, None).await;
+    assert_eq!(reply.status, StatusCode::OK, "{caller:?}: {}", reply.body);
+    reply.body["data"].clone()
+}
+
+/// KIND-19
+#[tokio::test]
+async fn a_coaching_relationship_tells_each_participant_what_they_may_do() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let r1 = app.fixture.r1;
+
+        for (caller, viewer) in [
+            (
+                Caller::Coach,
+                json!({ "role": "coach", "can_schedule_sessions": true, "sees_all_actions": true }),
+            ),
+            (
+                Caller::Coachee,
+                json!({ "role": "coachee", "can_schedule_sessions": false, "sees_all_actions": false }),
+            ),
+        ] {
+            let data = read_as(&mut app, caller, r1).await;
+            assert_eq!(data["viewer"], viewer, "{caller:?}");
+            assert_eq!(data["suggests_actions"], true, "{caller:?}");
+        }
+    })
+    .await;
+}
+
+/// KIND-20
+#[tokio::test]
+async fn a_colleague_relationship_tells_each_colleague_they_may_do_everything() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let r1 = app.fixture.r1;
+        make_colleagues(app.db(), r1).await;
+
+        for caller in [Caller::Coach, Caller::Coachee] {
+            let data = read_as(&mut app, caller, r1).await;
+            assert_eq!(
+                data["viewer"],
+                json!({ "role": "colleague", "can_schedule_sessions": true, "sees_all_actions": true }),
+                "{caller:?}"
+            );
+            assert_eq!(data["suggests_actions"], false, "{caller:?}");
+        }
+    })
+    .await;
+}
+
+/// KIND-21
+#[tokio::test]
+async fn an_admin_is_no_viewer_of_the_relationships_they_list() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let path = format!("/organizations/{}/coaching_relationships", app.fixture.o1);
+
+        let reply = app.send(Caller::Admin, Method::GET, &path, None).await;
+
+        assert_eq!(reply.status, StatusCode::OK);
+        let listed = reply.body["data"]
+            .as_array()
+            .expect("a list of relationships");
+        assert_eq!(listed.len(), 3, "{}", reply.body);
+        for relationship in listed {
+            assert!(relationship["viewer"].is_null(), "{relationship}");
+        }
+    })
+    .await;
+}
+
+/// KIND-24
+#[tokio::test]
+async fn scheduling_is_blocked_by_the_participant_who_left() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, r1, r3) = (app.fixture.o1, app.fixture.r1, app.fixture.r3);
+        let (coach, removed) = (
+            app.fixture.user(Caller::Coach),
+            app.fixture.user(Caller::Removed),
+        );
+
+        let data = read_as(&mut app, Caller::Coach, r1).await;
+        assert!(data["scheduling_blocked_by"].is_null(), "{data}");
+
+        let data = read_as(&mut app, Caller::Coach, r3).await;
+        assert_eq!(data["scheduling_blocked_by"], removed.to_string(), "{data}");
+
+        make_colleagues(app.db(), r1).await;
+        remove_roles(app.db(), coach, o1).await;
+        let data = read_as(&mut app, Caller::Coachee, r1).await;
+        assert_eq!(data["scheduling_blocked_by"], coach.to_string(), "{data}");
+    })
+    .await;
+}
+
+/// KIND-26
+#[tokio::test]
+async fn a_created_relationship_names_no_viewer_for_the_admin() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let body = json!({
+            "coach_id": app.fixture.user(Caller::Coach),
+            "coachee_id": app.fixture.user(Caller::Member),
+        });
+        let path = create_path(&app);
+
+        let created = app
+            .send(Caller::Admin, Method::POST, &path, Some(body))
+            .await;
+
+        assert_eq!(created.status, StatusCode::OK, "{}", created.body);
+        assert!(created.body["data"]["viewer"].is_null(), "{}", created.body);
+        assert_eq!(created.body["data"]["suggests_actions"], true);
+        assert!(created.body["data"]["scheduling_blocked_by"].is_null());
+    })
     .await;
 }

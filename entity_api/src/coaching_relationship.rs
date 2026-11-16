@@ -10,7 +10,7 @@ use chrono::Utc;
 use entity::{
     coachees, coaches,
     coaching_relationship_kind::Kind,
-    coaching_relationships::{self, ActiveModel, Entity, Model, Visibility},
+    coaching_relationships::{self, viewer_of, ActiveModel, Entity, Model, Viewer, Visibility},
     coaching_sessions, users, Id,
 };
 use log::*;
@@ -291,6 +291,48 @@ pub struct Membership {
     pub coachee_is_member: bool,
 }
 
+impl Membership {
+    /// The participants of `relationship` still in its organization.
+    pub fn member_ids(self, relationship: &Model) -> Vec<Id> {
+        [
+            (relationship.coach_id, self.coach_is_member),
+            (relationship.coachee_id, self.coachee_is_member),
+        ]
+        .into_iter()
+        .filter_map(|(id, is_member)| is_member.then_some(id))
+        .collect()
+    }
+}
+
+/// What a relationship lets its caller do, and whose leaving its organization blocks
+/// scheduling its sessions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, ToSchema)]
+#[schema(as = domain::coaching_relationship::Capabilities)]
+pub struct Capabilities {
+    /// What the caller may do in the relationship; null when the caller isn't a participant.
+    #[schema(required = true)]
+    pub viewer: Option<Viewer>,
+    /// Whether transcripts of its sessions are scanned for suggested actions.
+    pub suggests_actions: bool,
+    /// The participant whose leaving the organization blocks scheduling its sessions, the one
+    /// a scheduling 409 names; null when nobody does.
+    #[schema(required = true)]
+    pub scheduling_blocked_by: Option<Id>,
+}
+
+impl Capabilities {
+    /// `relationship` as `caller` sees it, given which of its participants are still members.
+    pub fn for_caller(relationship: &Model, membership: Membership, caller: &users::Model) -> Self {
+        Self {
+            viewer: viewer_of(relationship, caller),
+            suggests_actions: relationship.kind.rules().suggests_actions(),
+            scheduling_blocked_by: relationship
+                .seat_blocking_scheduling(&membership.member_ids(relationship))
+                .map(|seat| relationship.participant(seat)),
+        }
+    }
+}
+
 /// A coaching relationship with its participants' [`Membership`].
 #[derive(Debug, Clone, PartialEq, Serialize, FromQueryResult, ToSchema)]
 #[schema(as = domain::coaching_relationship::WithMembership)]
@@ -301,6 +343,20 @@ pub struct WithMembership {
     #[serde(flatten)]
     #[sea_orm(nested)]
     pub membership: Membership,
+    /// Empty until [`WithMembership::for_caller`] fills it.
+    #[serde(flatten)]
+    #[sea_orm(skip)]
+    pub capabilities: Capabilities,
+}
+
+impl WithMembership {
+    /// This relationship as `caller` sees it.
+    pub fn for_caller(self, caller: &users::Model) -> Self {
+        Self {
+            capabilities: Capabilities::for_caller(&self.relationship, self.membership, caller),
+            ..self
+        }
+    }
 }
 
 /// Adds each participant's [`Membership`] to a relationship select, computed in its SQL.
@@ -333,9 +389,11 @@ fn with_user_names(
 ) -> CoachingRelationshipWithUserNames {
     CoachingRelationshipWithUserNames {
         id: coaching_relationship.id,
+        organization_id: coaching_relationship.organization_id,
         coach_id: coaching_relationship.coach_id,
         coachee_id: coaching_relationship.coachee_id,
         kind: coaching_relationship.kind,
+        slug: coaching_relationship.slug.clone(),
         coach_first_name: coach.first_name.clone(),
         coach_last_name: coach.last_name.clone(),
         coachee_first_name: coachee.first_name.clone(),
@@ -346,6 +404,7 @@ fn with_user_names(
             coach_is_member: true,
             coachee_is_member: true,
         },
+        capabilities: Capabilities::default(),
     }
 }
 
@@ -550,6 +609,7 @@ pub async fn find_by_organization_with_user_names(
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
         .column(coaching_relationships::Column::Kind)
+        .column(coaching_relationships::Column::Slug)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -592,6 +652,7 @@ pub async fn find_by_user_and_organization_with_user_names(
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
         .column(coaching_relationships::Column::Kind)
+        .column(coaching_relationships::Column::Slug)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -628,6 +689,7 @@ pub async fn get_relationship_with_user_names(
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
         .column(coaching_relationships::Column::Kind)
+        .column(coaching_relationships::Column::Slug)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -758,6 +820,7 @@ pub async fn find_by_user_id_with_user_names(
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
         .column(coaching_relationships::Column::Kind)
+        .column(coaching_relationships::Column::Slug)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -774,9 +837,11 @@ pub async fn find_by_user_id_with_user_names(
 #[derive(FromQueryResult, Debug, PartialEq, Clone)]
 pub struct CoachingRelationshipWithUserNames {
     pub id: Id,
+    pub organization_id: Id,
     pub coach_id: Id,
     pub coachee_id: Id,
     pub kind: Kind,
+    pub slug: String,
     pub coach_first_name: String,
     pub coach_last_name: String,
     pub coachee_first_name: String,
@@ -785,6 +850,33 @@ pub struct CoachingRelationshipWithUserNames {
     pub updated_at: DateTimeWithTimeZone,
     #[sea_orm(nested)]
     pub membership: Membership,
+    /// Empty until [`CoachingRelationshipWithUserNames::for_caller`] fills it.
+    #[sea_orm(skip)]
+    pub capabilities: Capabilities,
+}
+
+impl CoachingRelationshipWithUserNames {
+    /// The relationship row this describes.
+    pub fn relationship(&self) -> Model {
+        Model {
+            id: self.id,
+            organization_id: self.organization_id,
+            coach_id: self.coach_id,
+            coachee_id: self.coachee_id,
+            kind: self.kind,
+            slug: self.slug.clone(),
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
+
+    /// This relationship as `caller` sees it.
+    pub fn for_caller(self, caller: &users::Model) -> Self {
+        Self {
+            capabilities: Capabilities::for_caller(&self.relationship(), self.membership, caller),
+            ..self
+        }
+    }
 }
 
 /// By hand: the derive would nest `membership` under `allOf`, but the wire lists its fields.
@@ -810,16 +902,16 @@ impl PartialSchema for CoachingRelationshipWithUserNames {
             .fold(ObjectBuilder::new(), |object, (name, schema)| {
                 object.property(name, schema).required(name)
             });
-        // Serialized at the top level, so `Membership`'s properties join this object's.
-        let RefOr::T(Schema::Object(membership)) = Membership::schema() else {
-            return object.into();
-        };
-        membership
-            .required
-            .iter()
-            .filter_map(|name| Some((name, membership.properties.get(name)?.clone())))
+        // Serialized at the top level, so these schemas' properties join this object's.
+        [Membership::schema(), Capabilities::schema()]
+            .into_iter()
+            .filter_map(|schema| match schema {
+                RefOr::T(Schema::Object(object)) => Some(object),
+                _ => None,
+            })
+            .flat_map(|flattened| flattened.properties.into_iter())
             .fold(object, |object, (name, schema)| {
-                object.property(name, schema).required(name)
+                object.property(&name, schema).required(&name)
             })
             .into()
     }
@@ -832,6 +924,7 @@ impl ToSchema for CoachingRelationshipWithUserNames {
 
     fn schemas(schemas: &mut Vec<(String, RefOr<Schema>)>) {
         schemas.push((<Kind as ToSchema>::name().into_owned(), Kind::schema()));
+        schemas.push((<Viewer as ToSchema>::name().into_owned(), Viewer::schema()));
     }
 }
 
@@ -842,7 +935,7 @@ impl Serialize for CoachingRelationshipWithUserNames {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("CoachingRelationship", 12)?;
+        let mut state = serializer.serialize_struct("CoachingRelationship", 15)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("coach_id", &self.coach_id)?;
         state.serialize_field("coachee_id", &self.coachee_id)?;
@@ -855,6 +948,12 @@ impl Serialize for CoachingRelationshipWithUserNames {
         state.serialize_field("updated_at", &self.updated_at)?;
         state.serialize_field("coach_is_member", &self.membership.coach_is_member)?;
         state.serialize_field("coachee_is_member", &self.membership.coachee_is_member)?;
+        state.serialize_field("viewer", &self.capabilities.viewer)?;
+        state.serialize_field("suggests_actions", &self.capabilities.suggests_actions)?;
+        state.serialize_field(
+            "scheduling_blocked_by",
+            &self.capabilities.scheduling_blocked_by,
+        )?;
         state.end()
     }
 }
@@ -869,9 +968,11 @@ mod wire_tests {
         let now = Utc::now().fixed_offset();
         let relationship = CoachingRelationshipWithUserNames {
             id: Id::new_v4(),
+            organization_id: Id::new_v4(),
             coach_id: Id::new_v4(),
             coachee_id: Id::new_v4(),
             kind: Kind::Coaching,
+            slug: String::new(),
             coach_first_name: String::new(),
             coach_last_name: String::new(),
             coachee_first_name: String::new(),
@@ -879,6 +980,7 @@ mod wire_tests {
             created_at: now,
             updated_at: now,
             membership: Membership::default(),
+            capabilities: Capabilities::default(),
         };
         let serde_json::Value::Object(wire) =
             serde_json::to_value(&relationship).expect("serializes")
@@ -992,7 +1094,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", CAST("coaching_relationships"."kind" AS "text"), "coaching_relationships"."created_at", "coaching_relationships"."updated_at", coaches.first_name AS "coach_first_name", coaches.last_name AS "coach_last_name", coachees.first_name AS "coachee_first_name", coachees.last_name AS "coachee_last_name", EXISTS(SELECT 1 FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = "coaching_relationships"."coach_id" AND ("user_roles"."organization_id" = "coaching_relationships"."organization_id" OR ("user_roles"."role" = (CAST($1 AS "role")) AND "user_roles"."organization_id" IS NULL))) AS "coach_is_member", EXISTS(SELECT 1 FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = "coaching_relationships"."coachee_id" AND ("user_roles"."organization_id" = "coaching_relationships"."organization_id" OR ("user_roles"."role" = (CAST($2 AS "role")) AND "user_roles"."organization_id" IS NULL))) AS "coachee_is_member" FROM "refactor_platform"."coaching_relationships" JOIN "refactor_platform"."users" AS "coaches" ON "coaching_relationships"."coach_id" = "coaches"."id" JOIN "refactor_platform"."users" AS "coachees" ON "coaching_relationships"."coachee_id" = "coachees"."id" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $3)"#,
+                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", CAST("coaching_relationships"."kind" AS "text"), "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at", coaches.first_name AS "coach_first_name", coaches.last_name AS "coach_last_name", coachees.first_name AS "coachee_first_name", coachees.last_name AS "coachee_last_name", EXISTS(SELECT 1 FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = "coaching_relationships"."coach_id" AND ("user_roles"."organization_id" = "coaching_relationships"."organization_id" OR ("user_roles"."role" = (CAST($1 AS "role")) AND "user_roles"."organization_id" IS NULL))) AS "coach_is_member", EXISTS(SELECT 1 FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = "coaching_relationships"."coachee_id" AND ("user_roles"."organization_id" = "coaching_relationships"."organization_id" OR ("user_roles"."role" = (CAST($2 AS "role")) AND "user_roles"."organization_id" IS NULL))) AS "coachee_is_member" FROM "refactor_platform"."coaching_relationships" JOIN "refactor_platform"."users" AS "coaches" ON "coaching_relationships"."coach_id" = "coaches"."id" JOIN "refactor_platform"."users" AS "coachees" ON "coaching_relationships"."coachee_id" = "coachees"."id" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $3)"#,
                 [
                     "super_admin".into(),
                     "super_admin".into(),

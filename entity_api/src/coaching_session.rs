@@ -1055,6 +1055,18 @@ pub struct EnrichedSession {
     pub series: Option<SeriesSummary>,
 }
 
+impl EnrichedSession {
+    /// This session with its included relationship as `caller` sees it.
+    pub fn for_caller(self, caller: &users::Model) -> Self {
+        Self {
+            relationship: self
+                .relationship
+                .map(|relationship| relationship.for_caller(caller)),
+            ..self
+        }
+    }
+}
+
 /// The parts of a session's series the list view needs, without loading the series row.
 #[derive(Debug, Clone, serde::Serialize, ToSchema)]
 #[schema(as = domain::coaching_session::SeriesSummary)]

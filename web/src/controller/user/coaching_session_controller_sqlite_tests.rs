@@ -11,6 +11,7 @@ use axum::http::{Method, StatusCode};
 use chrono::Utc;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
+use serde_json::json;
 
 use crate::test_utils::sqlite::{ids, seed_super_coaching, TestApp};
 
@@ -217,6 +218,34 @@ async fn a_super_admin_reads_their_nearest_session_in_an_org_they_hold_no_role_i
             app.expect(Caller::Super, Method::GET, &path, None).await,
             (StatusCode::OK, ids([seeded.session]))
         );
+    })
+    .await;
+}
+
+/// KIND-23
+#[tokio::test]
+async fn an_included_relationship_tells_the_caller_what_they_may_do() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let coach = app.fixture.user(Caller::Coach);
+        let path = format!("/users/{coach}/coaching_sessions?include=relationship");
+
+        let reply = app.send(Caller::Coach, Method::GET, &path, None).await;
+
+        assert_eq!(reply.status, StatusCode::OK);
+        let sessions = reply.body["data"].as_array().expect("a list of sessions");
+        assert!(!sessions.is_empty(), "{}", reply.body);
+        for session in sessions {
+            assert_eq!(
+                session["relationship"]["viewer"],
+                json!({ "role": "coach", "can_schedule_sessions": true, "sees_all_actions": true }),
+                "{session}"
+            );
+            assert_eq!(
+                session["relationship"]["suggests_actions"], true,
+                "{session}"
+            );
+        }
     })
     .await;
 }
