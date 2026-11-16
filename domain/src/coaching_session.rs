@@ -134,6 +134,7 @@ pub(crate) async fn create(
         &mut coaching_session_model,
         &coaching_relationship,
         acting_user_id,
+        &member_meeting_account_ids(&coaching_relationship, acting_user_id, &member_ids),
     )
     .await?;
 
@@ -294,9 +295,9 @@ fn truncated(dates: Vec<NaiveDateTime>) -> Result<Vec<NaiveDateTime>, Error> {
 /// on first read, stamping `hydrated_at` so subsequent reads short-circuit.
 ///
 /// Provider is resolved at hydration time from the most-recently-updated OAuth
-/// connection of the first account in the relationship's meeting accounts that has
-/// one — not at session-create time. For recurring series created
-/// via [`bulk_create_recurring`], this means changing or reconnecting providers
+/// connection of the first account in the relationship's meeting accounts, among
+/// participants still in its organization, that has one — not at session-create time.
+/// For recurring series created via [`bulk_create_recurring`], this means changing or reconnecting providers
 /// between bulk-create and first read will change which provider the session
 /// uses. This is the intended behavior: recurring sessions defer the choice
 /// until someone actually opens them.
@@ -335,8 +336,10 @@ pub async fn ensure_hydrated(
         generate_document_name(&organization.slug, &coaching_relationship.slug, session_id);
     let tiptap = TiptapDocument::new(config).await?;
 
+    // Read once on the txn: it picks the link's account and decides who is notified.
+    let member_ids = coaching_relationship::notify_member_ids(&txn, &coaching_relationship).await?;
     let scheduler_id = session.scheduled_by_user_id;
-    let accounts = coaching_relationship.meeting_account_ids(scheduler_id);
+    let accounts = member_meeting_account_ids(&coaching_relationship, scheduler_id, &member_ids);
     let result: Result<(Model, Vec<DomainEvent>), Error> = async {
         tiptap.create(&document_name).await?;
         session.collab_document_name = Some(document_name.clone());
@@ -353,12 +356,11 @@ pub async fn ensure_hydrated(
                 &mut session,
                 &coaching_relationship,
                 scheduler_id,
+                &accounts,
             )
             .await?;
         }
 
-        let member_ids =
-            coaching_relationship::notify_member_ids(&txn, &coaching_relationship).await?;
         let ctx = CoachingSessionHydrationContext {
             txn: &txn,
             session: &session,
@@ -721,16 +723,32 @@ pub(crate) fn ensure_coachee_reached(
     }
 }
 
+/// The accounts a new meeting link for a session scheduled by `scheduler_id` may be made
+/// with, in the order to try them, leaving out anyone not among `member_ids`.
+fn member_meeting_account_ids(
+    relationship: &coaching_relationships::Model,
+    scheduler_id: Id,
+    member_ids: &[Id],
+) -> Vec<Id> {
+    relationship
+        .meeting_account_ids(scheduler_id)
+        .into_iter()
+        .filter(|id| member_ids.contains(id))
+        .collect()
+}
+
 /// If a provider is specified on the session, attempt to attach a meeting URL. First checks
 /// if an existing meeting URL can be reused (for providers with persistent URLs), then
-/// falls back to creating a new meeting space with the first of the relationship's meeting
-/// accounts, for a session scheduled by `scheduler_id`, that is connected to the provider.
+/// falls back to creating a new meeting space with the first of `accounts` that is connected
+/// to the provider. A session scheduled by `scheduler_id` credits a reused link with no
+/// recorded creator to its schedule owner.
 async fn maybe_attach_meeting_url(
     db: &DatabaseConnection,
     config: &Config,
     coaching_session_model: &mut Model,
     relationship: &coaching_relationships::Model,
     scheduler_id: Id,
+    accounts: &[Id],
 ) -> Result<(), Error> {
     if let Some(provider) = &coaching_session_model.provider {
         if let Some(reused) = find_reusable_meeting_url(
@@ -747,8 +765,7 @@ async fn maybe_attach_meeting_url(
             return Ok(());
         }
 
-        let accounts = relationship.meeting_account_ids(scheduler_id);
-        let credentials = first_connected(&accounts, |id| {
+        let credentials = first_connected(accounts, |id| {
             crate::oauth_connection::find_by_user_and_provider(db, id, *provider)
         })
         .await?;
@@ -891,8 +908,9 @@ mod tests {
         coaching_relationships, coaching_session_images, coaching_sessions, goals,
         meeting_provider::Provider, oauth_connections, organizations,
     };
-    use mockito::Server;
-    use sea_orm::{DatabaseBackend, MockDatabase};
+    use meeting_auth::oauth::token::encryption;
+    use mockito::{Matcher, Mock, Server, ServerGuard};
+    use sea_orm::{DatabaseBackend, MockDatabase, Statement, Transaction};
     use service::config::Config;
 
     fn test_user_with_email(email: &str) -> entity_api::users::Model {
@@ -1691,8 +1709,7 @@ mod tests {
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org]])
-            // no OAuth connection, so no meeting URL
-            .append_query_results(vec![Vec::<oauth_connections::Model>::new()])
+            // the coach left, so no account is looked up and no meeting URL is made
             .append_query_results([members(&[relationship.coachee_id])])
             .append_query_results(vec![vec![goal]])
             .append_query_results(vec![vec![link]])
@@ -1764,9 +1781,9 @@ mod tests {
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![connection]])
             .append_query_results(vec![vec![earlier]])
-            .append_query_results([members(&[relationship.coachee_id])])
             .append_query_results(vec![Vec::<goals::Model>::new()])
             .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
             .append_query_results(vec![vec![hydrated]])
@@ -1807,6 +1824,241 @@ mod tests {
             "the creator is the coach: {:?}",
             hydration.values
         );
+        Ok(())
+    }
+
+    /// 32 bytes hex, the shape `encryption::encrypt` expects.
+    const ENCRYPTION_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const MEET_LINK: &str = "https://meet.google.com/new-link-abc";
+
+    /// `user_id`'s Google connection, its access token `token`, never expiring.
+    fn google_connection(user_id: Id, token: &str) -> oauth_connections::Model {
+        let now = chrono::Utc::now();
+        oauth_connections::Model {
+            id: Id::new_v4(),
+            user_id,
+            provider: Provider::Google,
+            external_account_id: None,
+            external_email: None,
+            access_token: encryption::encrypt(token, ENCRYPTION_KEY).expect("the token encrypts"),
+            refresh_token: None,
+            token_expires_at: None,
+            token_type: "Bearer".to_string(),
+            scopes: String::new(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        }
+    }
+
+    /// A Tiptap and Google Meet stand-in, where a space is made only with the access token
+    /// `token` and `spaces` times, and the config that points at it.
+    async fn documents_and_meet(token: &str, spaces: usize) -> (ServerGuard, Mock, Config) {
+        let mut server = Server::new_async().await;
+        server
+            .mock("POST", Matcher::Regex("^/api/documents/".to_string()))
+            .with_status(200)
+            .create_async()
+            .await;
+        let meet = server
+            .mock("POST", "/spaces")
+            .match_header("authorization", format!("Bearer {token}").as_str())
+            .with_status(200)
+            .with_body(format!(
+                r#"{{"name":"spaces/abc","meetingUri":"{MEET_LINK}","meetingCode":"new-link-abc"}}"#
+            ))
+            .expect(spaces)
+            .create_async()
+            .await;
+        let config = Config::from_args([
+            "test".to_string(),
+            "--tiptap-auth-key=test-auth-key".to_string(),
+            format!("--tiptap-url={}", server.url()),
+            format!("--google-meet-api-url={}", server.url()),
+            format!("--encryption-key={ENCRYPTION_KEY}"),
+            "--google-client-id=client-id".to_string(),
+            "--google-client-secret=client-secret".to_string(),
+            "--google-redirect-uri=https://app.example.com/oauth/google/callback".to_string(),
+        ]);
+        (server, meet, config)
+    }
+
+    /// An unhydrated session on `relationship` scheduled by `scheduler_id`, and the row the
+    /// hydrating UPDATE returns.
+    fn unhydrated_session(
+        relationship: &coaching_relationships::Model,
+        scheduler_id: Id,
+    ) -> (coaching_sessions::Model, coaching_sessions::Model) {
+        let session = coaching_sessions::Model {
+            hydrated_at: None,
+            scheduled_by_user_id: scheduler_id,
+            ..test_session(relationship.id, None)
+        };
+        let hydrated = coaching_sessions::Model {
+            hydrated_at: Some(chrono::Utc::now().into()),
+            ..session.clone()
+        };
+        (session, hydrated)
+    }
+
+    /// Every statement the mock database saw.
+    fn statements(log: &[Transaction]) -> Vec<&Statement> {
+        log.iter().flat_map(|txn| txn.statements()).collect()
+    }
+
+    /// The UPDATE that marks the session hydrated.
+    fn hydrating_update(log: &[Transaction]) -> String {
+        statements(log)
+            .into_iter()
+            .find(|s| {
+                s.sql
+                    .starts_with(r#"UPDATE "refactor_platform"."coaching_sessions""#)
+            })
+            .map(|s| format!("{:?}", s.values))
+            .expect("the session is marked hydrated")
+    }
+
+    /// Whether any OAuth connection lookup named `user_id`.
+    fn looked_up_connection_of(log: &[Transaction], user_id: Id) -> bool {
+        statements(log).into_iter().any(|s| {
+            s.sql.contains(r#""oauth_connections""#)
+                && format!("{:?}", s.values).contains(&user_id.to_string())
+        })
+    }
+
+    /// A colleague relationship between `a` and `b`.
+    fn colleagues(a: Id, b: Id, organization_id: Id) -> coaching_relationships::Model {
+        coaching_relationships::Model {
+            coachee_id: b,
+            kind: crate::coaching_relationship_kind::Kind::Colleague,
+            ..test_coaching_relationship(a, organization_id)
+        }
+    }
+
+    /// SCHED-21: B scheduled the series and has since left the organization, so first-read
+    /// hydration makes the link with A's account and never reads B's connection.
+    #[tokio::test]
+    async fn hydration_links_with_the_remaining_colleagues_account_when_the_scheduler_left(
+    ) -> Result<(), Error> {
+        let (a, b) = (Id::new_v4(), Id::new_v4());
+        let org = test_organization();
+        let relationship = colleagues(a, b, org.id);
+        let (session, hydrated) = unhydrated_session(&relationship, b);
+        let a_connection = google_connection(a, "a-token");
+        let (_server, meet, config) = documents_and_meet("a-token", 1).await;
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // advisory lock, then the re-read under it
+            .append_exec_results(vec![exec_ok()])
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org]])
+            .append_query_results([members(&[a])])
+            // A's connection picks the provider, then no reusable link, then A's credentials
+            .append_query_results(vec![vec![a_connection.clone()]])
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            .append_query_results(vec![vec![a_connection.clone()]])
+            .append_query_results(vec![vec![a_connection]])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            .append_query_results(vec![vec![hydrated]])
+            .into_connection();
+
+        ensure_hydrated(&db, &config, &EventPublisher::new(), session).await?;
+
+        meet.assert_async().await;
+        let log = db.into_transaction_log();
+        let update = hydrating_update(&log);
+        assert!(update.contains(MEET_LINK), "{update}");
+        assert!(
+            update.contains(&a.to_string()),
+            "A is the creator: {update}"
+        );
+        assert!(!looked_up_connection_of(&log, b), "B's connection is read");
+        Ok(())
+    }
+
+    /// SCHED-21: with the scheduler gone and the remaining colleague unconnected, hydration
+    /// still succeeds, with no link.
+    #[tokio::test]
+    async fn hydration_makes_no_link_when_no_remaining_colleague_is_connected() -> Result<(), Error>
+    {
+        let (a, b) = (Id::new_v4(), Id::new_v4());
+        let org = test_organization();
+        let relationship = colleagues(a, b, org.id);
+        let (session, hydrated) = unhydrated_session(&relationship, b);
+        let (_server, meet, config) = documents_and_meet("b-token", 0).await;
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // advisory lock, then the re-read under it
+            .append_exec_results(vec![exec_ok()])
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org]])
+            .append_query_results([members(&[a])])
+            // A has no connection
+            .append_query_results(vec![Vec::<oauth_connections::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            .append_query_results(vec![vec![hydrated]])
+            .into_connection();
+
+        ensure_hydrated(&db, &config, &EventPublisher::new(), session).await?;
+
+        meet.assert_async().await;
+        let log = db.into_transaction_log();
+        let update = hydrating_update(&log);
+        assert!(!update.contains(MEET_LINK), "{update}");
+        assert!(!looked_up_connection_of(&log, b), "B's connection is read");
+        Ok(())
+    }
+
+    /// SCHED-21: a coach who left gets no link made with their account on hydration; a
+    /// coach still in the organization gets one, as before.
+    #[tokio::test]
+    async fn hydration_links_with_the_coachs_account_only_while_the_coach_is_a_member(
+    ) -> Result<(), Error> {
+        for coach_is_member in [false, true] {
+            let org = test_organization();
+            let coach_id = Id::new_v4();
+            let relationship = test_coaching_relationship(coach_id, org.id);
+            let (session, hydrated) = unhydrated_session(&relationship, coach_id);
+            let connection = google_connection(coach_id, "coach-token");
+            let (_server, meet, config) =
+                documents_and_meet("coach-token", usize::from(coach_is_member)).await;
+
+            let locked = MockDatabase::new(DatabaseBackend::Postgres)
+                // advisory lock, then the re-read under it
+                .append_exec_results(vec![exec_ok()])
+                .append_query_results(vec![vec![session.clone()]])
+                .append_query_results(vec![vec![relationship.clone()]])
+                .append_query_results(vec![vec![org]]);
+            let db = match coach_is_member {
+                true => locked
+                    .append_query_results([both_participants_are_members(&relationship)])
+                    .append_query_results(vec![vec![connection.clone()]])
+                    .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+                    .append_query_results(vec![vec![connection.clone()]])
+                    .append_query_results(vec![vec![connection]]),
+                false => locked.append_query_results([members(&[relationship.coachee_id])]),
+            }
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            .append_query_results(vec![vec![hydrated]])
+            .into_connection();
+
+            ensure_hydrated(&db, &config, &EventPublisher::new(), session).await?;
+
+            meet.assert_async().await;
+            let log = db.into_transaction_log();
+            let update = hydrating_update(&log);
+            assert_eq!(update.contains(MEET_LINK), coach_is_member, "{update}");
+            assert_eq!(
+                update.contains(&coach_id.to_string()),
+                coach_is_member,
+                "the coach is the creator only while a member: {update}"
+            );
+            assert_eq!(looked_up_connection_of(&log, coach_id), coach_is_member);
+        }
         Ok(())
     }
 
@@ -2024,7 +2276,7 @@ mod tests {
         let refetched = input.clone();
 
         // Sequence: advisory_lock exec → re-fetch (not yet hydrated) → relationship
-        // → organization → tiptap POST (200) → oauth_connection::find_by_user
+        // → organization → membership → tiptap POST (200) → oauth_connection::find_by_user
         // returns an error → error surfaced, NO cleanup DELETE.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_exec_results(vec![sea_orm::MockExecResult {
@@ -2034,6 +2286,7 @@ mod tests {
             .append_query_results(vec![vec![refetched]])
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_errors(vec![sea_orm::DbErr::Custom(
                 "simulated oauth lookup failure".to_string(),
             )])
@@ -2446,7 +2699,7 @@ mod tests {
             .await;
 
         // Per attempt: lock exec -> refetch (unhydrated) -> relationship -> org
-        // -> POST 200 -> oauth lookup errors -> rollback + cleanup. Twice.
+        // -> membership -> POST 200 -> oauth lookup errors -> rollback + cleanup. Twice.
         let mut builder = MockDatabase::new(DatabaseBackend::Postgres);
         for _ in 0..2 {
             builder = builder
@@ -2457,6 +2710,7 @@ mod tests {
                 .append_query_results(vec![vec![session.clone()]])
                 .append_query_results(vec![vec![relationship.clone()]])
                 .append_query_results(vec![vec![org.clone()]])
+                .append_query_results([both_participants_are_members(&relationship)])
                 .append_query_errors(vec![sea_orm::DbErr::Custom(
                     "simulated oauth lookup failure".to_string(),
                 )]);
