@@ -498,7 +498,15 @@ fn invite_ics_for_participants(coach: &users::Model, coachee: &users::Model) -> 
         .and_hms_opt(12, 0, 0)
         .unwrap();
 
-    let ics = build_session_invite_ics(coach, coachee, &session, "desc".into(), dtstamp).unwrap();
+    let ics = build_session_invite_ics(
+        coach,
+        coachee,
+        &session,
+        "desc".into(),
+        dtstamp,
+        anchor_tz(coach),
+    )
+    .unwrap();
     unfold(&ics)
 }
 
@@ -586,6 +594,67 @@ fn test_anchor_timezone_still_follows_the_coach() {
     assert!(ics.contains("TZID:America/New_York"));
 }
 
+/// The `DTSTART;TZID` of a session invite built as the scheduled send builds it.
+fn invite_start_zone(participants: &Participants<'_>, scheduled_by: &users::Model) -> String {
+    let session = coaching_sessions::Model {
+        scheduled_by_user_id: scheduled_by.id,
+        ..create_test_session()
+    };
+    let ics = build_session_invite_ics(
+        participants.coach,
+        participants.coachee,
+        &session,
+        "desc".into(),
+        NaiveDate::from_ymd_opt(2026, 3, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+        anchor_tz(participants.schedule_owner(&session)),
+    )
+    .unwrap();
+    unfold(&ics)
+        .lines()
+        .find_map(|line| line.strip_prefix("DTSTART;TZID="))
+        .and_then(|rest| rest.split_once(':'))
+        .map(|(zone, _)| zone.to_string())
+        .expect("a zoned DTSTART")
+}
+
+/// SCHED-20: a colleague session's invite is anchored to the colleague who scheduled it.
+#[test]
+fn a_colleague_sessions_invite_follows_its_schedulers_zone() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/Los_Angeles");
+    let participants = Participants {
+        coach: &coach,
+        coachee: &coachee,
+        kind: coaching_relationship_kind::Kind::Colleague,
+    };
+
+    assert_eq!(
+        invite_start_zone(&participants, &coachee),
+        "America/Los_Angeles"
+    );
+    assert_eq!(invite_start_zone(&participants, &coach), "America/New_York");
+}
+
+/// A coaching session's invite is anchored to the coach whoever scheduled it.
+#[test]
+fn a_coaching_sessions_invite_follows_the_coachs_zone_whoever_scheduled_it() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/Los_Angeles");
+    let participants = Participants {
+        coach: &coach,
+        coachee: &coachee,
+        kind: coaching_relationship_kind::Kind::Coaching,
+    };
+
+    assert_eq!(
+        invite_start_zone(&participants, &coachee),
+        "America/New_York"
+    );
+}
+
 #[test]
 fn test_build_session_invite_ics_structure() {
     let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
@@ -609,6 +678,7 @@ fn test_build_session_invite_ics_structure() {
         &session,
         "Join this session: https://app/x".into(),
         dtstamp,
+        anchor_tz(&coach),
     )
     .unwrap();
 
@@ -649,6 +719,7 @@ fn test_build_session_invite_ics_bumped_sequence() {
         &session,
         "Join this session: https://app/x".into(),
         dtstamp,
+        anchor_tz(&coach),
     )
     .unwrap();
 
@@ -1452,6 +1523,7 @@ fn test_build_session_cancel_ics_structure() {
         SESSION_CANCELLED_DESCRIPTION.to_string(),
         dtstamp,
         session.ical_sequence,
+        anchor_tz(&coach),
     )
     .unwrap();
 
@@ -1735,8 +1807,15 @@ fn test_standalone_session_ics_carries_no_recurrence_id() {
 
     assert!(session.coaching_session_series_id.is_none());
 
-    let invite =
-        build_session_invite_ics(&coach, &coachee, &session, "desc".into(), dtstamp).unwrap();
+    let invite = build_session_invite_ics(
+        &coach,
+        &coachee,
+        &session,
+        "desc".into(),
+        dtstamp,
+        anchor_tz(&coach),
+    )
+    .unwrap();
     assert!(invite.contains(&format!("UID:{}@myrefactor.com", session.id)));
     assert!(!invite.contains("RECURRENCE-ID"));
 
@@ -1747,6 +1826,7 @@ fn test_standalone_session_ics_carries_no_recurrence_id() {
         "desc".into(),
         dtstamp,
         session.ical_sequence,
+        anchor_tz(&coach),
     )
     .unwrap();
     assert!(cancel.contains(&format!("UID:{}@myrefactor.com", session.id)));

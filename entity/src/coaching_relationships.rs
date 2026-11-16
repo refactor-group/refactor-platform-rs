@@ -95,6 +95,27 @@ impl Model {
         .find_map(|(id, seat)| (id == user_id).then_some(seat))
     }
 
+    /// Whose zone, default session length and meeting account a session scheduled by
+    /// `scheduler_id` uses.
+    pub fn schedule_owner_id(&self, scheduler_id: Id) -> Id {
+        self.kind
+            .rules()
+            .schedule_owner()
+            .user_id(self.coach_id, self.coachee_id, scheduler_id)
+    }
+
+    /// The accounts a new meeting link for a session scheduled by `scheduler_id` may be made
+    /// with, in the order to try them: the schedule owner's, then the other participant's
+    /// where the kind allows it.
+    pub fn meeting_account_ids(&self, scheduler_id: Id) -> Vec<Id> {
+        let owner_id = self.schedule_owner_id(scheduler_id);
+        let other_id = [self.coach_id, self.coachee_id]
+            .into_iter()
+            .find(|&id| id != owner_id)
+            .filter(|_| self.kind.rules().links_with_other_account());
+        std::iter::once(owner_id).chain(other_id).collect()
+    }
+
     /// What `user_id` is to this relationship; `None` when they aren't in it.
     pub fn role(&self, user_id: Id) -> Option<coaching_relationship_kind::Role> {
         self.seat(user_id).map(|seat| self.kind.rules().role(seat))
@@ -353,6 +374,31 @@ mod tests {
                 relationship.can_schedule_sessions(user),
                 user == relationship.coach_id,
                 "{user}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_coaching_sessions_owner_is_its_coach_whoever_schedules() {
+        let (coach, coachee) = (Id::new_v4(), Id::new_v4());
+        let relationship = relationship_of(Kind::Coaching, coach, coachee);
+
+        for scheduler in [coach, coachee] {
+            assert_eq!(relationship.schedule_owner_id(scheduler), coach);
+            assert_eq!(relationship.meeting_account_ids(scheduler), [coach]);
+        }
+    }
+
+    #[test]
+    fn a_colleague_sessions_owner_is_its_scheduler_then_the_other_colleague() {
+        let (first, second) = (Id::new_v4(), Id::new_v4());
+        let relationship = relationship_of(Kind::Colleague, first, second);
+
+        for (scheduler, other) in [(first, second), (second, first)] {
+            assert_eq!(relationship.schedule_owner_id(scheduler), scheduler);
+            assert_eq!(
+                relationship.meeting_account_ids(scheduler),
+                [scheduler, other]
             );
         }
     }

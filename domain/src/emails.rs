@@ -604,16 +604,16 @@ const UID_DOMAIN: &str = "myrefactor.com";
 /// Display name paired with `FROM_ADDRESS` on the `.ics` `ORGANIZER`.
 const FROM_DISPLAY_NAME: &str = "Refactor Coach";
 
-/// The zone every `.ics` for a session is anchored to. The coach owns the schedule, so
-/// their zone is the one whose DST rules the emitted `VTIMEZONE` must follow.
-fn anchor_tz(coach: &users::Model) -> chrono_tz::Tz {
-    coach.timezone.parse().unwrap_or(chrono_tz::UTC)
+/// The zone every `.ics` for a session is anchored to: its schedule owner's, whose DST rules
+/// the emitted `VTIMEZONE` must follow.
+fn anchor_tz(owner: &users::Model) -> chrono_tz::Tz {
+    owner.timezone.parse().unwrap_or(chrono_tz::UTC)
 }
 
-/// The zone a series this coach publishes now is written in, after the `VTIMEZONE`
+/// The zone a series this schedule owner publishes now is written in, after the `VTIMEZONE`
 /// fallback, so expansion and the emitted `DTSTART;TZID` always agree.
-pub(crate) fn publication_zone(coach: &users::Model) -> Tz {
-    ical::emitted_zone(anchor_tz(coach))
+pub(crate) fn publication_zone(owner: &users::Model) -> Tz {
+    ical::emitted_zone(anchor_tz(owner))
 }
 
 /// The zone a series' invites are written in: the one it was published in.
@@ -626,7 +626,7 @@ fn series_zone(series: &coaching_session_series::Model) -> Result<Tz, Error> {
 async fn invite_zone(
     db: &DatabaseConnection,
     session: &coaching_sessions::Model,
-    coach: &users::Model,
+    owner: &users::Model,
 ) -> Result<Tz, Error> {
     match (
         session.coaching_session_series_id,
@@ -635,7 +635,7 @@ async fn invite_zone(
         (Some(series_id), Some(_)) => {
             series_zone(&coaching_session_series::find_by_id(db, series_id).await?)
         }
-        _ => Ok(anchor_tz(coach)),
+        _ => Ok(anchor_tz(owner)),
     }
 }
 
@@ -798,8 +798,8 @@ fn build_session_invite_ics(
     session: &coaching_sessions::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
+    anchor_tz: Tz,
 ) -> Result<String, Error> {
-    let anchor_tz = anchor_tz(coach);
     let invite = ical::IcsInvite {
         uid: ics_uid(session.id),
         sequence: session.ical_sequence,
@@ -903,6 +903,20 @@ impl Delivered {
 }
 
 impl<'a> Participants<'a> {
+    /// Whose zone anchors the invites for `session`: its schedule owner, given who scheduled it.
+    /// A scheduler outside the pair falls back to the coach.
+    pub(crate) fn schedule_owner(&self, session: &coaching_sessions::Model) -> &'a users::Model {
+        let owner_id = self.kind.rules().schedule_owner().user_id(
+            self.coach.id,
+            self.coachee.id,
+            session.scheduled_by_user_id,
+        );
+        [self.coachee, self.coach]
+            .into_iter()
+            .find(|user| user.id == owner_id)
+            .unwrap_or(self.coach)
+    }
+
     /// Both participants, for a send that reaches them regardless of membership.
     fn ids(&self) -> [Id; 2] {
         [self.coach.id, self.coachee.id]
@@ -1038,7 +1052,8 @@ async fn send_single_session_invite_email<N: EmailNotification>(
         })
         .collect::<Vec<OpenAction>>();
 
-    let anchor_tz = anchor_tz(coach);
+    let owner = participants.schedule_owner(session);
+    let anchor_tz = anchor_tz(owner);
     let description = ical::compose_description(&DescriptionParts {
         session_url: email_config.build_session_url(&session.id)?,
         title: session.title.as_deref(),
@@ -1051,7 +1066,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     });
 
     let dtstamp = chrono::Utc::now().naive_utc();
-    let series_zone = invite_zone(db, session, coach).await?;
+    let series_zone = invite_zone(db, session, owner).await?;
     // A session inside a series is addressed as an override of its occurrence; one that
     // predates `ical_recurrence_id` goes out self-contained under its own `UID`.
     let ics_body = build_session_ics(
@@ -1068,7 +1083,9 @@ async fn send_single_session_invite_email<N: EmailNotification>(
                 dtstamp,
             )
         },
-        |description| build_session_invite_ics(coach, coachee, session, description, dtstamp),
+        |description| {
+            build_session_invite_ics(coach, coachee, session, description, dtstamp, anchor_tz)
+        },
     )?;
 
     let copies = participants.copies();
@@ -1490,8 +1507,8 @@ fn build_session_cancel_ics(
     description: String,
     dtstamp: chrono::NaiveDateTime,
     sequence: i32,
+    anchor_tz: Tz,
 ) -> Result<String, Error> {
-    let anchor_tz = anchor_tz(coach);
     let invite = ical::IcsInvite {
         uid: ics_uid(session.id),
         // Passed in rather than read off the row. The usual delete bumps it inside the
@@ -1631,6 +1648,7 @@ async fn send_session_cancelled_email(
                 description,
                 dtstamp,
                 session.ical_sequence,
+                anchor_tz(participants.schedule_owner(session)),
             )
         },
     )?;
@@ -1680,7 +1698,7 @@ pub async fn notify_session_cancelled(
             kind: relationship.kind,
         };
 
-        let series_zone = invite_zone(db, session, &coach).await?;
+        let series_zone = invite_zone(db, session, participants.schedule_owner(session)).await?;
         // Both, members or not: a removed member still holds the event.
         send_session_cancelled_email(
             config,
@@ -2011,7 +2029,7 @@ async fn send_series_invite_email<N: EmailNotification>(
         .filter_map(|g| g.title)
         .collect::<Vec<String>>();
 
-    let anchor_tz = anchor_tz(coach);
+    let anchor_tz = anchor_tz(participants.schedule_owner(first));
     let description = ical::compose_description(&DescriptionParts {
         session_url: email_config.build_session_url(&first.id)?,
         title: None,
@@ -2569,6 +2587,7 @@ fn build_orphan_cancels(
                 SESSION_CANCELLED_DESCRIPTION.to_string(),
                 dtstamp,
                 orphan_cancel_sequence(session),
+                anchor_tz(participants.schedule_owner(session)),
             )
             .inspect_err(|e| {
                 warn!(
@@ -2706,7 +2725,7 @@ async fn cancel_orphans_for(
             ical_sequence: orphan_cancel_sequence(session),
             ..session.clone()
         };
-        // An orphan is standalone, so its invite was anchored to the coach.
+        // An orphan is standalone, so its invite was anchored to its schedule owner.
         if let Err(e) = send_session_cancelled_email(
             config,
             &Audience {
@@ -2715,7 +2734,7 @@ async fn cancel_orphans_for(
             },
             &cancelled,
             organization,
-            anchor_tz(participants.coach),
+            anchor_tz(participants.schedule_owner(session)),
         )
         .await
         {

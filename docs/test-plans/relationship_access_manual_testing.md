@@ -278,6 +278,8 @@ How to read the tables:
 | SER-22 | GET /coaching_session_series/{unknown}; POST its `/resend_invite`, `/reschedule` | COACH | 404, no email | `web/src/extractors/coaching_session_series_access.rs:110` | |
 | SER-23 | any /coaching_session_series route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 | SER-24 | POST /coaching_session_series `{coaching_relationship_id: RC}`, RC the KIND-04 colleague relationship of COACH and MEMBER, after MEMBER's O1 role is removed (ORG-04) | COACH | 409 `participant_not_a_member`, `details.user_id` MEMBER, nothing written, no email | `domain/src/coaching_relationship.rs:104` | [membership] Restore MEMBER's role afterwards |
+| SER-25 | POST /coaching_session_series `{coaching_relationship_id: RC}` with `start_at` before a New York DST change | MEMBER | 200 (201); the series `rule.timezone` is `America/New_York` and the sessions keep New York wall-clock time across the change; the invites' `DTSTART;TZID` is `America/New_York` | `domain/src/coaching_session_series.rs:99` | A colleague series follows whoever created it. Set the zones first: `UPDATE refactor_platform.users SET timezone = 'Asia/Tokyo' WHERE id = '<COACH_ID>'; UPDATE refactor_platform.users SET timezone = 'America/New_York' WHERE id = '<MEMBER_ID>';` |
+| SER-26 | PUT /coaching_session_series/SRC, a series on RC that COACH created | MEMBER | 200; `rule.timezone` becomes `America/New_York` | `domain/src/coaching_session_series.rs:212` | A reschedule re-publishes in the zone of whoever made it; reschedule-following (`:624`) the same. Zones as SER-25 |
 
 ### 4.4 Agreements (`AGR`)
 
@@ -610,6 +612,10 @@ inbox is yours.
 | SCHED-14 | Phase 1 migrations on a database that predates them | operator | every session's scheduler is its coach (NOT NULL); link creator is the coach exactly where `meeting_url` is set; a notice row per participant; `coaching_sessions.notice_given_at` gone | `migration/src/m20261114_00000{0,1,2,4,5}*` | For a fresh local database. The 1c migration's settle and its down: reminder plan H5b |
 | SCHED-15 | PUT /coaching_sessions/S1 `{meeting_url: "https://meet.example/kumquat"}` (MEET-03), then again with the same URL | COACH | after the first PUT: `meeting_url_created_by_user_id` = COACH_ID; the repeat PUT leaves it as it was. The PUT cannot clear a link: an omitted or null `meeting_url` leaves it unchanged | `domain::coaching_session::update` | A link set by hand records whoever set it. Clear the creator to null first to see the first PUT write it |
 | SCHED-16 | POST /coaching_sessions `{coaching_relationship_id: R1, meeting_url: "https://meet.example/kumquat"}`, no `provider` | COACH | `meeting_url_created_by_user_id` = COACH_ID | `domain::coaching_session::create` | A pasted link, not one made by a connected account |
+| SCHED-17 | POST /coaching_sessions `{coaching_relationship_id: RC}`, no `duration_minutes` | MEMBER | `duration_minutes` = MEMBER's `default_coaching_session_duration_minutes`, not COACH's | `domain::coaching_session::create` | Set the two defaults apart first. Coaching (SES-09) keeps the coach's default whoever is recorded |
+| SCHED-18 | POST /coaching_sessions `{coaching_relationship_id: RC, provider: google}`, MEMBER with no Google connection, COACH with one, RC with no earlier link | MEMBER | link attached; `meeting_url_created_by_user_id` = COACH_ID. With neither connected: no link, creator null | `domain::coaching_session::maybe_attach_meeting_url` | The scheduler's account first, then the other colleague's. A reused RC link keeps its creator, or the scheduler when it has none |
+| SCHED-19 | POST /coaching_sessions `{coaching_relationship_id: R1, provider: google}`, COACH with no Google connection, COACHEE with one, R1 with no earlier link | COACH | no link; `meeting_url_created_by_user_id` null | `domain::coaching_session::maybe_attach_meeting_url` | Coaching never uses the coachee's account |
+| SCHED-20 | POST /coaching_sessions `{coaching_relationship_id: RC}` (MAIL-01) | MEMBER | both invites' `DTSTART;TZID` is `America/New_York`, MEMBER's zone | `domain::emails::Participants::schedule_owner` | Zones as SER-25. Its cancellation and reschedule invites use the same zone |
 
 SCHED-14's checks, each expected to return 0:
 
@@ -1070,3 +1076,9 @@ a frozen `domain` test, or by hand with the reason.
 | SER-24 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_series_with_a_colleague_who_left_is_refused` |
 | TRN-30 | `domain/src/jobs/transcript_suggestions_sqlite_tests.rs::a_colleague_sessions_analysis_is_never_claimed` |
 | TRN-31 | `domain/src/transcript_suggestion/review_sqlite_tests.rs::a_colleague_session_cannot_be_scanned` |
+| SER-25 | `domain/src/coaching_session_series_sqlite_tests.rs::a_colleague_series_follows_the_zone_of_the_colleague_who_created_it` |
+| SER-26 | `domain/src/coaching_session_series_sqlite_tests.rs::a_rescheduled_colleague_series_follows_the_zone_of_the_colleague_who_moved_it`, `domain/src/coaching_session_series_sqlite_tests.rs::a_rescheduled_coaching_series_keeps_the_coachs_zone`; by hand for reschedule-following: it takes Postgres advisory locks |
+| SCHED-17 | `domain/src/coaching_session_sqlite_tests.rs::a_colleague_session_takes_the_schedulers_default_duration` |
+| SCHED-18 | `domain/src/coaching_session_sqlite_tests.rs::a_colleague_session_links_with_the_other_colleagues_account_when_the_scheduler_has_none`, `domain/src/coaching_session_sqlite_tests.rs::a_colleague_session_gets_no_link_when_neither_colleague_is_connected` |
+| SCHED-19 | `domain/src/coaching_session_sqlite_tests.rs::a_coaching_session_never_links_with_the_coachees_account` |
+| SCHED-20 | `domain/src/emails_tests.rs::a_colleague_sessions_invite_follows_its_schedulers_zone`, `domain/src/emails_tests.rs::a_coaching_sessions_invite_follows_the_coachs_zone_whoever_scheduled_it` |

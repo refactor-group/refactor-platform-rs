@@ -29,21 +29,21 @@ use utoipa::ToSchema;
 /// Resolve the duration for a new coaching session via the defaulting cascade.
 ///
 /// - `Some(d)` returns `d` directly (already validated by the type).
-/// - `None` loads the coach and uses their
+/// - `None` loads `owner_id`, the session's schedule owner, and uses their
 ///   `default_coaching_session_duration_minutes` (valid by DB invariant — the
 ///   column is `NOT NULL DEFAULT 60` and the only writes go through
 ///   `Duration::new`).
 pub async fn resolve_duration(
     db: &impl ConnectionTrait,
-    coach_id: Id,
+    owner_id: Id,
     requested: Option<Duration>,
 ) -> Result<Duration, Error> {
     if let Some(d) = requested {
         return Ok(d);
     }
-    let coach = crate::user::find_by_id(db, coach_id).await?;
+    let owner = crate::user::find_by_id(db, owner_id).await?;
     Ok(Duration::from_minutes_unchecked(
-        coach.default_coaching_session_duration_minutes,
+        owner.default_coaching_session_duration_minutes,
     ))
 }
 
@@ -127,13 +127,13 @@ pub fn normalize_title_in_update_map(update_map: &mut UpdateMap) {
 pub async fn create(
     db: &impl ConnectionTrait,
     coaching_session_model: Model,
-    coach_id: Id,
+    owner_id: Id,
     scheduled_by: Id,
     requested_duration: Option<Duration>,
 ) -> Result<Model, Error> {
     debug!("New Coaching Session Model to be inserted: {coaching_session_model:?}");
 
-    let duration = resolve_duration(db, coach_id, requested_duration).await?;
+    let duration = resolve_duration(db, owner_id, requested_duration).await?;
     let title = normalize_title(coaching_session_model.title);
     validate_title_length(title.as_deref())?;
     let now = chrono::Utc::now();
@@ -171,7 +171,7 @@ pub async fn create(
 pub async fn bulk_create_recurring(
     db: &impl ConnectionTrait,
     coaching_relationship_id: Id,
-    coach_id: Id,
+    owner_id: Id,
     scheduled_by: Id,
     series_id: Id,
     dates: Vec<chrono::NaiveDateTime>,
@@ -188,7 +188,7 @@ pub async fn bulk_create_recurring(
         return Ok(Vec::new());
     }
 
-    let duration = resolve_duration(db, coach_id, requested_duration).await?;
+    let duration = resolve_duration(db, owner_id, requested_duration).await?;
     let duration_minutes_i16 = duration.minutes();
     let now = chrono::Utc::now();
     let active_models: Vec<ActiveModel> = dates

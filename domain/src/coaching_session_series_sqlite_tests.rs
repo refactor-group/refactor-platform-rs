@@ -15,7 +15,9 @@ use sea_orm::{ActiveModelTrait, ActiveValue::Unchanged, DatabaseConnection, Enti
 
 use super::*;
 use crate::error::{EntityErrorKind, InternalErrorKind};
-use crate::test_utils::sqlite::fixture::move_series_into_the_past;
+use crate::test_utils::sqlite::fixture::{
+    make_colleagues, move_series_into_the_past, set_timezone,
+};
 use crate::test_utils::sqlite::{
     database, mirror_migration_defaults, seed_action, seed_agreement, seed_coaching_session,
     seed_membership, seed_organization, seed_topic, seed_user, within_time_limit,
@@ -803,6 +805,162 @@ async fn a_permit_for_another_relationship_cannot_delete_the_series() {
                 .expect("the series survives"),
             series
         );
+    })
+    .await;
+}
+
+/// Colleagues in Tokyo (coach seat) and New York (coachee seat), both holding a role;
+/// returns the relationship and the two colleagues, coach seat first.
+async fn colleagues_tokyo_and_new_york(db: &DatabaseConnection) -> (Id, Id, Id) {
+    let (relationship_id, tokyo) = scheduling_relationship(db).await;
+    make_colleagues(db, relationship_id).await;
+    let new_york = coaching_relationship::find_by_id(db, relationship_id)
+        .await
+        .expect("the relationship reads")
+        .coachee_id;
+    set_timezone(db, tokyo, "Asia/Tokyo").await;
+    set_timezone(db, new_york, "America/New_York").await;
+    (relationship_id, tokyo, new_york)
+}
+
+/// 2027-03-01 15:00 UTC, a Monday two weeks before New York's clocks go forward.
+fn before_new_york_springs_forward() -> NaiveDateTime {
+    NaiveDate::from_ymd_opt(2027, 3, 1)
+        .unwrap()
+        .and_hms_opt(15, 0, 0)
+        .unwrap()
+}
+
+/// Each session's start, in date order.
+async fn starts(db: &DatabaseConnection, series_id: Id) -> Vec<NaiveDateTime> {
+    entity_api::coaching_session::find_by_series_id(db, series_id)
+        .await
+        .expect("the sessions read")
+        .into_iter()
+        .map(|session| session.date)
+        .collect()
+}
+
+fn stored_rule(series: &Model) -> SeriesRule {
+    serde_json::from_value(series.rule.clone()).expect("the rule reads")
+}
+
+/// SER-25: a colleague series is written in the zone of the colleague who created it, and its
+/// sessions keep that colleague's wall-clock time across their DST change.
+#[tokio::test]
+async fn a_colleague_series_follows_the_zone_of_the_colleague_who_created_it() {
+    within_time_limit(async {
+        let db = database().await;
+        let (relationship_id, _tokyo, new_york) = colleagues_tokyo_and_new_york(&db).await;
+
+        let (series, _) = create_with_sessions(
+            &db,
+            &Config::default(),
+            relationship_id,
+            new_york,
+            before_new_york_springs_forward(),
+            weekly(4),
+            None,
+        )
+        .await
+        .expect("the series is created");
+
+        assert_eq!(stored_rule(&series).timezone, "America/New_York");
+        // 10:00 in New York throughout: 15:00 UTC in EST, 14:00 UTC once EDT starts on Mar 14.
+        let at = |day, hour| {
+            NaiveDate::from_ymd_opt(2027, 3, day)
+                .unwrap()
+                .and_hms_opt(hour, 0, 0)
+                .unwrap()
+        };
+        assert_eq!(
+            starts(&db, series.id).await,
+            vec![at(1, 15), at(8, 15), at(15, 14), at(22, 14)]
+        );
+    })
+    .await;
+}
+
+/// SER-26: rescheduling a colleague series re-publishes it in the zone of the colleague who
+/// rescheduled it, not the one who created it.
+#[tokio::test]
+async fn a_rescheduled_colleague_series_follows_the_zone_of_the_colleague_who_moved_it() {
+    within_time_limit(async {
+        let db = database().await;
+        let (relationship_id, tokyo, new_york) = colleagues_tokyo_and_new_york(&db).await;
+        let (series, _) = create_with_sessions(
+            &db,
+            &Config::default(),
+            relationship_id,
+            tokyo,
+            days_ahead(7),
+            weekly(2),
+            None,
+        )
+        .await
+        .expect("the series is created");
+        assert_eq!(stored_rule(&series).timezone, "Asia/Tokyo");
+        // Upcoming sessions take Postgres advisory locks; past ones are kept.
+        move_series_into_the_past(&db, series.id).await;
+
+        let rescheduled = reschedule(
+            &db,
+            &Config::default(),
+            series.id,
+            new_york,
+            days_ahead(14),
+            weekly(2),
+            None,
+        )
+        .await
+        .expect("the series is rescheduled");
+
+        assert_eq!(
+            stored_rule(&rescheduled.series).timezone,
+            "America/New_York"
+        );
+    })
+    .await;
+}
+
+/// A coaching series rescheduled by someone other than the coach keeps the coach's zone.
+#[tokio::test]
+async fn a_rescheduled_coaching_series_keeps_the_coachs_zone() {
+    within_time_limit(async {
+        let db = database().await;
+        let (relationship_id, coach_id) = scheduling_relationship(&db).await;
+        let coachee_id = coaching_relationship::find_by_id(&db, relationship_id)
+            .await
+            .expect("the relationship reads")
+            .coachee_id;
+        set_timezone(&db, coach_id, "Asia/Tokyo").await;
+        set_timezone(&db, coachee_id, "America/New_York").await;
+        let (series, _) = create_with_sessions(
+            &db,
+            &Config::default(),
+            relationship_id,
+            coach_id,
+            days_ahead(7),
+            weekly(2),
+            None,
+        )
+        .await
+        .expect("the series is created");
+        move_series_into_the_past(&db, series.id).await;
+
+        let rescheduled = reschedule(
+            &db,
+            &Config::default(),
+            series.id,
+            coachee_id,
+            days_ahead(14),
+            weekly(2),
+            None,
+        )
+        .await
+        .expect("the series is rescheduled");
+
+        assert_eq!(stored_rule(&rescheduled.series).timezone, "Asia/Tokyo");
     })
     .await;
 }

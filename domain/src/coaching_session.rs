@@ -1,6 +1,8 @@
 pub(crate) mod recurrence;
 pub mod with_permit;
 
+use std::future::Future;
+
 use crate::coaching_relationship::{
     ensure_required_participants_are_members, participant_not_a_member,
 };
@@ -18,6 +20,7 @@ use crate::error::{
 use crate::events::{DomainEvent, EventPublisher};
 use crate::gateway::tiptap::TiptapDocument;
 use crate::meeting_provider::MeetingProperties;
+use crate::oauth_connections;
 use crate::Id;
 use chrono::{DurationRound, NaiveDateTime, TimeDelta, Utc};
 use entity_api::{
@@ -107,10 +110,10 @@ pub(crate) async fn create(
     }
     let member_ids = coaching_relationship::notify_member_ids(db, &coaching_relationship).await?;
     ensure_required_participants_are_members(&coaching_relationship, &member_ids)?;
-    let coach_id = coaching_relationship.coach_id;
+    let owner_id = coaching_relationship.schedule_owner_id(acting_user_id);
 
     coaching_session_model.date = SessionDate::new(coaching_session_model.date)?.into_inner();
-    // A link the request carries was set by hand; one attached below comes from the coach.
+    // A link the request carries was set by hand; one attached below comes from a connected account.
     coaching_session_model.meeting_url_created_by_user_id = coaching_session_model
         .meeting_url
         .as_ref()
@@ -125,7 +128,14 @@ pub(crate) async fn create(
     coaching_session_model.collab_document_name = Some(document_name.clone());
     coaching_session_model.hydrated_at = Some(chrono::Utc::now().into());
 
-    maybe_attach_meeting_url(db, config, &mut coaching_session_model, coach_id).await?;
+    maybe_attach_meeting_url(
+        db,
+        config,
+        &mut coaching_session_model,
+        &coaching_relationship,
+        acting_user_id,
+    )
+    .await?;
 
     let tiptap = TiptapDocument::new(config).await?;
     tiptap.create(&document_name).await?;
@@ -138,7 +148,7 @@ pub(crate) async fn create(
         let session = coaching_session::create(
             &txn,
             coaching_session_model,
-            coach_id,
+            owner_id,
             acting_user_id,
             requested_duration,
         )
@@ -186,7 +196,8 @@ pub(crate) async fn create(
 
 /// Bulk-creates a series of coaching sessions. Provider is intentionally not
 /// captured here — every row's `provider` stays NULL until [`ensure_hydrated`]
-/// fills it in on first read, using the coach's then-current OAuth connection.
+/// fills it in on first read, using the then-current OAuth connection of the
+/// session's schedule owner. A missing duration takes `owner_id`'s default.
 ///
 /// Every materialized recurring session belongs to a parent
 /// `coaching_session_series` row (`series_id`); the [`crate::coaching_session_series`]
@@ -195,7 +206,7 @@ pub(crate) async fn create(
 pub(crate) async fn bulk_create_recurring(
     db: &impl sea_orm::ConnectionTrait,
     coaching_relationship_id: Id,
-    coach_id: Id,
+    owner_id: Id,
     scheduled_by: Id,
     series_id: Id,
     dates: Vec<NaiveDateTime>,
@@ -204,7 +215,7 @@ pub(crate) async fn bulk_create_recurring(
     Ok(coaching_session::bulk_create_recurring(
         db,
         coaching_relationship_id,
-        coach_id,
+        owner_id,
         scheduled_by,
         series_id,
         truncated(dates)?,
@@ -282,12 +293,13 @@ fn truncated(dates: Vec<NaiveDateTime>) -> Result<Vec<NaiveDateTime>, Error> {
 /// Runs deferred side-effects (Tiptap doc, meeting URL, in-progress-goal links)
 /// on first read, stamping `hydrated_at` so subsequent reads short-circuit.
 ///
-/// Provider is resolved at hydration time from the coach's most-recently-updated
-/// OAuth connection — not at session-create time. For recurring series created
+/// Provider is resolved at hydration time from the most-recently-updated OAuth
+/// connection of the first account in the relationship's meeting accounts that has
+/// one — not at session-create time. For recurring series created
 /// via [`bulk_create_recurring`], this means changing or reconnecting providers
 /// between bulk-create and first read will change which provider the session
 /// uses. This is the intended behavior: recurring sessions defer the choice
-/// until the coach actually opens them.
+/// until someone actually opens them.
 pub async fn ensure_hydrated(
     db: &DatabaseConnection,
     config: &Config,
@@ -323,14 +335,26 @@ pub async fn ensure_hydrated(
         generate_document_name(&organization.slug, &coaching_relationship.slug, session_id);
     let tiptap = TiptapDocument::new(config).await?;
 
-    let coach_id = coaching_relationship.coach_id;
+    let scheduler_id = session.scheduled_by_user_id;
+    let accounts = coaching_relationship.meeting_account_ids(scheduler_id);
     let result: Result<(Model, Vec<DomainEvent>), Error> = async {
         tiptap.create(&document_name).await?;
         session.collab_document_name = Some(document_name.clone());
 
-        if let Some(connection) = crate::oauth_connection::find_by_user(db, coach_id).await? {
+        if let Some((_, connection)) = first_connected(&accounts, |id| {
+            crate::oauth_connection::find_by_user(db, id)
+        })
+        .await?
+        {
             session.provider = Some(connection.provider);
-            maybe_attach_meeting_url(db, config, &mut session, coach_id).await?;
+            maybe_attach_meeting_url(
+                db,
+                config,
+                &mut session,
+                &coaching_relationship,
+                scheduler_id,
+            )
+            .await?;
         }
 
         let member_ids =
@@ -699,12 +723,14 @@ pub(crate) fn ensure_coachee_reached(
 
 /// If a provider is specified on the session, attempt to attach a meeting URL. First checks
 /// if an existing meeting URL can be reused (for providers with persistent URLs), then
-/// falls back to creating a new meeting space via OAuth credentials.
+/// falls back to creating a new meeting space with the first of the relationship's meeting
+/// accounts, for a session scheduled by `scheduler_id`, that is connected to the provider.
 async fn maybe_attach_meeting_url(
     db: &DatabaseConnection,
     config: &Config,
     coaching_session_model: &mut Model,
-    coach_id: Id,
+    relationship: &coaching_relationships::Model,
+    scheduler_id: Id,
 ) -> Result<(), Error> {
     if let Some(provider) = &coaching_session_model.provider {
         if let Some(reused) = find_reusable_meeting_url(
@@ -715,26 +741,30 @@ async fn maybe_attach_meeting_url(
         .await?
         {
             coaching_session_model.meeting_url = Some(reused.url);
-            coaching_session_model.meeting_url_created_by_user_id =
-                reused.created_by_user_id.or(Some(coach_id));
+            coaching_session_model.meeting_url_created_by_user_id = reused
+                .created_by_user_id
+                .or(Some(relationship.schedule_owner_id(scheduler_id)));
             return Ok(());
         }
 
-        let credentials =
-            crate::oauth_connection::find_by_user_and_provider(db, coach_id, *provider).await?;
+        let accounts = relationship.meeting_account_ids(scheduler_id);
+        let credentials = first_connected(&accounts, |id| {
+            crate::oauth_connection::find_by_user_and_provider(db, id, *provider)
+        })
+        .await?;
 
-        if let Some(credentials) = credentials {
+        if let Some((account_id, credentials)) = credentials {
             let meeting_url = create_meeting_url(
                 db,
                 config,
-                coach_id,
+                account_id,
                 provider,
                 &coaching_session_model.date,
                 credentials.external_account_id,
             )
             .await?;
             coaching_session_model.meeting_url = Some(meeting_url);
-            coaching_session_model.meeting_url_created_by_user_id = Some(coach_id);
+            coaching_session_model.meeting_url_created_by_user_id = Some(account_id);
         }
     }
     Ok(())
@@ -766,17 +796,36 @@ async fn find_reusable_meeting_url(
     Ok(url)
 }
 
-/// Create a meeting URL for the given provider using the coach's OAuth connection.
+/// The first of `account_ids` that `lookup` finds an OAuth connection for, with it. Looks up
+/// no further once one is found.
+async fn first_connected<F, Fut, E>(
+    account_ids: &[Id],
+    lookup: F,
+) -> Result<Option<(Id, oauth_connections::Model)>, Error>
+where
+    F: Fn(Id) -> Fut,
+    Fut: Future<Output = Result<Option<oauth_connections::Model>, E>>,
+    Error: From<E>,
+{
+    for &id in account_ids {
+        if let Some(connection) = lookup(id).await? {
+            return Ok(Some((id, connection)));
+        }
+    }
+    Ok(None)
+}
+
+/// Create a meeting URL for the given provider using `account_id`'s OAuth connection.
 async fn create_meeting_url(
     db: &DatabaseConnection,
     config: &Config,
-    coach_id: Id,
+    account_id: Id,
     provider: &crate::meeting_provider::Provider,
     start_time: &NaiveDateTime,
     external_account_id: Option<String>,
 ) -> Result<String, Error> {
     let access_token =
-        crate::oauth_connection::get_valid_access_token(db, config, coach_id, *provider).await?;
+        crate::oauth_connection::get_valid_access_token(db, config, account_id, *provider).await?;
 
     match provider {
         crate::meeting_provider::Provider::Google => {

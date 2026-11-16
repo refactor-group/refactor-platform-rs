@@ -74,7 +74,7 @@ impl SeriesRule {
 ///
 /// 1. Refuses when the coachee is no longer a member of the relationship's organization.
 /// 2. Expands and validates the recurrence rule.
-/// 3. Resolves the coach's effective duration via the defaulting cascade.
+/// 3. Resolves the schedule owner's effective duration via the defaulting cascade.
 /// 4. Inserts the series row with the resolved rule (including the resolved
 ///    `duration_minutes`) serialized to JSONB.
 /// 5. Bulk-inserts the materialized sessions linked back to the series via
@@ -96,12 +96,12 @@ pub(crate) async fn create_with_sessions(
         entity_api::coaching_relationship::find_by_id(db, coaching_relationship_id).await?;
     let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
     ensure_required_participants_are_members(&relationship, &member_ids)?;
-    let coach_id = relationship.coach_id;
-    let zone = publication_zone(db, coach_id).await?;
+    let owner_id = relationship.schedule_owner_id(acting_user_id);
+    let zone = publication_zone(db, owner_id).await?;
 
     let dates = coaching_session::expand_recurrence(start_at, &recurrence, zone)?;
     let resolved_duration =
-        entity_api::coaching_session::resolve_duration(db, coach_id, requested_duration).await?;
+        entity_api::coaching_session::resolve_duration(db, owner_id, requested_duration).await?;
 
     let rule = SeriesRule {
         start_at,
@@ -127,7 +127,7 @@ pub(crate) async fn create_with_sessions(
     let sessions = coaching_session::bulk_create_recurring(
         &txn,
         coaching_relationship_id,
-        coach_id,
+        owner_id,
         acting_user_id,
         series.id,
         dates,
@@ -152,10 +152,10 @@ pub(crate) async fn create_with_sessions(
     Ok((series, sessions))
 }
 
-/// The zone a series published now by this coach is written in.
-async fn publication_zone(db: &DatabaseConnection, coach_id: Id) -> Result<Tz, Error> {
-    let coach = entity_api::user::find_by_id_without_roles(db, coach_id).await?;
-    Ok(emails::publication_zone(&coach))
+/// The zone a series published now by its schedule owner, `owner_id`, is written in.
+async fn publication_zone(db: &DatabaseConnection, owner_id: Id) -> Result<Tz, Error> {
+    let owner = entity_api::user::find_by_id_without_roles(db, owner_id).await?;
+    Ok(emails::publication_zone(&owner))
 }
 
 /// List every series owned by the given coaching relationship.
@@ -208,8 +208,9 @@ pub(crate) async fn reschedule(
     let relationship =
         coaching_relationship::find_by_id(db, existing.coaching_relationship_id).await?;
 
-    // A reschedule re-publishes the series, so it adopts the coach's zone as it is now.
-    let zone = publication_zone(db, relationship.coach_id).await?;
+    // A reschedule re-publishes the series, so it adopts its schedule owner's zone as it is now.
+    let owner_id = relationship.schedule_owner_id(acting_user_id);
+    let zone = publication_zone(db, owner_id).await?;
     let new_dates = coaching_session::expand_recurrence(new_start_at, &new_recurrence, zone)?;
 
     // Resolve the duration for the re-materialized sessions. A reschedule moves
@@ -289,7 +290,7 @@ pub(crate) async fn reschedule(
     let new_sessions = coaching_session::bulk_create_recurring(
         &txn,
         updated_series.coaching_relationship_id,
-        relationship.coach_id,
+        owner_id,
         acting_user_id,
         updated_series.id,
         new_dates,
@@ -620,7 +621,8 @@ pub(crate) async fn reschedule_following(
     let snapshot_series = coaching_session_series::find_by_id(db, series_id).await?;
     let relationship =
         coaching_relationship::find_by_id(db, snapshot_series.coaching_relationship_id).await?;
-    let zone = publication_zone(db, relationship.coach_id).await?;
+    let owner_id = relationship.schedule_owner_id(acting_user_id);
+    let zone = publication_zone(db, owner_id).await?;
     let now = chrono::Utc::now().naive_utc();
 
     // Planned once to reject a bad request before taking locks, then again under them.
@@ -724,7 +726,7 @@ pub(crate) async fn reschedule_following(
     let created = coaching_session::bulk_create_recurring(
         &txn,
         existing.coaching_relationship_id,
-        relationship.coach_id,
+        owner_id,
         acting_user_id,
         target.id,
         plan.extras.clone(),

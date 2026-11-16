@@ -7,6 +7,8 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::Id;
+
 /// What a coaching relationship is, which decides what each participant may do.
 #[derive(
     Debug, Clone, Copy, Eq, PartialEq, EnumIter, Deserialize, Serialize, DeriveActiveEnum, ToSchema,
@@ -42,6 +44,26 @@ impl Kind {
 pub enum Seat {
     CoachId,
     CoacheeId,
+}
+
+/// Whose zone, default session length and meeting account a session uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScheduleOwner {
+    /// The participant in this seat, whoever schedules.
+    Seat(Seat),
+    /// Whoever scheduled or last rescheduled the session or series.
+    Scheduler,
+}
+
+impl ScheduleOwner {
+    /// The owner's user id, given a relationship's coach and coachee and who scheduled.
+    pub fn user_id(self, coach_id: Id, coachee_id: Id, scheduler_id: Id) -> Id {
+        match self {
+            ScheduleOwner::Seat(Seat::CoachId) => coach_id,
+            ScheduleOwner::Seat(Seat::CoacheeId) => coachee_id,
+            ScheduleOwner::Scheduler => scheduler_id,
+        }
+    }
 }
 
 /// What a participant is to their relationship: derived from its kind and their seat,
@@ -81,6 +103,11 @@ pub trait Rules {
     fn must_be_member_to_schedule(&self, seat: Seat) -> bool;
     /// Transcripts of its sessions are scanned for suggested actions.
     fn suggests_actions(&self) -> bool;
+    /// Whose zone, default session length and meeting account a session uses.
+    fn schedule_owner(&self) -> ScheduleOwner;
+    /// A new meeting link may be made with the other participant's account when the schedule
+    /// owner has none connected.
+    fn links_with_other_account(&self) -> bool;
 }
 
 /// One person coaches the other.
@@ -125,6 +152,14 @@ impl Rules for Coaching {
     fn suggests_actions(&self) -> bool {
         true
     }
+
+    fn schedule_owner(&self) -> ScheduleOwner {
+        ScheduleOwner::Seat(Seat::CoachId)
+    }
+
+    fn links_with_other_account(&self) -> bool {
+        false
+    }
 }
 
 /// Two equals with identical privileges.
@@ -153,6 +188,14 @@ impl Rules for Colleague {
 
     fn suggests_actions(&self) -> bool {
         false
+    }
+
+    fn schedule_owner(&self) -> ScheduleOwner {
+        ScheduleOwner::Scheduler
+    }
+
+    fn links_with_other_account(&self) -> bool {
+        true
     }
 }
 
@@ -218,6 +261,20 @@ mod tests {
             assert!(rules.can_schedule_sessions(seat), "{seat:?}");
             assert!(rules.sees_all_actions(seat), "{seat:?}");
         }
+    }
+
+    #[test]
+    fn coaching_sessions_follow_the_coach_and_link_only_with_their_account() {
+        let rules = Kind::Coaching.rules();
+        assert_eq!(rules.schedule_owner(), ScheduleOwner::Seat(Seat::CoachId));
+        assert!(!rules.links_with_other_account());
+    }
+
+    #[test]
+    fn colleague_sessions_follow_the_scheduler_and_may_link_with_the_other_account() {
+        let rules = Kind::Colleague.rules();
+        assert_eq!(rules.schedule_owner(), ScheduleOwner::Scheduler);
+        assert!(rules.links_with_other_account());
     }
 
     #[test]
