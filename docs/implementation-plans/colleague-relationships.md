@@ -28,7 +28,9 @@ The only sanctioned changes to coaching behavior, each approved separately: the 
 relationship authorization fixes (the matrix rows marked `[tightened]`), the phase M
 membership rules (rows marked `[membership]`), the phase 4 invite request shape (`coach_id`
 becomes `relationship: { with_user_id, kind }`; the ORG-01 and ORG-03 baseline tests change only
-their request bodies), and the phase 6 response shape change (same access, different fields).
+their request bodies), the phase 4 email variables (the MAIL-12 baseline test's expected welcome
+variables gain `inviter_*`; the MAIL-10 test's call passes a `Recipient`; every old variable and
+assertion unchanged), and the phase 6 response shape change (same access, different fields).
 
 ## Phases
 

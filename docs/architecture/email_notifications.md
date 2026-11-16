@@ -84,7 +84,7 @@ Session and series lifecycle emails carry an `invite.ics` attachment, base64-inl
 
 `UID` is stable per session (`<session_id>@myrefactor.com`) or per series (`<series_id>@myrefactor.com`), and `SEQUENCE` increments on every change. That pair is what lets a calendar client update or remove an existing event in place instead of accumulating duplicates. The `ical_sequence` columns on `coaching_sessions` and `coaching_session_series` persist the counter; cancellations bump it in memory only, since the row is being deleted in the same operation.
 
-The anchor timezone is the coach's `users.timezone`, with a real IANA `VTIMEZONE` block spliced in so strict clients render local time rather than floating time. When the zone is UTC or unrecognized, times are emitted as UTC with no `TZID`.
+The anchor timezone is the schedule owner's `users.timezone` (the coach for a coaching relationship; for colleagues, whoever scheduled the session or series), with a real IANA `VTIMEZONE` block spliced in so strict clients render local time rather than floating time. When the zone is UTC or unrecognized, times are emitted as UTC with no `TZID`.
 
 Single sessions and series use separate templates for both reschedule and cancel. Resend templates have no conditional syntax, and the two paths supply different variables, so one template cannot render both shapes.
 
@@ -106,8 +106,9 @@ queue of pre-scheduled sends:
 - A session **booked inside the lead window** is due immediately and reminded on the next
   tick, so a same-day booking still gets one heads-up.
 
-The reminder goes to the coachee only: the coach already holds the invite from the
-scheduled send, and the copy is written from the coachee's side. It carries no `.ics` —
+The reminder goes to each participant the relationship's rules remind (`Rules::is_reminded`):
+the coachee only for coaching, since the coach already holds the invite from the scheduled send;
+both colleagues for a colleague relationship, each by their own notice and claim. It carries no `.ics` —
 the calendar event was delivered when the session was scheduled, and re-sending the same
 `UID`/`SEQUENCE` pair either does nothing or duplicates the event.
 
