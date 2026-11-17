@@ -2,7 +2,10 @@ use serde::Deserialize;
 use utoipa::ToSchema;
 
 use domain::coaching_relationship::InviteeRelationship;
-use domain::{coaching_relationship_kind::Kind, Id};
+use domain::{
+    coaching_relationship_kind::{Kind, Role},
+    Id,
+};
 
 pub(crate) mod action;
 pub(crate) mod goal_progress;
@@ -24,10 +27,15 @@ pub(crate) struct CreateParams {
 #[serde(deny_unknown_fields)]
 #[schema(as = params::coaching_relationship::InviteeRelationshipParams)]
 pub(crate) struct InviteeRelationshipParams {
-    /// The other person, already a member; for `coaching`, the coach of the person added.
+    /// The other person, already a member, who takes the seat the person added does not.
     pub(crate) with_user_id: Id,
     /// What the relationship is.
     pub(crate) kind: Kind,
+    /// The person added's role in this relationship, not their organization role: `coach`
+    /// or `coachee` for `coaching`, `colleague` for `colleague`. Omit to make them the
+    /// coachee of `coaching` or a colleague. A role the kind has no seat for is a 422
+    /// with `details.reason` `role_not_in_kind`.
+    pub(crate) role: Option<Role>,
 }
 
 impl From<InviteeRelationshipParams> for InviteeRelationship {
@@ -35,6 +43,7 @@ impl From<InviteeRelationshipParams> for InviteeRelationship {
         Self {
             with_user_id: params.with_user_id,
             kind: params.kind,
+            role: params.role,
         }
     }
 }

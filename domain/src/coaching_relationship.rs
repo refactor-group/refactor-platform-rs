@@ -16,20 +16,62 @@ pub use entity_api::coaching_relationship::{
     RoleFilterable, WithMembership,
 };
 
-/// The relationship to create for a person joining an organization: with whom, and what kind.
+/// The relationship to create for a person joining an organization: with whom, what kind,
+/// and what the invitee is in it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InviteeRelationship {
-    /// The other person; for coaching, the coach.
+    /// The other person, who takes the seat the invitee does not.
     pub with_user_id: Id,
     pub kind: Kind,
+    /// The invitee's role in the relationship; `None` seats them as the coachee.
+    pub role: Option<Role>,
 }
 
 impl InviteeRelationship {
-    /// The draft placing `with_user_id` in the coach seat and the invitee in the coachee seat.
+    /// Settles which seat the invitee takes: the coachee seat when `role` is omitted or both
+    /// seats hold it, else the seat holding `role`. Refuses with a 422 (`role_not_in_kind`) a
+    /// role neither seat of the kind holds.
+    pub fn seated(self) -> Result<SeatedInvitee, Error> {
+        let rules = self.kind.rules();
+        self.role
+            .map_or(Some(Seat::CoacheeId), |role| {
+                [Seat::CoacheeId, Seat::CoachId]
+                    .into_iter()
+                    .find(|&seat| rules.role(seat) == role)
+            })
+            .map(|invitee_seat| SeatedInvitee {
+                with_user_id: self.with_user_id,
+                kind: self.kind,
+                invitee_seat,
+            })
+            .ok_or_else(|| {
+                Error::invalid_because(
+                    reason::ROLE_NOT_IN_KIND,
+                    "The relationship's kind has no seat with the role given for the new member.",
+                )
+            })
+    }
+}
+
+/// An invitee relationship whose invitee seat is settled, ready to draft once the invitee's
+/// id is known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeatedInvitee {
+    with_user_id: Id,
+    kind: Kind,
+    invitee_seat: Seat,
+}
+
+impl SeatedInvitee {
+    /// The draft placing the invitee in their seat and `with_user_id` in the other.
     pub fn draft_for(self, invitee_id: Id) -> Draft {
+        let (coach_id, coachee_id) = match self.invitee_seat {
+            Seat::CoachId => (invitee_id, self.with_user_id),
+            Seat::CoacheeId => (self.with_user_id, invitee_id),
+        };
         Draft {
-            coach_id: self.with_user_id,
-            coachee_id: invitee_id,
+            coach_id,
+            coachee_id,
             kind: self.kind,
         }
     }
@@ -288,6 +330,65 @@ mod tests {
                     refused,
                     "{kind:?} {membership:?}"
                 );
+            }
+        }
+    }
+
+    /// For every kind and every requested role, the invitee takes a seat holding that role
+    /// (the coachee seat when none is requested) or the request is refused as
+    /// `role_not_in_kind`; the other person always takes the other seat.
+    #[test]
+    fn an_invitee_takes_the_seat_holding_their_requested_role() {
+        let (invitee, other) = (Id::new_v4(), Id::new_v4());
+        for kind in Kind::iter() {
+            let rules = kind.rules();
+            for role in Role::iter().map(Some).chain([None]) {
+                let seated = InviteeRelationship {
+                    with_user_id: other,
+                    kind,
+                    role,
+                }
+                .seated()
+                .map(|seated| seated.draft_for(invitee));
+                let role_in_kind = role.is_none_or(|role| {
+                    [Seat::CoachId, Seat::CoacheeId]
+                        .into_iter()
+                        .any(|seat| rules.role(seat) == role)
+                });
+
+                match seated {
+                    Ok(draft) => {
+                        assert!(role_in_kind, "{kind:?} {role:?}: refused");
+                        assert_eq!(draft.kind, kind);
+                        let (invitee_seat, other_id) = if draft.coach_id == invitee {
+                            (Seat::CoachId, draft.coachee_id)
+                        } else {
+                            assert_eq!(draft.coachee_id, invitee, "{kind:?} {role:?}");
+                            (Seat::CoacheeId, draft.coach_id)
+                        };
+                        assert_eq!(other_id, other, "{kind:?} {role:?}");
+                        assert_eq!(
+                            rules.role(invitee_seat),
+                            role.unwrap_or(rules.role(Seat::CoacheeId)),
+                            "{kind:?} {role:?}"
+                        );
+                        assert!(
+                            invitee_seat == Seat::CoacheeId
+                                || rules.role(Seat::CoacheeId) != rules.role(invitee_seat),
+                            "{kind:?} {role:?}: the coachee seat when it holds the role"
+                        );
+                    }
+                    Err(err) => {
+                        assert!(!role_in_kind, "{kind:?} {role:?}: accepted");
+                        let DomainErrorKind::Internal(InternalErrorKind::Entity(
+                            EntityErrorKind::Unprocessable { details, .. },
+                        )) = err.error_kind
+                        else {
+                            panic!("expected a 422, got {:?}", err.error_kind);
+                        };
+                        assert_eq!(details["reason"], "role_not_in_kind");
+                    }
+                }
             }
         }
     }

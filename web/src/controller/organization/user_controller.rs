@@ -50,8 +50,8 @@ pub async fn index(
 ///
 /// Creates a new user associated with the specified organization, optionally
 /// creating their relationship with an existing member in the same transaction:
-/// for `coaching`, `relationship.with_user_id` coaches the new user; for
-/// `colleague`, the two are colleagues.
+/// for `coaching`, `relationship.with_user_id` coaches the new user, or is coached by
+/// them when `relationship.role` is `coach`; for `colleague`, the two are colleagues.
 #[utoipa::path(
     post,
     path = "/organizations/{organization_id}/users",
@@ -65,7 +65,7 @@ pub async fn index(
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 409, description = "The relationship is refused, and nothing is created and no email sent: the organization is archived, the person named in `relationship` is not a member of it, or the two people already have a relationship of the other kind in the organization (`details.reason` `pair_already_related`, `details.relationship_id` the existing relationship)"),
-        (status = 422, description = "The body carries `coach_id`, which `relationship` replaced; nothing is created and no email sent"),
+        (status = 422, description = "Nothing is created and no email sent: the body carries `coach_id`, which `relationship` replaced, or `relationship.role` is a role its kind has no seat for (`details.reason` `role_not_in_kind`)"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
