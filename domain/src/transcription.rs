@@ -413,8 +413,9 @@ fn unattributed(speakers: &[transcription_types::Participant]) -> Vec<Attributio
 }
 
 /// Gathers what is known about the coach; every failure degrades the evidence, none is fatal.
-/// The attendee list is read with the account of whoever made the session's meeting link,
-/// or the coach's when no maker was recorded.
+/// Attendees are matched against the coach's account. The attendee list itself is read with
+/// the token of whoever made the session's meeting link, or the coach's when no maker was
+/// recorded.
 async fn gather_evidence(
     db: &DatabaseConnection,
     recording_bot: Option<&dyn recording_bot::Provider>,
@@ -434,11 +435,11 @@ async fn gather_evidence(
     let Some(recording) = recording_of_space(db, recording_bot, transcription, &code).await else {
         return Gathered::default();
     };
-    let coach_account_id = external_account_id(db, config, link_maker_id, MeetingProvider::Google)
+    let coach_account_id = external_account_id(db, config, coach_id, MeetingProvider::Google)
         .await
         .inspect_err(|_| {
             warn!(
-                "Attribution for transcription {}: looking up the meeting link maker's Google account failed",
+                "Attribution for transcription {}: looking up the coach's Google account failed",
                 transcription.id
             )
         })

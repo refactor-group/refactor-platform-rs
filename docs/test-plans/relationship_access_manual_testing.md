@@ -455,7 +455,7 @@ How to read the tables:
 | TRN-29 | any transcription, suggestion, recording or image route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 | TRN-30 | Replaced by TRN-33: a colleague transcript is never given an analysis, so the sweep has none to skip | | | | |
 | TRN-31 | GET, POST /coaching_sessions/{RC session}/transcript_suggestions/scan, RC the KIND-04 colleague relationship, its session with a completed transcript | COACH, MEMBER | GET 200 `status: unavailable`; POST 422, no analysis written | `domain/src/transcript_suggestion/review.rs:515` | The status the route already gives when nothing can be scanned |
-| TRN-32 | Transcript completion for a Google Meet session on RC whose link MEMBER made (`meeting_url_created_by_user_id` = MEMBER_ID) | operator | the attendee list is read with MEMBER's Google account and token; with no recorded link maker, COACH's | `domain/src/transcription.rs` `gather_evidence` | Who is attributed is unchanged |
+| TRN-32 | Transcript completion for a Google Meet session on RC whose link MEMBER made (`meeting_url_created_by_user_id` = MEMBER_ID) | operator | the attendee list is read with MEMBER's Google token and matched against COACH's Google account; with no recorded link maker, both are COACH's | `domain/src/transcription.rs` `gather_evidence` | Who is attributed is unchanged |
 | TRN-33 | Transcript completion for RC's session with suggestions configured, beside one for R1 | operator | RC's transcript gets no `transcript_analyses` row; R1's gets one `pending` (psql) | `domain/src/transcription.rs` `owed_analyses` | Nothing is queued that the sweep would never claim. Replaces TRN-30 |
 
 ### 4.9 Meeting links and OAuth-dependent flows (`MEET`)
@@ -1132,5 +1132,5 @@ a frozen `domain` test, or by hand with the reason.
 | SER-27 | `domain/src/coaching_session_series_sqlite_tests.rs::a_colleague_following_reschedule_the_other_colleague_missed_stays_pending`, `domain/src/coaching_session_series_sqlite_tests.rs::a_colleague_following_reschedule_that_missed_only_the_scheduler_settles` |
 | ORG-40 | `web/src/controller/organization/user_controller_sqlite_tests.rs::a_member_body_with_the_replaced_coach_id_is_refused` |
 | SER-28 | `domain/src/coaching_session_series_sqlite_tests.rs::an_unchanged_colleague_series_saved_from_another_zone_changes_nothing` |
-| TRN-32 | `domain/src/transcription_completion_tests.rs::attribution_looks_up_the_account_that_made_the_meeting_link`, `domain/src/transcription_completion_tests.rs::attribution_without_a_recorded_link_maker_looks_up_the_coach` |
+| TRN-32 | `domain/src/transcription_completion_tests.rs::attribution_matches_the_coach_and_reads_attendees_as_the_link_maker`, `domain/src/transcription_completion_tests.rs::attribution_without_a_recorded_link_maker_reads_as_the_coach` |
 | TRN-33 | `domain/src/transcription_analysis_hook_sqlite_tests.rs::completing_a_colleague_transcript_writes_no_analysis`, `domain/src/transcription_analysis_hook_sqlite_tests.rs::completing_with_a_target_writes_one_pending_analysis_with_the_segments` |
