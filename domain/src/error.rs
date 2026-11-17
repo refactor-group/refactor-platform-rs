@@ -65,6 +65,11 @@ pub enum EntityErrorKind {
         message: String,
         details: Option<serde_json::Value>,
     },
+    /// A request refused as invalid, answered with a 422 whose `details` say why.
+    Unprocessable {
+        message: String,
+        details: serde_json::Value,
+    },
     CannotLinkCompletedGoal,
     GoalAlreadyLinkedToSession,
     OrganizationNotEmpty {
@@ -166,17 +171,33 @@ impl Error {
         details.insert("reason".to_string(), reason.into());
         Self::conflict(message, details.into())
     }
+
+    /// A 422 whose `details` carry a machine-readable `reason` (one of [`reason`]).
+    pub(crate) fn invalid_because(reason: &str, message: impl Into<String>) -> Self {
+        Self {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::Unprocessable {
+                    message: message.into(),
+                    details: serde_json::json!({ "reason": reason }),
+                },
+            )),
+        }
+    }
 }
 
-/// The `details.reason` values a 409 can carry.
+/// The `details.reason` values a 409 or 422 can carry.
 pub(crate) mod reason {
     pub(crate) const COACHEE_NOT_A_MEMBER: &str = "coachee_not_a_member";
+    pub(crate) const PARTICIPANT_NOT_A_MEMBER: &str = "participant_not_a_member";
     pub(crate) const ASSIGNEE_NOT_A_MEMBER: &str = "assignee_not_a_member";
     pub(crate) const USER_HAS_COACHING_HISTORY: &str = "user_has_coaching_history";
     pub(crate) const SESSIONS_HAVE_CONTENT: &str = "sessions_have_content";
     pub(crate) const NO_UPCOMING_SESSIONS: &str = "no_upcoming_sessions";
     pub(crate) const SERIES_MEMBER: &str = "series_member";
     pub(crate) const LEGACY_SERIES: &str = "legacy_series";
+    pub(crate) const PAIR_ALREADY_RELATED: &str = "pair_already_related";
+    pub(crate) const ASSIGNEE_SCOPE_NOT_APPLICABLE: &str = "assignee_scope_not_applicable";
 }
 
 impl fmt::Display for Error {
@@ -244,6 +265,17 @@ impl From<EntityApiError> for Error {
                 return Error {
                     source: Some(Box::new(err)),
                     error_kind: DomainErrorKind::Validation(message),
+                };
+            }
+            EntityApiErrorKind::PairAlreadyRelated { relationship_id } => {
+                let refusal = Error::conflict_because(
+                    reason::PAIR_ALREADY_RELATED,
+                    "These two people already have a relationship of another kind in this organization.",
+                    serde_json::json!({ "relationship_id": relationship_id }),
+                );
+                return Error {
+                    source: Some(Box::new(err)),
+                    ..refusal
                 };
             }
             EntityApiErrorKind::RecordNotFound => EntityErrorKind::NotFound,

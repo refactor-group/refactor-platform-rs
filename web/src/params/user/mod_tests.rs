@@ -4,6 +4,7 @@ use axum::body::to_bytes;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::NaiveTime;
+use domain::coaching_relationship_kind::Kind;
 use domain::error::{DomainErrorKind, Error as DomainError};
 use domain::user::WorkingHoursPatch;
 use domain::users::Role;
@@ -56,12 +57,11 @@ fn update_role_params_reads_the_pascal_case_wire_form() {
         .expect_err("the lowercase database form is not the wire form");
 }
 
-/// `flatten` puts `coach_id` beside the user fields rather than nesting it, and
-/// leaves a body predating the field still valid. Nesting either would break
-/// deployed clients.
+/// `flatten` puts `relationship` beside the user fields rather than nesting it, and
+/// leaves a body without one still valid. Nesting either would break deployed clients.
 #[test]
-fn create_member_params_reads_coach_id_beside_the_flattened_user_fields() {
-    let coach_id = Id::new_v4();
+fn create_member_params_reads_relationship_beside_the_flattened_user_fields() {
+    let with_user_id = Id::new_v4();
     let user_fields = r#"
         "first_name": "Ada",
         "last_name": "Lovelace",
@@ -70,16 +70,45 @@ fn create_member_params_reads_coach_id_beside_the_flattened_user_fields() {
         "timezone": "UTC"
     "#;
 
-    let without_coach: CreateMemberParams = serde_json::from_str(&format!("{{{user_fields}}}"))
-        .expect("a body predating coach_id must still deserialize");
-    assert_eq!(without_coach.user.email, "ada@example.com");
-    assert!(without_coach.coach_id.is_none());
+    let without: CreateMemberParams = serde_json::from_str(&format!("{{{user_fields}}}"))
+        .expect("a body without a relationship must still deserialize");
+    assert_eq!(without.user.email, "ada@example.com");
+    assert!(without.relationship.is_none());
 
-    let with_coach: CreateMemberParams =
-        serde_json::from_str(&format!(r#"{{{user_fields}, "coach_id": "{coach_id}"}}"#))
-            .expect("coach_id must be read at the same level as the user fields");
-    assert_eq!(with_coach.coach_id, Some(coach_id));
-    assert_eq!(with_coach.user.email, "ada@example.com");
+    let with: CreateMemberParams = serde_json::from_str(&format!(
+        r#"{{{user_fields}, "relationship": {{"with_user_id": "{with_user_id}", "kind": "colleague"}}}}"#
+    ))
+    .expect("relationship must be read at the same level as the user fields");
+    let relationship = with.relationship.expect("the relationship is read");
+    assert_eq!(relationship.with_user_id, with_user_id);
+    assert_eq!(relationship.kind, Kind::Colleague);
+    assert_eq!(with.user.email, "ada@example.com");
+}
+
+/// `coach_id` was replaced by `relationship`; a stale client must be refused rather than
+/// led to believe a coach was assigned.
+#[test]
+fn attach_role_params_refuses_the_replaced_coach_id() {
+    let body = format!(r#"{{"role": "User", "coach_id": "{}"}}"#, Id::new_v4());
+
+    let error = serde_json::from_str::<AttachRoleParams>(&body)
+        .expect_err("coach_id must be refused, not ignored");
+
+    assert!(
+        error.to_string().contains("unknown field"),
+        "the caller must be told which key was rejected: {error}"
+    );
+}
+
+/// The relationship's kind decides who coaches whom, so it may not be left out.
+#[test]
+fn a_relationship_without_a_kind_is_refused() {
+    let body = format!(
+        r#"{{"role": "User", "relationship": {{"with_user_id": "{}"}}}}"#,
+        Id::new_v4()
+    );
+
+    serde_json::from_str::<AttachRoleParams>(&body).expect_err("kind is required");
 }
 
 fn update_params(start: Option<&str>, end: Option<&str>) -> UpdateParams {

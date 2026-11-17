@@ -292,6 +292,8 @@ async fn test_send_welcome_email_success() {
                     "last_name": "Doe",
                     "coach_first_name": "Sarah",
                     "coach_full_name": "Sarah Coach",
+                    "inviter_first_name": "Sarah",
+                    "inviter_full_name": "Sarah Coach",
                     "magic_link_url": "https://app.example.com/setup/test-magic-link-token"
                 }
             }
@@ -403,6 +405,8 @@ async fn test_send_welcome_email_escapes_name_with_specials() {
                     "last_name": "Doe, Jr.",
                     "coach_first_name": "Alex",
                     "coach_full_name": "Alex Smith",
+                    "inviter_first_name": "Alex",
+                    "inviter_full_name": "Alex Smith",
                     "magic_link_url": "https://app.example.com/setup/test-magic-link-token"
                 }
             }
@@ -498,7 +502,15 @@ fn invite_ics_for_participants(coach: &users::Model, coachee: &users::Model) -> 
         .and_hms_opt(12, 0, 0)
         .unwrap();
 
-    let ics = build_session_invite_ics(coach, coachee, &session, "desc".into(), dtstamp).unwrap();
+    let ics = build_session_invite_ics(
+        coach,
+        coachee,
+        &session,
+        "desc".into(),
+        dtstamp,
+        anchor_tz(coach),
+    )
+    .unwrap();
     unfold(&ics)
 }
 
@@ -586,6 +598,67 @@ fn test_anchor_timezone_still_follows_the_coach() {
     assert!(ics.contains("TZID:America/New_York"));
 }
 
+/// The `DTSTART;TZID` of a session invite built as the scheduled send builds it.
+fn invite_start_zone(participants: &Participants<'_>, scheduled_by: &users::Model) -> String {
+    let session = coaching_sessions::Model {
+        scheduled_by_user_id: scheduled_by.id,
+        ..create_test_session()
+    };
+    let ics = build_session_invite_ics(
+        participants.coach,
+        participants.coachee,
+        &session,
+        "desc".into(),
+        NaiveDate::from_ymd_opt(2026, 3, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+        anchor_tz(participants.schedule_owner(&session)),
+    )
+    .unwrap();
+    unfold(&ics)
+        .lines()
+        .find_map(|line| line.strip_prefix("DTSTART;TZID="))
+        .and_then(|rest| rest.split_once(':'))
+        .map(|(zone, _)| zone.to_string())
+        .expect("a zoned DTSTART")
+}
+
+/// SCHED-20: a colleague session's invite is anchored to the colleague who scheduled it.
+#[test]
+fn a_colleague_sessions_invite_follows_its_schedulers_zone() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/Los_Angeles");
+    let participants = Participants {
+        coach: &coach,
+        coachee: &coachee,
+        kind: coaching_relationship_kind::Kind::Colleague,
+    };
+
+    assert_eq!(
+        invite_start_zone(&participants, &coachee),
+        "America/Los_Angeles"
+    );
+    assert_eq!(invite_start_zone(&participants, &coach), "America/New_York");
+}
+
+/// A coaching session's invite is anchored to the coach whoever scheduled it.
+#[test]
+fn a_coaching_sessions_invite_follows_the_coachs_zone_whoever_scheduled_it() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/Los_Angeles");
+    let participants = Participants {
+        coach: &coach,
+        coachee: &coachee,
+        kind: coaching_relationship_kind::Kind::Coaching,
+    };
+
+    assert_eq!(
+        invite_start_zone(&participants, &coachee),
+        "America/New_York"
+    );
+}
+
 #[test]
 fn test_build_session_invite_ics_structure() {
     let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "America/New_York");
@@ -609,6 +682,7 @@ fn test_build_session_invite_ics_structure() {
         &session,
         "Join this session: https://app/x".into(),
         dtstamp,
+        anchor_tz(&coach),
     )
     .unwrap();
 
@@ -649,6 +723,7 @@ fn test_build_session_invite_ics_bumped_sequence() {
         &session,
         "Join this session: https://app/x".into(),
         dtstamp,
+        anchor_tz(&coach),
     )
     .unwrap();
 
@@ -1452,6 +1527,7 @@ fn test_build_session_cancel_ics_structure() {
         SESSION_CANCELLED_DESCRIPTION.to_string(),
         dtstamp,
         session.ical_sequence,
+        anchor_tz(&coach),
     )
     .unwrap();
 
@@ -1735,8 +1811,15 @@ fn test_standalone_session_ics_carries_no_recurrence_id() {
 
     assert!(session.coaching_session_series_id.is_none());
 
-    let invite =
-        build_session_invite_ics(&coach, &coachee, &session, "desc".into(), dtstamp).unwrap();
+    let invite = build_session_invite_ics(
+        &coach,
+        &coachee,
+        &session,
+        "desc".into(),
+        dtstamp,
+        anchor_tz(&coach),
+    )
+    .unwrap();
     assert!(invite.contains(&format!("UID:{}@myrefactor.com", session.id)));
     assert!(!invite.contains("RECURRENCE-ID"));
 
@@ -1747,6 +1830,7 @@ fn test_standalone_session_ics_carries_no_recurrence_id() {
         "desc".into(),
         dtstamp,
         session.ical_sequence,
+        anchor_tz(&coach),
     )
     .unwrap();
     assert!(cancel.contains(&format!("UID:{}@myrefactor.com", session.id)));
@@ -4567,6 +4651,9 @@ async fn test_send_session_reminder_email_variables() {
                     "first_name": "Jane",
                     "coach_first_name": "Alex",
                     "coach_full_name": "Alex Smith",
+                    "other_user_first_name": "Alex",
+                    "other_user_last_name": "Smith",
+                    "other_user_role": "coach",
                     "organization_name": "Acme Corp",
                     "session_date": "Wednesday, March 4, 2026",
                     "session_time": "10:00 AM",
@@ -4586,9 +4673,18 @@ async fn test_send_session_reminder_email_variables() {
         .await
         .unwrap();
 
-    send_session_reminder_email(&email_config, &coachee, &coach, &session, &org)
-        .await
-        .unwrap();
+    send_session_reminder_email(
+        &email_config,
+        &Recipient {
+            user: &coachee,
+            other_user: &coach,
+            other_user_role: coaching_relationship_kind::Role::Coach,
+        },
+        &session,
+        &org,
+    )
+    .await
+    .unwrap();
 
     mock.assert_async().await;
 }
@@ -4620,8 +4716,11 @@ async fn test_send_session_reminder_email_goes_only_to_the_coachee() {
 
     send_session_reminder_email(
         &email_config,
-        &coachee,
-        &coach,
+        &Recipient {
+            user: &coachee,
+            other_user: &coach,
+            other_user_role: coaching_relationship_kind::Role::Coach,
+        },
         &create_test_session(),
         &create_test_organization(),
     )
@@ -4668,8 +4767,11 @@ async fn test_send_session_reminder_email_carries_title_and_meeting_url() {
 
     send_session_reminder_email(
         &email_config,
-        &coachee,
-        &coach,
+        &Recipient {
+            user: &coachee,
+            other_user: &coach,
+            other_user_role: coaching_relationship_kind::Role::Coach,
+        },
         &session,
         &create_test_organization(),
     )
@@ -4698,6 +4800,221 @@ async fn test_session_reminder_missing_template_id() {
         DomainErrorKind::Internal(InternalErrorKind::Config) => {}
         other => panic!("Expected Config error, got: {other:?}"),
     }
+}
+
+// ───── colleague wording ─────
+
+/// The `.ics` DESCRIPTION a session between `coach` and `coachee` of `kind` carries.
+fn description_for(
+    kind: coaching_relationship_kind::Kind,
+    coach: &users::Model,
+    coachee: &users::Model,
+) -> String {
+    let participants = Participants {
+        coach,
+        coachee,
+        kind,
+    };
+    ical::compose_description(&DescriptionParts {
+        session_url: "https://app.example.com/coaching-sessions/1".to_string(),
+        title: None,
+        participants: &participants.description_line(),
+        organization_name: "Acme Corp",
+        topics: &[],
+        goal_titles: &[],
+        open_actions: &[],
+        anchor_tz: chrono_tz::UTC,
+    })
+}
+
+/// A coaching DESCRIPTION is unchanged: it names the coach alone.
+#[test]
+fn a_coaching_description_names_the_coach_as_before() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+
+    assert_eq!(
+        description_for(coaching_relationship_kind::Kind::Coaching, &coach, &coachee),
+        "Coach: Alex Smith\nOrganization: Acme Corp\n\n\
+         Join this session: https://app.example.com/coaching-sessions/1"
+    );
+}
+
+/// One `.ics` reaches both colleagues, so its DESCRIPTION names them both and no coach.
+#[test]
+fn a_colleague_description_names_both_colleagues_and_no_coach() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+
+    let description = description_for(
+        coaching_relationship_kind::Kind::Colleague,
+        &coach,
+        &coachee,
+    );
+
+    assert!(
+        description.contains("Colleagues: Alex Smith and Jane Doe\nOrganization: Acme Corp"),
+        "{description}"
+    );
+    assert!(!description.contains("Coach:"), "{description}");
+}
+
+/// A Resend mock expecting one email to `recipient` from `template_id` that names `other`
+/// a colleague.
+async fn colleague_named_in(
+    server: &mut ServerGuard,
+    template_id: &str,
+    recipient: &users::Model,
+    other: &users::Model,
+) -> mockito::Mock {
+    server
+        .mock("POST", "/emails")
+        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            "to": [format!("\"{} {}\" <{}>", recipient.first_name, recipient.last_name, recipient.email)],
+            "template": {
+                "id": template_id,
+                "variables": {
+                    "other_user_first_name": other.first_name,
+                    "other_user_last_name": other.last_name,
+                    "other_user_role": "colleague",
+                }
+            }
+        })))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await
+}
+
+/// Two colleagues, Alex in the coach seat and Jane in the coachee seat.
+fn colleagues() -> (users::Model, users::Model) {
+    (
+        create_test_user_with("Alex", "Smith", "alex@example.com", "UTC"),
+        create_test_user_with("Jane", "Doe", "jane@example.com", "UTC"),
+    )
+}
+
+/// MAIL-01 for colleagues: each scheduled email names the other a colleague, and the shared
+/// invite names them both.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn each_colleagues_scheduled_email_names_the_other_a_colleague() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let (alex, jane) = colleagues();
+    let capture = IcsCapture::default();
+    let to_alex = colleague_named_in(&mut server, "session_template_456", &alex, &jane).await;
+    let to_jane = server
+        .mock("POST", "/emails")
+        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            "to": ["\"Jane Doe\" <jane@example.com>"],
+            "template": { "variables": {
+                "other_user_first_name": "Alex",
+                "other_user_role": "colleague",
+            }}
+        })))
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    send_session_scheduled_email(
+        &mock_description_loaders(),
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &alex,
+                coachee: &jane,
+                kind: coaching_relationship_kind::Kind::Colleague,
+            },
+            member_ids: &[alex.id, jane.id],
+        },
+        &create_test_session(),
+        &create_test_organization(),
+    )
+    .await
+    .expect("the scheduled emails send");
+
+    to_alex.assert_async().await;
+    to_jane.assert_async().await;
+    let vevent = capture.vevent();
+    let description = vevent
+        .lines()
+        .find(|line| line.starts_with("DESCRIPTION:"))
+        .expect("the invite carries a DESCRIPTION");
+    assert!(
+        description.starts_with("DESCRIPTION:Colleagues: Alex Smith and Jane Doe"),
+        "{description}"
+    );
+    assert!(!description.contains("Coach:"), "{description}");
+}
+
+/// MAIL-02 for colleagues: each rescheduled email names the other a colleague.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn each_colleagues_rescheduled_email_names_the_other_a_colleague() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let (alex, jane) = colleagues();
+    let template = "session_reschedule_template_abc";
+    let to_alex = colleague_named_in(&mut server, template, &alex, &jane).await;
+    let to_jane = colleague_named_in(&mut server, template, &jane, &alex).await;
+    let session = create_test_session();
+
+    send_session_rescheduled_email(
+        &mock_description_loaders(),
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &alex,
+                coachee: &jane,
+                kind: coaching_relationship_kind::Kind::Colleague,
+            },
+            member_ids: &[alex.id, jane.id],
+        },
+        &session,
+        &create_test_organization(),
+        session.date - chrono::Duration::days(1),
+    )
+    .await
+    .expect("the rescheduled emails send");
+
+    to_alex.assert_async().await;
+    to_jane.assert_async().await;
+}
+
+/// MAIL-03 for colleagues: each cancellation names the other a colleague.
+#[tokio::test]
+async fn each_colleagues_cancelled_email_names_the_other_a_colleague() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let (alex, jane) = colleagues();
+    let template = "session_cancel_template_abc";
+    let to_alex = colleague_named_in(&mut server, template, &alex, &jane).await;
+    let to_jane = colleague_named_in(&mut server, template, &jane, &alex).await;
+
+    send_session_cancelled_email(
+        &config,
+        &Audience {
+            participants: &Participants {
+                coach: &alex,
+                coachee: &jane,
+                kind: coaching_relationship_kind::Kind::Colleague,
+            },
+            member_ids: &[alex.id, jane.id],
+        },
+        &create_test_session(),
+        &create_test_organization(),
+        chrono_tz::UTC,
+    )
+    .await
+    .expect("the cancellations send");
+
+    to_alex.assert_async().await;
+    to_jane.assert_async().await;
 }
 
 // ───── stored series zone vs the coach's current zone ─────

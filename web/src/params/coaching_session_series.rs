@@ -15,8 +15,9 @@ pub(crate) struct CreateParams {
     pub(crate) coaching_relationship_id: Id,
     pub(crate) start_at: NaiveDateTime,
     pub(crate) recurrence: Recurrence,
-    /// Session duration in minutes (1..=480). Omit to use the coach's stored
-    /// `default_coaching_session_duration_minutes`.
+    /// Session duration in minutes (1..=480). Omit to use the stored
+    /// `default_coaching_session_duration_minutes` of the coach, or of the caller in a
+    /// colleague relationship.
     pub(crate) duration_minutes: Option<i16>,
 }
 

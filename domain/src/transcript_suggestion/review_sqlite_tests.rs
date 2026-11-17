@@ -19,6 +19,7 @@ use sea_orm::{
 
 use super::*;
 use crate::events::{DomainEvent, EventHandler};
+use crate::test_utils::sqlite::fixture::make_colleagues;
 use crate::test_utils::sqlite::{
     coach_of, database, seed_membership, seed_organization, within_time_limit,
 };
@@ -1581,6 +1582,31 @@ async fn a_session_without_a_completed_transcript_or_a_key_cannot_be_scanned() {
         let error = start_scan(&f.db, &publisher, &scanning(), &f.session)
             .await
             .expect_err("nothing to scan without a completed transcript");
+        assert!(is_validation(&error));
+
+        assert!(analyses(&f).await.is_empty());
+        assert_eq!(recorder.suggestion_changes(), 0);
+    })
+    .await;
+}
+
+/// TRN-31: a colleague session's completed transcript is not scannable: the scan reads
+/// `unavailable` and starting one is refused, as when nothing can be scanned.
+#[tokio::test]
+async fn a_colleague_session_cannot_be_scanned() {
+    within_time_limit(async {
+        let f = fixture().await;
+        delete_analysis(&f).await;
+        make_colleagues(&f.db, f.relationship_id).await;
+        let (publisher, recorder) = recording_publisher();
+
+        assert_eq!(
+            scan_status(&f.db, &scanning(), &f.session).await.unwrap(),
+            ScanStatus::Unavailable
+        );
+        let error = start_scan(&f.db, &publisher, &scanning(), &f.session)
+            .await
+            .expect_err("a colleague session suggests nothing");
         assert!(is_validation(&error));
 
         assert!(analyses(&f).await.is_empty());

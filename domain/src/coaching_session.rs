@@ -1,7 +1,11 @@
 pub(crate) mod recurrence;
 pub mod with_permit;
 
-use crate::coaching_relationship::{coachee_not_a_member, ensure_coachee_is_member};
+use std::future::Future;
+
+use crate::coaching_relationship::{
+    ensure_required_participants_are_members, participant_not_a_member,
+};
 use crate::coaching_relationships;
 use crate::coaching_session_hydration::{
     run_coaching_session_hydration_tasks, CoachingSessionHydrationContext,
@@ -14,7 +18,8 @@ use crate::error::{
 };
 use crate::events::{DomainEvent, EventPublisher};
 use crate::gateway::tiptap::TiptapDocument;
-use crate::meeting_provider::MeetingProperties;
+use crate::meeting_provider::{MeetingProperties, Provider};
+use crate::oauth_connections;
 use crate::Id;
 use chrono::{DurationRound, NaiveDateTime, TimeDelta, Utc};
 use entity_api::{
@@ -103,11 +108,11 @@ pub(crate) async fn create(
         });
     }
     let member_ids = coaching_relationship::notify_member_ids(db, &coaching_relationship).await?;
-    ensure_coachee_is_member(&coaching_relationship, &member_ids)?;
-    let coach_id = coaching_relationship.coach_id;
+    ensure_required_participants_are_members(&coaching_relationship, &member_ids)?;
+    let owner_id = coaching_relationship.schedule_owner_id(acting_user_id);
 
     coaching_session_model.date = SessionDate::new(coaching_session_model.date)?.into_inner();
-    // A link the request carries was set by hand; one attached below comes from the coach.
+    // A link the request carries was set by hand; one attached below comes from a connected account.
     coaching_session_model.meeting_url_created_by_user_id = coaching_session_model
         .meeting_url
         .as_ref()
@@ -122,7 +127,19 @@ pub(crate) async fn create(
     coaching_session_model.collab_document_name = Some(document_name.clone());
     coaching_session_model.hydrated_at = Some(chrono::Utc::now().into());
 
-    maybe_attach_meeting_url(db, config, &mut coaching_session_model, coach_id).await?;
+    let accounts = member_meeting_account_ids(&coaching_relationship, acting_user_id, &member_ids);
+    if coaching_session_model.provider.is_none() && coaching_session_model.meeting_url.is_none() {
+        coaching_session_model.provider = other_account_provider(db, owner_id, &accounts).await?;
+    }
+    maybe_attach_meeting_url(
+        db,
+        config,
+        &mut coaching_session_model,
+        &coaching_relationship,
+        acting_user_id,
+        &accounts,
+    )
+    .await?;
 
     let tiptap = TiptapDocument::new(config).await?;
     tiptap.create(&document_name).await?;
@@ -135,7 +152,7 @@ pub(crate) async fn create(
         let session = coaching_session::create(
             &txn,
             coaching_session_model,
-            coach_id,
+            owner_id,
             acting_user_id,
             requested_duration,
         )
@@ -183,7 +200,8 @@ pub(crate) async fn create(
 
 /// Bulk-creates a series of coaching sessions. Provider is intentionally not
 /// captured here — every row's `provider` stays NULL until [`ensure_hydrated`]
-/// fills it in on first read, using the coach's then-current OAuth connection.
+/// fills it in on first read, using the then-current OAuth connection of the
+/// session's schedule owner. A missing duration takes `owner_id`'s default.
 ///
 /// Every materialized recurring session belongs to a parent
 /// `coaching_session_series` row (`series_id`); the [`crate::coaching_session_series`]
@@ -192,7 +210,7 @@ pub(crate) async fn create(
 pub(crate) async fn bulk_create_recurring(
     db: &impl sea_orm::ConnectionTrait,
     coaching_relationship_id: Id,
-    coach_id: Id,
+    owner_id: Id,
     scheduled_by: Id,
     series_id: Id,
     dates: Vec<NaiveDateTime>,
@@ -201,7 +219,7 @@ pub(crate) async fn bulk_create_recurring(
     Ok(coaching_session::bulk_create_recurring(
         db,
         coaching_relationship_id,
-        coach_id,
+        owner_id,
         scheduled_by,
         series_id,
         truncated(dates)?,
@@ -279,12 +297,13 @@ fn truncated(dates: Vec<NaiveDateTime>) -> Result<Vec<NaiveDateTime>, Error> {
 /// Runs deferred side-effects (Tiptap doc, meeting URL, in-progress-goal links)
 /// on first read, stamping `hydrated_at` so subsequent reads short-circuit.
 ///
-/// Provider is resolved at hydration time from the coach's most-recently-updated
-/// OAuth connection — not at session-create time. For recurring series created
-/// via [`bulk_create_recurring`], this means changing or reconnecting providers
+/// Provider is resolved at hydration time from the most-recently-updated OAuth
+/// connection of the first account in the relationship's meeting accounts, among
+/// participants still in its organization, that has one, rather than at session-create time.
+/// For recurring series created via [`bulk_create_recurring`], this means changing or reconnecting providers
 /// between bulk-create and first read will change which provider the session
 /// uses. This is the intended behavior: recurring sessions defer the choice
-/// until the coach actually opens them.
+/// until someone actually opens them.
 pub async fn ensure_hydrated(
     db: &DatabaseConnection,
     config: &Config,
@@ -320,18 +339,27 @@ pub async fn ensure_hydrated(
         generate_document_name(&organization.slug, &coaching_relationship.slug, session_id);
     let tiptap = TiptapDocument::new(config).await?;
 
-    let coach_id = coaching_relationship.coach_id;
+    // Read once on the txn: it picks the link's account and decides who is notified.
+    let member_ids = coaching_relationship::notify_member_ids(&txn, &coaching_relationship).await?;
+    let scheduler_id = session.scheduled_by_user_id;
+    let accounts = member_meeting_account_ids(&coaching_relationship, scheduler_id, &member_ids);
     let result: Result<(Model, Vec<DomainEvent>), Error> = async {
         tiptap.create(&document_name).await?;
         session.collab_document_name = Some(document_name.clone());
 
-        if let Some(connection) = crate::oauth_connection::find_by_user(db, coach_id).await? {
-            session.provider = Some(connection.provider);
-            maybe_attach_meeting_url(db, config, &mut session, coach_id).await?;
+        if let Some((_, provider)) = first_connected_provider(db, &accounts).await? {
+            session.provider = Some(provider);
+            maybe_attach_meeting_url(
+                db,
+                config,
+                &mut session,
+                &coaching_relationship,
+                scheduler_id,
+                &accounts,
+            )
+            .await?;
         }
 
-        let member_ids =
-            coaching_relationship::notify_member_ids(&txn, &coaching_relationship).await?;
         let ctx = CoachingSessionHydrationContext {
             txn: &txn,
             session: &session,
@@ -455,7 +483,7 @@ async fn apply_update(
         let relationship =
             coaching_relationship::find_by_id(&txn, old.coaching_relationship_id).await?;
         let member_ids = coaching_relationship::notify_member_ids(&txn, &relationship).await?;
-        ensure_coachee_is_member(&relationship, &member_ids)?;
+        ensure_required_participants_are_members(&relationship, &member_ids)?;
         if let Some(scheduler) = acting_user {
             update_map.insert("scheduled_by_user_id".to_string(), Some(scheduler.into()));
         }
@@ -654,7 +682,7 @@ pub(crate) async fn resend_invite(
     let relationship =
         coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
     let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
-    ensure_coachee_is_member(&relationship, &member_ids)?;
+    ensure_required_participants_are_members(&relationship, &member_ids)?;
 
     // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
     let bumped = coaching_session::increment_ical_sequence(db, id).await?;
@@ -670,36 +698,58 @@ pub(crate) async fn resend_invite(
         &parties.organization,
     )
     .await?;
-    ensure_coachee_reached(&delivered, &relationship)?;
+    ensure_others_told(&delivered, &relationship, bumped.scheduled_by_user_id)?;
     record_announced(db, &bumped).await;
     Ok(())
 }
 
-/// A resend is only done once the coachee has it. Missing the coach is not a failure: the
-/// coach is the one asking. An `Audience` that leaves the coachee out of `member_ids` gets
-/// the not-a-member 409.
-pub(crate) fn ensure_coachee_reached(
+/// A resend of a session scheduled by `scheduler_id` is only done once everyone but its
+/// schedule owner has it. Missing the owner is not a failure: they set the schedule. Someone
+/// owed it whom the `Audience` left out of `member_ids` gets the not-a-member 409 for their seat.
+pub(crate) fn ensure_others_told(
     delivered: &emails::Delivered,
     relationship: &coaching_relationships::Model,
+    scheduler_id: Id,
 ) -> Result<(), Error> {
-    match delivered.coachee {
-        emails::Delivery::Sent => Ok(()),
-        emails::Delivery::NoLongerAMember => Err(coachee_not_a_member(relationship)),
-        emails::Delivery::Failed => Err(Error {
-            source: None,
-            error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
-        }),
-    }
+    delivered
+        .owed(relationship, scheduler_id)
+        .into_iter()
+        .try_for_each(|(seat, delivery)| match delivery {
+            emails::Delivery::Sent => Ok(()),
+            emails::Delivery::NoLongerAMember => Err(participant_not_a_member(relationship, seat)),
+            emails::Delivery::Failed => Err(Error {
+                source: None,
+                error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+            }),
+        })
+}
+
+/// The accounts a new meeting link for a session scheduled by `scheduler_id` may be made
+/// with, in the order to try them, leaving out anyone not among `member_ids`.
+fn member_meeting_account_ids(
+    relationship: &coaching_relationships::Model,
+    scheduler_id: Id,
+    member_ids: &[Id],
+) -> Vec<Id> {
+    relationship
+        .meeting_account_ids(scheduler_id)
+        .into_iter()
+        .filter(|id| member_ids.contains(id))
+        .collect()
 }
 
 /// If a provider is specified on the session, attempt to attach a meeting URL. First checks
 /// if an existing meeting URL can be reused (for providers with persistent URLs), then
-/// falls back to creating a new meeting space via OAuth credentials.
+/// falls back to creating a new meeting space with the first of `accounts` that is connected
+/// to the provider. A session scheduled by `scheduler_id` credits a reused link with no
+/// recorded creator to its schedule owner.
 async fn maybe_attach_meeting_url(
     db: &DatabaseConnection,
     config: &Config,
     coaching_session_model: &mut Model,
-    coach_id: Id,
+    relationship: &coaching_relationships::Model,
+    scheduler_id: Id,
+    accounts: &[Id],
 ) -> Result<(), Error> {
     if let Some(provider) = &coaching_session_model.provider {
         if let Some(reused) = find_reusable_meeting_url(
@@ -710,26 +760,29 @@ async fn maybe_attach_meeting_url(
         .await?
         {
             coaching_session_model.meeting_url = Some(reused.url);
-            coaching_session_model.meeting_url_created_by_user_id =
-                reused.created_by_user_id.or(Some(coach_id));
+            coaching_session_model.meeting_url_created_by_user_id = reused
+                .created_by_user_id
+                .or(Some(relationship.schedule_owner_id(scheduler_id)));
             return Ok(());
         }
 
-        let credentials =
-            crate::oauth_connection::find_by_user_and_provider(db, coach_id, *provider).await?;
+        let credentials = first_connected(accounts, |id| {
+            crate::oauth_connection::find_by_user_and_provider(db, id, *provider)
+        })
+        .await?;
 
-        if let Some(credentials) = credentials {
+        if let Some((account_id, credentials)) = credentials {
             let meeting_url = create_meeting_url(
                 db,
                 config,
-                coach_id,
+                account_id,
                 provider,
                 &coaching_session_model.date,
                 credentials.external_account_id,
             )
             .await?;
             coaching_session_model.meeting_url = Some(meeting_url);
-            coaching_session_model.meeting_url_created_by_user_id = Some(coach_id);
+            coaching_session_model.meeting_url_created_by_user_id = Some(account_id);
         }
     }
     Ok(())
@@ -761,17 +814,66 @@ async fn find_reusable_meeting_url(
     Ok(url)
 }
 
-/// Create a meeting URL for the given provider using the coach's OAuth connection.
+/// The first of `accounts` connected to any meeting provider, with the provider of its most
+/// recently updated connection.
+async fn first_connected_provider(
+    db: &DatabaseConnection,
+    accounts: &[Id],
+) -> Result<Option<(Id, Provider)>, Error> {
+    Ok(
+        first_connected(accounts, |id| crate::oauth_connection::find_by_user(db, id))
+            .await?
+            .map(|(id, connection)| (id, connection.provider)),
+    )
+}
+
+/// The provider for a link a request did not ask for: that of the first other account in
+/// `accounts` with a connection, when the schedule owner `owner_id` has none. Looks nothing
+/// up when `accounts` holds no one but the owner.
+async fn other_account_provider(
+    db: &DatabaseConnection,
+    owner_id: Id,
+    accounts: &[Id],
+) -> Result<Option<Provider>, Error> {
+    if accounts.iter().all(|&id| id == owner_id) {
+        return Ok(None);
+    }
+    Ok(first_connected_provider(db, accounts)
+        .await?
+        .filter(|&(id, _)| id != owner_id)
+        .map(|(_, provider)| provider))
+}
+
+/// The first of `account_ids` that `lookup` finds an OAuth connection for, with it. Looks up
+/// no further once one is found.
+async fn first_connected<F, Fut, E>(
+    account_ids: &[Id],
+    lookup: F,
+) -> Result<Option<(Id, oauth_connections::Model)>, Error>
+where
+    F: Fn(Id) -> Fut,
+    Fut: Future<Output = Result<Option<oauth_connections::Model>, E>>,
+    Error: From<E>,
+{
+    for &id in account_ids {
+        if let Some(connection) = lookup(id).await? {
+            return Ok(Some((id, connection)));
+        }
+    }
+    Ok(None)
+}
+
+/// Create a meeting URL for the given provider using `account_id`'s OAuth connection.
 async fn create_meeting_url(
     db: &DatabaseConnection,
     config: &Config,
-    coach_id: Id,
+    account_id: Id,
     provider: &crate::meeting_provider::Provider,
     start_time: &NaiveDateTime,
     external_account_id: Option<String>,
 ) -> Result<String, Error> {
     let access_token =
-        crate::oauth_connection::get_valid_access_token(db, config, coach_id, *provider).await?;
+        crate::oauth_connection::get_valid_access_token(db, config, account_id, *provider).await?;
 
     match provider {
         crate::meeting_provider::Provider::Google => {
@@ -837,8 +939,9 @@ mod tests {
         coaching_relationships, coaching_session_images, coaching_sessions, goals,
         meeting_provider::Provider, oauth_connections, organizations,
     };
-    use mockito::Server;
-    use sea_orm::{DatabaseBackend, MockDatabase};
+    use meeting_auth::oauth::token::encryption;
+    use mockito::{Matcher, Mock, Server, ServerGuard};
+    use sea_orm::{DatabaseBackend, MockDatabase, Statement, Transaction};
     use service::config::Config;
 
     fn test_user_with_email(email: &str) -> entity_api::users::Model {
@@ -1637,8 +1740,7 @@ mod tests {
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org]])
-            // no OAuth connection, so no meeting URL
-            .append_query_results(vec![Vec::<oauth_connections::Model>::new()])
+            // the coach left, so no account is looked up and no meeting URL is made
             .append_query_results([members(&[relationship.coachee_id])])
             .append_query_results(vec![vec![goal]])
             .append_query_results(vec![vec![link]])
@@ -1710,9 +1812,9 @@ mod tests {
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_results(vec![vec![connection]])
             .append_query_results(vec![vec![earlier]])
-            .append_query_results([members(&[relationship.coachee_id])])
             .append_query_results(vec![Vec::<goals::Model>::new()])
             .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
             .append_query_results(vec![vec![hydrated]])
@@ -1753,6 +1855,241 @@ mod tests {
             "the creator is the coach: {:?}",
             hydration.values
         );
+        Ok(())
+    }
+
+    /// 32 bytes hex, the shape `encryption::encrypt` expects.
+    const ENCRYPTION_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const MEET_LINK: &str = "https://meet.google.com/new-link-abc";
+
+    /// `user_id`'s Google connection, its access token `token`, never expiring.
+    fn google_connection(user_id: Id, token: &str) -> oauth_connections::Model {
+        let now = chrono::Utc::now();
+        oauth_connections::Model {
+            id: Id::new_v4(),
+            user_id,
+            provider: Provider::Google,
+            external_account_id: None,
+            external_email: None,
+            access_token: encryption::encrypt(token, ENCRYPTION_KEY).expect("the token encrypts"),
+            refresh_token: None,
+            token_expires_at: None,
+            token_type: "Bearer".to_string(),
+            scopes: String::new(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        }
+    }
+
+    /// A Tiptap and Google Meet stand-in, where a space is made only with the access token
+    /// `token` and `spaces` times, and the config that points at it.
+    async fn documents_and_meet(token: &str, spaces: usize) -> (ServerGuard, Mock, Config) {
+        let mut server = Server::new_async().await;
+        server
+            .mock("POST", Matcher::Regex("^/api/documents/".to_string()))
+            .with_status(200)
+            .create_async()
+            .await;
+        let meet = server
+            .mock("POST", "/spaces")
+            .match_header("authorization", format!("Bearer {token}").as_str())
+            .with_status(200)
+            .with_body(format!(
+                r#"{{"name":"spaces/abc","meetingUri":"{MEET_LINK}","meetingCode":"new-link-abc"}}"#
+            ))
+            .expect(spaces)
+            .create_async()
+            .await;
+        let config = Config::from_args([
+            "test".to_string(),
+            "--tiptap-auth-key=test-auth-key".to_string(),
+            format!("--tiptap-url={}", server.url()),
+            format!("--google-meet-api-url={}", server.url()),
+            format!("--encryption-key={ENCRYPTION_KEY}"),
+            "--google-client-id=client-id".to_string(),
+            "--google-client-secret=client-secret".to_string(),
+            "--google-redirect-uri=https://app.example.com/oauth/google/callback".to_string(),
+        ]);
+        (server, meet, config)
+    }
+
+    /// An unhydrated session on `relationship` scheduled by `scheduler_id`, and the row the
+    /// hydrating UPDATE returns.
+    fn unhydrated_session(
+        relationship: &coaching_relationships::Model,
+        scheduler_id: Id,
+    ) -> (coaching_sessions::Model, coaching_sessions::Model) {
+        let session = coaching_sessions::Model {
+            hydrated_at: None,
+            scheduled_by_user_id: scheduler_id,
+            ..test_session(relationship.id, None)
+        };
+        let hydrated = coaching_sessions::Model {
+            hydrated_at: Some(chrono::Utc::now().into()),
+            ..session.clone()
+        };
+        (session, hydrated)
+    }
+
+    /// Every statement the mock database saw.
+    fn statements(log: &[Transaction]) -> Vec<&Statement> {
+        log.iter().flat_map(|txn| txn.statements()).collect()
+    }
+
+    /// The UPDATE that marks the session hydrated.
+    fn hydrating_update(log: &[Transaction]) -> String {
+        statements(log)
+            .into_iter()
+            .find(|s| {
+                s.sql
+                    .starts_with(r#"UPDATE "refactor_platform"."coaching_sessions""#)
+            })
+            .map(|s| format!("{:?}", s.values))
+            .expect("the session is marked hydrated")
+    }
+
+    /// Whether any OAuth connection lookup named `user_id`.
+    fn looked_up_connection_of(log: &[Transaction], user_id: Id) -> bool {
+        statements(log).into_iter().any(|s| {
+            s.sql.contains(r#""oauth_connections""#)
+                && format!("{:?}", s.values).contains(&user_id.to_string())
+        })
+    }
+
+    /// A colleague relationship between `a` and `b`.
+    fn colleagues(a: Id, b: Id, organization_id: Id) -> coaching_relationships::Model {
+        coaching_relationships::Model {
+            coachee_id: b,
+            kind: crate::coaching_relationship_kind::Kind::Colleague,
+            ..test_coaching_relationship(a, organization_id)
+        }
+    }
+
+    /// SCHED-21: B scheduled the series and has since left the organization, so first-read
+    /// hydration makes the link with A's account and never reads B's connection.
+    #[tokio::test]
+    async fn hydration_links_with_the_remaining_colleagues_account_when_the_scheduler_left(
+    ) -> Result<(), Error> {
+        let (a, b) = (Id::new_v4(), Id::new_v4());
+        let org = test_organization();
+        let relationship = colleagues(a, b, org.id);
+        let (session, hydrated) = unhydrated_session(&relationship, b);
+        let a_connection = google_connection(a, "a-token");
+        let (_server, meet, config) = documents_and_meet("a-token", 1).await;
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // advisory lock, then the re-read under it
+            .append_exec_results(vec![exec_ok()])
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org]])
+            .append_query_results([members(&[a])])
+            // A's connection picks the provider, then no reusable link, then A's credentials
+            .append_query_results(vec![vec![a_connection.clone()]])
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            .append_query_results(vec![vec![a_connection.clone()]])
+            .append_query_results(vec![vec![a_connection]])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            .append_query_results(vec![vec![hydrated]])
+            .into_connection();
+
+        ensure_hydrated(&db, &config, &EventPublisher::new(), session).await?;
+
+        meet.assert_async().await;
+        let log = db.into_transaction_log();
+        let update = hydrating_update(&log);
+        assert!(update.contains(MEET_LINK), "{update}");
+        assert!(
+            update.contains(&a.to_string()),
+            "A is the creator: {update}"
+        );
+        assert!(!looked_up_connection_of(&log, b), "B's connection is read");
+        Ok(())
+    }
+
+    /// SCHED-21: with the scheduler gone and the remaining colleague unconnected, hydration
+    /// still succeeds, with no link.
+    #[tokio::test]
+    async fn hydration_makes_no_link_when_no_remaining_colleague_is_connected() -> Result<(), Error>
+    {
+        let (a, b) = (Id::new_v4(), Id::new_v4());
+        let org = test_organization();
+        let relationship = colleagues(a, b, org.id);
+        let (session, hydrated) = unhydrated_session(&relationship, b);
+        let (_server, meet, config) = documents_and_meet("b-token", 0).await;
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            // advisory lock, then the re-read under it
+            .append_exec_results(vec![exec_ok()])
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![vec![org]])
+            .append_query_results([members(&[a])])
+            // A has no connection
+            .append_query_results(vec![Vec::<oauth_connections::Model>::new()])
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            .append_query_results(vec![vec![hydrated]])
+            .into_connection();
+
+        ensure_hydrated(&db, &config, &EventPublisher::new(), session).await?;
+
+        meet.assert_async().await;
+        let log = db.into_transaction_log();
+        let update = hydrating_update(&log);
+        assert!(!update.contains(MEET_LINK), "{update}");
+        assert!(!looked_up_connection_of(&log, b), "B's connection is read");
+        Ok(())
+    }
+
+    /// SCHED-21: a coach who left gets no link made with their account on hydration; a
+    /// coach still in the organization gets one, as before.
+    #[tokio::test]
+    async fn hydration_links_with_the_coachs_account_only_while_the_coach_is_a_member(
+    ) -> Result<(), Error> {
+        for coach_is_member in [false, true] {
+            let org = test_organization();
+            let coach_id = Id::new_v4();
+            let relationship = test_coaching_relationship(coach_id, org.id);
+            let (session, hydrated) = unhydrated_session(&relationship, coach_id);
+            let connection = google_connection(coach_id, "coach-token");
+            let (_server, meet, config) =
+                documents_and_meet("coach-token", usize::from(coach_is_member)).await;
+
+            let locked = MockDatabase::new(DatabaseBackend::Postgres)
+                // advisory lock, then the re-read under it
+                .append_exec_results(vec![exec_ok()])
+                .append_query_results(vec![vec![session.clone()]])
+                .append_query_results(vec![vec![relationship.clone()]])
+                .append_query_results(vec![vec![org]]);
+            let db = match coach_is_member {
+                true => locked
+                    .append_query_results([both_participants_are_members(&relationship)])
+                    .append_query_results(vec![vec![connection.clone()]])
+                    .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+                    .append_query_results(vec![vec![connection.clone()]])
+                    .append_query_results(vec![vec![connection]]),
+                false => locked.append_query_results([members(&[relationship.coachee_id])]),
+            }
+            .append_query_results(vec![Vec::<goals::Model>::new()])
+            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
+            .append_query_results(vec![vec![hydrated]])
+            .into_connection();
+
+            ensure_hydrated(&db, &config, &EventPublisher::new(), session).await?;
+
+            meet.assert_async().await;
+            let log = db.into_transaction_log();
+            let update = hydrating_update(&log);
+            assert_eq!(update.contains(MEET_LINK), coach_is_member, "{update}");
+            assert_eq!(
+                update.contains(&coach_id.to_string()),
+                coach_is_member,
+                "the coach is the creator only while a member: {update}"
+            );
+            assert_eq!(looked_up_connection_of(&log, coach_id), coach_is_member);
+        }
         Ok(())
     }
 
@@ -1970,7 +2307,7 @@ mod tests {
         let refetched = input.clone();
 
         // Sequence: advisory_lock exec → re-fetch (not yet hydrated) → relationship
-        // → organization → tiptap POST (200) → oauth_connection::find_by_user
+        // → organization → membership → tiptap POST (200) → oauth_connection::find_by_user
         // returns an error → error surfaced, NO cleanup DELETE.
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_exec_results(vec![sea_orm::MockExecResult {
@@ -1980,6 +2317,7 @@ mod tests {
             .append_query_results(vec![vec![refetched]])
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org]])
+            .append_query_results([both_participants_are_members(&relationship)])
             .append_query_errors(vec![sea_orm::DbErr::Custom(
                 "simulated oauth lookup failure".to_string(),
             )])
@@ -2392,7 +2730,7 @@ mod tests {
             .await;
 
         // Per attempt: lock exec -> refetch (unhydrated) -> relationship -> org
-        // -> POST 200 -> oauth lookup errors -> rollback + cleanup. Twice.
+        // -> membership -> POST 200 -> oauth lookup errors -> rollback + cleanup. Twice.
         let mut builder = MockDatabase::new(DatabaseBackend::Postgres);
         for _ in 0..2 {
             builder = builder
@@ -2403,6 +2741,7 @@ mod tests {
                 .append_query_results(vec![vec![session.clone()]])
                 .append_query_results(vec![vec![relationship.clone()]])
                 .append_query_results(vec![vec![org.clone()]])
+                .append_query_results([both_participants_are_members(&relationship)])
                 .append_query_errors(vec![sea_orm::DbErr::Custom(
                     "simulated oauth lookup failure".to_string(),
                 )]);
@@ -2429,9 +2768,10 @@ mod tests {
     fn m7_06_a_coachee_skipped_as_not_a_member_is_the_resend_409() {
         let relationship = test_coaching_relationship(Id::new_v4(), Id::new_v4());
 
-        let err = ensure_coachee_reached(
+        let err = ensure_others_told(
             &coachee_delivery(emails::Delivery::NoLongerAMember),
             &relationship,
+            relationship.coach_id,
         )
         .unwrap_err();
 
@@ -2458,9 +2798,12 @@ mod tests {
     fn m7_07_a_failed_send_to_the_coachee_is_a_network_error() {
         let relationship = test_coaching_relationship(Id::new_v4(), Id::new_v4());
 
-        let err =
-            ensure_coachee_reached(&coachee_delivery(emails::Delivery::Failed), &relationship)
-                .unwrap_err();
+        let err = ensure_others_told(
+            &coachee_delivery(emails::Delivery::Failed),
+            &relationship,
+            relationship.coach_id,
+        )
+        .unwrap_err();
 
         assert!(
             matches!(

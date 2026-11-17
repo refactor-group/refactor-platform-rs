@@ -1,3 +1,5 @@
+use sea_orm::Iterable;
+
 use super::*;
 use crate::roles::Role;
 use crate::user_roles;
@@ -235,4 +237,55 @@ fn both_member_colleagues_get_a_scheduling_permit_and_one_who_left_does_not() {
         assert_eq!(permit.user_id(), user_id);
     }
     assert!(SchedulingPermit::verify(relationship, &create_test_user(second, vec![])).is_none());
+}
+
+/// KIND-22: for every kind, seat and standing, `viewer_of` answers what the
+/// enforcing functions answer, and a stranger gets no viewer.
+#[test]
+fn a_viewer_answers_what_the_enforcing_functions_answer() {
+    for kind in Kind::iter() {
+        let relationship = relationship_of(kind, Id::new_v4(), Id::new_v4());
+        for seat in [Seat::CoachId, Seat::CoacheeId] {
+            let id = relationship.participant(seat);
+            for (standing, caller) in [
+                ("member", member_of(&relationship, id)),
+                ("not a member", create_test_user(id, vec![])),
+                (
+                    "super admin without a role",
+                    create_test_user(id, vec![create_test_role(id, Role::SuperAdmin, None)]),
+                ),
+            ] {
+                let expected = Viewer {
+                    role: relationship.role(id).expect("a participant has a role"),
+                    can_schedule_sessions: SchedulingPermit::verify(relationship.clone(), &caller)
+                        .is_some(),
+                    sees_all_actions: relationship.sees_all_actions(id),
+                };
+                assert_eq!(
+                    viewer_of(&relationship, &caller),
+                    Some(expected),
+                    "{kind:?} {seat:?} {standing}"
+                );
+            }
+        }
+        let stranger = member_of(&relationship, Id::new_v4());
+        assert_eq!(viewer_of(&relationship, &stranger), None, "{kind:?}");
+    }
+}
+
+/// KIND-22: a coach who left their organization still sees everything but may no longer
+/// schedule.
+#[test]
+fn a_coach_who_left_may_not_schedule() {
+    let coach_id = Id::new_v4();
+    let relationship = create_test_relationship(coach_id, Id::new_v4());
+
+    assert_eq!(
+        viewer_of(&relationship, &create_test_user(coach_id, vec![])),
+        Some(Viewer {
+            role: crate::coaching_relationship_kind::Role::Coach,
+            can_schedule_sessions: false,
+            sees_all_actions: true,
+        })
+    );
 }

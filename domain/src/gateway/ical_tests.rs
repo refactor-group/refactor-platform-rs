@@ -378,7 +378,7 @@ fn description_full_single() {
     let parts = DescriptionParts {
         session_url: "https://app.example/sessions/1".into(),
         title: Some("Q3 Planning"),
-        coach_name: "Jim Hodapp",
+        participants: "Coach: Jim Hodapp",
         organization_name: "Refactor Group",
         topics: &topics,
         goal_titles: &goals,
@@ -406,7 +406,7 @@ fn description_minimal_series_shape() {
     let parts = DescriptionParts {
         session_url: "https://app.example/sessions/1".into(),
         title: None,
-        coach_name: "Jim Hodapp",
+        participants: "Coach: Jim Hodapp",
         organization_name: "Refactor Group",
         topics: &[],
         goal_titles: &goals,

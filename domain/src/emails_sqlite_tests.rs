@@ -5,12 +5,15 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{NaiveDateTime, TimeDelta, Timelike, Utc};
 use entity::coaching_session_series as series_entity;
+use entity_api::coaching_session_pending_reschedule::{self, Schedule};
 use mockito::{Matcher, Mock, Server, ServerGuard};
 use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Set};
 
 use super::*;
 use crate::coaching_session::{Frequency, Recurrence};
+use crate::error::ExternalErrorKind;
 use crate::events::EventPublisher;
+use crate::test_utils::sqlite::fixture::make_colleagues;
 use crate::test_utils::sqlite::{
     database, mirror_migration_defaults, seed_membership, seed_organization, seed_user,
     within_time_limit,
@@ -704,6 +707,109 @@ async fn a_reminder_recipient_is_mailed_only_while_holding_a_role() {
 
         seeded.grant_role(&db, coachee).await;
         assert!(still_notified().await);
+    })
+    .await;
+}
+
+/// Resend answering 500 to `failing`'s address and 200 to `told`'s.
+async fn resend_failing_for(
+    server: &mut ServerGuard,
+    failing: &users::Model,
+    told: &users::Model,
+) -> [Mock; 2] {
+    [
+        server
+            .mock("POST", "/emails")
+            .match_body(Matcher::Regex(failing.email.clone()))
+            .with_status(500)
+            .with_body("down")
+            .create_async()
+            .await,
+        server
+            .mock("POST", "/emails")
+            .match_body(Matcher::Regex(told.email.clone()))
+            .with_status(200)
+            .with_body(r#"{"id":"email_test"}"#)
+            .create_async()
+            .await,
+    ]
+}
+
+/// Resends a colleague session the coachee-seat colleague scheduled, with a pending change
+/// and Resend failing for the coach seat's copy (`coach_fails`) or the coachee seat's.
+/// Returns the result and whether the change is still pending, which a resend recorded as
+/// announced clears.
+async fn resend_colleague_session_failing_for(coach_fails: bool) -> (Result<(), Error>, bool) {
+    let db = database().await;
+    let seeded = seed(&db).await;
+    seeded.grant_role(&db, seeded.coach.id).await;
+    seeded.grant_role(&db, seeded.coachee.id).await;
+    make_colleagues(&db, seeded.relationship.id).await;
+    let session = coaching_sessions::ActiveModel {
+        id: Set(seeded.session.id),
+        scheduled_by_user_id: Set(seeded.coachee.id),
+        ..Default::default()
+    }
+    .update(&db)
+    .await
+    .expect("the coachee-seat colleague scheduled it");
+    coaching_session_pending_reschedule::record_change(
+        &db,
+        session.id,
+        Schedule {
+            date: session.date - TimeDelta::hours(1),
+            duration_minutes: session.duration_minutes,
+        },
+        Schedule::from(&session),
+        Utc::now().naive_utc(),
+        coaching_session_pending_reschedule::LEASE,
+    )
+    .await
+    .expect("the change is pending");
+    let mut server = Server::new_async().await;
+    let (failing, told) = match coach_fails {
+        true => (&seeded.coach, &seeded.coachee),
+        false => (&seeded.coachee, &seeded.coach),
+    };
+    let _mocks = resend_failing_for(&mut server, failing, told).await;
+
+    let result = crate::coaching_session::resend_invite(&db, &sending(&server), session.id).await;
+
+    let pending = coaching_session_pending_reschedule::find(&db, session.id)
+        .await
+        .expect("the pending row reads")
+        .is_some();
+    (result, pending)
+}
+
+/// A colleague's resend is not done until the other colleague has it.
+#[tokio::test]
+async fn a_colleague_resend_the_other_colleague_missed_fails_and_stays_unannounced() {
+    within_time_limit(async {
+        let (result, pending) = resend_colleague_session_failing_for(true).await;
+
+        let err = result.expect_err("the other colleague was not told");
+        assert!(
+            matches!(
+                err.error_kind,
+                DomainErrorKind::External(ExternalErrorKind::Network)
+            ),
+            "{err:?}"
+        );
+        assert!(pending, "the session is not recorded as announced");
+    })
+    .await;
+}
+
+/// The colleague who scheduled a session already knows it, so missing their own copy is
+/// not a failed resend.
+#[tokio::test]
+async fn a_colleague_resend_that_missed_only_the_scheduler_succeeds_and_is_announced() {
+    within_time_limit(async {
+        let (result, pending) = resend_colleague_session_failing_for(false).await;
+
+        result.expect("the other colleague was told");
+        assert!(!pending, "the session is recorded as announced");
     })
     .await;
 }

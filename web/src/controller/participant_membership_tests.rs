@@ -30,6 +30,9 @@ const RELATIONSHIP_KEYS: [&str; 8] = [
     "updated_at",
 ];
 
+/// The keys telling the caller what the relationship lets them and its participants do.
+const CAPABILITY_KEYS: [&str; 3] = ["viewer", "suggests_actions", "scheduling_blocked_by"];
+
 fn routes() -> Router<AppState> {
     Router::new().route(
         "/users/:user_id/coaching_sessions",
@@ -91,9 +94,12 @@ async fn m4_05_an_included_relationship_marks_a_removed_coachee() {
     for key in RELATIONSHIP_KEYS {
         assert_eq!(relationship[key], old[key], "{key}: {body}");
     }
+    for key in CAPABILITY_KEYS {
+        assert!(relationship.get(key).is_some(), "{key}: {body}");
+    }
     assert_eq!(
         relationship.as_object().map(|o| o.len()),
-        Some(RELATIONSHIP_KEYS.len() + 2),
+        Some(RELATIONSHIP_KEYS.len() + 2 + CAPABILITY_KEYS.len()),
         "{body}"
     );
 }

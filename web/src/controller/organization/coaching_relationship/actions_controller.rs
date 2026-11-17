@@ -21,13 +21,35 @@ use log::*;
 
 /// Used by the batch handler to gate the HTTP-layer `assignee` scope check: callers who
 /// see all actions in any relationship bypass it; everyone else goes through it.
-fn caller_sees_all_actions_in_any(
-    relationships: &[coaching_relationships::Model],
+fn caller_sees_all_actions_in_any<'a>(
+    relationships: impl IntoIterator<Item = &'a coaching_relationships::Model>,
     user_id: Id,
 ) -> bool {
     relationships
-        .iter()
+        .into_iter()
         .any(|relationship| relationship.sees_all_actions(user_id))
+}
+
+/// The batch handler's `assignee` scope check, held only to the relationships the scope names
+/// someone in. A caller whose every relationship the scope leaves out gets an empty list
+/// instead.
+fn check_batch_assignee_visibility(
+    relationships: &[coaching_relationships::Model],
+    caller_id: Id,
+    assignee_scope: Option<&ActionApi::AssigneeScope>,
+) -> Result<(), Error> {
+    let in_scope: Vec<_> = relationships
+        .iter()
+        .filter(|relationship| {
+            assignee_scope.is_none_or(|scope| scope.user_id_in(relationship).is_some())
+        })
+        .collect();
+    let all_left_out = in_scope.is_empty() && !relationships.is_empty();
+    if all_left_out || caller_sees_all_actions_in_any(in_scope, caller_id) {
+        return Ok(());
+    }
+    let own_visibility = ActionApi::CallerVisibility::OwnAndUnassigned { user_id: caller_id };
+    check_assignee_visibility(caller_id, &own_visibility, assignee_scope)
 }
 
 /// 403s a caller limited to their own actions that scopes `assignee` to anyone other than
@@ -63,7 +85,8 @@ fn check_assignee_visibility(
 ///
 /// Coachees see only actions assigned to themselves or unassigned.
 /// `assignee=X` filters strictly to actions whose assignees contain X
-/// (excludes unassigned); omit it for the broad view.
+/// (excludes unassigned); omit it for the broad view. `assignee=coach` and
+/// `assignee=coachee` are refused on a relationship whose participants share one role.
 #[utoipa::path(
     get,
     path = "/organizations/{organization_id}/coaching_relationships/{relationship_id}/actions",
@@ -76,6 +99,7 @@ fn check_assignee_visibility(
         (status = 200, description = "Successfully retrieved actions for the coaching relationship"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Coachee scoped `assignee` to coach or another user"),
+        (status = 422, description = "`assignee=coach` or `assignee=coachee` on a colleague relationship; `details.reason` is `assignee_scope_not_applicable`"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -106,12 +130,9 @@ pub async fn read(
     let mut query_params = params.into_query_params();
     query_params.caller_visibility = caller_visibility;
 
-    // Resolve role-based assignee scope to a concrete user ID
-    query_params.assignee_user_id = assignee_scope.map(|scope| match scope {
-        ActionApi::AssigneeScope::Coach => relationship.coach_id,
-        ActionApi::AssigneeScope::Coachee => relationship.coachee_id,
-        ActionApi::AssigneeScope::User(id) => id,
-    });
+    query_params.assignee_user_id = assignee_scope
+        .map(|scope| ActionApi::assignee_user_id(&relationship, &scope))
+        .transpose()?;
 
     let actions = ActionApi::find_by_coaching_relationship(
         app_state.db_conn_ref(),
@@ -126,7 +147,8 @@ pub async fn read(
 /// GET actions across all participant relationships, grouped by relationship id.
 ///
 /// Visibility narrows per-relationship by the caller's role (full for coach
-/// side, self-or-unassigned for coachee side).
+/// side, self-or-unassigned for coachee side). With `assignee=coach` or
+/// `assignee=coachee`, relationships whose participants share one role are left out.
 #[utoipa::path(
     get,
     path = "/organizations/{organization_id}/coaching_relationships/actions",
@@ -135,7 +157,7 @@ pub async fn read(
         ("organization_id" = Uuid, Path, description = "Organization id"),
     ),
     responses(
-        (status = 200, description = "Successfully retrieved batch actions"),
+        (status = 200, description = "Successfully retrieved batch actions. With `assignee=coach` or `assignee=coachee`, colleague relationships are left out"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Coachee scoped `assignee` to coach or another user"),
         (status = 503, description = "Service temporarily unavailable")
@@ -166,12 +188,7 @@ pub async fn index(
     )
     .await?;
 
-    // A caller who sees all actions in at least one relationship may use any assignee
-    // scope; one limited to their own actions everywhere may not scope to anyone else.
-    if !caller_sees_all_actions_in_any(&relationships, user.id) {
-        let own_visibility = ActionApi::CallerVisibility::OwnAndUnassigned { user_id: user.id };
-        check_assignee_visibility(user.id, &own_visibility, assignee_scope.as_ref())?;
-    }
+    check_batch_assignee_visibility(&relationships, user.id, assignee_scope.as_ref())?;
 
     let relationship_actions = ActionApi::find_by_user_relationships(
         app_state.db_conn_ref(),

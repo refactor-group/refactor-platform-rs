@@ -9,9 +9,11 @@ fn listed_row() -> BTreeMap<String, Value> {
     let name = |n: &str| Value::from(n.to_string());
     BTreeMap::from([
         ("id".to_string(), Id::new_v4().into()),
+        ("organization_id".to_string(), Id::new_v4().into()),
         ("coach_id".to_string(), Id::new_v4().into()),
         ("coachee_id".to_string(), Id::new_v4().into()),
         ("kind".to_string(), "coaching".into()),
+        ("slug".to_string(), name("coach-coachee")),
         ("coach_first_name".to_string(), name("Coach")),
         ("coach_last_name".to_string(), name("One")),
         ("coachee_first_name".to_string(), name("Coachee")),

@@ -1,12 +1,13 @@
-//! Sends each coachee a reminder ahead of an upcoming coaching session.
+//! Sends each reminded participant a reminder ahead of an upcoming coaching session.
 //!
-//! Each tick claims the sessions whose start has entered the lead window and emails the
-//! coachee. "Due" is re-derived from the sessions table every tick, so a reschedule, a
-//! cancellation, or a session booked five minutes ago all take effect on the next tick
-//! with no work from the code paths that made the change:
+//! Each tick claims the sessions whose start has entered the lead window and emails each
+//! participant the relationship's rules remind: the coachee, and both colleagues. "Due" is
+//! re-derived from the sessions table every tick, so a reschedule, a cancellation, or a
+//! session booked five minutes ago all take effect on the next tick with no work from the
+//! code paths that made the change:
 //!
 //! - **Rescheduled.** The claim holds the start it was sent for, so a moved session no
-//!   longer matches its own claim and becomes due again. The coachee gets a fresh
+//!   longer matches its own claim and becomes due again. Each recipient gets a fresh
 //!   reminder for the new time.
 //! - **Cancelled.** The row is gone, so nothing is due. No queued job survives to fire
 //!   against a session that no longer exists.
@@ -140,7 +141,14 @@ impl Job for Sweep {
                 release(ctx, reminder, "its session moved").await;
                 continue;
             }
-            match emails::send_session_reminder(&ctx.db, &ctx.config, session).await {
+            match emails::send_session_reminder(
+                &ctx.db,
+                &ctx.config,
+                session,
+                reminder.recipient_id,
+            )
+            .await
+            {
                 Ok(emails::ReminderOutcome::RecipientNoLongerAMember) => {
                     skipped += 1;
                     info!(
@@ -151,6 +159,16 @@ impl Job for Sweep {
                     // Release rather than keep the claim, so re-adding them before the
                     // session restores the reminder instead of leaving it marked sent.
                     release(ctx, reminder, "skipping them").await;
+                }
+                Ok(emails::ReminderOutcome::RecipientNotReminded) => {
+                    skipped += 1;
+                    // Kept rather than released: their relationship does not remind them,
+                    // so a later tick would only claim it again.
+                    info!(
+                        "[session-reminder] session {} not sent: user {} is not reminded in \
+                         its relationship",
+                        session.id, reminder.recipient_id
+                    );
                 }
                 Ok(emails::ReminderOutcome::Sent) => sent += 1,
                 Err(e) => {

@@ -6,14 +6,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{NaiveDate, Utc};
 use entity::meeting_provider::Provider;
-use entity::{coaching_relationships, coaching_sessions, organizations};
+use entity::{coaching_relationships, coaching_sessions, oauth_connections, organizations, users};
+use meeting_auth::oauth::token::encryption;
 use mockito::{Matcher, Mock, Server, ServerGuard};
 use sea_orm::{ActiveModelTrait, ActiveValue::Unchanged, DatabaseConnection, EntityTrait, Set};
 
 use super::*;
 use crate::coaching_relationship::Membership;
 use crate::coaching_relationships::Visibility;
-use crate::test_utils::sqlite::fixture::set_google_meeting_url;
+use crate::test_utils::sqlite::fixture::{make_colleagues, set_google_meeting_url};
 use crate::test_utils::sqlite::{
     coach_of, database, mirror_migration_defaults, organization_of, seed_lapsed_membership,
     seed_membership, seed_organization, seed_user, within_time_limit, LapsedMembership,
@@ -879,6 +880,221 @@ async fn mark_hydrated_stores_the_link_creator_and_keeps_the_scheduler() {
         assert_eq!(hydrated.meeting_url, target.meeting_url);
         assert_eq!(hydrated.meeting_url_created_by_user_id, Some(rel.coach_id));
         assert_eq!(hydrated.scheduled_by_user_id, scheduler);
+    })
+    .await;
+}
+
+/// SCHED-17: a colleague session created with no duration takes the default of the colleague
+/// who scheduled it, not the coach seat's.
+#[tokio::test]
+async fn a_colleague_session_takes_the_schedulers_default_duration() {
+    within_time_limit(async {
+        let (db, rel) = scheduling_database().await;
+        make_colleagues(&db, rel.id).await;
+        for (user_id, minutes) in [(rel.coach_id, 60), (rel.coachee_id, 25)] {
+            users::ActiveModel {
+                id: Set(user_id),
+                default_coaching_session_duration_minutes: Set(minutes),
+                ..Default::default()
+            }
+            .update(&db)
+            .await
+            .expect("the default duration is set");
+        }
+        let (_server, _documents, config) = documents().await;
+
+        let created = create_as(&db, &config, new_session(&rel, None), rel.coachee_id).await;
+
+        assert_eq!(created.duration_minutes, 25);
+    })
+    .await;
+}
+
+/// 32 bytes hex, the shape `encryption::encrypt` expects.
+const ENCRYPTION_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+/// A Google connection for `user_id` whose unexpiring access token is `token`.
+async fn connect_google(db: &DatabaseConnection, user_id: Id, token: &str) {
+    let now = Utc::now();
+    oauth_connections::ActiveModel {
+        id: Set(Id::new_v4()),
+        user_id: Set(user_id),
+        provider: Set(Provider::Google),
+        external_account_id: Set(None),
+        external_email: Set(None),
+        access_token: Set(encryption::encrypt(token, ENCRYPTION_KEY).expect("the token encrypts")),
+        refresh_token: Set(None),
+        token_expires_at: Set(None),
+        token_type: Set("Bearer".to_string()),
+        scopes: Set(String::new()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the connection is seeded");
+}
+
+const MEET_LINK: &str = "https://meet.google.com/new-link-abc";
+
+/// A Tiptap and Google Meet stand-in, where a space is made only with the access token
+/// `token`, and the config that points at it.
+async fn documents_and_meet(token: &str) -> (ServerGuard, [Mock; 2], Config) {
+    let mut server = Server::new_async().await;
+    let documents = server
+        .mock("POST", Matcher::Regex("^/api/documents/".to_string()))
+        .with_status(200)
+        .create_async()
+        .await;
+    let spaces = server
+        .mock("POST", "/spaces")
+        .match_header("authorization", format!("Bearer {token}").as_str())
+        .with_status(200)
+        .with_body(format!(
+            r#"{{"name":"spaces/abc","meetingUri":"{MEET_LINK}","meetingCode":"new-link-abc"}}"#
+        ))
+        .create_async()
+        .await;
+    let config = Config::from_args([
+        "test".to_string(),
+        "--tiptap-auth-key=test-auth-key".to_string(),
+        format!("--tiptap-url={}", server.url()),
+        format!("--google-meet-api-url={}", server.url()),
+        format!("--encryption-key={ENCRYPTION_KEY}"),
+        "--google-client-id=client-id".to_string(),
+        "--google-client-secret=client-secret".to_string(),
+        "--google-redirect-uri=https://app.example.com/oauth/google/callback".to_string(),
+    ]);
+    (server, [documents, spaces], config)
+}
+
+/// SCHED-18: a colleague whose scheduler has no connected account gets a link made with the
+/// other colleague's, which is recorded as its creator.
+#[tokio::test]
+async fn a_colleague_session_links_with_the_other_colleagues_account_when_the_scheduler_has_none() {
+    within_time_limit(async {
+        let (db, rel) = scheduling_database().await;
+        make_colleagues(&db, rel.id).await;
+        connect_google(&db, rel.coach_id, "other-token").await;
+        let (_server, [_documents, spaces], config) = documents_and_meet("other-token").await;
+
+        let created = create_as(
+            &db,
+            &config,
+            new_session(&rel, Some(Provider::Google)),
+            rel.coachee_id,
+        )
+        .await;
+
+        spaces.assert_async().await;
+        assert_eq!(created.meeting_url.as_deref(), Some(MEET_LINK));
+        assert_eq!(created.meeting_url_created_by_user_id, Some(rel.coach_id));
+    })
+    .await;
+}
+
+/// SCHED-18: colleagues with no connected account between them get no link.
+#[tokio::test]
+async fn a_colleague_session_gets_no_link_when_neither_colleague_is_connected() {
+    within_time_limit(async {
+        let (db, rel) = scheduling_database().await;
+        make_colleagues(&db, rel.id).await;
+        let (_server, [_documents, spaces], config) = documents_and_meet("any-token").await;
+
+        let created = create_as(
+            &db,
+            &config,
+            new_session(&rel, Some(Provider::Google)),
+            rel.coachee_id,
+        )
+        .await;
+
+        spaces.expect(0).assert_async().await;
+        assert_eq!(created.meeting_url, None);
+        assert_eq!(created.meeting_url_created_by_user_id, None);
+    })
+    .await;
+}
+
+/// SCHED-19: a coaching session's link is only ever made with the coach's account, so a
+/// coach with none gets no link even when the coachee has one.
+#[tokio::test]
+async fn a_coaching_session_never_links_with_the_coachees_account() {
+    within_time_limit(async {
+        let (db, rel) = scheduling_database().await;
+        connect_google(&db, rel.coachee_id, "coachee-token").await;
+        let (_server, [_documents, spaces], config) = documents_and_meet("coachee-token").await;
+
+        let created = create_as(
+            &db,
+            &config,
+            new_session(&rel, Some(Provider::Google)),
+            rel.coach_id,
+        )
+        .await;
+
+        spaces.expect(0).assert_async().await;
+        assert_eq!(created.meeting_url, None);
+        assert_eq!(created.meeting_url_created_by_user_id, None);
+    })
+    .await;
+}
+
+/// SCHED-22: a colleague session requested with no provider by a scheduler with no connection
+/// gets a link from the other colleague's, with that connection's provider.
+#[tokio::test]
+async fn a_colleague_session_with_no_provider_links_with_the_other_colleagues_connection() {
+    within_time_limit(async {
+        let (db, rel) = scheduling_database().await;
+        make_colleagues(&db, rel.id).await;
+        connect_google(&db, rel.coach_id, "other-token").await;
+        let (_server, [_documents, spaces], config) = documents_and_meet("other-token").await;
+
+        let created = create_as(&db, &config, new_session(&rel, None), rel.coachee_id).await;
+
+        spaces.assert_async().await;
+        assert_eq!(created.meeting_url.as_deref(), Some(MEET_LINK));
+        assert_eq!(created.provider, Some(Provider::Google));
+        assert_eq!(created.meeting_url_created_by_user_id, Some(rel.coach_id));
+    })
+    .await;
+}
+
+/// SCHED-22: a connected scheduler who asks for no provider gets no link, whatever the other
+/// colleague has.
+#[tokio::test]
+async fn a_connected_colleague_who_asks_for_no_provider_gets_no_link() {
+    within_time_limit(async {
+        let (db, rel) = scheduling_database().await;
+        make_colleagues(&db, rel.id).await;
+        connect_google(&db, rel.coachee_id, "scheduler-token").await;
+        connect_google(&db, rel.coach_id, "other-token").await;
+        let (_server, [_documents, spaces], config) = documents_and_meet("scheduler-token").await;
+
+        let created = create_as(&db, &config, new_session(&rel, None), rel.coachee_id).await;
+
+        spaces.expect(0).assert_async().await;
+        assert_eq!(created.meeting_url, None);
+        assert_eq!(created.provider, None);
+        assert_eq!(created.meeting_url_created_by_user_id, None);
+    })
+    .await;
+}
+
+/// SCHED-22: a coaching session asked for with no provider never takes one from the coachee.
+#[tokio::test]
+async fn a_coaching_session_with_no_provider_never_links_with_the_coachees_connection() {
+    within_time_limit(async {
+        let (db, rel) = scheduling_database().await;
+        connect_google(&db, rel.coachee_id, "coachee-token").await;
+        let (_server, [_documents, spaces], config) = documents_and_meet("coachee-token").await;
+
+        let created = create_as(&db, &config, new_session(&rel, None), rel.coach_id).await;
+
+        spaces.expect(0).assert_async().await;
+        assert_eq!(created.meeting_url, None);
+        assert_eq!(created.provider, None);
+        assert_eq!(created.meeting_url_created_by_user_id, None);
     })
     .await;
 }

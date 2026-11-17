@@ -283,12 +283,12 @@ async fn attach_rejects_an_unknown_field_in_the_body() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
-/// Nothing else pins that the handler forwards the body's coach into the domain
+/// Nothing else pins that the handler forwards the body's relationship into the domain
 /// call: hardcoding `None` at the call site passes every other test in the suite.
-/// The mock is primed only for the coachless path, so a forwarded coach must run
+/// The mock is primed only for the path without one, so a forwarded relationship must run
 /// past the end of the queue and fail the request.
 #[tokio::test]
-async fn attach_forwards_the_requested_coach_to_the_domain_call() {
+async fn attach_forwards_the_requested_relationship_to_the_domain_call() {
     let organization_id = Id::new_v4();
     let target_id = Id::new_v4();
     let coach_id = Id::new_v4();
@@ -318,14 +318,16 @@ async fn attach_forwards_the_requested_coach_to_the_domain_call() {
         "POST",
         organization_id,
         target_id,
-        Body::from(format!(r#"{{"role":"User","coach_id":"{coach_id}"}}"#)),
+        Body::from(format!(
+            r#"{{"role":"User","relationship":{{"with_user_id":"{coach_id}","kind":"coaching"}}}}"#
+        )),
     )
     .await;
 
     assert_ne!(
         response.status(),
         StatusCode::OK,
-        "a coach in the body must reach the domain call, not be dropped"
+        "a relationship in the body must reach the domain call, not be dropped"
     );
 }
 

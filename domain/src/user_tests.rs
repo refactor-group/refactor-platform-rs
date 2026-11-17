@@ -3,7 +3,7 @@ use crate::working_hours::{Field, Invalid};
 use crate::Actor;
 use crate::{coaching_relationships, organizations, user_roles, IntoUpdateMap, UpdateMap};
 use chrono::NaiveTime;
-use sea_orm::{DatabaseBackend, DbErr, MockDatabase};
+use sea_orm::{DatabaseBackend, DbErr, MockDatabase, MockExecResult};
 
 fn organization(id: Id) -> organizations::Model {
     let now = chrono::Utc::now();
@@ -99,7 +99,8 @@ fn role_change(
 }
 
 /// Mocks the lookups `entity_api::coaching_relationship::create` runs before it
-/// inserts: the organization, both parties, their memberships, the duplicate check.
+/// inserts: the organization, both parties, their memberships, the pair's advisory
+/// lock, the duplicate check.
 fn mock_relationship_preflight(
     db: MockDatabase,
     organization_id: Id,
@@ -116,6 +117,10 @@ fn mock_relationship_preflight(
         .append_query_results([membership.clone()])
         .append_query_results([Vec::<user_roles::Model>::new()])
         .append_query_results([membership])
+        .append_exec_results([MockExecResult {
+            last_insert_id: 0,
+            rows_affected: 1,
+        }])
         .append_query_results([Vec::<coaching_relationships::Model>::new()])
 }
 
@@ -250,7 +255,10 @@ async fn create_in_organization_rolls_back_when_the_relationship_insert_fails() 
         Actor::new(actor_user_id),
         organization_id,
         new_user,
-        Some(coach.id),
+        Some(InviteeRelationship {
+            with_user_id: coach.id,
+            kind: crate::coaching_relationship_kind::Kind::Coaching,
+        }),
     )
     .await
     .expect_err("expected the failed relationship insert to fail the whole call");
@@ -308,7 +316,10 @@ async fn create_in_organization_commits_the_user_and_the_relationship_together()
         Actor::new(actor_user_id),
         organization_id,
         new_user,
-        Some(coach.id),
+        Some(InviteeRelationship {
+            with_user_id: coach.id,
+            kind: crate::coaching_relationship_kind::Kind::Coaching,
+        }),
     )
     .await?;
 

@@ -95,6 +95,51 @@ impl Model {
         .find_map(|(id, seat)| (id == user_id).then_some(seat))
     }
 
+    /// The user in `seat`.
+    pub fn participant(&self, seat: Seat) -> Id {
+        match seat {
+            Seat::CoachId => self.coach_id,
+            Seat::CoacheeId => self.coachee_id,
+        }
+    }
+
+    /// The seat of the first participant, coach seat first, who must still be in the
+    /// organization for this relationship's sessions to be scheduled or changed but is not
+    /// among `member_ids`; `None` when nobody's absence blocks scheduling.
+    pub fn seat_blocking_scheduling(&self, member_ids: &[Id]) -> Option<Seat> {
+        let rules = self.kind.rules();
+        [Seat::CoachId, Seat::CoacheeId].into_iter().find(|&seat| {
+            rules.must_be_member_to_schedule(seat) && !member_ids.contains(&self.participant(seat))
+        })
+    }
+
+    /// The seat of whoever owns the schedule of a session scheduled by `scheduler_id`: whose
+    /// zone, default session length and meeting account it uses, and who need not be told of it.
+    pub fn schedule_owner_seat(&self, scheduler_id: Id) -> Seat {
+        self.kind
+            .rules()
+            .schedule_owner()
+            .seat(self.seat(scheduler_id))
+    }
+
+    /// Whose zone, default session length and meeting account a session scheduled by
+    /// `scheduler_id` uses.
+    pub fn schedule_owner_id(&self, scheduler_id: Id) -> Id {
+        self.participant(self.schedule_owner_seat(scheduler_id))
+    }
+
+    /// The accounts a new meeting link for a session scheduled by `scheduler_id` may be made
+    /// with, in the order to try them: the schedule owner's, then the other participant's
+    /// where the kind allows it.
+    pub fn meeting_account_ids(&self, scheduler_id: Id) -> Vec<Id> {
+        let owner_id = self.schedule_owner_id(scheduler_id);
+        let other_id = [self.coach_id, self.coachee_id]
+            .into_iter()
+            .find(|&id| id != owner_id)
+            .filter(|_| self.kind.rules().links_with_other_account());
+        std::iter::once(owner_id).chain(other_id).collect()
+    }
+
     /// What `user_id` is to this relationship; `None` when they aren't in it.
     pub fn role(&self, user_id: Id) -> Option<coaching_relationship_kind::Role> {
         self.seat(user_id).map(|seat| self.kind.rules().role(seat))
@@ -163,6 +208,30 @@ impl SchedulingPermit {
     pub fn user_id(&self) -> Id {
         self.user_id
     }
+}
+
+/// What one caller may do in a relationship, answered by the functions that enforce each rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, ToSchema)]
+#[schema(as = domain::coaching_relationships::Viewer)]
+pub struct Viewer {
+    /// What the caller is to the relationship.
+    pub role: coaching_relationship_kind::Role,
+    /// Whether the caller's own seat and organization membership let them schedule, reschedule
+    /// and cancel its sessions. The other participant's membership is reported separately, by
+    /// `scheduling_blocked_by`.
+    pub can_schedule_sessions: bool,
+    /// Whether the caller sees every action in the relationship, not only their own and
+    /// unassigned ones.
+    pub sees_all_actions: bool,
+}
+
+/// What `caller` may do in `relationship`; `None` when they aren't one of its participants.
+pub fn viewer_of(relationship: &Model, caller: &users::Model) -> Option<Viewer> {
+    relationship.role(caller.id).map(|role| Viewer {
+        role,
+        can_schedule_sessions: SchedulingPermit::verify(relationship.clone(), caller).is_some(),
+        sees_all_actions: relationship.sees_all_actions(caller.id),
+    })
 }
 
 /// A caller's relationship visibility, derived once per request from their
@@ -353,6 +422,31 @@ mod tests {
                 relationship.can_schedule_sessions(user),
                 user == relationship.coach_id,
                 "{user}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_coaching_sessions_owner_is_its_coach_whoever_schedules() {
+        let (coach, coachee) = (Id::new_v4(), Id::new_v4());
+        let relationship = relationship_of(Kind::Coaching, coach, coachee);
+
+        for scheduler in [coach, coachee] {
+            assert_eq!(relationship.schedule_owner_id(scheduler), coach);
+            assert_eq!(relationship.meeting_account_ids(scheduler), [coach]);
+        }
+    }
+
+    #[test]
+    fn a_colleague_sessions_owner_is_its_scheduler_then_the_other_colleague() {
+        let (first, second) = (Id::new_v4(), Id::new_v4());
+        let relationship = relationship_of(Kind::Colleague, first, second);
+
+        for (scheduler, other) in [(first, second), (second, first)] {
+            assert_eq!(relationship.schedule_owner_id(scheduler), scheduler);
+            assert_eq!(
+                relationship.meeting_account_ids(scheduler),
+                [scheduler, other]
             );
         }
     }

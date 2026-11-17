@@ -1,3 +1,4 @@
+use crate::coaching_relationship_kind::{Kind, Role, Seat};
 use crate::coaching_relationships::{Model, SchedulingPermit};
 use crate::error::{reason, DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::Id;
@@ -11,9 +12,28 @@ pub use entity_api::coaching_relationship::{
     create, find_by_coach_and_organization, find_by_id, find_by_organization_with_user_names,
     find_by_user, find_by_user_and_organization, find_by_user_and_organization_with_user_names,
     find_by_user_id_with_user_names, find_coach_and_coachee, get_relationship_with_user_names,
-    is_coach_of, CoachingRelationshipWithUserNames, Draft, Membership, RoleFilterable,
-    WithMembership,
+    is_coach_of, Capabilities, CoachingRelationshipWithUserNames, Draft, Membership,
+    RoleFilterable, WithMembership,
 };
+
+/// The relationship to create for a person joining an organization: with whom, and what kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InviteeRelationship {
+    /// The other person; for coaching, the coach.
+    pub with_user_id: Id,
+    pub kind: Kind,
+}
+
+impl InviteeRelationship {
+    /// The draft placing `with_user_id` in the coach seat and the invitee in the coachee seat.
+    pub fn draft_for(self, invitee_id: Id) -> Draft {
+        Draft {
+            coach_id: self.with_user_id,
+            coachee_id: invitee_id,
+            kind: self.kind,
+        }
+    }
+}
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<Model>, Error>
 where
@@ -78,26 +98,45 @@ pub async fn find_by_organization_for_user_with_user_names(
     Ok(coaching_relationships)
 }
 
-/// A 409 when the coachee is not among `member_ids`, the relationship's participants still
-/// in its organization: anything sent on the relationship would not reach them.
-pub(crate) fn ensure_coachee_is_member(
+/// A 409 for the first participant, coach seat first, whose seat must still be in the
+/// organization for sessions to be scheduled or changed but who is not among `member_ids`,
+/// the relationship's participants still in its organization.
+pub(crate) fn ensure_required_participants_are_members(
     relationship: &Model,
     member_ids: &[Id],
 ) -> Result<(), Error> {
-    match member_ids.contains(&relationship.coachee_id) {
-        true => Ok(()),
-        false => Err(coachee_not_a_member(relationship)),
-    }
+    relationship
+        .seat_blocking_scheduling(member_ids)
+        .map_or(Ok(()), |seat| {
+            Err(participant_not_a_member(relationship, seat))
+        })
 }
 
-/// The 409 for a relationship whose coachee no longer belongs to its organization.
-pub(crate) fn coachee_not_a_member(relationship: &Model) -> Error {
+/// The 409 for a relationship whose participant in `seat` no longer belongs to its
+/// organization, its reason named by that participant's role.
+pub(crate) fn participant_not_a_member(relationship: &Model, seat: Seat) -> Error {
+    let (message, reason) = match relationship.kind.rules().role(seat) {
+        Role::Coachee => (
+            "Your coachee is no longer a member of this organization. Re-add them to the \
+             organization first.",
+            reason::COACHEE_NOT_A_MEMBER,
+        ),
+        Role::Colleague => (
+            "Your colleague is no longer a member of this organization. Re-add them to the \
+             organization first.",
+            reason::PARTICIPANT_NOT_A_MEMBER,
+        ),
+        Role::Coach => (
+            "Your coach is no longer a member of this organization. Re-add them to the \
+             organization first.",
+            reason::PARTICIPANT_NOT_A_MEMBER,
+        ),
+    };
     not_a_member(
-        "Your coachee is no longer a member of this organization. Re-add them to the \
-         organization first.",
-        reason::COACHEE_NOT_A_MEMBER,
+        message,
+        reason,
         relationship.organization_id,
-        relationship.coachee_id,
+        relationship.participant(seat),
     )
 }
 
@@ -165,6 +204,8 @@ mod membership_sqlite_tests;
 
 #[cfg(test)]
 mod tests {
+    use sea_orm::Iterable;
+
     use super::*;
 
     fn relationship() -> Model {
@@ -183,12 +224,16 @@ mod tests {
 
     /// M8-02: absent from `member_ids` is the 409; present is `Ok`. No database.
     #[test]
-    fn m8_02_ensure_coachee_is_member_reads_only_the_member_ids() {
+    fn m8_02_ensure_required_participants_are_members_reads_only_the_member_ids() {
         let relationship = relationship();
 
-        assert!(ensure_coachee_is_member(&relationship, &[relationship.coachee_id]).is_ok());
+        assert!(ensure_required_participants_are_members(
+            &relationship,
+            &[relationship.coachee_id]
+        )
+        .is_ok());
 
-        let err = ensure_coachee_is_member(&relationship, &[relationship.coach_id])
+        let err = ensure_required_participants_are_members(&relationship, &[relationship.coach_id])
             .expect_err("a coachee missing from member_ids is refused");
         let DomainErrorKind::Internal(InternalErrorKind::Entity(EntityErrorKind::Conflict {
             details: Some(details),
@@ -202,6 +247,49 @@ mod tests {
             details["user_id"],
             serde_json::json!(relationship.coachee_id)
         );
+    }
+
+    /// KIND-24: for every kind and every set of participants still in the organization,
+    /// `scheduling_blocked_by` names the user the scheduling 409 names, and `None` when it passes.
+    #[test]
+    fn scheduling_blocked_by_names_whom_the_scheduling_conflict_names() {
+        for kind in Kind::iter() {
+            let relationship = Model {
+                kind,
+                ..relationship()
+            };
+            let caller = crate::test_utils::proof::member_coach(&relationship);
+            for (coach_is_member, coachee_is_member) in
+                [(true, true), (true, false), (false, true), (false, false)]
+            {
+                let membership = Membership {
+                    coach_is_member,
+                    coachee_is_member,
+                };
+                let refused = ensure_required_participants_are_members(
+                    &relationship,
+                    &membership.member_ids(&relationship),
+                )
+                .err()
+                .map(|err| match err.error_kind {
+                    DomainErrorKind::Internal(InternalErrorKind::Entity(
+                        EntityErrorKind::Conflict {
+                            details: Some(details),
+                            ..
+                        },
+                    )) => details["user_id"].clone(),
+                    other => panic!("expected a conflict, got {other:?}"),
+                });
+
+                assert_eq!(
+                    Capabilities::for_caller(&relationship, membership, &caller)
+                        .scheduling_blocked_by
+                        .map(|user_id| serde_json::json!(user_id)),
+                    refused,
+                    "{kind:?} {membership:?}"
+                );
+            }
+        }
     }
 
     /// A permit admits its own relationship and refuses any other with a 403.

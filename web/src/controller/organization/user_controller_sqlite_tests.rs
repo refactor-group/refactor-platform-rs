@@ -33,7 +33,7 @@ fn new_member_body(coach: domain::Id) -> Value {
         "password": "kumquat-new-password",
         "github_username": null,
         "github_profile_url": null,
-        "coach_id": coach,
+        "relationship": {"with_user_id": coach, "kind": "coaching"},
     })
 }
 
@@ -114,6 +114,106 @@ async fn adding_a_member_with_a_coach_stores_a_coaching_relationship() {
                 .collect::<Vec<_>>(),
             vec![Kind::Coaching]
         );
+    })
+    .await;
+}
+
+/// KIND-15
+#[tokio::test]
+async fn admins_add_a_member_as_a_colleague() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, coach) = (app.fixture.o1, app.fixture.user(Caller::Coach));
+        let mut body = new_member_body(coach);
+        body["relationship"]["kind"] = json!("colleague");
+
+        let reply = app
+            .send(
+                Caller::Admin,
+                Method::POST,
+                &format!("/organizations/{o1}/users"),
+                Some(body),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(reply.body["status_code"], 201);
+        let user = user_with_email(app.db(), NEW_EMAIL)
+            .await
+            .expect("the member is stored");
+        assert_eq!(
+            relationships_between(app.db(), coach, user)
+                .await
+                .into_iter()
+                .map(|relationship| relationship.kind)
+                .collect::<Vec<_>>(),
+            vec![Kind::Colleague]
+        );
+        assert!(relationships_between(app.db(), user, coach)
+            .await
+            .is_empty());
+        assert_eq!(app.take_emailed(), vec![NEW_EMAIL.to_string()]);
+    })
+    .await;
+}
+
+/// KIND-18
+#[tokio::test]
+async fn a_refused_relationship_adds_no_member_and_sends_no_email() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let o1 = app.fixture.o1;
+        // Not an O1 member, so no relationship with them can be made there.
+        let stranger = seed_user(app.db()).await;
+        let mut body = new_member_body(stranger);
+        body["relationship"]["kind"] = json!("colleague");
+        app.take_emailed();
+
+        let reply = app
+            .send(
+                Caller::Admin,
+                Method::POST,
+                &format!("/organizations/{o1}/users"),
+                Some(body),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::CONFLICT);
+        assert_eq!(user_with_email(app.db(), NEW_EMAIL).await, None);
+        assert_eq!(app.take_emailed(), Vec::<String>::new());
+    })
+    .await;
+}
+
+/// ORG-40
+#[tokio::test]
+async fn a_member_body_with_the_replaced_coach_id_is_refused() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, coach) = (app.fixture.o1, app.fixture.user(Caller::Coach));
+        let mut body = new_member_body(coach);
+        body["coach_id"] = json!(coach);
+        app.take_emailed();
+
+        let reply = app
+            .send(
+                Caller::Admin,
+                Method::POST,
+                &format!("/organizations/{o1}/users"),
+                Some(body),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+        // The rejection an unknown field in any other body gets.
+        let message = reply.body.as_str().unwrap_or_default();
+        assert!(
+            message.starts_with("Failed to deserialize the JSON body into the target type")
+                && message.contains("unknown field `coach_id`"),
+            "{message}"
+        );
+        assert_eq!(user_with_email(app.db(), NEW_EMAIL).await, None);
+        assert_eq!(app.take_emailed(), Vec::<String>::new());
     })
     .await;
 }

@@ -379,6 +379,88 @@ async fn the_session_space_with_a_host_attributes_the_coach_and_the_coachee() {
         .any(|sql| sql.contains("oauth_connections")));
 }
 
+/// The coach's Google connection, carrying their account id so no token is needed to read it.
+fn coach_connection(people: &People) -> oauth_connections::Model {
+    let now = Utc::now();
+    oauth_connections::Model {
+        id: Id::new_v4(),
+        user_id: people.coach.id,
+        provider: MeetingProvider::Google,
+        external_account_id: Some("coach-google-id".to_owned()),
+        external_email: None,
+        access_token: "unused".to_owned(),
+        refresh_token: None,
+        token_expires_at: None,
+        token_type: "Bearer".to_owned(),
+        scopes: String::new(),
+        created_at: now.into(),
+        updated_at: now.into(),
+    }
+}
+
+/// Gathers evidence for `session` with the coach's account known and no token stored for
+/// anyone; returns the user ids the two `oauth_connections` reads were bound to, in order:
+/// the account lookup, then the token lookup.
+async fn oauth_lookup_user_ids(people: &People, session: coaching_sessions::Model) -> Vec<Id> {
+    let transcription = transcription(&session);
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([vec![session.clone()]])
+        .append_query_results([vec![coach_and_coachee_row(people)]])
+        .append_query_results([vec![recording(&transcription)]])
+        .append_query_results([vec![coach_connection(people)]])
+        .append_query_results([Vec::<oauth_connections::Model>::new()])
+        .into_connection();
+    let config = Config::from_args([
+        "test",
+        "--encryption-key=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "--google-client-id=client-id",
+        "--google-client-secret=client-secret",
+        "--google-redirect-uri=https://app.example.com/oauth/google/callback",
+    ]);
+    let bot = FakeBot::in_meeting(SESSION_CODE);
+
+    attribute_speakers(&db, Some(&bot), &config, &transcription, &speakers()).await;
+
+    statements(db)
+        .iter()
+        .filter(|sql| sql.contains("oauth_connections"))
+        .map(|sql| {
+            [people.coach.id, people.coachee.id]
+                .into_iter()
+                .find(|id| sql.contains(&id.to_string()))
+                .expect("each lookup is bound to a participant")
+        })
+        .collect()
+}
+
+/// Attendees are matched against the coach's account, but read with the token of whoever
+/// made the Meet link.
+#[tokio::test]
+async fn attribution_matches_the_coach_and_reads_attendees_as_the_link_maker() {
+    let people = people();
+    let session = coaching_sessions::Model {
+        meeting_url_created_by_user_id: Some(people.coachee.id),
+        ..session(&people, Some(MeetingProvider::Google))
+    };
+
+    assert_eq!(
+        oauth_lookup_user_ids(&people, session).await,
+        [people.coach.id, people.coachee.id]
+    );
+}
+
+/// A session with no recorded link maker is read with the coach's token too.
+#[tokio::test]
+async fn attribution_without_a_recorded_link_maker_reads_as_the_coach() {
+    let people = people();
+    let session = session(&people, Some(MeetingProvider::Google));
+
+    assert_eq!(
+        oauth_lookup_user_ids(&people, session).await,
+        [people.coach.id, people.coach.id]
+    );
+}
+
 /// Runs `handle_completion` against a Google session with the given bot; returns its result,
 /// the statement log, and the session's people.
 async fn complete_with(bot: &FakeBot) -> (Result<(), Error>, Vec<String>, People) {

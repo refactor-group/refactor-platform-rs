@@ -7,8 +7,14 @@ use crate::{user_roles, users};
 
 /// The proof for `relationship`'s coach, a member of its organization.
 pub(crate) fn coach_permit(relationship: coaching_relationships::Model) -> SchedulingPermit {
+    let coach = member_coach(&relationship);
+    SchedulingPermit::verify(relationship, &coach).expect("a member coach may schedule sessions")
+}
+
+/// `relationship`'s coach, holding a role in its organization.
+pub(crate) fn member_coach(relationship: &coaching_relationships::Model) -> users::Model {
     let now = chrono::Utc::now().fixed_offset();
-    let coach = users::Model {
+    users::Model {
         id: relationship.coach_id,
         email: "coach@example.com".to_string(),
         first_name: "Test".to_string(),
@@ -32,6 +38,5 @@ pub(crate) fn coach_permit(relationship: coaching_relationships::Model) -> Sched
         invite_status: None,
         created_at: now,
         updated_at: now,
-    };
-    SchedulingPermit::verify(relationship, &coach).expect("a member coach may schedule sessions")
+    }
 }

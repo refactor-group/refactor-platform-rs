@@ -42,7 +42,7 @@ async fn admins_attach_a_member_with_a_coach() {
                     caller,
                     Method::POST,
                     &format!("/organizations/{o1}/users/{target}/role"),
-                    Some(json!({ "role": "User", "coach_id": coach })),
+                    Some(json!({ "role": "User", "relationship": {"with_user_id": coach, "kind": "coaching"} })),
                 )
                 .await;
 
@@ -75,7 +75,7 @@ async fn attaching_a_member_with_a_new_coach_stores_a_coaching_relationship() {
                 Caller::Admin,
                 Method::POST,
                 &format!("/organizations/{o1}/users/{target}/role"),
-                Some(json!({ "role": "User", "coach_id": coach })),
+                Some(json!({ "role": "User", "relationship": {"with_user_id": coach, "kind": "coaching"} })),
             )
             .await;
 
@@ -89,6 +89,82 @@ async fn attaching_a_member_with_a_new_coach_stores_a_coaching_relationship() {
                 .collect::<Vec<_>>(),
             vec![Kind::Coaching]
         );
+    })
+    .await;
+}
+
+/// KIND-16
+#[tokio::test]
+async fn admins_attach_a_member_as_a_colleague() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, coach) = (app.fixture.o1, app.fixture.user(Caller::Coach));
+        // A former O1 member with no relationship, so ADMIN may see them.
+        let target = seed_user(app.db()).await;
+        record_removal(app.db(), target, o1).await;
+
+        let reply = app
+            .send(
+                Caller::Admin,
+                Method::POST,
+                &format!("/organizations/{o1}/users/{target}/role"),
+                Some(json!({
+                    "role": "User",
+                    "relationship": { "with_user_id": coach, "kind": "colleague" },
+                })),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(reply.body["status_code"], 201);
+        assert!(holds_role(app.db(), target, o1).await);
+        assert_eq!(
+            relationships_between(app.db(), coach, target)
+                .await
+                .into_iter()
+                .map(|relationship| relationship.kind)
+                .collect::<Vec<_>>(),
+            vec![Kind::Colleague]
+        );
+        assert!(relationships_between(app.db(), target, coach)
+            .await
+            .is_empty());
+    })
+    .await;
+}
+
+/// KIND-17
+#[tokio::test]
+async fn a_refused_relationship_grants_no_role() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let fixture = &app.fixture;
+        let (o1, r3, coach) = (fixture.o1, fixture.r3, fixture.user(Caller::Coach));
+        // A former O1 member whom COACH still coaches (R3).
+        let target = fixture.user(Caller::Removed);
+        record_removal(app.db(), target, o1).await;
+        let before = relationships_between(app.db(), coach, target).await;
+
+        let reply = app
+            .send(
+                Caller::Admin,
+                Method::POST,
+                &format!("/organizations/{o1}/users/{target}/role"),
+                Some(json!({
+                    "role": "User",
+                    "relationship": { "with_user_id": coach, "kind": "colleague" },
+                })),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::CONFLICT);
+        assert_eq!(reply.body["details"]["reason"], "pair_already_related");
+        assert_eq!(reply.body["details"]["relationship_id"], r3.to_string());
+        assert!(!holds_role(app.db(), target, o1).await);
+        assert_eq!(relationships_between(app.db(), coach, target).await, before);
+        assert!(relationships_between(app.db(), target, coach)
+            .await
+            .is_empty());
     })
     .await;
 }

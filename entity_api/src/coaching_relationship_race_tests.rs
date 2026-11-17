@@ -3,7 +3,7 @@
 
 use super::*;
 use entity::{organizations, user_roles, users};
-use sea_orm::{DatabaseBackend, DatabaseConnection, MockDatabase};
+use sea_orm::{DatabaseBackend, DatabaseConnection, MockDatabase, MockExecResult};
 
 fn organization(id: Id) -> organizations::Model {
     let now = Utc::now();
@@ -69,7 +69,8 @@ fn statements(db: DatabaseConnection) -> Vec<String> {
 }
 
 /// The organization, both users, then a super-admin probe plus an organization list
-/// per user. Mirrors what `create` reads before the uniqueness lookup.
+/// per user, then the pair's advisory lock. Mirrors what `create` reads before the
+/// uniqueness lookup.
 fn mock_up_to_uniqueness_check(
     organization_id: Id,
     coach: &users::Model,
@@ -86,6 +87,10 @@ fn mock_up_to_uniqueness_check(
         .append_query_results([membership.clone()])
         .append_query_results([Vec::<user_roles::Model>::new()])
         .append_query_results([membership])
+        .append_exec_results([MockExecResult {
+            last_insert_id: 0,
+            rows_affected: 1,
+        }])
 }
 
 /// The pre-check sees nothing, the insert conflicts because a concurrent request
@@ -143,6 +148,7 @@ async fn refuses_a_concurrent_winner_of_another_kind() {
     let coach = user(Id::new_v4(), "Coach");
     let coachee = user(Id::new_v4(), "Coachee");
     let winner = relationship(organization_id, coach.id, coachee.id);
+    let winner_id = winner.id;
 
     let db = mock_up_to_uniqueness_check(organization_id, &coach, &coachee)
         .append_query_results([Vec::<Model>::new()])
@@ -162,8 +168,10 @@ async fn refuses_a_concurrent_winner_of_another_kind() {
     .await
     .expect_err("a coaching winner must not stand in for a colleague relationship");
 
-    assert!(
-        matches!(error.error_kind, EntityApiErrorKind::ValidationError { .. }),
-        "{error:?}"
+    assert_eq!(
+        error.error_kind,
+        EntityApiErrorKind::PairAlreadyRelated {
+            relationship_id: winner_id
+        }
     );
 }

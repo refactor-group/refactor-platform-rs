@@ -560,3 +560,40 @@ async fn the_colleague_in_the_coachee_seat_creates_a_series() {
     })
     .await;
 }
+
+/// SER-24: a series with a colleague who left is refused as `participant_not_a_member`,
+/// with nothing written and nobody mailed.
+#[tokio::test]
+async fn a_series_with_a_colleague_who_left_is_refused() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (r1, o1) = (app.fixture.r1, app.fixture.o1);
+        make_colleagues(app.db(), r1).await;
+        let coachee = app.fixture.user(Caller::Coachee);
+        remove_roles(app.db(), coachee, o1).await;
+        let series = relationship_series(app.db(), r1).await;
+        let sessions = relationship_sessions(app.db(), r1).await;
+        let documents = app.expect_tiptap("POST", 0).await;
+        let emails = app.expect_emails(0).await;
+
+        let reply = app
+            .send(
+                Caller::Coach,
+                Method::POST,
+                "/coaching_session_series",
+                Some(create_body(r1)),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::CONFLICT);
+        let details = &reply.body["details"];
+        assert_eq!(details["reason"], "participant_not_a_member", "{details}");
+        assert_eq!(details["user_id"], coachee.to_string(), "{details}");
+        assert_eq!(details["organization_id"], o1.to_string(), "{details}");
+        assert_eq!(relationship_series(app.db(), r1).await, series);
+        assert_eq!(relationship_sessions(app.db(), r1).await, sessions);
+        documents.assert_async().await;
+        emails.assert_async().await;
+    })
+    .await;
+}

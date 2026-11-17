@@ -7,6 +7,7 @@ use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
 use crate::params::coaching_relationship::goal_progress::IndexParams as GoalProgressIndexParams;
+use crate::params::coaching_relationship::CreateParams;
 use crate::{AppState, Error};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -15,7 +16,7 @@ use axum::Json;
 use domain::coaching_relationship::CoachingRelationshipWithUserNames;
 use domain::coaching_relationship_kind::Kind;
 use domain::{
-    action as ActionApi, coaching_relationship as CoachingRelationshipApi, coaching_relationships,
+    action as ActionApi, coaching_relationship as CoachingRelationshipApi,
     goal_progress as GoalProgressApi,
 };
 use service::config::ApiVersion;
@@ -25,8 +26,9 @@ use log::*;
 /// CREATE a new CoachingRelationship.
 ///
 /// Restricted to administrators of the organization named in the path. Idempotent:
-/// when a relationship already exists for this coach and coachee in the organization,
-/// that relationship is returned rather than a duplicate created.
+/// when the pair already has a relationship of the requested kind in the organization,
+/// that relationship is returned rather than a duplicate created. Colleagues are an
+/// unordered pair, so a colleague relationship is found whichever person is named first.
 #[utoipa::path(
     post,
     path = "/organizations/{organization_id}/coaching_relationships",
@@ -34,14 +36,14 @@ use log::*;
         ApiVersion,
         ("organization_id" = Uuid, Path, description = "Organization id"),
     ),
-    request_body = domain::coaching_relationships::Model,
+    request_body = CreateParams,
     responses(
-        (status = 200, description = "The Coaching Relationship, newly created or the existing one for this coach and coachee. The envelope's status_code is 201 in both cases, so it does not distinguish a reuse from a create", body = domain::coaching_relationship::CoachingRelationshipWithUserNames),
+        (status = 200, description = "The relationship of the requested kind (default coaching), newly created or the existing one for this pair: for coaching, this coach and coachee; for colleagues, these two people in either order. The envelope's status_code is 201 in both cases, so it does not distinguish a reuse from a create", body = domain::coaching_relationship::CoachingRelationshipWithUserNames),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Caller does not administer the organization"),
         (status = 404, description = "Organization, coach or coachee not found"),
         (status = 405, description = "Method not allowed"),
-        (status = 409, description = "The coach is the coachee, the coach or coachee is not a member of the organization, the pair already has a relationship of another kind in the organization, or the organization is archived"),
+        (status = 409, description = "The coach is the coachee, the coach or coachee is not a member of the organization, the organization is archived, or the two people already have a relationship of the other kind in the organization in either direction (`details.reason` `pair_already_related`, `details.relationship_id` the existing relationship)"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -51,22 +53,25 @@ use log::*;
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
-    OrganizationAdminAccess { organization, .. }: OrganizationAdminAccess,
-    Json(coaching_relationship_model): Json<coaching_relationships::Model>,
+    OrganizationAdminAccess {
+        organization,
+        authenticated_user,
+    }: OrganizationAdminAccess,
+    Json(params): Json<CreateParams>,
 ) -> Result<impl IntoResponse, Error> {
-    debug!("CREATE new Coaching Relationship from: {coaching_relationship_model:?}");
+    debug!("CREATE new Coaching Relationship from: {params:?}");
 
     let coaching_relationship: CoachingRelationshipWithUserNames = CoachingRelationshipApi::create(
         app_state.db_conn_ref(),
         organization.id,
         CoachingRelationshipApi::Draft {
-            coach_id: coaching_relationship_model.coach_id,
-            coachee_id: coaching_relationship_model.coachee_id,
-            // No request chooses a kind yet.
-            kind: Kind::Coaching,
+            coach_id: params.coach_id,
+            coachee_id: params.coachee_id,
+            kind: params.kind.unwrap_or(Kind::Coaching),
         },
     )
-    .await?;
+    .await?
+    .for_caller(&authenticated_user);
 
     debug!(
         "Newly created Coaching Relationship: {:?}",
@@ -104,6 +109,7 @@ pub async fn create(
 )]
 pub async fn read(
     CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(user): AuthenticatedUser,
     State(app_state): State<AppState>,
     CoachingRelationshipAccess(coaching_relationship): CoachingRelationshipAccess,
 ) -> Result<impl IntoResponse, Error> {
@@ -115,7 +121,8 @@ pub async fn read(
             app_state.db_conn_ref(),
             relationship_id,
         )
-        .await?;
+        .await?
+        .map(|relationship| relationship.for_caller(&user));
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), relationship)))
 }
@@ -149,13 +156,16 @@ pub async fn index(
         user.id, organization_id
     );
 
-    let coaching_relationships =
+    let coaching_relationships: Vec<CoachingRelationshipWithUserNames> =
         CoachingRelationshipApi::find_by_organization_for_user_with_user_names(
             app_state.db_conn_ref(),
             user.id,
             organization_id,
         )
-        .await?;
+        .await?
+        .into_iter()
+        .map(|relationship| relationship.for_caller(&user))
+        .collect();
 
     debug!("Found CoachingRelationships: {coaching_relationships:?}");
 
@@ -177,7 +187,7 @@ pub async fn index(
         ("sort_by" = Option<crate::params::coaching_relationship::goal_progress::SortField>, Query, description = "Sort by field. Valid values: 'updated_at', 'status_changed_at', 'created_at'.", example = "updated_at"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc', 'desc'.", example = "desc"),
         ("limit" = Option<u32>, Query, description = "Cap on the number of goals returned. Values above 100 are silently clamped. Omit for unbounded results.", example = 3),
-        ("assignee" = Option<String>, Query, description = "Scope action counts / next-due to a specific assignee. Values: 'coach', 'coachee' (case-insensitive), or a user UUID. Omit for relationship-wide counts."),
+        ("assignee" = Option<String>, Query, description = "Scope action counts / next-due to a specific assignee. Values: 'coach', 'coachee' (case-insensitive), or a user UUID. 'coach' and 'coachee' are refused on a colleague relationship. Omit for relationship-wide counts."),
         ("coaching_session_id" = Option<Uuid>, Query, description = "Restrict to goals linked to this coaching session via the session↔goal join table."),
     ),
     responses(
@@ -185,6 +195,7 @@ pub async fn index(
         (status = 400, description = "Invalid query parameter value"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Coaching relationship not found"),
+        (status = 422, description = "`assignee=coach` or `assignee=coachee` on a colleague relationship; `details.reason` is `assignee_scope_not_applicable`"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -211,16 +222,10 @@ pub async fn goal_progress(
     // otherwise reject with 400 rather than silently returning zero-filled stats
     // (which would expose a probe oracle for arbitrary user ids).
     query_params.assignee_user_id = match assignee_scope {
-        Some(ActionApi::AssigneeScope::Coach) => Some(relationship.coach_id),
-        Some(ActionApi::AssigneeScope::Coachee) => Some(relationship.coachee_id),
-        Some(ActionApi::AssigneeScope::User(id))
-            if id == relationship.coach_id || id == relationship.coachee_id =>
-        {
-            Some(id)
-        }
-        Some(ActionApi::AssigneeScope::User(_)) => {
+        Some(ActionApi::AssigneeScope::User(id)) if !relationship.includes_user(id) => {
             return Err(Error::Web(WebErrorKind::Input));
         }
+        Some(scope) => Some(ActionApi::assignee_user_id(&relationship, &scope)?),
         None => None,
     };
 

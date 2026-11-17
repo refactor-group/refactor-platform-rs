@@ -10,14 +10,14 @@ use chrono::Utc;
 use entity::{
     coachees, coaches,
     coaching_relationship_kind::Kind,
-    coaching_relationships::{self, ActiveModel, Entity, Model, Visibility},
+    coaching_relationships::{self, viewer_of, ActiveModel, Entity, Model, Viewer, Visibility},
     coaching_sessions, users, Id,
 };
 use log::*;
 use sea_orm::{
     entity::prelude::*, sea_query::Alias, sea_query::Expr, sea_query::OnConflict, Condition,
-    DatabaseConnection, DbErr, ExprTrait, FromQueryResult, Iterable, JoinType, QuerySelect,
-    QueryTrait, Set,
+    DatabaseConnection, DbBackend, DbErr, ExprTrait, FromQueryResult, Iterable, JoinType,
+    QuerySelect, QueryTrait, Set, Statement, TransactionSession, TransactionTrait,
 };
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
@@ -35,10 +35,16 @@ pub struct Draft {
 
 /// Creates the drafted relationship in an organization.
 ///
-/// Returns the existing relationship when one of the same kind already exists for that
-/// coach, coachee and organization, and refuses one of another kind.
+/// Returns the existing relationship when the pair already holds one of the same kind
+/// (in either direction for colleagues, in the drafted direction for coaching), and
+/// refuses with `PairAlreadyRelated` when the pair holds one of the other kind.
+///
+/// The check and the insert run in one transaction holding the pair's advisory lock, so
+/// two concurrent creates for the same pair are decided one after the other. Called on
+/// a caller's transaction, it runs in a savepoint and the lock lasts until that
+/// transaction ends.
 pub async fn create(
-    db: &impl ConnectionTrait,
+    db: &(impl ConnectionTrait + TransactionTrait),
     organization_id: Id,
     draft: Draft,
 ) -> Result<CoachingRelationshipWithUserNames, Error> {
@@ -93,20 +99,50 @@ pub async fn create(
         });
     }
 
-    // Coaching Relationship must be unique within the context of an organization
-    // Note: this is enforced at the database level as well
-    let existing_coaching_relationship =
-        find_for_pair(db, organization_id, draft.coach_id, draft.coachee_id).await?;
+    let txn = db.begin().await?;
+    lock_pair(&txn, organization_id, draft.coach_id, draft.coachee_id).await?;
 
-    if let Some(existing) = existing_coaching_relationship {
-        debug!(
-            "Coaching relationship {} already exists for coach {}, coachee {} in organization {organization_id}; returning it",
-            existing.id, existing.coach_id, existing.coachee_id
-        );
-        return of_kind(existing, draft.kind)
-            .map(|existing| with_user_names(&existing, &coach, &coachee));
+    let relationship = match settle(
+        &draft,
+        find_between(&txn, organization_id, draft.coach_id, draft.coachee_id).await?,
+    )? {
+        Some(existing) => {
+            debug!(
+                "Coaching relationship {} already exists for coach {}, coachee {} in organization {organization_id}; returning it",
+                existing.id, existing.coach_id, existing.coachee_id
+            );
+            existing
+        }
+        None => insert(&txn, organization_id, draft, &coach, &coachee).await?,
+    };
+
+    txn.commit().await?;
+    let (seated_coach, seated_coachee) = in_stored_seats(&relationship, &coach, &coachee);
+    Ok(with_user_names(&relationship, seated_coach, seated_coachee))
+}
+
+/// The two users in the seats `relationship` stores them in, which for a returned colleague
+/// relationship may be the reverse of the request's.
+fn in_stored_seats<'a>(
+    relationship: &Model,
+    one: &'a users::Model,
+    other: &'a users::Model,
+) -> (&'a users::Model, &'a users::Model) {
+    if relationship.coach_id == one.id {
+        (one, other)
+    } else {
+        (other, one)
     }
+}
 
+/// Inserts the drafted relationship, or returns the one a concurrent request inserted first.
+async fn insert(
+    db: &impl ConnectionTrait,
+    organization_id: Id,
+    draft: Draft,
+    coach: &users::Model,
+    coachee: &users::Model,
+) -> Result<Model, Error> {
     let now = Utc::now();
     let slug = slugify!(format!("{} {}", coach.first_name, coachee.first_name).as_str());
 
@@ -122,34 +158,83 @@ pub async fn create(
     };
 
     match insert_unless_exists(db, coaching_relationship_active_model).await? {
-        Some(inserted) => Ok(with_user_names(&inserted, &coach, &coachee)),
+        Some(inserted) => Ok(inserted),
         None => {
-            let winner = find_for_pair(db, organization_id, draft.coach_id, draft.coachee_id)
-                .await?
-                .ok_or_else(|| Error {
-                    source: None,
-                    error_kind: EntityApiErrorKind::RecordNotFound,
-                })?;
+            let winner = settle(
+                &draft,
+                find_between(db, organization_id, draft.coach_id, draft.coachee_id).await?,
+            )?
+            .ok_or_else(not_found)?;
             debug!(
                 "Coaching relationship for coach {}, coachee {} in organization {organization_id} was created by a concurrent request; returning that one ({})",
                 winner.coach_id, winner.coachee_id, winner.id
             );
-            of_kind(winner, draft.kind).map(|winner| with_user_names(&winner, &coach, &coachee))
+            Ok(winner)
         }
     }
 }
 
-/// `existing` when it is of `kind`; a conflict otherwise, since a pair holds one relationship.
-fn of_kind(existing: Model, kind: Kind) -> Result<Model, Error> {
-    Some(existing)
-        .filter(|existing| existing.kind == kind)
-        .ok_or_else(|| Error {
-            source: None,
-            error_kind: EntityApiErrorKind::ValidationError {
-                message: "This coach and coachee already have a relationship of another kind in the organization.".into(),
-                details: None,
-            },
+/// Holds the pair's advisory lock until the transaction ends, so creates for the same
+/// pair in an organization are decided one after the other.
+async fn lock_pair(
+    db: &impl ConnectionTrait,
+    organization_id: Id,
+    a: Id,
+    b: Id,
+) -> Result<(), Error> {
+    // SQLite, the test tier, has no advisory locks and runs on one connection.
+    if db.get_database_backend() != DbBackend::Postgres {
+        return Ok(());
+    }
+    db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "SELECT pg_advisory_xact_lock($1, $2)",
+        [
+            PAIR_LOCK_NAMESPACE.into(),
+            pair_lock_key(organization_id, a, b).into(),
+        ],
+    ))
+    .await?;
+    Ok(())
+}
+
+/// The first key of every pair lock. Pair locks take the two-key form, which Postgres keeps
+/// apart from the single-key session locks, and this namespace keeps them apart from any
+/// other two-key lock.
+const PAIR_LOCK_NAMESPACE: i32 = 1;
+
+/// The second key of the advisory lock for a pair in an organization, the same whichever
+/// person is first.
+fn pair_lock_key(organization_id: Id, a: Id, b: Id) -> i32 {
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let hash = [organization_id, Ord::min(a, b), Ord::max(a, b)]
+        .iter()
+        .map(|id| {
+            let (upper, lower) = id.as_u64_pair();
+            upper ^ lower
         })
+        .fold(0, |key: u64, part| key.wrapping_mul(FNV_PRIME) ^ part);
+    (hash ^ (hash >> 32)) as i32
+}
+
+/// Decides a create from the pair's existing relationships in the organization: the one to
+/// return, `None` to insert, or `PairAlreadyRelated` when the pair holds the other kind.
+///
+/// A kind whose two seats hold the same role (colleagues) makes the pair unordered, so a
+/// relationship in either direction is returned; otherwise only the drafted direction is.
+fn settle(draft: &Draft, existing: Vec<Model>) -> Result<Option<Model>, Error> {
+    if let Some(other) = existing.iter().find(|related| related.kind != draft.kind) {
+        return Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::PairAlreadyRelated {
+                relationship_id: other.id,
+            },
+        });
+    }
+    let unordered = !draft.kind.seats_differ();
+    Ok(existing
+        .into_iter()
+        .find(|related| unordered || related.coach_id == draft.coach_id))
 }
 
 /// Inserts `relationship`, returning `None` when its coach, coachee and organization already exist.
@@ -183,25 +268,22 @@ pub async fn insert_unless_exists(
     }
 }
 
-/// The relationship for exactly this coach, coachee and organization, if one exists.
-///
-/// Shared by the pre-check and the lost-race recovery so both agree on what "the same
-/// relationship" means. Directional: swapping coach and coachee is a different pair.
-///
-/// Filters in SQL so this rides the `coaching_relationships_coach_coachee_org` unique
-/// index and returns at most one row, rather than reading an organization's whole set
-/// to answer a question about one pair.
-async fn find_for_pair(
+/// Every relationship between two people in an organization, in either direction.
+async fn find_between(
     db: &impl ConnectionTrait,
     organization_id: Id,
-    coach_id: Id,
-    coachee_id: Id,
-) -> Result<Option<Model>, Error> {
+    a: Id,
+    b: Id,
+) -> Result<Vec<Model>, Error> {
+    let directed = |coach_id: Id, coachee_id: Id| {
+        Condition::all()
+            .add(coaching_relationships::Column::CoachId.eq(coach_id))
+            .add(coaching_relationships::Column::CoacheeId.eq(coachee_id))
+    };
     Ok(Entity::find()
         .filter(coaching_relationships::Column::OrganizationId.eq(organization_id))
-        .filter(coaching_relationships::Column::CoachId.eq(coach_id))
-        .filter(coaching_relationships::Column::CoacheeId.eq(coachee_id))
-        .one(db)
+        .filter(Condition::any().add(directed(a, b)).add(directed(b, a)))
+        .all(db)
         .await?)
 }
 
@@ -234,6 +316,48 @@ pub struct Membership {
     pub coachee_is_member: bool,
 }
 
+impl Membership {
+    /// The participants of `relationship` still in its organization.
+    pub fn member_ids(self, relationship: &Model) -> Vec<Id> {
+        [
+            (relationship.coach_id, self.coach_is_member),
+            (relationship.coachee_id, self.coachee_is_member),
+        ]
+        .into_iter()
+        .filter_map(|(id, is_member)| is_member.then_some(id))
+        .collect()
+    }
+}
+
+/// What a relationship lets its caller do, and whose leaving its organization blocks
+/// scheduling its sessions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, ToSchema)]
+#[schema(as = domain::coaching_relationship::Capabilities)]
+pub struct Capabilities {
+    /// What the caller may do in the relationship; null when the caller isn't a participant.
+    #[schema(required = true)]
+    pub viewer: Option<Viewer>,
+    /// Whether transcripts of its sessions are scanned for suggested actions.
+    pub suggests_actions: bool,
+    /// The participant whose leaving the organization blocks scheduling its sessions, the one
+    /// a scheduling 409 names; null when nobody does.
+    #[schema(required = true)]
+    pub scheduling_blocked_by: Option<Id>,
+}
+
+impl Capabilities {
+    /// `relationship` as `caller` sees it, given which of its participants are still members.
+    pub fn for_caller(relationship: &Model, membership: Membership, caller: &users::Model) -> Self {
+        Self {
+            viewer: viewer_of(relationship, caller),
+            suggests_actions: relationship.kind.rules().suggests_actions(),
+            scheduling_blocked_by: relationship
+                .seat_blocking_scheduling(&membership.member_ids(relationship))
+                .map(|seat| relationship.participant(seat)),
+        }
+    }
+}
+
 /// A coaching relationship with its participants' [`Membership`].
 #[derive(Debug, Clone, PartialEq, Serialize, FromQueryResult, ToSchema)]
 #[schema(as = domain::coaching_relationship::WithMembership)]
@@ -244,6 +368,20 @@ pub struct WithMembership {
     #[serde(flatten)]
     #[sea_orm(nested)]
     pub membership: Membership,
+    /// Empty until [`WithMembership::for_caller`] fills it.
+    #[serde(flatten)]
+    #[sea_orm(skip)]
+    pub capabilities: Capabilities,
+}
+
+impl WithMembership {
+    /// This relationship as `caller` sees it.
+    pub fn for_caller(self, caller: &users::Model) -> Self {
+        Self {
+            capabilities: Capabilities::for_caller(&self.relationship, self.membership, caller),
+            ..self
+        }
+    }
 }
 
 /// Adds each participant's [`Membership`] to a relationship select, computed in its SQL.
@@ -276,9 +414,11 @@ fn with_user_names(
 ) -> CoachingRelationshipWithUserNames {
     CoachingRelationshipWithUserNames {
         id: coaching_relationship.id,
+        organization_id: coaching_relationship.organization_id,
         coach_id: coaching_relationship.coach_id,
         coachee_id: coaching_relationship.coachee_id,
         kind: coaching_relationship.kind,
+        slug: coaching_relationship.slug.clone(),
         coach_first_name: coach.first_name.clone(),
         coach_last_name: coach.last_name.clone(),
         coachee_first_name: coachee.first_name.clone(),
@@ -289,6 +429,7 @@ fn with_user_names(
             coach_is_member: true,
             coachee_is_member: true,
         },
+        capabilities: Capabilities::default(),
     }
 }
 
@@ -493,6 +634,7 @@ pub async fn find_by_organization_with_user_names(
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
         .column(coaching_relationships::Column::Kind)
+        .column(coaching_relationships::Column::Slug)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -535,6 +677,7 @@ pub async fn find_by_user_and_organization_with_user_names(
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
         .column(coaching_relationships::Column::Kind)
+        .column(coaching_relationships::Column::Slug)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -571,6 +714,7 @@ pub async fn get_relationship_with_user_names(
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
         .column(coaching_relationships::Column::Kind)
+        .column(coaching_relationships::Column::Slug)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -701,6 +845,7 @@ pub async fn find_by_user_id_with_user_names(
         .column(coaching_relationships::Column::CoachId)
         .column(coaching_relationships::Column::CoacheeId)
         .column(coaching_relationships::Column::Kind)
+        .column(coaching_relationships::Column::Slug)
         .column(coaching_relationships::Column::CreatedAt)
         .column(coaching_relationships::Column::UpdatedAt)
         .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
@@ -717,9 +862,11 @@ pub async fn find_by_user_id_with_user_names(
 #[derive(FromQueryResult, Debug, PartialEq, Clone)]
 pub struct CoachingRelationshipWithUserNames {
     pub id: Id,
+    pub organization_id: Id,
     pub coach_id: Id,
     pub coachee_id: Id,
     pub kind: Kind,
+    pub slug: String,
     pub coach_first_name: String,
     pub coach_last_name: String,
     pub coachee_first_name: String,
@@ -728,6 +875,33 @@ pub struct CoachingRelationshipWithUserNames {
     pub updated_at: DateTimeWithTimeZone,
     #[sea_orm(nested)]
     pub membership: Membership,
+    /// Empty until [`CoachingRelationshipWithUserNames::for_caller`] fills it.
+    #[sea_orm(skip)]
+    pub capabilities: Capabilities,
+}
+
+impl CoachingRelationshipWithUserNames {
+    /// The relationship row this describes.
+    pub fn relationship(&self) -> Model {
+        Model {
+            id: self.id,
+            organization_id: self.organization_id,
+            coach_id: self.coach_id,
+            coachee_id: self.coachee_id,
+            kind: self.kind,
+            slug: self.slug.clone(),
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+    }
+
+    /// This relationship as `caller` sees it.
+    pub fn for_caller(self, caller: &users::Model) -> Self {
+        Self {
+            capabilities: Capabilities::for_caller(&self.relationship(), self.membership, caller),
+            ..self
+        }
+    }
 }
 
 /// By hand: the derive would nest `membership` under `allOf`, but the wire lists its fields.
@@ -753,16 +927,16 @@ impl PartialSchema for CoachingRelationshipWithUserNames {
             .fold(ObjectBuilder::new(), |object, (name, schema)| {
                 object.property(name, schema).required(name)
             });
-        // Serialized at the top level, so `Membership`'s properties join this object's.
-        let RefOr::T(Schema::Object(membership)) = Membership::schema() else {
-            return object.into();
-        };
-        membership
-            .required
-            .iter()
-            .filter_map(|name| Some((name, membership.properties.get(name)?.clone())))
+        // Serialized at the top level, so these schemas' properties join this object's.
+        [Membership::schema(), Capabilities::schema()]
+            .into_iter()
+            .filter_map(|schema| match schema {
+                RefOr::T(Schema::Object(object)) => Some(object),
+                _ => None,
+            })
+            .flat_map(|flattened| flattened.properties.into_iter())
             .fold(object, |object, (name, schema)| {
-                object.property(name, schema).required(name)
+                object.property(&name, schema).required(&name)
             })
             .into()
     }
@@ -775,6 +949,7 @@ impl ToSchema for CoachingRelationshipWithUserNames {
 
     fn schemas(schemas: &mut Vec<(String, RefOr<Schema>)>) {
         schemas.push((<Kind as ToSchema>::name().into_owned(), Kind::schema()));
+        schemas.push((<Viewer as ToSchema>::name().into_owned(), Viewer::schema()));
     }
 }
 
@@ -785,7 +960,7 @@ impl Serialize for CoachingRelationshipWithUserNames {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("CoachingRelationship", 12)?;
+        let mut state = serializer.serialize_struct("CoachingRelationship", 15)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("coach_id", &self.coach_id)?;
         state.serialize_field("coachee_id", &self.coachee_id)?;
@@ -798,6 +973,12 @@ impl Serialize for CoachingRelationshipWithUserNames {
         state.serialize_field("updated_at", &self.updated_at)?;
         state.serialize_field("coach_is_member", &self.membership.coach_is_member)?;
         state.serialize_field("coachee_is_member", &self.membership.coachee_is_member)?;
+        state.serialize_field("viewer", &self.capabilities.viewer)?;
+        state.serialize_field("suggests_actions", &self.capabilities.suggests_actions)?;
+        state.serialize_field(
+            "scheduling_blocked_by",
+            &self.capabilities.scheduling_blocked_by,
+        )?;
         state.end()
     }
 }
@@ -812,9 +993,11 @@ mod wire_tests {
         let now = Utc::now().fixed_offset();
         let relationship = CoachingRelationshipWithUserNames {
             id: Id::new_v4(),
+            organization_id: Id::new_v4(),
             coach_id: Id::new_v4(),
             coachee_id: Id::new_v4(),
             kind: Kind::Coaching,
+            slug: String::new(),
             coach_first_name: String::new(),
             coach_last_name: String::new(),
             coachee_first_name: String::new(),
@@ -822,6 +1005,7 @@ mod wire_tests {
             created_at: now,
             updated_at: now,
             membership: Membership::default(),
+            capabilities: Capabilities::default(),
         };
         let serde_json::Value::Object(wire) =
             serde_json::to_value(&relationship).expect("serializes")
@@ -935,7 +1119,7 @@ mod tests {
             db.into_transaction_log(),
             [Transaction::from_sql_and_values(
                 DatabaseBackend::Postgres,
-                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", CAST("coaching_relationships"."kind" AS "text"), "coaching_relationships"."created_at", "coaching_relationships"."updated_at", coaches.first_name AS "coach_first_name", coaches.last_name AS "coach_last_name", coachees.first_name AS "coachee_first_name", coachees.last_name AS "coachee_last_name", EXISTS(SELECT 1 FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = "coaching_relationships"."coach_id" AND ("user_roles"."organization_id" = "coaching_relationships"."organization_id" OR ("user_roles"."role" = (CAST($1 AS "role")) AND "user_roles"."organization_id" IS NULL))) AS "coach_is_member", EXISTS(SELECT 1 FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = "coaching_relationships"."coachee_id" AND ("user_roles"."organization_id" = "coaching_relationships"."organization_id" OR ("user_roles"."role" = (CAST($2 AS "role")) AND "user_roles"."organization_id" IS NULL))) AS "coachee_is_member" FROM "refactor_platform"."coaching_relationships" JOIN "refactor_platform"."users" AS "coaches" ON "coaching_relationships"."coach_id" = "coaches"."id" JOIN "refactor_platform"."users" AS "coachees" ON "coaching_relationships"."coachee_id" = "coachees"."id" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $3)"#,
+                r#"SELECT "coaching_relationships"."id", "coaching_relationships"."organization_id", "coaching_relationships"."coach_id", "coaching_relationships"."coachee_id", CAST("coaching_relationships"."kind" AS "text"), "coaching_relationships"."slug", "coaching_relationships"."created_at", "coaching_relationships"."updated_at", coaches.first_name AS "coach_first_name", coaches.last_name AS "coach_last_name", coachees.first_name AS "coachee_first_name", coachees.last_name AS "coachee_last_name", EXISTS(SELECT 1 FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = "coaching_relationships"."coach_id" AND ("user_roles"."organization_id" = "coaching_relationships"."organization_id" OR ("user_roles"."role" = (CAST($1 AS "role")) AND "user_roles"."organization_id" IS NULL))) AS "coach_is_member", EXISTS(SELECT 1 FROM "refactor_platform"."user_roles" WHERE "user_roles"."user_id" = "coaching_relationships"."coachee_id" AND ("user_roles"."organization_id" = "coaching_relationships"."organization_id" OR ("user_roles"."role" = (CAST($2 AS "role")) AND "user_roles"."organization_id" IS NULL))) AS "coachee_is_member" FROM "refactor_platform"."coaching_relationships" JOIN "refactor_platform"."users" AS "coaches" ON "coaching_relationships"."coach_id" = "coaches"."id" JOIN "refactor_platform"."users" AS "coachees" ON "coaching_relationships"."coachee_id" = "coachees"."id" WHERE "coaching_relationships"."organization_id" IN (SELECT "organizations"."id" FROM "refactor_platform"."organizations" WHERE "organizations"."id" = $3)"#,
                 [
                     "super_admin".into(),
                     "super_admin".into(),
@@ -1051,6 +1235,25 @@ mod tests {
         assert!(
             db.into_transaction_log().is_empty(),
             "self-coaching must be rejected before any statement runs"
+        );
+    }
+}
+
+#[cfg(test)]
+mod lock_key_tests {
+    use super::*;
+
+    #[test]
+    fn a_pairs_lock_key_ignores_which_person_is_first_and_depends_on_the_organization() {
+        let (organization_id, a, b) = (Id::new_v4(), Id::new_v4(), Id::new_v4());
+
+        assert_eq!(
+            pair_lock_key(organization_id, a, b),
+            pair_lock_key(organization_id, b, a)
+        );
+        assert_ne!(
+            pair_lock_key(organization_id, a, b),
+            pair_lock_key(Id::new_v4(), a, b)
         );
     }
 }

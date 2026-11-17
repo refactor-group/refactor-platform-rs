@@ -46,12 +46,15 @@ pub async fn index(
     let params = params.with_user_id(user_id);
 
     // Web layer's RoleFilter implements RoleFilterable trait, so pass directly
-    let relationships = CoachingRelationshipApi::find_by_user_id_with_user_names(
+    let relationships: Vec<_> = CoachingRelationshipApi::find_by_user_id_with_user_names(
         app_state.db_conn_ref(),
         &visibility_for(&user),
         params.role,
     )
-    .await?;
+    .await?
+    .into_iter()
+    .map(|relationship| relationship.for_caller(&user))
+    .collect();
 
     debug!(
         "Found {} coaching relationships for user {user_id}",

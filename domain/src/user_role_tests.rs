@@ -303,8 +303,8 @@ async fn attach_to_organization_audits_the_grant_inside_the_transaction() -> Res
 }
 
 /// Mocks every query `attach_to_organization` runs up to and including the role
-/// insert, then the lookups `coaching_relationship::create` runs before its own
-/// insert.
+/// insert, then the lookups and advisory lock `coaching_relationship::create` runs
+/// before its own insert.
 fn mock_attach_with_coach(
     actor_user_id: Id,
     organization_id: Id,
@@ -333,6 +333,7 @@ fn mock_attach_with_coach(
         .append_query_results([membership.clone()])
         .append_query_results([Vec::<user_roles::Model>::new()])
         .append_query_results([membership])
+        .append_exec_results([exec_result(1)])
         .append_query_results([Vec::<coaching_relationships::Model>::new()])
 }
 
@@ -368,7 +369,10 @@ async fn attach_to_organization_commits_the_role_and_the_coach_together() -> Res
         organization_id,
         user_id,
         Role::User,
-        Some(coach_id),
+        Some(InviteeRelationship {
+            with_user_id: coach_id,
+            kind: crate::coaching_relationship_kind::Kind::Coaching,
+        }),
     )
     .await?;
 
@@ -401,7 +405,10 @@ async fn attach_to_organization_rolls_back_the_role_when_the_coach_assignment_fa
         organization_id,
         user_id,
         Role::User,
-        Some(coach_id),
+        Some(InviteeRelationship {
+            with_user_id: coach_id,
+            kind: crate::coaching_relationship_kind::Kind::Coaching,
+        }),
     )
     .await
     .expect_err("expected the failed coach assignment to fail the whole call");

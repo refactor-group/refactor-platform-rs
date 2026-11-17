@@ -35,6 +35,13 @@ impl Kind {
             Kind::Colleague => &Colleague,
         }
     }
+
+    /// Whether its two seats hold different roles, so that `coach` and `coachee` each name one
+    /// of the pair. Colleagues are equals, so for them neither does.
+    pub fn seats_differ(self) -> bool {
+        let rules = self.rules();
+        rules.role(Seat::CoachId) != rules.role(Seat::CoacheeId)
+    }
 }
 
 /// Which column a participant occupies. Not stored and not serialized.
@@ -42,6 +49,26 @@ impl Kind {
 pub enum Seat {
     CoachId,
     CoacheeId,
+}
+
+/// Whose zone, default session length and meeting account a session uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScheduleOwner {
+    /// The participant in this seat, whoever schedules.
+    Seat(Seat),
+    /// Whoever scheduled or last rescheduled the session or series.
+    Scheduler,
+}
+
+impl ScheduleOwner {
+    /// The owner's seat, given the seat of whoever scheduled; the coach seat when the scheduler
+    /// holds none.
+    pub fn seat(self, scheduler_seat: Option<Seat>) -> Seat {
+        match self {
+            ScheduleOwner::Seat(seat) => seat,
+            ScheduleOwner::Scheduler => scheduler_seat.unwrap_or(Seat::CoachId),
+        }
+    }
 }
 
 /// What a participant is to their relationship: derived from its kind and their seat,
@@ -74,6 +101,18 @@ pub trait Rules {
     fn can_schedule_sessions(&self, seat: Seat) -> bool;
     /// Sees every action in the relationship, not only their own and unassigned ones.
     fn sees_all_actions(&self, seat: Seat) -> bool;
+    /// Gets the upcoming-session reminder.
+    fn is_reminded(&self, seat: Seat) -> bool;
+    /// Must still be in the organization for the relationship's sessions to be scheduled or
+    /// changed.
+    fn must_be_member_to_schedule(&self, seat: Seat) -> bool;
+    /// Transcripts of its sessions are scanned for suggested actions.
+    fn suggests_actions(&self) -> bool;
+    /// Whose zone, default session length and meeting account a session uses.
+    fn schedule_owner(&self) -> ScheduleOwner;
+    /// A new meeting link may be made with the other participant's account when the schedule
+    /// owner has none connected.
+    fn links_with_other_account(&self) -> bool;
 }
 
 /// One person coaches the other.
@@ -100,6 +139,32 @@ impl Rules for Coaching {
             Seat::CoacheeId => false,
         }
     }
+
+    fn is_reminded(&self, seat: Seat) -> bool {
+        match seat {
+            Seat::CoachId => false,
+            Seat::CoacheeId => true,
+        }
+    }
+
+    fn must_be_member_to_schedule(&self, seat: Seat) -> bool {
+        match seat {
+            Seat::CoachId => false,
+            Seat::CoacheeId => true,
+        }
+    }
+
+    fn suggests_actions(&self) -> bool {
+        true
+    }
+
+    fn schedule_owner(&self) -> ScheduleOwner {
+        ScheduleOwner::Seat(Seat::CoachId)
+    }
+
+    fn links_with_other_account(&self) -> bool {
+        false
+    }
 }
 
 /// Two equals with identical privileges.
@@ -115,6 +180,26 @@ impl Rules for Colleague {
     }
 
     fn sees_all_actions(&self, _seat: Seat) -> bool {
+        true
+    }
+
+    fn is_reminded(&self, _seat: Seat) -> bool {
+        true
+    }
+
+    fn must_be_member_to_schedule(&self, _seat: Seat) -> bool {
+        true
+    }
+
+    fn suggests_actions(&self) -> bool {
+        false
+    }
+
+    fn schedule_owner(&self) -> ScheduleOwner {
+        ScheduleOwner::Scheduler
+    }
+
+    fn links_with_other_account(&self) -> bool {
         true
     }
 }
@@ -154,6 +239,26 @@ mod tests {
     }
 
     #[test]
+    fn coaching_reminds_and_requires_membership_of_the_coachee_alone() {
+        let rules = Kind::Coaching.rules();
+        assert!(!rules.is_reminded(Seat::CoachId));
+        assert!(!rules.must_be_member_to_schedule(Seat::CoachId));
+        assert!(rules.is_reminded(Seat::CoacheeId));
+        assert!(rules.must_be_member_to_schedule(Seat::CoacheeId));
+        assert!(rules.suggests_actions());
+    }
+
+    #[test]
+    fn colleague_reminds_and_requires_membership_of_both_seats_and_suggests_nothing() {
+        let rules = Kind::Colleague.rules();
+        for seat in [Seat::CoachId, Seat::CoacheeId] {
+            assert!(rules.is_reminded(seat), "{seat:?}");
+            assert!(rules.must_be_member_to_schedule(seat), "{seat:?}");
+        }
+        assert!(!rules.suggests_actions());
+    }
+
+    #[test]
     fn colleague_gives_both_seats_the_same_role_and_authority() {
         let rules = Kind::Colleague.rules();
         for seat in [Seat::CoachId, Seat::CoacheeId] {
@@ -161,6 +266,26 @@ mod tests {
             assert!(rules.can_schedule_sessions(seat), "{seat:?}");
             assert!(rules.sees_all_actions(seat), "{seat:?}");
         }
+    }
+
+    #[test]
+    fn coaching_sessions_follow_the_coach_and_link_only_with_their_account() {
+        let rules = Kind::Coaching.rules();
+        assert_eq!(rules.schedule_owner(), ScheduleOwner::Seat(Seat::CoachId));
+        assert!(!rules.links_with_other_account());
+    }
+
+    #[test]
+    fn colleague_sessions_follow_the_scheduler_and_may_link_with_the_other_account() {
+        let rules = Kind::Colleague.rules();
+        assert_eq!(rules.schedule_owner(), ScheduleOwner::Scheduler);
+        assert!(rules.links_with_other_account());
+    }
+
+    #[test]
+    fn only_coaching_seats_differ() {
+        assert!(Kind::Coaching.seats_differ());
+        assert!(!Kind::Colleague.seats_differ());
     }
 
     #[test]

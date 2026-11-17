@@ -17,7 +17,7 @@ use super::{
     Suggestible, Target,
 };
 use crate::action::{self, ActionWithAssignees};
-use crate::coaching_relationship::ensure_assignees_are_members;
+use crate::coaching_relationship::{self, ensure_assignees_are_members};
 use crate::coaching_relationship_kind::Seat;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::events::EventPublisher;
@@ -156,7 +156,8 @@ pub struct DuplicateOf {
 #[serde(rename_all = "snake_case")]
 #[schema(as = domain::transcript_suggestion::review::ScanStatus)]
 pub enum ScanStatus {
-    /// Suggestions are not configured, or the session has no completed transcript.
+    /// Suggestions are not configured, its relationship suggests no actions, or the session
+    /// has no completed transcript.
     Unavailable,
     /// The latest completed transcript was never scanned.
     None,
@@ -498,13 +499,20 @@ pub async fn start_scan(
 
 const SCAN_RUNNING: &str = "A scan is already running.";
 
-/// The latest transcription's id and its action analysis, or `None` when nothing can be scanned.
+/// The latest transcription's id and its action analysis, or `None` when nothing can be
+/// scanned: suggestions are not configured, the relationship's rules suggest no actions, or
+/// no transcript completed.
 async fn scannable(
     db: &DatabaseConnection,
     config: &Config,
     session: &coaching_sessions::Model,
 ) -> Result<Option<(Id, Option<transcript_analysis::Model>)>, Error> {
     if config.assembly_ai_api_key().is_none() {
+        return Ok(None);
+    }
+    let relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    if !relationship.kind.rules().suggests_actions() {
         return Ok(None);
     }
     let Some(latest) = transcription::find_by_coaching_session(db, session.id)

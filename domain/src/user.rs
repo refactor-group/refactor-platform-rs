@@ -9,7 +9,7 @@ use entity_api::{
 };
 
 use crate::{
-    coaching_relationship_kind::Kind,
+    coaching_relationship::InviteeRelationship,
     error::Error,
     error::{reason, DomainErrorKind, EntityErrorKind, InternalErrorKind},
     magic_link_token, magic_link_tokens, users, Actor, Id,
@@ -131,11 +131,11 @@ pub async fn update_password(
     Ok(mutate::update::<users::ActiveModel, users::Column>(db, active_model, params).await?)
 }
 
-/// Creates a user in an organization and, when `coach_id` is given, their
-/// coaching relationship, in a single transaction.
+/// Creates a user in an organization and, when `relationship` is given, their
+/// relationship with that person, in a single transaction.
 ///
 /// The two operations are deliberately combined: callers send the invitation
-/// email once this returns, so a failed coach assignment has to leave nothing
+/// email once this returns, so a refused relationship has to leave nothing
 /// behind. A rolled-back row is recoverable, a sent email is not.
 ///
 /// # Errors
@@ -147,24 +147,15 @@ pub async fn create_in_organization(
     actor: Actor,
     organization_id: Id,
     user_model: users::Model,
-    coach_id: Option<Id>,
+    relationship: Option<InviteeRelationship>,
 ) -> Result<users::Model, Error> {
     let txn = db.begin().await.map_err(EntityApiError::from)?;
 
     let new_user = user::create_by_organization(&txn, actor, organization_id, user_model).await?;
 
-    if let Some(coach_id) = coach_id {
-        coaching_relationship::create(
-            &txn,
-            organization_id,
-            coaching_relationship::Draft {
-                coach_id,
-                coachee_id: new_user.id,
-                // No request chooses a kind yet.
-                kind: Kind::Coaching,
-            },
-        )
-        .await?;
+    if let Some(relationship) = relationship {
+        coaching_relationship::create(&txn, organization_id, relationship.draft_for(new_user.id))
+            .await?;
     }
 
     txn.commit().await.map_err(EntityApiError::from)?;

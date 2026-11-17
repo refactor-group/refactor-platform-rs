@@ -22,7 +22,8 @@ use entity::{
     actions, actions_users, coaching_relationships, coaching_session_images,
     coaching_session_series, coaching_sessions, coaching_sessions_goals, goals, meeting_recording,
     oauth_connections, organizations, transcript_analysis, transcript_participant,
-    transcript_segment, transcript_suggestion, transcription, user_role_changes, user_roles, Id,
+    transcript_segment, transcript_suggestion, transcription, user_role_changes, user_roles, users,
+    Id,
 };
 use entity_api::user::generate_hash;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
@@ -318,6 +319,18 @@ pub async fn make_colleagues(db: &DatabaseConnection, relationship: Id) {
     .update(db)
     .await
     .expect("the relationship becomes a colleague one");
+}
+
+/// Puts `user_id` in the IANA zone `timezone`.
+pub async fn set_timezone(db: &DatabaseConnection, user_id: Id, timezone: &str) {
+    users::ActiveModel {
+        id: Set(user_id),
+        timezone: Set(timezone.to_string()),
+        ..Default::default()
+    }
+    .update(db)
+    .await
+    .expect("the timezone is set");
 }
 
 /// The audit row an admin's removal of `user_id` from `organization_id` leaves, which lets

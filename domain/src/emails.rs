@@ -8,8 +8,9 @@ use sea_orm::DatabaseConnection;
 use service::config::Config;
 
 use crate::{
-    actions, coaching_relationship, coaching_relationship_kind, coaching_relationships,
-    coaching_session, coaching_session_series,
+    actions, coaching_relationship,
+    coaching_relationship_kind::{self, Seat},
+    coaching_relationships, coaching_session, coaching_session_series,
     coaching_session_series::SeriesRule,
     coaching_sessions,
     error::Error,
@@ -288,7 +289,7 @@ async fn send_welcome_email(
         .map(|b| b.build(TOKEN_PLACEHOLDER, magic_link_token))
         .unwrap_or_default();
 
-    let coach_full_name = format!("{} {}", inviter.first_name, inviter.last_name);
+    let inviter_full_name = format!("{} {}", inviter.first_name, inviter.last_name);
 
     debug!("Preparing template variables for {}", user.email);
 
@@ -302,7 +303,9 @@ async fn send_welcome_email(
         .add_variable("first_name", user.first_name.as_str())
         .add_variable("last_name", user.last_name.as_str())
         .add_variable("coach_first_name", inviter.first_name.as_str())
-        .add_variable("coach_full_name", coach_full_name.as_str())
+        .add_variable("coach_full_name", inviter_full_name.as_str())
+        .add_variable("inviter_first_name", inviter.first_name.as_str())
+        .add_variable("inviter_full_name", inviter_full_name.as_str())
         .add_variable("magic_link_url", magic_link_url.as_str())
         .build()
         .await?;
@@ -603,16 +606,16 @@ const UID_DOMAIN: &str = "myrefactor.com";
 /// Display name paired with `FROM_ADDRESS` on the `.ics` `ORGANIZER`.
 const FROM_DISPLAY_NAME: &str = "Refactor Coach";
 
-/// The zone every `.ics` for a session is anchored to. The coach owns the schedule, so
-/// their zone is the one whose DST rules the emitted `VTIMEZONE` must follow.
-fn anchor_tz(coach: &users::Model) -> chrono_tz::Tz {
-    coach.timezone.parse().unwrap_or(chrono_tz::UTC)
+/// The zone every `.ics` for a session is anchored to: its schedule owner's, whose DST rules
+/// the emitted `VTIMEZONE` must follow.
+fn anchor_tz(owner: &users::Model) -> chrono_tz::Tz {
+    owner.timezone.parse().unwrap_or(chrono_tz::UTC)
 }
 
-/// The zone a series this coach publishes now is written in, after the `VTIMEZONE`
+/// The zone a series this schedule owner publishes now is written in, after the `VTIMEZONE`
 /// fallback, so expansion and the emitted `DTSTART;TZID` always agree.
-pub(crate) fn publication_zone(coach: &users::Model) -> Tz {
-    ical::emitted_zone(anchor_tz(coach))
+pub(crate) fn publication_zone(owner: &users::Model) -> Tz {
+    ical::emitted_zone(anchor_tz(owner))
 }
 
 /// The zone a series' invites are written in: the one it was published in.
@@ -625,7 +628,7 @@ fn series_zone(series: &coaching_session_series::Model) -> Result<Tz, Error> {
 async fn invite_zone(
     db: &DatabaseConnection,
     session: &coaching_sessions::Model,
-    coach: &users::Model,
+    owner: &users::Model,
 ) -> Result<Tz, Error> {
     match (
         session.coaching_session_series_id,
@@ -634,7 +637,7 @@ async fn invite_zone(
         (Some(series_id), Some(_)) => {
             series_zone(&coaching_session_series::find_by_id(db, series_id).await?)
         }
-        _ => Ok(anchor_tz(coach)),
+        _ => Ok(anchor_tz(owner)),
     }
 }
 
@@ -797,8 +800,8 @@ fn build_session_invite_ics(
     session: &coaching_sessions::Model,
     description: String,
     dtstamp: chrono::NaiveDateTime,
+    anchor_tz: Tz,
 ) -> Result<String, Error> {
-    let anchor_tz = anchor_tz(coach);
     let invite = ical::IcsInvite {
         uid: ics_uid(session.id),
         sequence: session.ical_sequence,
@@ -867,7 +870,7 @@ pub enum Delivery {
 
 /// What a session email did for each participant.
 ///
-/// The two sends fail independently, and only the coachee's bears on the reminder, so a
+/// The two sends fail independently, and each participant's notice is their own, so a
 /// single "it worked" would record notice for someone who was never told.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Delivered {
@@ -876,6 +879,28 @@ pub struct Delivered {
 }
 
 impl Delivered {
+    /// What this send did for each participant it owed, coachee seat first: everyone but the
+    /// owner of the schedule of a session `scheduler_id` scheduled, who already knows it.
+    pub fn owed(
+        &self,
+        relationship: &coaching_relationships::Model,
+        scheduler_id: Id,
+    ) -> Vec<(Seat, Delivery)> {
+        let owner = relationship.schedule_owner_seat(scheduler_id);
+        [(Seat::CoacheeId, self.coachee), (Seat::CoachId, self.coach)]
+            .into_iter()
+            .filter(|(seat, _)| *seat != owner)
+            .collect()
+    }
+
+    /// Whether everyone this send owed has it or is no longer a member, so nothing is left to
+    /// retry.
+    pub fn settles(&self, relationship: &coaching_relationships::Model, scheduler_id: Id) -> bool {
+        self.owed(relationship, scheduler_id)
+            .iter()
+            .all(|(_, delivery)| *delivery != Delivery::Failed)
+    }
+
     /// The participants of `relationship` this send reached.
     pub fn reached(&self, relationship: &coaching_relationships::Model) -> Vec<Id> {
         [
@@ -902,9 +927,31 @@ impl Delivered {
 }
 
 impl<'a> Participants<'a> {
+    /// Whose zone anchors the invites for `session`: its schedule owner, given who scheduled it.
+    pub(crate) fn schedule_owner(&self, session: &coaching_sessions::Model) -> &'a users::Model {
+        let scheduler_seat = [(self.coach, Seat::CoachId), (self.coachee, Seat::CoacheeId)]
+            .into_iter()
+            .find_map(|(user, seat)| (user.id == session.scheduled_by_user_id).then_some(seat));
+        match self.kind.rules().schedule_owner().seat(scheduler_seat) {
+            Seat::CoachId => self.coach,
+            Seat::CoacheeId => self.coachee,
+        }
+    }
+
     /// Both participants, for a send that reaches them regardless of membership.
     fn ids(&self) -> [Id; 2] {
         [self.coach.id, self.coachee.id]
+    }
+
+    /// The `.ics` DESCRIPTION line naming the pair, which both participants read: the coach
+    /// seat's role and name when the seats differ, else both names under their shared role.
+    fn description_line(&self) -> String {
+        let label = capitalized(self.kind.rules().role(Seat::CoachId).as_str());
+        let coach = self.coach.preferred_name();
+        match self.kind.seats_differ() {
+            true => format!("{label}: {coach}"),
+            false => format!("{label}s: {coach} and {}", self.coachee.preferred_name()),
+        }
     }
 
     /// Each participant's copy, coachee first, labelled with their role.
@@ -931,6 +978,15 @@ impl<'a> Participants<'a> {
             ),
         ]
     }
+}
+
+/// `word` with its first letter in upper case.
+fn capitalized(word: &str) -> String {
+    let mut chars = word.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 /// Sends each of `copies` (coachee, then coach), skipping anyone not in `member_ids`. A failed
@@ -1037,11 +1093,12 @@ async fn send_single_session_invite_email<N: EmailNotification>(
         })
         .collect::<Vec<OpenAction>>();
 
-    let anchor_tz = anchor_tz(coach);
+    let owner = participants.schedule_owner(session);
+    let anchor_tz = anchor_tz(owner);
     let description = ical::compose_description(&DescriptionParts {
         session_url: email_config.build_session_url(&session.id)?,
         title: session.title.as_deref(),
-        coach_name: &coach.preferred_name(),
+        participants: &participants.description_line(),
         organization_name: &organization.name,
         topics: &topics,
         goal_titles: &goal_titles,
@@ -1050,7 +1107,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     });
 
     let dtstamp = chrono::Utc::now().naive_utc();
-    let series_zone = invite_zone(db, session, coach).await?;
+    let series_zone = invite_zone(db, session, owner).await?;
     // A session inside a series is addressed as an override of its occurrence; one that
     // predates `ical_recurrence_id` goes out self-contained under its own `UID`.
     let ics_body = build_session_ics(
@@ -1067,7 +1124,9 @@ async fn send_single_session_invite_email<N: EmailNotification>(
                 dtstamp,
             )
         },
-        |description| build_session_invite_ics(coach, coachee, session, description, dtstamp),
+        |description| {
+            build_session_invite_ics(coach, coachee, session, description, dtstamp, anchor_tz)
+        },
     )?;
 
     let copies = participants.copies();
@@ -1275,16 +1334,6 @@ fn build_session_ics(
     }
 }
 
-/// What a deferred session-rescheduled send did.
-#[derive(Debug, PartialEq, Eq)]
-pub enum RescheduleOutcome {
-    /// Sent to each participant still in the organization.
-    Sent(Delivered),
-    /// The coachee left the organization, so no one is owed the change; a coach still in
-    /// it was sent their copy, with `coach` saying how that went.
-    CoacheeNoLongerAMember { coach: Delivery },
-}
-
 /// Sends the session-rescheduled emails to the participants still in the organization.
 ///
 /// Membership is checked here, not trusted from the edit: the send runs after a settle
@@ -1292,13 +1341,13 @@ pub enum RescheduleOutcome {
 ///
 /// A delivered send must settle the session's pending reschedule (via
 /// `coaching_session_pending_reschedule::complete`). Returns the session's relationship
-/// beside the outcome.
+/// beside what the send did for each participant.
 pub async fn send_session_rescheduled(
     db: &DatabaseConnection,
     config: &Config,
     session: &coaching_sessions::Model,
     previous_start: NaiveDateTime,
-) -> Result<(coaching_relationships::Model, RescheduleOutcome), Error> {
+) -> Result<(coaching_relationships::Model, Delivered), Error> {
     let relationship =
         coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
     let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
@@ -1308,7 +1357,8 @@ pub async fn send_session_rescheduled(
     if member_ids.is_empty() {
         return Ok((
             relationship,
-            RescheduleOutcome::CoacheeNoLongerAMember {
+            Delivered {
+                coachee: Delivery::NoLongerAMember,
                 coach: Delivery::NoLongerAMember,
             },
         ));
@@ -1330,16 +1380,22 @@ pub async fn send_session_rescheduled(
         previous_start,
     )
     .await?;
-    let outcome = match member_ids.contains(&coachee.id) {
-        true => RescheduleOutcome::Sent(delivered),
-        false => RescheduleOutcome::CoacheeNoLongerAMember {
-            coach: delivered.coach,
-        },
-    };
-    Ok((relationship, outcome))
+    Ok((relationship, delivered))
 }
 
-/// Send the upcoming-session reminder to the coachee.
+/// Whether a reminder attempt actually mailed anyone.
+///
+/// A skip is not a failure: the recipient is no longer entitled to the session's details,
+/// or their relationship does not remind them, so there is nothing to retry and nothing to
+/// report as broken.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReminderOutcome {
+    Sent,
+    RecipientNoLongerAMember,
+    RecipientNotReminded,
+}
+
+/// Send the upcoming-session reminder to `recipient_id`, the participant the sweep claimed it for.
 ///
 /// Unlike the other `notify_*` entry points this returns `Result` rather than swallowing
 /// failures. Its caller is the reminder sweep, not a controller: the sweep has already
@@ -1347,37 +1403,51 @@ pub async fn send_session_rescheduled(
 /// back for a later retry. Logging and discarding the error here would silently drop the
 /// reminder instead.
 ///
-/// The coach is not a recipient — they already hold the invite from the scheduled send,
-/// and the copy is written from the coachee's side ("your coach, ...").
+/// Only a participant whose seat the relationship's rules remind gets one; for coaching
+/// that is the coachee, since the coach already holds the invite from the scheduled send.
+/// The `coach_*` and `other_user_*` variables name the other participant.
 ///
 /// No `.ics` rides along: the calendar event was delivered when the session was
 /// scheduled, and re-sending the same `UID`/`SEQUENCE` pair is a no-op for a calendar
 /// client at best and a duplicate event at worst.
-/// Whether a reminder attempt actually mailed anyone.
-///
-/// A skip is not a failure: the recipient is no longer entitled to the session's details,
-/// so there is nothing to retry and nothing to report as broken.
-#[derive(Debug, PartialEq, Eq)]
-pub enum ReminderOutcome {
-    Sent,
-    RecipientNoLongerAMember,
-}
-
 pub async fn send_session_reminder(
     db: &DatabaseConnection,
     config: &Config,
     session: &coaching_sessions::Model,
+    recipient_id: Id,
 ) -> Result<ReminderOutcome, Error> {
     let relationship =
         coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
 
+    // By seat, not `seat()`: a self-coached coachee also holds the coach seat.
+    let rules = relationship.kind.rules();
+    let Some(seat) = [
+        (Seat::CoachId, relationship.coach_id),
+        (Seat::CoacheeId, relationship.coachee_id),
+    ]
+    .into_iter()
+    .find(|&(seat, user_id)| user_id == recipient_id && rules.is_reminded(seat))
+    .map(|(seat, _)| seat) else {
+        return Ok(ReminderOutcome::RecipientNotReminded);
+    };
+
     let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
     let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
     let organization = organization::find_by_id(db, relationship.organization_id).await?;
+    let [coachee_copy, coach_copy] = Participants {
+        coach: &coach,
+        coachee: &coachee,
+        kind: relationship.kind,
+    }
+    .copies();
+    let (_, to) = match seat {
+        Seat::CoachId => coach_copy,
+        Seat::CoacheeId => coachee_copy,
+    };
 
     info!(
-        "Initiating session reminder email for session {} (coachee: {})",
-        session.id, coachee.id
+        "Initiating session reminder email for session {} (recipient: {})",
+        session.id, to.user.id
     );
 
     let email_config = ResolvedEmailConfig::new::<SessionReminder>(config).await?;
@@ -1390,11 +1460,11 @@ pub async fn send_session_reminder(
     // accepting the request, is inherent rather than unfinished: no transaction spans an
     // outbound call, and holding a lock across one would trade a rare stale email for
     // pool exhaustion.
-    if !recipient_still_notified(db, &relationship, coachee.id).await? {
+    if !recipient_still_notified(db, &relationship, to.user.id).await? {
         return Ok(ReminderOutcome::RecipientNoLongerAMember);
     }
 
-    send_session_reminder_email(&email_config, &coachee, &coach, session, &organization).await?;
+    send_session_reminder_email(&email_config, &to, session, &organization).await?;
 
     Ok(ReminderOutcome::Sent)
 }
@@ -1414,35 +1484,42 @@ async fn recipient_still_notified(
         .contains(&recipient_id))
 }
 
-/// Build and send the reminder to one coachee.
+/// Build and send the reminder to `to.user`, naming the session's other participant.
 async fn send_session_reminder_email(
     email_config: &ResolvedEmailConfig,
-    coachee: &users::Model,
-    coach: &users::Model,
+    to: &Recipient<'_>,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
 ) -> Result<(), Error> {
-    let (session_date, session_time) = format_session_date_time(session.date, &coachee.timezone);
+    let Recipient {
+        user: recipient,
+        other_user: other,
+        other_user_role,
+    } = *to;
+    let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
     let session_duration =
         crate::duration::Duration::from_minutes_unchecked(session.duration_minutes).to_string();
-    let coach_full_name = format!("{} {}", coach.first_name, coach.last_name);
+    let other_full_name = format!("{} {}", other.first_name, other.last_name);
 
     let email_request = SendEmailRequestBuilder::new()
         .from(FROM_ADDRESS)
         .to_with_name(
-            &coachee.email,
-            format!("{} {}", coachee.first_name, coachee.last_name),
+            &recipient.email,
+            format!("{} {}", recipient.first_name, recipient.last_name),
         )
         .template_id(&email_config.template_id)
-        .add_variable("first_name", coachee.first_name.as_str())
-        .add_variable("coach_first_name", coach.first_name.as_str())
-        .add_variable("coach_full_name", coach_full_name.as_str())
+        .add_variable("first_name", recipient.first_name.as_str())
+        .add_variable("coach_first_name", other.first_name.as_str())
+        .add_variable("coach_full_name", other_full_name.as_str())
+        .add_variable("other_user_first_name", other.first_name.as_str())
+        .add_variable("other_user_last_name", other.last_name.as_str())
+        .add_variable("other_user_role", other_user_role.as_str())
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_date", session_date.as_str())
         .add_variable("session_time", session_time.as_str())
         .add_variable(
             "session_when",
-            format_session_when(session.date, &coachee.timezone),
+            format_session_when(session.date, &recipient.timezone),
         )
         .add_variable("session_duration", session_duration.as_str())
         .add_variable(
@@ -1469,8 +1546,8 @@ fn build_session_cancel_ics(
     description: String,
     dtstamp: chrono::NaiveDateTime,
     sequence: i32,
+    anchor_tz: Tz,
 ) -> Result<String, Error> {
-    let anchor_tz = anchor_tz(coach);
     let invite = ical::IcsInvite {
         uid: ics_uid(session.id),
         // Passed in rather than read off the row. The usual delete bumps it inside the
@@ -1610,6 +1687,7 @@ async fn send_session_cancelled_email(
                 description,
                 dtstamp,
                 session.ical_sequence,
+                anchor_tz(participants.schedule_owner(session)),
             )
         },
     )?;
@@ -1659,7 +1737,7 @@ pub async fn notify_session_cancelled(
             kind: relationship.kind,
         };
 
-        let series_zone = invite_zone(db, session, &coach).await?;
+        let series_zone = invite_zone(db, session, participants.schedule_owner(session)).await?;
         // Both, members or not: a removed member still holds the event.
         send_session_cancelled_email(
             config,
@@ -1990,11 +2068,11 @@ async fn send_series_invite_email<N: EmailNotification>(
         .filter_map(|g| g.title)
         .collect::<Vec<String>>();
 
-    let anchor_tz = anchor_tz(coach);
+    let anchor_tz = anchor_tz(participants.schedule_owner(first));
     let description = ical::compose_description(&DescriptionParts {
         session_url: email_config.build_session_url(&first.id)?,
         title: None,
-        coach_name: &coach.preferred_name(),
+        participants: &participants.description_line(),
         organization_name: &organization.name,
         topics: &[],
         goal_titles: &first_goal_titles,
@@ -2548,6 +2626,7 @@ fn build_orphan_cancels(
                 SESSION_CANCELLED_DESCRIPTION.to_string(),
                 dtstamp,
                 orphan_cancel_sequence(session),
+                anchor_tz(participants.schedule_owner(session)),
             )
             .inspect_err(|e| {
                 warn!(
@@ -2685,7 +2764,7 @@ async fn cancel_orphans_for(
             ical_sequence: orphan_cancel_sequence(session),
             ..session.clone()
         };
-        // An orphan is standalone, so its invite was anchored to the coach.
+        // An orphan is standalone, so its invite was anchored to its schedule owner.
         if let Err(e) = send_session_cancelled_email(
             config,
             &Audience {
@@ -2694,7 +2773,7 @@ async fn cancel_orphans_for(
             },
             &cancelled,
             organization,
-            anchor_tz(participants.coach),
+            anchor_tz(participants.schedule_owner(session)),
         )
         .await
         {
