@@ -18,7 +18,7 @@ use crate::error::{
 };
 use crate::events::{DomainEvent, EventPublisher};
 use crate::gateway::tiptap::TiptapDocument;
-use crate::meeting_provider::MeetingProperties;
+use crate::meeting_provider::{MeetingProperties, Provider};
 use crate::oauth_connections;
 use crate::Id;
 use chrono::{DurationRound, NaiveDateTime, TimeDelta, Utc};
@@ -127,13 +127,17 @@ pub(crate) async fn create(
     coaching_session_model.collab_document_name = Some(document_name.clone());
     coaching_session_model.hydrated_at = Some(chrono::Utc::now().into());
 
+    let accounts = member_meeting_account_ids(&coaching_relationship, acting_user_id, &member_ids);
+    if coaching_session_model.provider.is_none() && coaching_session_model.meeting_url.is_none() {
+        coaching_session_model.provider = other_account_provider(db, owner_id, &accounts).await?;
+    }
     maybe_attach_meeting_url(
         db,
         config,
         &mut coaching_session_model,
         &coaching_relationship,
         acting_user_id,
-        &member_meeting_account_ids(&coaching_relationship, acting_user_id, &member_ids),
+        &accounts,
     )
     .await?;
 
@@ -343,12 +347,8 @@ pub async fn ensure_hydrated(
         tiptap.create(&document_name).await?;
         session.collab_document_name = Some(document_name.clone());
 
-        if let Some((_, connection)) = first_connected(&accounts, |id| {
-            crate::oauth_connection::find_by_user(db, id)
-        })
-        .await?
-        {
-            session.provider = Some(connection.provider);
+        if let Some((_, provider)) = first_connected_provider(db, &accounts).await? {
+            session.provider = Some(provider);
             maybe_attach_meeting_url(
                 db,
                 config,
@@ -812,6 +812,36 @@ async fn find_reusable_meeting_url(
     );
 
     Ok(url)
+}
+
+/// The first of `accounts` connected to any meeting provider, with the provider of its most
+/// recently updated connection.
+async fn first_connected_provider(
+    db: &DatabaseConnection,
+    accounts: &[Id],
+) -> Result<Option<(Id, Provider)>, Error> {
+    Ok(
+        first_connected(accounts, |id| crate::oauth_connection::find_by_user(db, id))
+            .await?
+            .map(|(id, connection)| (id, connection.provider)),
+    )
+}
+
+/// The provider for a link a request did not ask for: that of the first other account in
+/// `accounts` with a connection, when the schedule owner `owner_id` has none. Looks nothing
+/// up when `accounts` holds no one but the owner.
+async fn other_account_provider(
+    db: &DatabaseConnection,
+    owner_id: Id,
+    accounts: &[Id],
+) -> Result<Option<Provider>, Error> {
+    if accounts.iter().all(|&id| id == owner_id) {
+        return Ok(None);
+    }
+    Ok(first_connected_provider(db, accounts)
+        .await?
+        .filter(|&(id, _)| id != owner_id)
+        .map(|(_, provider)| provider))
 }
 
 /// The first of `account_ids` that `lookup` finds an OAuth connection for, with it. Looks up

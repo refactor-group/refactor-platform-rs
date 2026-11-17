@@ -141,6 +141,9 @@ pub(crate) struct CreateParams {
     /// colleague relationship.
     pub(crate) duration_minutes: Option<i16>,
     pub(crate) meeting_url: Option<String>,
+    /// The provider to make a meeting link with. Omitted with no `meeting_url` in a colleague
+    /// session whose scheduler has no meeting connection, it is filled from the other
+    /// colleague's connection.
     pub(crate) provider: Option<Provider>,
     /// Optional human-authored title. Omit or null to leave unset.
     pub(crate) title: Option<String>,

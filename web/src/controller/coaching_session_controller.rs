@@ -156,6 +156,9 @@ pub async fn index(
 }
 
 /// POST create a new Coaching Session
+///
+/// With no `provider` and no `meeting_url`, a colleague session whose scheduler has no meeting
+/// connection gets a link from the other colleague's connection, and records its provider.
 #[utoipa::path(
     post,
     path = "/coaching_sessions",
