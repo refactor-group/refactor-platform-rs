@@ -19,16 +19,17 @@ pub use entity_api::action::{
     FindByUserParams, Scope,
 };
 
-/// The user `scope` names in `relationship`. Refuses with a 422 (`assignee_scope_not_applicable`)
-/// a `Coach` or `Coachee` scope on a relationship whose seats hold the same role.
+/// The user `scope` names in `relationship`, asked by `caller_id`. Refuses with a 422
+/// (`assignee_scope_not_applicable`) a role scope no participant of `relationship` holds.
 pub fn assignee_user_id(
     relationship: &coaching_relationships::Model,
     scope: &AssigneeScope,
+    caller_id: Id,
 ) -> Result<Id, Error> {
-    scope.user_id_in(relationship).ok_or_else(|| {
+    scope.user_id_in(relationship, caller_id).ok_or_else(|| {
         Error::invalid_because(
             reason::ASSIGNEE_SCOPE_NOT_APPLICABLE,
-            "assignee=coach and assignee=coachee do not apply to this relationship, whose participants share one role; scope by user id instead.",
+            "No participant of this relationship holds that assignee role; scope by user id instead.",
         )
     })
 }

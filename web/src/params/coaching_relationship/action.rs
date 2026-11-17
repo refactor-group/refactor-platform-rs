@@ -27,12 +27,13 @@ pub(crate) enum AssigneeFilter {
 /// or by a specific user ID.
 ///
 /// Deserialized from the `assignee` query parameter:
-/// - `"coach"` / `"coachee"` (case-insensitive) → role-based filter
+/// - `"coach"` / `"coachee"` / `"colleague"` (case-insensitive) → role-based filter
 /// - A valid UUID string → specific user filter
 #[derive(Clone, Debug, ToSchema)]
 pub(crate) enum AssigneeScope {
     Coach,
     Coachee,
+    Colleague,
     User(Id),
 }
 
@@ -45,6 +46,7 @@ impl<'de> Deserialize<'de> for AssigneeScope {
         match s.to_lowercase().as_str() {
             "coach" => Ok(Self::Coach),
             "coachee" => Ok(Self::Coachee),
+            "colleague" => Ok(Self::Colleague),
             other => Id::parse_str(other)
                 .map(Self::User)
                 .map_err(serde::de::Error::custom),
@@ -57,6 +59,7 @@ impl From<AssigneeScope> for action::AssigneeScope {
         match scope {
             AssigneeScope::Coach => Self::Coach,
             AssigneeScope::Coachee => Self::Coachee,
+            AssigneeScope::Colleague => Self::Colleague,
             AssigneeScope::User(id) => Self::User(id),
         }
     }
@@ -83,8 +86,9 @@ pub(crate) struct IndexParams {
     pub(crate) assignee_filter: AssigneeFilter,
     /// PascalCase status: `NotStarted`, `InProgress`, `Completed`, `OnHold`, `WontDo`.
     pub(crate) status: Option<Status>,
-    /// Strict-contains scope: `coach`, `coachee`, or a user UUID. Excludes
-    /// unassigned when present. Omit for the broad view.
+    /// Strict-contains scope: `coach`, `coachee`, `colleague`, or a user UUID. A role names the
+    /// participant holding it, the one who isn't the caller when both do. Excludes unassigned
+    /// when present. Omit for the broad view.
     pub(crate) assignee: Option<AssigneeScope>,
     /// Defaults to `due_by` when any sort param is provided.
     pub(crate) sort_by: Option<SortField>,

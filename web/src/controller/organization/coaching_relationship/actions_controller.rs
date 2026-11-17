@@ -41,7 +41,7 @@ fn check_batch_assignee_visibility(
     let in_scope: Vec<_> = relationships
         .iter()
         .filter(|relationship| {
-            assignee_scope.is_none_or(|scope| scope.user_id_in(relationship).is_some())
+            assignee_scope.is_none_or(|scope| scope.user_id_in(relationship, caller_id).is_some())
         })
         .collect();
     let all_left_out = in_scope.is_empty() && !relationships.is_empty();
@@ -66,7 +66,9 @@ fn check_assignee_visibility(
 
     let permitted = match assignee_scope {
         None => true,
-        Some(ActionApi::AssigneeScope::Coachee) => true,
+        // In a relationship that limits the caller, the coachee is the caller and no one is a
+        // colleague.
+        Some(ActionApi::AssigneeScope::Coachee | ActionApi::AssigneeScope::Colleague) => true,
         Some(ActionApi::AssigneeScope::User(id)) => *id == own_id,
         Some(ActionApi::AssigneeScope::Coach) => false,
     };
@@ -85,8 +87,9 @@ fn check_assignee_visibility(
 ///
 /// Coachees see only actions assigned to themselves or unassigned.
 /// `assignee=X` filters strictly to actions whose assignees contain X
-/// (excludes unassigned); omit it for the broad view. `assignee=coach` and
-/// `assignee=coachee` are refused on a relationship whose participants share one role.
+/// (excludes unassigned); omit it for the broad view. `assignee=coach`, `coachee` and
+/// `colleague` name the participant holding that role, the one who isn't the caller when both
+/// do, and are refused when no participant holds it.
 #[utoipa::path(
     get,
     path = "/organizations/{organization_id}/coaching_relationships/{relationship_id}/actions",
@@ -99,7 +102,7 @@ fn check_assignee_visibility(
         (status = 200, description = "Successfully retrieved actions for the coaching relationship"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Coachee scoped `assignee` to coach or another user"),
-        (status = 422, description = "`assignee=coach` or `assignee=coachee` on a colleague relationship; `details.reason` is `assignee_scope_not_applicable`"),
+        (status = 422, description = "`assignee=coach` or `assignee=coachee` on a colleague relationship, or `assignee=colleague` on a coaching one; `details.reason` is `assignee_scope_not_applicable`"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -131,7 +134,7 @@ pub async fn read(
     query_params.caller_visibility = caller_visibility;
 
     query_params.assignee_user_id = assignee_scope
-        .map(|scope| ActionApi::assignee_user_id(&relationship, &scope))
+        .map(|scope| ActionApi::assignee_user_id(&relationship, &scope, user.id))
         .transpose()?;
 
     let actions = ActionApi::find_by_coaching_relationship(
@@ -147,8 +150,9 @@ pub async fn read(
 /// GET actions across all participant relationships, grouped by relationship id.
 ///
 /// Visibility narrows per-relationship by the caller's role (full for coach
-/// side, self-or-unassigned for coachee side). With `assignee=coach` or
-/// `assignee=coachee`, relationships whose participants share one role are left out.
+/// side, self-or-unassigned for coachee side). A role `assignee` leaves out the relationships
+/// where no participant holds it: `coach` and `coachee` skip colleague relationships, and
+/// `colleague` lists each colleague relationship's other colleague and skips coaching ones.
 #[utoipa::path(
     get,
     path = "/organizations/{organization_id}/coaching_relationships/actions",
@@ -157,7 +161,7 @@ pub async fn read(
         ("organization_id" = Uuid, Path, description = "Organization id"),
     ),
     responses(
-        (status = 200, description = "Successfully retrieved batch actions. With `assignee=coach` or `assignee=coachee`, colleague relationships are left out"),
+        (status = 200, description = "Successfully retrieved batch actions. With `assignee=coach` or `assignee=coachee`, colleague relationships are left out; with `assignee=colleague`, coaching relationships are left out and each colleague relationship lists the other colleague's actions"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Coachee scoped `assignee` to coach or another user"),
         (status = 503, description = "Service temporarily unavailable")

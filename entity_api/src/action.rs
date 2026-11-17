@@ -14,7 +14,7 @@ use log::*;
 use super::error::{EntityApiErrorKind, Error};
 use super::{actions_user, coaching_relationship};
 use entity::actions::{ActiveModel, Entity, Model};
-use entity::coaching_relationship_kind::Seat;
+use entity::coaching_relationship_kind::{Role, Seat};
 use entity::coaching_relationships::Visibility;
 use entity::{actions, coaching_relationships, coaching_sessions, status::Status, Id};
 
@@ -461,23 +461,34 @@ pub enum AssigneeScope {
     Coach,
     /// Actions assigned to the coachee in each relationship
     Coachee,
+    /// Actions assigned to the caller's colleague in each relationship
+    Colleague,
     /// Actions assigned to a specific user
     User(Id),
 }
 
 impl AssigneeScope {
-    /// The user this scope names in `relationship`, or `None` for `Coach` or `Coachee` on a
-    /// relationship whose seats hold the same role, where neither names anyone in particular.
-    pub fn user_id_in(&self, relationship: &entity::coaching_relationships::Model) -> Option<Id> {
-        let seat = match self {
-            AssigneeScope::Coach => Seat::CoachId,
-            AssigneeScope::Coachee => Seat::CoacheeId,
+    /// The user this scope names in `relationship`, asked by `caller_id`. A user scope names its
+    /// user. A role scope names the participant who holds that role, the one who isn't the
+    /// caller when both do, and no one when neither does.
+    pub fn user_id_in(
+        &self,
+        relationship: &entity::coaching_relationships::Model,
+        caller_id: Id,
+    ) -> Option<Id> {
+        let role = match self {
+            AssigneeScope::Coach => Role::Coach,
+            AssigneeScope::Coachee => Role::Coachee,
+            AssigneeScope::Colleague => Role::Colleague,
             AssigneeScope::User(id) => return Some(*id),
         };
-        relationship
-            .kind
-            .seats_differ()
-            .then(|| relationship.participant(seat))
+        let rules = relationship.kind.rules();
+        [Seat::CoachId, Seat::CoacheeId]
+            .into_iter()
+            .filter(|&seat| rules.role(seat) == role)
+            .map(|seat| relationship.participant(seat))
+            // A holder who isn't the caller sorts first.
+            .min_by_key(|&holder| holder == caller_id)
     }
 }
 
@@ -640,7 +651,7 @@ pub async fn find_by_user_relationships(
         };
 
         let assignee_user_id = match &assignee_scope {
-            Some(scope) => match scope.user_id_in(relationship) {
+            Some(scope) => match scope.user_id_in(relationship, caller_user_id) {
                 Some(user_id) => Some(user_id),
                 None => continue,
             },
@@ -666,7 +677,7 @@ pub async fn find_by_user_relationships(
 mod tests {
     use super::*;
     use entity::{actions::Model, Id};
-    use sea_orm::{DatabaseBackend, MockDatabase};
+    use sea_orm::{DatabaseBackend, Iterable, MockDatabase};
 
     /// `user_id` reading their own actions, holding a role in one organization.
     fn member(user_id: Id) -> Visibility {
@@ -1790,6 +1801,77 @@ mod tests {
             );
         }
         assert_eq!(CallerVisibility::for_relationship(stranger, &rel), None);
+    }
+
+    #[test]
+    fn a_role_scope_names_the_holder_who_is_not_the_caller_or_no_one() {
+        let (coach, coachee, stranger) = (Id::new_v4(), Id::new_v4(), Id::new_v4());
+        for kind in entity::coaching_relationship_kind::Kind::iter() {
+            let rel = entity::coaching_relationships::Model {
+                kind,
+                ..create_test_relationship(Id::new_v4(), coach, coachee, Id::new_v4())
+            };
+            let rules = kind.rules();
+            for (scope, role) in [
+                (AssigneeScope::Coach, Role::Coach),
+                (AssigneeScope::Coachee, Role::Coachee),
+                (AssigneeScope::Colleague, Role::Colleague),
+            ] {
+                let holders: Vec<Id> = [(Seat::CoachId, coach), (Seat::CoacheeId, coachee)]
+                    .into_iter()
+                    .filter_map(|(seat, user_id)| (rules.role(seat) == role).then_some(user_id))
+                    .collect();
+                for caller in [coach, coachee, stranger] {
+                    let expected = match holders.as_slice() {
+                        [] => None,
+                        [only] => Some(*only),
+                        [first, second, ..] => {
+                            Some(if *first == caller { *second } else { *first })
+                        }
+                    };
+                    assert_eq!(
+                        scope.user_id_in(&rel, caller),
+                        expected,
+                        "{kind:?} {scope:?} caller {caller}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn role_scopes_name_each_kinds_participants_as_pinned() {
+        let (coach, coachee, stranger) = (Id::new_v4(), Id::new_v4(), Id::new_v4());
+        let coaching = create_test_relationship(Id::new_v4(), coach, coachee, Id::new_v4());
+        let colleague = entity::coaching_relationships::Model {
+            kind: entity::coaching_relationship_kind::Kind::Colleague,
+            ..coaching.clone()
+        };
+        for caller in [coach, coachee, stranger] {
+            assert_eq!(
+                AssigneeScope::Coach.user_id_in(&coaching, caller),
+                Some(coach)
+            );
+            assert_eq!(
+                AssigneeScope::Coachee.user_id_in(&coaching, caller),
+                Some(coachee)
+            );
+            assert_eq!(AssigneeScope::Colleague.user_id_in(&coaching, caller), None);
+            assert_eq!(AssigneeScope::Coach.user_id_in(&colleague, caller), None);
+            assert_eq!(AssigneeScope::Coachee.user_id_in(&colleague, caller), None);
+            assert_eq!(
+                AssigneeScope::User(stranger).user_id_in(&colleague, caller),
+                Some(stranger)
+            );
+        }
+        assert_eq!(
+            AssigneeScope::Colleague.user_id_in(&colleague, coach),
+            Some(coachee)
+        );
+        assert_eq!(
+            AssigneeScope::Colleague.user_id_in(&colleague, coachee),
+            Some(coach)
+        );
     }
 
     /// Coachee with `assignee_filter=assigned` sees only self-assigned, not unassigned.

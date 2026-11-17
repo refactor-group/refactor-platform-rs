@@ -41,8 +41,8 @@ pub(crate) struct IndexParams {
     /// are silently clamped. Omit for unbounded results.
     pub(crate) limit: Option<u32>,
     /// Optional: scope action counts / next-due / completed-dates to a
-    /// specific assignee (`coach`, `coachee`, or a UUID). Role values are
-    /// resolved to a concrete user id by the controller.
+    /// specific assignee (`coach`, `coachee`, `colleague`, or a UUID). Role
+    /// values are resolved to a concrete user id by the controller.
     pub(crate) assignee: Option<AssigneeScope>,
     /// Optional: restrict to goals linked to a specific coaching session
     /// via the `coaching_sessions_goals` join table.
@@ -67,7 +67,7 @@ impl IndexParams {
 
     /// Extracts the assignee scope before the params are consumed by
     /// `into_query_params`. The controller then resolves role-based scopes
-    /// (`Coach` / `Coachee`) against the coaching relationship model.
+    /// (`Coach` / `Coachee` / `Colleague`) against the coaching relationship model.
     pub(crate) fn assignee_scope(&self) -> Option<action::AssigneeScope> {
         self.assignee.clone().map(Into::into)
     }
