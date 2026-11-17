@@ -1,0 +1,142 @@
+name: Roll Back DigitalOcean Deploy via Tailscale
+# Restores the images the last successful deploy replaced (one step back),
+# using the rollback set that deploy_to_do.yml records on the server.
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Roll back the backend even if the database has migrations the previous backend does not know. Old code may break against the newer schema."
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    name: Manual Rollback Over Tailscale
+    runs-on: ubuntu-24.04
+    environment: production
+
+    steps:
+      - name: Set up Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-actions
+          version: latest
+          use-cache: "true"
+
+      # Same gate as deploy_to_do.yml: SSH can race Tailscale route propagation.
+      - name: Wait for Tailscale path to deploy host
+        run: |
+          echo "Waiting for Tailscale to establish path to ${{ secrets.DO_TAILSCALE_NAME }}..."
+          for i in {1..20}; do
+            if tailscale ping --c 1 --timeout 2s ${{ secrets.DO_TAILSCALE_NAME }} >/dev/null 2>&1; then
+              echo "Tailscale path ready (attempt $i)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: Tailscale never reached ${{ secrets.DO_TAILSCALE_NAME }} after 40s"
+          tailscale status || true
+          exit 1
+
+      - name: Roll Back Over SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DO_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          echo "${{ secrets.DO_HOST_KEY }}" >> ~/.ssh/known_hosts
+          ssh-keyscan -T 5 -H ${{ secrets.DO_TAILSCALE_NAME }} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'bash -s' << 'ROLLBACK_SCRIPT_EOF'
+            set -euo pipefail
+            cd /home/deploy
+
+            FORCE='${{ inputs.force }}'
+            SITE_HOST=$(echo '${{ vars.FRONTEND_BASE_URL }}' | sed -E 's#^https?://##; s#/.*$##')
+            MANIFEST=/home/deploy/rollback/manifest
+
+            [ -n "$SITE_HOST" ] || { echo "ERROR: FRONTEND_BASE_URL is empty"; exit 1; }
+            [ -s "$MANIFEST" ] || { echo "ERROR: no rollback set recorded; nothing to roll back to."; exit 1; }
+            echo "INFO: Rollback set:"
+            cat "$MANIFEST"
+
+            echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin
+
+            # Each manifest line: service image previous_id previous_digest
+            SERVICES=()
+            declare -A IMAGE
+            while read -r svc image _previous_id digest; do
+              local_tag="refactor-rollback/$svc:previous"
+              if ! docker image inspect "$local_tag" >/dev/null 2>&1; then
+                [ "$digest" != "-" ] || { echo "ERROR: $local_tag is gone and no digest was recorded"; exit 1; }
+                echo "INFO: $local_tag is gone; pulling $digest"
+                docker pull "$digest"
+                docker tag "$digest" "$local_tag"
+              fi
+              SERVICES+=("$svc")
+              IMAGE[$svc]=$image
+            done < <(grep -v '^#' "$MANIFEST")
+
+            if [[ " ${SERVICES[*]} " == *" rust-app "* ]]; then
+              echo "INFO: Checking the previous backend knows every applied migration..."
+              if ! BACKEND_IMAGE_NAME=refactor-rollback/rust-app:previous \
+                docker compose run --rm --no-deps -T --name "migration-gate-$$" migrator migrationctl status; then
+                if [ "$FORCE" = "true" ]; then
+                  echo "WARNING: the database has migrations the previous backend does not know; rolling back anyway (force)."
+                else
+                  echo "ERROR: the database has migrations the previous backend does not know. Fix forward, or rerun with force."
+                  exit 1
+                fi
+              fi
+            fi
+
+            echo "INFO: ⏪ Rolling back ${SERVICES[*]}..."
+            for svc in "${SERVICES[@]}"; do
+              # Retag the deployed tag so a reboot keeps the rolled-back image.
+              docker tag "refactor-rollback/$svc:previous" "${IMAGE[$svc]}"
+            done
+            docker compose up -d --no-deps "${SERVICES[@]}"
+
+            # Static nginx upstreams resolve container IPs only at config load.
+            for attempt in $(seq 1 10); do
+              if docker exec nginx-reverse-proxy nginx -t >/dev/null 2>&1 \
+                && docker exec nginx-reverse-proxy nginx -s reload; then
+                break
+              fi
+              [ "$attempt" -lt 10 ] || { echo "ERROR: nginx reload failed"; exit 1; }
+              sleep 2
+            done
+
+            check_url() {
+              curl -fsS -o /dev/null --max-time 5 --resolve "$SITE_HOST:443:127.0.0.1" "https://$SITE_HOST$1"
+            }
+            for path in /api/health /; do
+              for attempt in $(seq 1 45); do
+                check_url "$path" >/dev/null 2>&1 && break
+                [ "$attempt" -lt 45 ] || { echo "ERROR: $path is not healthy after rolling back"; exit 1; }
+                sleep 2
+              done
+            done
+            if [[ " ${SERVICES[*]} " == *" docs-collab "* ]]; then
+              for attempt in $(seq 1 45); do
+                [ "$(docker inspect -f '{{.State.Health.Status}}' docs-collab 2>/dev/null)" = "healthy" ] && break
+                [ "$attempt" -lt 45 ] || { echo "ERROR: docs-collab is not healthy after rolling back"; exit 1; }
+                sleep 2
+              done
+            fi
+
+            # One step back only: the set is used up.
+            rm -f "$MANIFEST"
+            for svc in "${SERVICES[@]}"; do
+              docker rmi "refactor-rollback/$svc:previous" >/dev/null 2>&1 || true
+            done
+
+            docker ps -a
+            echo "INFO: ✅ Rolled back ${SERVICES[*]}."
+          ROLLBACK_SCRIPT_EOF

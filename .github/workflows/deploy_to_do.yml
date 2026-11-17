@@ -11,7 +11,7 @@ on:
         default: false # Disabled by default
         type: boolean # Simple checkbox in the UI
       deploy_docs_collab:
-        description: "Also (re)deploy docs-collab-server. Restarts it, dropping live editing sessions. Leave false for app-only deploys."
+        description: "Also deploy docs-collab-server. Replaces it only if its image or config changed, dropping live editing sessions. When false it keeps running untouched."
         required: false
         default: false
         type: boolean
@@ -274,7 +274,7 @@ jobs:
           EOF
 
       # Step 4: SSH and deploy to the digitalocean droplet over private Tailscale tailnet
-      - name: Deploy Over SSH to Server and Restart Service # Main deployment step
+      - name: Deploy Over SSH and Replace Changed Containers # Main deployment step
         run: |
           mkdir -p ~/.ssh
           # Create SSH directory
@@ -322,287 +322,272 @@ jobs:
           # SSH and deploy
           echo "Starting main deployment script..."
           ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'bash -s' << 'DEPLOY_SCRIPT_EOF'
-            set -e
-            # Exit immediately if any command fails
-
-
-            # Cleanup function to ensure service gets restarted even on failure
-            cleanup() {
-              echo "INFO: 🔄 Ensuring Refactor Platform service is running..."
-              if systemctl list-unit-files | grep -q "refactor-platform.service"; then
-                sudo systemctl start refactor-platform.service 2>/dev/null || echo "WARNING: Failed to restart service"
-              else
-                echo "WARNING: refactor-platform.service not found during cleanup"
-              fi
-            }
+            set -euo pipefail
 
             # Verify SSH execution is working correctly
             if [[ "$(hostname)" == *"runner"* ]] || [[ "$(pwd)" == *"runner"* ]]; then
                 echo "FATAL ERROR: Script is running on GitHub Actions runner instead of target server!"
-                echo "SSH connection failed - aborting deployment"
                 exit 1
             fi
 
-            echo "INFO: Connected to deployment target successfully"
+            cd /home/deploy
 
-            echo 'INFO: 📦 Starting deployment from branch: ${{ github.ref_name }}...'
+            # Values come from the workflow, never from sourcing .env: its
+            # POSTGRES_OPTIONS contains '&', which a shell would run as a command.
+            REF='${{ github.ref_name }}'
+            RAW="https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/$REF"
+            DEPLOY_DOCS_COLLAB='${{ inputs.deploy_docs_collab }}'
+            SITE_HOST=$(echo '${{ vars.FRONTEND_BASE_URL }}' | sed -E 's#^https?://##; s#/.*$##')
+            ROLLBACK_DIR=/home/deploy/rollback
 
-            # Ensure we're in the correct directory
-            cd /home/deploy || {
-                echo "FATAL ERROR: Cannot change to /home/deploy directory"
-                echo "Current directory: $(pwd)"
-                echo "Directory contents:"
-                ls -la
-                exit 1
+            # Compose service (also its container name) -> image tag it runs.
+            declare -A IMAGE=(
+              [rust-app]='${{ vars.BACKEND_IMAGE_NAME }}'
+              [nextjs-app]='${{ vars.FRONTEND_IMAGE_NAME }}'
+            )
+            SERVICES=(rust-app nextjs-app)
+            if [ "$DEPLOY_DOCS_COLLAB" = "true" ]; then
+              IMAGE[docs-collab]='${{ vars.DOCS_COLLAB_IMAGE_NAME }}'
+              SERVICES+=(docs-collab)
+            else
+              echo "INFO: deploy_docs_collab=false; leaving the running collab server untouched."
+            fi
+
+            [ -n "$SITE_HOST" ] || { echo "ERROR: FRONTEND_BASE_URL is empty"; exit 1; }
+            for svc in "${SERVICES[@]}"; do
+              [ -n "${IMAGE[$svc]}" ] || { echo "ERROR: no image name for $svc"; exit 1; }
+              # A digest reference cannot be retagged, which rollback relies on.
+              [[ "${IMAGE[$svc]}" != *@* ]] || { echo "ERROR: ${IMAGE[$svc]} must be a tag, not a digest"; exit 1; }
+            done
+
+            echo "INFO: 📦 Deploying from branch $REF"
+            docker compose version
+            df -h /var/lib/docker || true
+
+            declare -A OLD NEW
+            CHANGED=()
+            BACKEND_STOPPED=false
+            MIGRATED=false
+            SWITCHED=false
+
+            changed() { [[ " ${CHANGED[*]} " == *" $1 "* ]]; }
+
+            # Point every pulled tag back at the image its container runs, so a
+            # reboot (systemd runs `compose up -d` with no pull) keeps the old stack.
+            restore_tags() {
+              for svc in "${SERVICES[@]}"; do
+                if [ -n "${OLD[$svc]:-}" ]; then
+                  docker tag "${OLD[$svc]}" "${IMAGE[$svc]}" || echo "WARNING: could not retag ${IMAGE[$svc]}"
+                fi
+              done
             }
-            curl -O https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/docker-compose.yaml
-            if [ -f docker-compose.yaml ]; then
-                chmod 640 docker-compose.yaml
-            else
-                echo "ERROR: Failed to download docker-compose.yaml"
-                exit 1
-            fi
 
-            # Check if docker-compose.yaml exists before using it as reference
-            if [ ! -f docker-compose.yaml ]; then
-                echo "ERROR: docker-compose.yaml not found - cannot set permissions"
-                exit 1
-            fi
-
-            echo "INFO: 🛑 Stopping Refactor Platform service before nginx setup..."
-            sudo systemctl stop refactor-platform.service
-
-            # Set trap early to ensure service restart on any failure during nginx setup
-            trap cleanup EXIT
-
-            echo "INFO: Creating nginx directories..."
-            if ! mkdir -p nginx/conf.d nginx/logs nginx/scripts nginx/html/.well-known/acme-challenge; then
-              echo "ERROR: Failed to create nginx directories"
-              exit 1
-            fi
-
-            echo "INFO: Setting initial directory permissions..."
-            # Ensure current user owns the nginx directory tree
-            chown -R $(whoami):$(whoami) nginx/ 2>/dev/null || true
-            # Set restrictive directory permissions initially
-            find nginx -type d -exec chmod 755 {} \;
-
-            echo "INFO: Downloading nginx configuration files..."
-
-
-            # Download main nginx config
-            if ! curl -fsSL "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/nginx.conf" -o nginx/nginx.conf; then
-                echo "ERROR: Failed to download nginx.conf"
-                exit 1
-            fi
-
-            # Verify the main nginx config file was downloaded and is not empty
-            if [ ! -s nginx/nginx.conf ]; then
-                echo "ERROR: Downloaded nginx.conf is empty or could not be created"
-                exit 1
-            fi
-
-            # Download refactor platform nginx reverse proxy config
-            if ! curl -fsSL "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/conf.d/refactor-platform.conf" -o nginx/conf.d/refactor-platform.conf; then
-                echo "ERROR: Failed to download refactor-platform.conf"
-                exit 1
-            fi
-
-            # Verify the platform config file was downloaded and is not empty
-            if [ ! -s nginx/conf.d/refactor-platform.conf ]; then
-                echo "ERROR: Downloaded refactor-platform.conf is empty or could not be created"
-                exit 1
-            fi
-
-            # Download refactor platform nginx let's encrypt ssl cert renewal script
-            # Handle potential directory issues with robust retry logic
-            echo "INFO: Preparing to download renew-certs.sh..."
-
-            # Ensure scripts directory exists (recreate if needed)
-            if [ ! -d nginx/scripts ]; then
-                echo "INFO: Scripts directory missing, recreating..."
-                mkdir -p nginx/scripts
-            fi
-
-            # Remove existing file first to avoid permission issues
-            rm -f nginx/scripts/renew-certs.sh 2>/dev/null || true
-
-            # Download with exponential backoff retry logic
-            for attempt in {1..3}; do
-                if curl -fsSL --retry 2 "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/scripts/renew-certs.sh" -o nginx/scripts/renew-certs.sh; then
-                    echo "INFO: Successfully downloaded renew-certs.sh on attempt $attempt"
-                    break
-                elif [ $attempt -eq 3 ]; then
-                    echo "ERROR: Failed to download renew-certs.sh after 3 attempts"
-                    exit 1
+            on_exit() {
+              local status=$?
+              if [ $status -ne 0 ] && ! $SWITCHED; then
+                if $MIGRATED; then
+                  echo "ERROR: migrations ran but the new containers were not started; rerun the deploy."
                 else
-                    echo "INFO: Download attempt $attempt failed, recreating directory and retrying in $((attempt * 2)) seconds..."
-                    mkdir -p nginx/scripts
-                    sleep $((attempt * 2))
+                  echo "ERROR: deploy failed before any container was replaced; restoring the running images."
+                  restore_tags
+                  if $BACKEND_STOPPED; then
+                    docker start rust-app || echo "ERROR: could not restart rust-app"
+                    # A restarted container can come back on a new IP.
+                    reload_nginx || echo "ERROR: nginx reload failed"
+                  fi
                 fi
-            done
+              fi
+            }
+            trap on_exit EXIT
 
-            # Verify the renew certs script file was downloaded and is not empty
-            if [ ! -s nginx/scripts/renew-certs.sh ]; then
-                echo "ERROR: Downloaded renew-certs.sh script is empty or could not be created"
-                exit 1
-            fi
-
-            if [ -f nginx/scripts/renew-certs.sh ]; then
-                chmod 770 nginx/scripts/renew-certs.sh
-            else
-                echo "WARNING: renew-certs.sh not found for initial chmod"
-            fi
-
-            # Download nginx log rotation script
-            echo "INFO: Preparing to download rotate-logs.sh..."
-
-            # Remove existing file first to avoid permission issues
-            rm -f nginx/scripts/rotate-logs.sh 2>/dev/null || true
-
-            # Download with exponential backoff retry logic
-            for attempt in {1..3}; do
-                if curl -fsSL --retry 2 "https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/${{ github.ref_name }}/nginx/scripts/rotate-logs.sh" -o nginx/scripts/rotate-logs.sh; then
-                    echo "INFO: Successfully downloaded rotate-logs.sh on attempt $attempt"
-                    break
-                elif [ $attempt -eq 3 ]; then
-                    echo "ERROR: Failed to download rotate-logs.sh after 3 attempts"
-                    exit 1
-                else
-                    echo "INFO: Download attempt $attempt failed, retrying in $((attempt * 2)) seconds..."
-                    sleep $((attempt * 2))
+            fetch() {
+              for attempt in 1 2 3; do
+                if curl -fsSL --retry 2 "$RAW/$1" -o "$2" && [ -s "$2" ]; then
+                  return 0
                 fi
-            done
+                echo "INFO: download of $1 failed (attempt $attempt), retrying..."
+                sleep $((attempt * 2))
+              done
+              echo "ERROR: failed to download $1"
+              return 1
+            }
 
-            # Verify the rotate logs script file was downloaded and is not empty
-            if [ ! -s nginx/scripts/rotate-logs.sh ]; then
-                echo "ERROR: Downloaded rotate-logs.sh script is empty or could not be created"
-                exit 1
-            fi
-
-            if [ -f nginx/scripts/rotate-logs.sh ]; then
-                chmod 770 nginx/scripts/rotate-logs.sh
-            else
-                echo "WARNING: rotate-logs.sh not found for initial chmod"
-            fi
-
-            echo "INFO: Setting final directory permissions..."
-            # Set final directory permissions to allow nginx to serve ACME challenges
-            if [ -d nginx ]; then
-                find nginx -type d -exec chmod 755 {} \;
-                # Set file permissions for downloaded files
-                find nginx -type f -exec chmod 644 {} \; 2>/dev/null || true
-                # Make the scripts executable
-                if [ -f nginx/scripts/renew-certs.sh ]; then
-                    chmod 755 nginx/scripts/renew-certs.sh
-                else
-                    echo "WARNING: renew-certs.sh not found for final chmod"
+            reload_nginx() {
+              for attempt in $(seq 1 10); do
+                if docker exec nginx-reverse-proxy nginx -t >/dev/null 2>&1 \
+                  && docker exec nginx-reverse-proxy nginx -s reload; then
+                  echo "INFO: nginx reloaded"
+                  return 0
                 fi
-                if [ -f nginx/scripts/rotate-logs.sh ]; then
-                    chmod 755 nginx/scripts/rotate-logs.sh
-                else
-                    echo "WARNING: rotate-logs.sh not found for final chmod"
+                sleep 2
+              done
+              docker exec nginx-reverse-proxy nginx -t || true
+              return 1
+            }
+
+            check_url() {
+              curl -fsS -o /dev/null --max-time 5 --resolve "$SITE_HOST:443:127.0.0.1" "https://$SITE_HOST$1"
+            }
+
+            collab_healthy() {
+              [ "$(docker inspect -f '{{.State.Health.Status}}' docs-collab 2>/dev/null)" = "healthy" ]
+            }
+
+            wait_for() {
+              for _ in $(seq 1 45); do
+                if "$@" >/dev/null 2>&1; then
+                  return 0
                 fi
-            else
-                echo "WARNING: nginx directory not found for final permissions"
-            fi
+                sleep 2
+              done
+              return 1
+            }
 
-            echo "INFO: Nginx setup completed successfully!"
+            healthy() {
+              wait_for check_url /api/health || { echo "ERROR: backend is not healthy"; return 1; }
+              wait_for check_url / || { echo "ERROR: frontend is not healthy"; return 1; }
+              if [ "$DEPLOY_DOCS_COLLAB" = "true" ]; then
+                wait_for collab_healthy || { echo "ERROR: docs-collab is not healthy"; return 1; }
+              fi
+              echo "INFO: ✅ backend, frontend$([ "$DEPLOY_DOCS_COLLAB" = "true" ] && echo ", docs-collab") healthy"
+            }
 
-            echo "INFO: 🔧 Matching .env permissions to docker-compose.yaml..."
-            # Update env file permissions
-            # Copy permissions from compose file
-            if [ -f docker-compose.yaml ] && [ -f .env ]; then
-                chmod --reference=docker-compose.yaml .env
-                # Copy ownership from compose file
-                chown --reference=docker-compose.yaml .env
-            elif [ -f .env ]; then
-                echo "WARNING: docker-compose.yaml not found, setting default .env permissions"
-                chmod 640 .env
-            else
-                echo "WARNING: .env file not found, skipping permission setting"
-            fi
+            # Exits 0 only when the given backend image knows every applied migration.
+            migrations_known_by() {
+              docker tag "$1" refactor-rollback/gate:candidate
+              local status=0
+              BACKEND_IMAGE_NAME=refactor-rollback/gate:candidate \
+                docker compose run --rm --no-deps -T --name "migration-gate-$$" migrator migrationctl status || status=$?
+              docker rmi refactor-rollback/gate:candidate >/dev/null || true
+              return $status
+            }
+
+            echo "INFO: 📥 Downloading compose and nginx files..."
+            STAGING=/home/deploy/.deploy-staging
+            rm -rf "$STAGING"
+            mkdir -p "$STAGING/nginx/conf.d" "$STAGING/nginx/scripts"
+            fetch docker-compose.yaml "$STAGING/docker-compose.yaml"
+            fetch nginx/nginx.conf "$STAGING/nginx/nginx.conf"
+            fetch nginx/conf.d/refactor-platform.conf "$STAGING/nginx/conf.d/refactor-platform.conf"
+            fetch nginx/scripts/renew-certs.sh "$STAGING/nginx/scripts/renew-certs.sh"
+            fetch nginx/scripts/rotate-logs.sh "$STAGING/nginx/scripts/rotate-logs.sh"
 
             echo "INFO: 📥 Logging into GHCR..."
-            # Login to GitHub Container Registry
             echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin
-            # Docker login
 
-            echo "INFO: 📥 Pulling images..."
-            # Pull Docker images
-            if [ -n "${{ vars.BACKEND_IMAGE_NAME }}" ]; then
-              # Check if backend image is set
-              echo "INFO: Pulling backend image: ${{ vars.BACKEND_IMAGE_NAME }}"
-              # Announce image pull
-              docker pull ${{ vars.BACKEND_IMAGE_NAME }}
-              # Pull backend image
-            fi
-            if [ -n "${{ vars.FRONTEND_IMAGE_NAME }}" ]; then
-              # Check if frontend image is set
-              echo "INFO: Pulling frontend image: ${{ vars.FRONTEND_IMAGE_NAME }}"
-              # Announce image pull
-              docker pull ${{ vars.FRONTEND_IMAGE_NAME }}
-              # Pull frontend image
-            fi
-            if [ "${{ inputs.deploy_docs_collab }}" = "true" ] && [ -n "${{ vars.DOCS_COLLAB_IMAGE_NAME }}" ]; then
-              echo "INFO: Pulling docs-collab image: ${{ vars.DOCS_COLLAB_IMAGE_NAME }}"
-              docker pull ${{ vars.DOCS_COLLAB_IMAGE_NAME }}
-            else
-              echo "INFO: Skipping docs-collab image pull (deploy_docs_collab=false); leaving any running collab server untouched."
+            for svc in "${SERVICES[@]}"; do
+              OLD[$svc]=$(docker inspect -f '{{.Image}}' "$svc" 2>/dev/null || true)
+            done
+
+            echo "INFO: 📥 Pulling images while the current containers keep running..."
+            for svc in "${SERVICES[@]}"; do
+              docker pull "${IMAGE[$svc]}"
+              NEW[$svc]=$(docker image inspect -f '{{.Id}}' "${IMAGE[$svc]}")
+              if [ "${OLD[$svc]}" != "${NEW[$svc]}" ]; then
+                CHANGED+=("$svc")
+              fi
+            done
+            echo "INFO: Changed images: ${CHANGED[*]:-none}"
+
+            echo "INFO: 🔧 Installing compose and nginx files..."
+            mkdir -p nginx/conf.d nginx/logs nginx/scripts nginx/html/.well-known/acme-challenge
+            chown -R "$(whoami):$(whoami)" nginx/ 2>/dev/null || true
+            # cp writes into the existing files, keeping the inode nginx's single-file
+            # bind mount points at; mv would leave nginx reading the old file.
+            cp "$STAGING/docker-compose.yaml" docker-compose.yaml
+            cp "$STAGING/nginx/nginx.conf" nginx/nginx.conf
+            cp "$STAGING/nginx/conf.d/refactor-platform.conf" nginx/conf.d/refactor-platform.conf
+            cp "$STAGING/nginx/scripts/renew-certs.sh" nginx/scripts/renew-certs.sh
+            cp "$STAGING/nginx/scripts/rotate-logs.sh" nginx/scripts/rotate-logs.sh
+            rm -rf "$STAGING"
+            chmod 640 docker-compose.yaml
+            find nginx -type d -exec chmod 755 {} \;
+            find nginx -type f -exec chmod 644 {} \; 2>/dev/null || true
+            chmod 755 nginx/scripts/renew-certs.sh nginx/scripts/rotate-logs.sh
+            if [ -f .env ]; then
+              chmod --reference=docker-compose.yaml .env
+              chown --reference=docker-compose.yaml .env
             fi
 
             echo "INFO: 🔍 Validating config..."
-            # Verify docker-compose configuration
-            if [ -f docker-compose.yaml ]; then
-                docker compose config --quiet
-            else
-                echo "ERROR: docker-compose.yaml not found - cannot validate configuration"
-                exit 1
-            fi
+            docker compose config --quiet
 
-            echo "INFO: 🚀 Starting Refactor Platform service..."
-
-            # Verify systemd service exists before attempting to start
-            if systemctl list-unit-files | grep -q "refactor-platform.service"; then
-                sudo systemctl start refactor-platform.service
-            else
-                echo "ERROR: refactor-platform.service not found"
-                echo "Available services matching 'refactor':"
-                systemctl list-unit-files | grep -i refactor || echo "No refactor services found"
-                exit 1
-            fi
-
-            echo "INFO: ⏳ Waiting for startup..."
-            # Wait for containers to reach steady state
-            sleep 3
-
-            echo "INFO: 🩺 Checking service and status..."
-            systemctl status refactor-platform.service
-            # Check container status
-            docker ps -a
-            # List all containers
-
-            echo "INFO: 📜 Checking migration logs..."
-            # Capture and display migration logs
-            if docker ps -a --format '{{.Names}}' | grep -q db-migrator; then
+            if changed rust-app; then
+              # The old backend must not run against the new schema, so it stops
+              # before migrations and stays down until the new one starts.
+              if [ -n "${OLD[rust-app]}" ]; then
+                echo "INFO: 🛑 Stopping the backend for migrations..."
+                docker stop rust-app
+                BACKEND_STOPPED=true
+              fi
+              echo "INFO: 🗄️ Running migrations (all or nothing)..."
+              docker compose up -d --no-deps --force-recreate migrator
+              MIGRATOR_EXIT=$(docker wait db-migrator)
               echo "=== DB Migration Logs ==="
-              docker logs db-migrator 2>&1 || echo "⚠️ No migration logs available"
+              docker logs db-migrator 2>&1 || true
               echo "========================="
-            else
-              echo "⚠️ db-migrator container not found"
+              if [ "$MIGRATOR_EXIT" != "0" ]; then
+                echo "ERROR: migrations failed (exit $MIGRATOR_EXIT); none were applied."
+                exit 1
+              fi
+              MIGRATED=true
             fi
 
-            echo "INFO: 🩺 Verifying app status..."
-            # Verify application health
-            echo "INFO: 🩺 Checking rust-app service status..."
-            if docker ps | grep -q rust-app; then
-              echo "INFO: ✅ Deployment succeeded! rust-app is running."
-            else
-              echo "ERROR: ⚠️ Missing container for rust-app. Logs follow:"
-              # Show backend logs
-              docker logs rust-app --tail 30 2>/dev/null || echo "❌ Backend logs unavailable"
+            echo "INFO: 🚀 Replacing changed containers..."
+            # Past this point the trap no longer restores tags: containers may already be new.
+            SWITCHED=true
+            # --no-deps keeps compose from running the migrator again.
+            docker compose up -d --no-deps --remove-orphans "${SERVICES[@]}" nginx
+
+            # Static nginx upstreams resolve container IPs only at config load.
+            reload_nginx || { echo "ERROR: nginx config is invalid; the old config is still serving"; exit 1; }
+
+            echo "INFO: 🩺 Checking health..."
+            if ! healthy; then
+              ROLLBACK_SERVICES=()
+              for svc in "${CHANGED[@]}"; do
+                [ -n "${OLD[$svc]}" ] && ROLLBACK_SERVICES+=("$svc")
+              done
+              if [ ${#ROLLBACK_SERVICES[@]} -eq 0 ]; then
+                echo "ERROR: unhealthy and nothing to roll back to."
+              elif changed rust-app && [ -n "${OLD[rust-app]}" ] && ! migrations_known_by "${OLD[rust-app]}"; then
+                echo "ERROR: unhealthy, and the previous backend does not know the applied migrations; not rolling back automatically."
+              else
+                echo "WARNING: ⏪ unhealthy; rolling back ${ROLLBACK_SERVICES[*]}..."
+                for svc in "${ROLLBACK_SERVICES[@]}"; do
+                  docker tag "${OLD[$svc]}" "${IMAGE[$svc]}"
+                done
+                docker compose up -d --no-deps "${ROLLBACK_SERVICES[@]}"
+                reload_nginx || true
+                healthy || echo "ERROR: still unhealthy after rolling back."
+              fi
+              exit 1
             fi
 
+            # Record what this deploy replaced, so rollback_do.yml can restore it.
+            # A deploy that changed no image keeps the existing rollback set.
+            if [ ${#CHANGED[@]} -gt 0 ]; then
+              mkdir -p "$ROLLBACK_DIR"
+              docker images --filter 'reference=refactor-rollback/*:previous' --format '{{.Repository}}:{{.Tag}}' \
+                | xargs -r docker rmi >/dev/null 2>&1 || true
+              {
+                echo "# deployed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ) ref=$REF"
+                echo "# service image previous_id previous_digest"
+                for svc in "${CHANGED[@]}"; do
+                  if [ -n "${OLD[$svc]}" ]; then
+                    docker tag "${OLD[$svc]}" "refactor-rollback/$svc:previous"
+                    digest=$(docker image inspect -f '{{index .RepoDigests 0}}' "${OLD[$svc]}" 2>/dev/null || true)
+                    echo "$svc ${IMAGE[$svc]} ${OLD[$svc]} ${digest:--}"
+                  fi
+                done
+              } > "$ROLLBACK_DIR/manifest"
+              echo "INFO: Rollback set:"
+              cat "$ROLLBACK_DIR/manifest"
+            fi
+
+            echo "INFO: 🧹 Removing dangling images..."
+            docker image prune -f
+
+            docker ps -a
             echo "INFO: 🎉 Deployment complete."
-            # Final deployment message
           DEPLOY_SCRIPT_EOF
