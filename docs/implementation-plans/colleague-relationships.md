@@ -315,7 +315,7 @@ Each handoff adds its colleague rows to the access test plan, with SQLite tests.
 manual access matrix (coach, coachee and colleague rows), the frontend Playwright pass, and the
 code and security reviews.
 
-**4b. Transcripts and suggested actions.** Speaker attribution
+**4b. Transcripts and suggested actions.** First, an optional `RECALL_AI_BASE_URL` setting (unset means `https://{region}.recall.ai`, wired through every passthrough layer) so a local mock can serve Recall's bot, recording and transcript responses and a locally signed webhook can drive completion end to end without the shared workspace. Speaker attribution
 (`domain/src/transcript_attribution.rs`) uses the recorded meeting-link creator and attributes
 colleague speakers to people, not roles. Their `colleague` role already comes from the
 relationship's kind (phase 2); each line's `speaker_user_id` tells the two apart. Colleague sessions get suggested actions: a colleague-aware
@@ -364,7 +364,18 @@ through the phase E event log (who, when, from and to kind, new coach).
 **6. Frontend contract and coordinated deploy.**
 Built from the phase 0 wire inventory: session lists replace `coach` with `participants`;
 relationship `role` filter and `coach_first_name`/`coachee_first_name`; `coachee_actions`;
-transcript `speaker`. The frontend
+transcript `speaker`.
+- Role-neutral response keys, renamed on both sides in this one deploy:
+  - The batch actions response (`GET /organizations/{org_id}/coaching_relationships/actions`)
+    renames `coachee_actions` to `actions_by_relationship`, since it holds every scope's
+    results (`coach`, `coachee`, `colleague`, a user id).
+  - Every other `coach_*` / `coachee_*` response field in the phase 0 inventory gets a
+    role-neutral name, stated in the phase 6 contract.
+  - Frontend, same deploy: the batch actions call and its types (the coaching-relationships
+    API module and the actions-board hooks) read `actions_by_relationship`, and every other
+    renamed field.
+  - The phase 6 contract lists each old and new key, and the access test plan gets a row per
+    renamed key. The frontend
 also stops deriving a participant's role from `coach_id === userId` and reads the role the
 backend computes (agreed in phase 2, when both sides unified their role types). One
 coordinated FE+BE deploy.
