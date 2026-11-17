@@ -372,6 +372,7 @@ async fn attach_to_organization_commits_the_role_and_the_coach_together() -> Res
         Some(InviteeRelationship {
             with_user_id: coach_id,
             kind: crate::coaching_relationship_kind::Kind::Coaching,
+            role: None,
         }),
     )
     .await?;
@@ -408,6 +409,7 @@ async fn attach_to_organization_rolls_back_the_role_when_the_coach_assignment_fa
         Some(InviteeRelationship {
             with_user_id: coach_id,
             kind: crate::coaching_relationship_kind::Kind::Coaching,
+            role: None,
         }),
     )
     .await

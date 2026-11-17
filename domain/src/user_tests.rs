@@ -258,6 +258,7 @@ async fn create_in_organization_rolls_back_when_the_relationship_insert_fails() 
         Some(InviteeRelationship {
             with_user_id: coach.id,
             kind: crate::coaching_relationship_kind::Kind::Coaching,
+            role: None,
         }),
     )
     .await
@@ -319,6 +320,7 @@ async fn create_in_organization_commits_the_user_and_the_relationship_together()
         Some(InviteeRelationship {
             with_user_id: coach.id,
             kind: crate::coaching_relationship_kind::Kind::Coaching,
+            role: None,
         }),
     )
     .await?;

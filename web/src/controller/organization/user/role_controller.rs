@@ -27,8 +27,9 @@ use crate::{controller::ApiResponse, AppState, Error};
 ///
 /// Grants the user a role in the organization without creating an account,
 /// optionally creating their relationship with another member in the same
-/// transaction: for `coaching`, `relationship.with_user_id` coaches the user; for
-/// `colleague`, the two are colleagues. The caller must
+/// transaction: for `coaching`, `relationship.with_user_id` coaches the user, or is
+/// coached by them when `relationship.role` is `coach`; for `colleague`, the two are
+/// colleagues. The top-level `role` is the organization role. The caller must
 /// administer the organization and must already be able to see the target user,
 /// otherwise the response is indistinguishable from a missing user.
 ///
@@ -49,7 +50,7 @@ use crate::{controller::ApiResponse, AppState, Error};
         (status = 403, description = "Caller does not administer the organization"),
         (status = 404, description = "No such user, or a user the caller may not see"),
         (status = 409, description = "User already belongs to the organization, or the relationship is refused and no role is granted: the organization is archived, the person named in `relationship` is the user or not a member of the organization, or the two people already have a relationship of the other kind in the organization (`details.reason` `pair_already_related`, `details.relationship_id` the existing relationship)"),
-        (status = 422, description = "SuperAdmin cannot be granted within an organization, or the body has an unknown field"),
+        (status = 422, description = "No role is granted: SuperAdmin cannot be granted within an organization, the body has an unknown field, or `relationship.role` is a role its kind has no seat for (`details.reason` `role_not_in_kind`)"),
     ),
     security(
         ("cookie_auth" = [])

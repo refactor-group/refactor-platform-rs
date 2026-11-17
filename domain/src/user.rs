@@ -140,8 +140,9 @@ pub async fn update_password(
 ///
 /// # Errors
 ///
-/// Any entity-layer error from the user or relationship creation, with nothing
-/// committed.
+/// A 422 (`role_not_in_kind`) before anything is written when `relationship.role` is
+/// no role of its kind; otherwise any entity-layer error from the user or relationship
+/// creation, with nothing committed.
 pub async fn create_in_organization(
     db: &DatabaseConnection,
     actor: Actor,
@@ -149,6 +150,8 @@ pub async fn create_in_organization(
     user_model: users::Model,
     relationship: Option<InviteeRelationship>,
 ) -> Result<users::Model, Error> {
+    let relationship = relationship.map(InviteeRelationship::seated).transpose()?;
+
     let txn = db.begin().await.map_err(EntityApiError::from)?;
 
     let new_user = user::create_by_organization(&txn, actor, organization_id, user_model).await?;
