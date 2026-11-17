@@ -14,6 +14,11 @@ on:
 permissions:
   contents: read
 
+# One deploy or rollback at a time on the production host (shared with deploy_to_do.yml).
+concurrency:
+  group: production-host
+  cancel-in-progress: false
+
 jobs:
   rollback:
     name: Manual Rollback Over Tailscale
@@ -83,6 +88,7 @@ jobs:
               SERVICES+=("$svc")
               IMAGE[$svc]=$image
             done < <(grep -v '^#' "$MANIFEST")
+            [ ${#SERVICES[@]} -gt 0 ] || { echo "ERROR: the rollback set has no entries; nothing to roll back to."; exit 1; }
 
             if [[ " ${SERVICES[*]} " == *" rust-app "* ]]; then
               echo "INFO: Checking the previous backend knows every applied migration..."

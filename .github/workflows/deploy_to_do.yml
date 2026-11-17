@@ -19,6 +19,11 @@ on:
 permissions:
   contents: read # Minimal permissions required for this workflow
 
+# One deploy or rollback at a time on the production host (shared with rollback_do.yml).
+concurrency:
+  group: production-host
+  cancel-in-progress: false
+
 jobs:
   deploy:
     name: Manual Deploy Over Tailscale # Display name for this job
@@ -371,6 +376,17 @@ jobs:
             BACKEND_STOPPED=false
             MIGRATED=false
             SWITCHED=false
+            STAGING=/home/deploy/.deploy-staging
+            BACKUP=/home/deploy/.deploy-backup
+            # Live files a deploy replaces; the previous copies come back when it fails.
+            FILES=(
+              docker-compose.yaml
+              nginx/nginx.conf
+              nginx/conf.d/refactor-platform.conf
+              nginx/scripts/renew-certs.sh
+              nginx/scripts/rotate-logs.sh
+            )
+            rm -rf "$STAGING" "$BACKUP"
 
             changed() { [[ " ${CHANGED[*]} " == *" $1 "* ]]; }
 
@@ -384,14 +400,26 @@ jobs:
               done
             }
 
+            # cp writes into the existing files, keeping the inode nginx's single-file
+            # bind mount points at; mv would leave nginx reading the old file.
+            install_files() {
+              local from=$1 f
+              for f in "${FILES[@]}"; do
+                if [ -f "$from/$f" ]; then
+                  cp "$from/$f" "$f" || echo "WARNING: could not install $f"
+                fi
+              done
+            }
+
             on_exit() {
               local status=$?
-              if [ $status -ne 0 ] && ! $SWITCHED; then
+              if [ "$status" -ne 0 ] && ! $SWITCHED; then
                 if $MIGRATED; then
                   echo "ERROR: migrations ran but the new containers were not started; rerun the deploy."
                 else
-                  echo "ERROR: deploy failed before any container was replaced; restoring the running images."
+                  echo "ERROR: deploy failed before any container was replaced; restoring the running images and files."
                   restore_tags
+                  install_files "$BACKUP"
                   if $BACKEND_STOPPED; then
                     docker start rust-app || echo "ERROR: could not restart rust-app"
                     print_images rust-app
@@ -480,15 +508,62 @@ jobs:
               return $status
             }
 
+            # Record what this deploy replaces, so rollback_do.yml can restore it. A
+            # deploy that replaces no existing container keeps the current set.
+            write_rollback_set() {
+              local svc digest entries=()
+              for svc in "${CHANGED[@]}"; do
+                if [ -n "${OLD[$svc]}" ]; then
+                  entries+=("$svc")
+                fi
+              done
+              [ ${#entries[@]} -gt 0 ] || return 0
+              mkdir -p "$ROLLBACK_DIR"
+              # Kept until this deploy is healthy, in case it rolls itself back.
+              rm -f "$ROLLBACK_DIR/manifest.before"
+              if [ -f "$ROLLBACK_DIR/manifest" ]; then
+                cp "$ROLLBACK_DIR/manifest" "$ROLLBACK_DIR/manifest.before"
+              fi
+              docker images --filter 'reference=refactor-rollback/*:previous' --format '{{.Repository}}:{{.Tag}}' \
+                | xargs -r docker rmi >/dev/null 2>&1 || true
+              {
+                echo "# deployed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ) ref=$REF"
+                echo "# service image previous_id previous_digest"
+                for svc in "${entries[@]}"; do
+                  docker tag "${OLD[$svc]}" "refactor-rollback/$svc:previous"
+                  digest=$(docker image inspect -f '{{index .RepoDigests 0}}' "${OLD[$svc]}" 2>/dev/null || true)
+                  echo "$svc ${IMAGE[$svc]} ${OLD[$svc]} ${digest:--}"
+                done
+              } > "$ROLLBACK_DIR/manifest"
+              echo "INFO: Rollback set:"
+              cat "$ROLLBACK_DIR/manifest"
+            }
+
+            # Drop services this deploy already rolled back from the rollback set.
+            # Once none are left, the set from before this deploy applies again.
+            forget_rolled_back() {
+              local svc _image previous_id _digest
+              [ -f "$ROLLBACK_DIR/manifest" ] || return 0
+              for svc in "$@"; do
+                sed -i "/^$svc /d" "$ROLLBACK_DIR/manifest"
+                docker rmi "refactor-rollback/$svc:previous" >/dev/null 2>&1 || true
+              done
+              grep -qv '^#' "$ROLLBACK_DIR/manifest" && return 0
+              rm -f "$ROLLBACK_DIR/manifest"
+              if [ -f "$ROLLBACK_DIR/manifest.before" ]; then
+                mv "$ROLLBACK_DIR/manifest.before" "$ROLLBACK_DIR/manifest"
+                while read -r svc _image previous_id _digest; do
+                  docker tag "$previous_id" "refactor-rollback/$svc:previous" || true
+                done < <(grep -v '^#' "$ROLLBACK_DIR/manifest")
+                echo "INFO: the rollback set from before this deploy applies again."
+              fi
+            }
+
             echo "INFO: 📥 Downloading compose and nginx files..."
-            STAGING=/home/deploy/.deploy-staging
-            rm -rf "$STAGING"
             mkdir -p "$STAGING/nginx/conf.d" "$STAGING/nginx/scripts"
-            fetch docker-compose.yaml "$STAGING/docker-compose.yaml"
-            fetch nginx/nginx.conf "$STAGING/nginx/nginx.conf"
-            fetch nginx/conf.d/refactor-platform.conf "$STAGING/nginx/conf.d/refactor-platform.conf"
-            fetch nginx/scripts/renew-certs.sh "$STAGING/nginx/scripts/renew-certs.sh"
-            fetch nginx/scripts/rotate-logs.sh "$STAGING/nginx/scripts/rotate-logs.sh"
+            for f in "${FILES[@]}"; do
+              fetch "$f" "$STAGING/$f"
+            done
 
             echo "INFO: 📥 Logging into GHCR..."
             echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin
@@ -507,16 +582,19 @@ jobs:
             done
             echo "INFO: Changed images: ${CHANGED[*]:-none}"
 
+            echo "INFO: 🔍 Validating the new compose file..."
+            docker compose -f "$STAGING/docker-compose.yaml" --project-directory "$PWD" config --quiet
+
             echo "INFO: 🔧 Installing compose and nginx files..."
             mkdir -p nginx/conf.d nginx/logs nginx/scripts nginx/html/.well-known/acme-challenge
             chown -R "$(whoami):$(whoami)" nginx/ 2>/dev/null || true
-            # cp writes into the existing files, keeping the inode nginx's single-file
-            # bind mount points at; mv would leave nginx reading the old file.
-            cp "$STAGING/docker-compose.yaml" docker-compose.yaml
-            cp "$STAGING/nginx/nginx.conf" nginx/nginx.conf
-            cp "$STAGING/nginx/conf.d/refactor-platform.conf" nginx/conf.d/refactor-platform.conf
-            cp "$STAGING/nginx/scripts/renew-certs.sh" nginx/scripts/renew-certs.sh
-            cp "$STAGING/nginx/scripts/rotate-logs.sh" nginx/scripts/rotate-logs.sh
+            mkdir -p "$BACKUP/nginx/conf.d" "$BACKUP/nginx/scripts"
+            for f in "${FILES[@]}"; do
+              if [ -f "$f" ]; then
+                cp -p "$f" "$BACKUP/$f"
+              fi
+            done
+            install_files "$STAGING"
             rm -rf "$STAGING"
             chmod 640 docker-compose.yaml
             find nginx -type d -exec chmod 755 {} \;
@@ -527,8 +605,12 @@ jobs:
               chown --reference=docker-compose.yaml .env
             fi
 
-            echo "INFO: 🔍 Validating config..."
-            docker compose config --quiet
+            # nginx -t fails unless every upstream resolves, docs-collab included.
+            if [ "$DEPLOY_DOCS_COLLAB" != "true" ] \
+              && [ "$(docker inspect -f '{{.State.Running}}' docs-collab 2>/dev/null)" != "true" ]; then
+              echo "INFO: docs-collab is not running; starting it so nginx can resolve it."
+              docker compose up -d --no-deps docs-collab
+            fi
 
             if changed rust-app; then
               # The old backend must not run against the new schema, so it stops
@@ -553,62 +635,69 @@ jobs:
             fi
 
             echo "INFO: 🚀 Replacing changed containers..."
-            # Past this point the trap no longer restores tags: containers may already be new.
+            # From here on, failures go through the health check's rollback below
+            # instead of the exit trap: containers may already be new.
             SWITCHED=true
+            write_rollback_set
+            UP_OK=true
             # --no-deps keeps compose from running the migrator again.
-            docker compose up -d --no-deps --remove-orphans "${SERVICES[@]}" nginx
+            docker compose up -d --no-deps --remove-orphans "${SERVICES[@]}" nginx \
+              || { echo "ERROR: replacing containers failed"; UP_OK=false; }
             print_images "${SERVICES[@]}"
 
             # Static nginx upstreams resolve container IPs only at config load.
-            reload_nginx || { echo "ERROR: nginx config is invalid; the old config is still serving"; exit 1; }
+            RELOAD_OK=true
+            reload_nginx || { echo "ERROR: nginx did not accept the new config"; RELOAD_OK=false; }
 
             echo "INFO: 🩺 Checking health..."
-            if ! healthy; then
+            if $UP_OK && $RELOAD_OK && healthy; then
+              rm -f "$ROLLBACK_DIR/manifest.before"
+              echo "INFO: 🧹 Removing dangling images..."
+              docker image prune -f
+              docker ps -a
+              echo "INFO: 🎉 Deployment complete."
+              exit 0
+            fi
+
+            for svc in "${CHANGED[@]}"; do
+              echo "=== $svc logs (last 100 lines) ==="
+              docker logs --tail 100 "$svc" 2>&1 || true
+            done
+
+            ROLLBACK_SERVICES=()
+            KEEP_BACKEND=false
+            for svc in "${CHANGED[@]}"; do
+              if [ -n "${OLD[$svc]}" ]; then
+                ROLLBACK_SERVICES+=("$svc")
+              fi
+            done
+            if changed rust-app && [ -n "${OLD[rust-app]}" ] && ! migrations_known_by "${OLD[rust-app]}"; then
+              echo "ERROR: the previous backend does not know the applied migrations; keeping the new backend."
+              KEEP_BACKEND=true
               ROLLBACK_SERVICES=()
               for svc in "${CHANGED[@]}"; do
-                [ -n "${OLD[$svc]}" ] && ROLLBACK_SERVICES+=("$svc")
+                if [ -n "${OLD[$svc]}" ] && [ "$svc" != rust-app ]; then
+                  ROLLBACK_SERVICES+=("$svc")
+                fi
               done
-              if [ ${#ROLLBACK_SERVICES[@]} -eq 0 ]; then
-                echo "ERROR: unhealthy and nothing to roll back to."
-              elif changed rust-app && [ -n "${OLD[rust-app]}" ] && ! migrations_known_by "${OLD[rust-app]}"; then
-                echo "ERROR: unhealthy, and the previous backend does not know the applied migrations; not rolling back automatically."
-              else
-                echo "WARNING: ⏪ unhealthy; rolling back ${ROLLBACK_SERVICES[*]}..."
-                for svc in "${ROLLBACK_SERVICES[@]}"; do
-                  docker tag "${OLD[$svc]}" "${IMAGE[$svc]}"
-                done
-                docker compose up -d --no-deps "${ROLLBACK_SERVICES[@]}"
-                print_images "${ROLLBACK_SERVICES[@]}"
-                reload_nginx || true
-                healthy || echo "ERROR: still unhealthy after rolling back."
-              fi
-              exit 1
             fi
 
-            # Record what this deploy replaced, so rollback_do.yml can restore it.
-            # A deploy that changed no image keeps the existing rollback set.
-            if [ ${#CHANGED[@]} -gt 0 ]; then
-              mkdir -p "$ROLLBACK_DIR"
-              docker images --filter 'reference=refactor-rollback/*:previous' --format '{{.Repository}}:{{.Tag}}' \
-                | xargs -r docker rmi >/dev/null 2>&1 || true
-              {
-                echo "# deployed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ) ref=$REF"
-                echo "# service image previous_id previous_digest"
-                for svc in "${CHANGED[@]}"; do
-                  if [ -n "${OLD[$svc]}" ]; then
-                    docker tag "${OLD[$svc]}" "refactor-rollback/$svc:previous"
-                    digest=$(docker image inspect -f '{{index .RepoDigests 0}}' "${OLD[$svc]}" 2>/dev/null || true)
-                    echo "$svc ${IMAGE[$svc]} ${OLD[$svc]} ${digest:--}"
-                  fi
-                done
-              } > "$ROLLBACK_DIR/manifest"
-              echo "INFO: Rollback set:"
-              cat "$ROLLBACK_DIR/manifest"
+            # The new compose and nginx files belong with the new backend, so they
+            # stay when it does.
+            if ! $KEEP_BACKEND; then
+              echo "WARNING: ⏪ restoring the previous compose and nginx files..."
+              install_files "$BACKUP"
             fi
-
-            echo "INFO: 🧹 Removing dangling images..."
-            docker image prune -f
-
-            docker ps -a
-            echo "INFO: 🎉 Deployment complete."
+            if [ ${#ROLLBACK_SERVICES[@]} -gt 0 ]; then
+              echo "WARNING: ⏪ rolling back ${ROLLBACK_SERVICES[*]}..."
+              for svc in "${ROLLBACK_SERVICES[@]}"; do
+                docker tag "${OLD[$svc]}" "${IMAGE[$svc]}"
+              done
+              docker compose up -d --no-deps "${ROLLBACK_SERVICES[@]}" || echo "ERROR: rolling back containers failed"
+              print_images "${ROLLBACK_SERVICES[@]}"
+              forget_rolled_back "${ROLLBACK_SERVICES[@]}"
+            fi
+            reload_nginx || echo "ERROR: nginx reload failed after rolling back"
+            healthy || echo "ERROR: still unhealthy after rolling back."
+            exit 1
           DEPLOY_SCRIPT_EOF

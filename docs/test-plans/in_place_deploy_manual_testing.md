@@ -63,7 +63,8 @@ checks pass, and `docker ps` shows the same container ages as before.
 **Pass:** `Changed images: rust-app`; the backend is stopped before the migrator
 runs; `nextjs-app` and `nginx-reverse-proxy` keep their age; `nginx reloaded`;
 health passes; `/home/deploy/rollback/manifest` lists `rust-app` and
-`docker images refactor-rollback/rust-app:previous` exists.
+`docker images refactor-rollback/rust-app:previous` exists; each started container
+logs a `runs <tag> commit=<sha>` line naming the merged commit.
 
 **B3. Rollback refuses when the database moved on.** After a deploy that added a
 migration, run `rollback_do.yml` with `force` off.
@@ -74,3 +75,48 @@ migration, run `rollback_do.yml`.
 **Pass:** the previous image runs, `BACKEND_IMAGE_NAME`'s tag points at it
 (`docker image inspect -f '{{.Id}}'`), health passes, and the manifest is gone. Run
 `deploy_to_do.yml` again to return to `main:latest`.
+
+**B5. Only one deploy or rollback runs at a time.** Dispatch `deploy_to_do.yml`, and
+while it runs, dispatch `rollback_do.yml`.
+**Pass:** the rollback waits as pending in the shared `production-host` group and
+starts only after the deploy finishes.
+
+**B6. A stopped docs-collab is started, not left to break nginx.** Before a deploy
+with `deploy_docs_collab` off, run `docker stop docs-collab` on the host.
+**Pass:** the log shows "docs-collab is not running; starting it", nginx reloads,
+and health passes. Without this, `nginx -t` fails on the `docs-collab` upstream.
+
+**B7. A deploy that only creates a container keeps the rollback set.** With a
+rollback set present, remove the docs-collab container (`docker rm -f docs-collab`)
+and deploy with `deploy_docs_collab` on.
+**Pass:** `Changed images: docs-collab`, health passes, and
+`/home/deploy/rollback/manifest` is unchanged.
+
+## 4. Part C: failure paths
+
+These can't be triggered safely in production. When one happens, check the deploy
+log for the result below.
+
+**C1. A migration fails.** **Expect:** "migrations failed ... none were applied",
+then "restoring the running images and files"; the previous backend is serving, the
+image tags and the live `docker-compose.yaml` and nginx files are the previous ones,
+and nginx reloads.
+
+**C2. nginx rejects the new config, or replacing a container fails.** **Expect:**
+"nginx did not accept the new config" (or "replacing containers failed"), then the
+previous compose and nginx files are restored, changed services roll back, nginx
+reloads, and the job exits 1.
+
+**C3. The new release is unhealthy and added no migration.** **Expect:** the last
+100 log lines of each changed container, then "rolling back ..." for all of them,
+then "the rollback set from before this deploy applies again"; health passes and the
+job exits 1.
+
+**C4. The new release is unhealthy and added a migration.** **Expect:** "the
+previous backend does not know the applied migrations; keeping the new backend";
+other changed services (for example the frontend) still roll back, the new files
+stay, and the rollback set keeps only `rust-app`. Fix forward, or run
+`rollback_do.yml` with `force`.
+
+**C5. A rollback set with no entries.** **Expect:** `rollback_do.yml` exits 1 with
+"the rollback set has no entries" and starts nothing.
