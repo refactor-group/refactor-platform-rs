@@ -96,12 +96,28 @@ jobs:
               fi
             fi
 
+            # Print what each container runs: its tag, the git commit it was built
+            # from (the image's org.opencontainers.image.revision label), image ID,
+            # and registry digest.
+            print_images() {
+              local name tag image_id revision digest
+              for name in "$@"; do
+                read -r tag image_id < <(docker inspect -f '{{.Config.Image}} {{.Image}}' "$name" 2>/dev/null) \
+                  || { echo "INFO: $name is not running"; continue; }
+                revision=$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$name" 2>/dev/null || true)
+                [ -n "$revision" ] && [ "$revision" != "<no value>" ] || revision=unknown
+                digest=$(docker image inspect -f '{{index .RepoDigests 0}}' "$image_id" 2>/dev/null || true)
+                echo "INFO: $name runs $tag commit=$revision image=$image_id digest=${digest#*@}"
+              done
+            }
+
             echo "INFO: ⏪ Rolling back ${SERVICES[*]}..."
             for svc in "${SERVICES[@]}"; do
               # Retag the deployed tag so a reboot keeps the rolled-back image.
               docker tag "refactor-rollback/$svc:previous" "${IMAGE[$svc]}"
             done
             docker compose up -d --no-deps "${SERVICES[@]}"
+            print_images "${SERVICES[@]}"
 
             # Static nginx upstreams resolve container IPs only at config load.
             for attempt in $(seq 1 10); do

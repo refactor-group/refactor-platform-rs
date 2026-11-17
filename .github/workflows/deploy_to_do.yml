@@ -392,6 +392,7 @@ jobs:
                   restore_tags
                   if $BACKEND_STOPPED; then
                     docker start rust-app || echo "ERROR: could not restart rust-app"
+                    print_images rust-app
                     # A restarted container can come back on a new IP.
                     reload_nginx || echo "ERROR: nginx reload failed"
                   fi
@@ -399,6 +400,21 @@ jobs:
               fi
             }
             trap on_exit EXIT
+
+            # Print what each container runs: its tag, the git commit it was built
+            # from (the image's org.opencontainers.image.revision label), image ID,
+            # and registry digest.
+            print_images() {
+              local name tag image_id revision digest
+              for name in "$@"; do
+                read -r tag image_id < <(docker inspect -f '{{.Config.Image}} {{.Image}}' "$name" 2>/dev/null) \
+                  || { echo "INFO: $name is not running"; continue; }
+                revision=$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$name" 2>/dev/null || true)
+                [ -n "$revision" ] && [ "$revision" != "<no value>" ] || revision=unknown
+                digest=$(docker image inspect -f '{{index .RepoDigests 0}}' "$image_id" 2>/dev/null || true)
+                echo "INFO: $name runs $tag commit=$revision image=$image_id digest=${digest#*@}"
+              done
+            }
 
             fetch() {
               for attempt in 1 2 3; do
@@ -531,6 +547,7 @@ jobs:
                 exit 1
               fi
               MIGRATED=true
+              print_images db-migrator
             fi
 
             echo "INFO: 🚀 Replacing changed containers..."
@@ -538,6 +555,7 @@ jobs:
             SWITCHED=true
             # --no-deps keeps compose from running the migrator again.
             docker compose up -d --no-deps --remove-orphans "${SERVICES[@]}" nginx
+            print_images "${SERVICES[@]}"
 
             # Static nginx upstreams resolve container IPs only at config load.
             reload_nginx || { echo "ERROR: nginx config is invalid; the old config is still serving"; exit 1; }
@@ -558,6 +576,7 @@ jobs:
                   docker tag "${OLD[$svc]}" "${IMAGE[$svc]}"
                 done
                 docker compose up -d --no-deps "${ROLLBACK_SERVICES[@]}"
+                print_images "${ROLLBACK_SERVICES[@]}"
                 reload_nginx || true
                 healthy || echo "ERROR: still unhealthy after rolling back."
               fi
