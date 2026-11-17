@@ -20,7 +20,8 @@ use crate::events::{DomainEvent, EventPublisher};
 use crate::gateway::tiptap::TiptapDocument;
 use crate::meeting_provider::{MeetingProperties, Provider};
 use crate::oauth_connections;
-use crate::Id;
+use crate::search::visibility_for;
+use crate::{users, Id};
 use chrono::{DurationRound, NaiveDateTime, TimeDelta, Utc};
 use entity_api::{
     coaching_relationship, coaching_session, coaching_session_notice,
@@ -34,9 +35,11 @@ use service::config::Config;
 
 pub use entity_api::coaching_session::{
     claim_due_reminders, find_by_id, find_by_ids_with_coaching_relationship, find_by_series_id,
-    find_by_user_with_includes, find_counts_by_month_for_user, find_nearest_by_user_with_includes,
-    find_next_session, find_participant_ids, release_reminder_claim, CountByMonth, DueReminder,
-    EnrichedSession, IncludeOptions, NearestWindow, SessionQueryOptions,
+    find_counts_by_month_for_user, find_next_session, find_participant_ids, release_reminder_claim,
+    CountByMonth, DueReminder, EnrichedSession, IncludeOptions, NearestWindow, SessionQueryOptions,
+};
+pub(crate) use entity_api::coaching_session::{
+    find_by_user_with_includes, find_nearest_by_user_with_includes,
 };
 pub use entity_api::coaching_session_display_title::SessionWithDisplayTitle;
 
@@ -52,6 +55,40 @@ pub fn parse_duration_minutes(minutes: Option<i16>) -> Result<Option<Duration>, 
         .map(Duration::try_from)
         .transpose()
         .map_err(|out| entity_api::error::Error::from(out).into())
+}
+
+/// The sessions `caller` takes part in, filtered and sorted by `options`, with `includes`
+/// loaded and any included relationship as `caller` sees it.
+pub async fn find_by_user_with_includes_for_caller(
+    db: &impl ConnectionTrait,
+    caller: &users::Model,
+    options: SessionQueryOptions,
+    includes: IncludeOptions,
+) -> Result<Vec<EnrichedSession>, Error> {
+    Ok(
+        find_by_user_with_includes(db, &visibility_for(caller), options, includes)
+            .await?
+            .into_iter()
+            .map(|session| session.for_caller(caller))
+            .collect(),
+    )
+}
+
+/// The sessions of `caller`'s relationships nearest the window's center, with `includes`
+/// loaded and any included relationship as `caller` sees it.
+pub async fn find_nearest_by_user_with_includes_for_caller(
+    db: &impl ConnectionTrait,
+    caller: &users::Model,
+    window: NearestWindow,
+    includes: IncludeOptions,
+) -> Result<Vec<EnrichedSession>, Error> {
+    Ok(
+        find_nearest_by_user_with_includes(db, &visibility_for(caller), window, includes)
+            .await?
+            .into_iter()
+            .map(|session| session.for_caller(caller))
+            .collect(),
+    )
 }
 
 /// Wraps the entity_api function to convert `entity_api::Error` into `domain::Error`,

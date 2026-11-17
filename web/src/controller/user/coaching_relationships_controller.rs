@@ -7,7 +7,6 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use domain::coaching_relationship as CoachingRelationshipApi;
-use domain::search::visibility_for;
 use service::config::ApiVersion;
 
 use log::*;
@@ -46,15 +45,12 @@ pub async fn index(
     let params = params.with_user_id(user_id);
 
     // Web layer's RoleFilter implements RoleFilterable trait, so pass directly
-    let relationships: Vec<_> = CoachingRelationshipApi::find_by_user_id_with_user_names(
+    let relationships = CoachingRelationshipApi::find_by_user_id_with_user_names_for_caller(
         app_state.db_conn_ref(),
-        &visibility_for(&user),
+        &user,
         params.role,
     )
-    .await?
-    .into_iter()
-    .map(|relationship| relationship.for_caller(&user))
-    .collect();
+    .await?;
 
     debug!(
         "Found {} coaching relationships for user {user_id}",
