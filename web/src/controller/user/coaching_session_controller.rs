@@ -85,9 +85,9 @@ pub async fn index(
     let sort_order = params.get_sort_order();
 
     // Fetch sessions with optional includes and sorting at database level
-    let enriched_sessions: Vec<_> = CoachingSessionApi::find_by_user_with_includes(
+    let enriched_sessions = CoachingSessionApi::find_by_user_with_includes_for_caller(
         app_state.db_conn_ref(),
-        &visibility_for(&user),
+        &user,
         CoachingSessionApi::SessionQueryOptions {
             coaching_relationship_id: params.coaching_relationship_id,
             organization_id: params.organization_id,
@@ -99,10 +99,7 @@ pub async fn index(
         },
         includes,
     )
-    .await?
-    .into_iter()
-    .map(|session| session.for_caller(&user))
-    .collect();
+    .await?;
 
     debug!(
         "Found {} coaching sessions for user {user_id}",
@@ -156,16 +153,13 @@ pub async fn nearest(
     let user_id = user.id;
     debug!("GET nearest Coaching Sessions for User: {user_id}, params: {params:?}");
 
-    let sessions: Vec<_> = CoachingSessionApi::find_nearest_by_user_with_includes(
+    let sessions = CoachingSessionApi::find_nearest_by_user_with_includes_for_caller(
         app_state.db_conn_ref(),
-        &visibility_for(&user),
+        &user,
         params.compile()?,
         include_options(&params.include),
     )
-    .await?
-    .into_iter()
-    .map(|session| session.for_caller(&user))
-    .collect();
+    .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), sessions)))
 }
