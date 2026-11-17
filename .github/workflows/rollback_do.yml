@@ -1,4 +1,4 @@
-name: Roll Back DigitalOcean Deploy via Tailscale
+name: Roll Back Production
 # Restores the images the last successful deploy replaced (one step back),
 # using the rollback set that deploy_to_do.yml records on the server.
 

@@ -1,4 +1,4 @@
-name: Deploy to DigitalOcean via Tailscale # Workflow name displayed in GitHub UI
+name: Deploy to Production # Workflow name displayed in GitHub UI
 # Deploys the latest stable tagged container images to production servers.
 
 # Manual trigger with debug ssh option
