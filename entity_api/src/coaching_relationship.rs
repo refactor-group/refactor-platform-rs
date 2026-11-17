@@ -15,9 +15,10 @@ use entity::{
 };
 use log::*;
 use sea_orm::{
-    entity::prelude::*, sea_query::Alias, sea_query::Expr, sea_query::OnConflict, Condition,
-    DatabaseConnection, DbBackend, DbErr, ExprTrait, FromQueryResult, Iterable, JoinType,
-    QuerySelect, QueryTrait, Set, Statement, TransactionSession, TransactionTrait,
+    entity::prelude::*, sea_query::Alias, sea_query::Expr, sea_query::OnConflict,
+    ActiveValue::Unchanged, Condition, DatabaseConnection, DbBackend, DbErr, ExprTrait,
+    FromQueryResult, Iterable, JoinType, QuerySelect, QueryTrait, Set, Statement,
+    TransactionSession, TransactionTrait,
 };
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
@@ -237,6 +238,64 @@ fn settle(draft: &Draft, existing: Vec<Model>) -> Result<Option<Model>, Error> {
         .find(|related| unordered || related.coach_id == draft.coach_id))
 }
 
+/// Refuses with `PairAlreadyRelated` when the pair's other relationships in the organization
+/// leave no room for `relationship` to become `target`: the same rule a create of `target`
+/// follows, with `relationship` itself left out.
+pub async fn ensure_pair_allows(
+    db: &impl ConnectionTrait,
+    relationship: &Model,
+    target: Draft,
+) -> Result<(), Error> {
+    let others = find_between(
+        db,
+        relationship.organization_id,
+        relationship.coach_id,
+        relationship.coachee_id,
+    )
+    .await?
+    .into_iter()
+    .filter(|other| other.id != relationship.id)
+    .collect();
+    settle(&target, others)?.map_or(Ok(()), |other| {
+        Err(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::PairAlreadyRelated {
+                relationship_id: other.id,
+            },
+        })
+    })
+}
+
+/// Changes `relationship` in place to `target`'s kind and seats, keeping its id and history.
+///
+/// Holds the pair's advisory lock and re-checks [`ensure_pair_allows`] under it, so a
+/// concurrent create or switch for the pair is decided one after the other. Run it on a
+/// transaction: the lock lasts until that transaction ends.
+pub async fn change_kind(
+    db: &impl ConnectionTrait,
+    relationship: &Model,
+    target: Draft,
+) -> Result<Model, Error> {
+    lock_pair(
+        db,
+        relationship.organization_id,
+        relationship.coach_id,
+        relationship.coachee_id,
+    )
+    .await?;
+    ensure_pair_allows(db, relationship, target).await?;
+    Ok(ActiveModel {
+        id: Unchanged(relationship.id),
+        coach_id: Set(target.coach_id),
+        coachee_id: Set(target.coachee_id),
+        kind: Set(target.kind),
+        updated_at: Set(Utc::now().into()),
+        ..Default::default()
+    }
+    .update(db)
+    .await?)
+}
+
 /// Inserts `relationship`, returning `None` when its coach, coachee and organization already exist.
 pub async fn insert_unless_exists(
     db: &impl ConnectionTrait,
@@ -438,6 +497,23 @@ pub async fn find_by_id(db: &impl ConnectionTrait, id: Id) -> Result<Model, Erro
         source: None,
         error_kind: EntityApiErrorKind::RecordNotFound,
     })
+}
+
+/// The relationship `id` in `organization_id`.
+///
+/// # Errors
+///
+/// `RecordNotFound` when there is none, or it belongs to another organization.
+pub async fn find_by_id_in_organization(
+    db: &impl ConnectionTrait,
+    organization_id: Id,
+    id: Id,
+) -> Result<Model, Error> {
+    Entity::find_by_id(id)
+        .filter(coaching_relationships::Column::OrganizationId.eq(organization_id))
+        .one(db)
+        .await?
+        .ok_or_else(not_found)
 }
 
 /// The relationship's coach and coachee, in that order, read in one query.

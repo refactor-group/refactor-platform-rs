@@ -161,6 +161,15 @@ impl Model {
             .is_some_and(|seat| self.kind.rules().sees_all_actions(seat))
     }
 
+    /// Whether `user_id` gets the upcoming-session reminder from any seat they hold, as the
+    /// reminder sweep decides it.
+    pub fn is_reminded(&self, user_id: Id) -> bool {
+        let rules = self.kind.rules();
+        [Seat::CoachId, Seat::CoacheeId]
+            .into_iter()
+            .any(|seat| self.participant(seat) == user_id && rules.is_reminded(seat))
+    }
+
     /// Returns `true` if the given user may access this relationship's data.
     ///
     /// Requires participation *and* current membership of the relationship's

@@ -12,7 +12,8 @@ rs#399 baseline is frozen. Rows it changes or adds are marked `[tightened]`; the
 Phase 1 adds the `SCHED` rows (4.15): what each schedule change records, with no change to who
 may make it. Phase 2 adds the `KIND` rows (4.16): each relationship's kind and the one participant
 role type. Phase 4 adds colleague rows, starting with creating one (KIND-04, KIND-11 to KIND-18);
-coach and coachee rows answer as before.
+coach and coachee rows answer as before. Phase 5 adds switching a relationship's kind in place
+(KIND-28 to KIND-37).
 
 Rows marked `[membership]` change in phase M (org membership consistency), which also lands
 before the baseline. Their expected results already show the phase M rule:
@@ -704,6 +705,16 @@ lowercase.
 | KIND-25 | GET /users/{COACHEE_ID}/coaching-relationships (REL-13) | COACHEE | 200; each relationship has COACHEE's `viewer` | `web/src/controller/user/coaching_relationships_controller.rs` | |
 | KIND-26 | POST /organizations/O1/coaching_relationships (REL-15) | ADMIN | 200 (201); `"viewer": null`, `"suggests_actions": true`, `"scheduling_blocked_by": null` | `web/src/controller/organization/coaching_relationship_controller.rs` | Delete the relationship afterwards |
 | KIND-27 | KIND-11's two creates | ADMIN | the second response's `coach_first_name`/`coach_last_name` are COACH's and `coachee_first_name`/`coachee_last_name` MEMBER's, matching the stored `coach_id`/`coachee_id` | `entity_api::coaching_relationship::create` (`in_stored_seats`) | Names follow the stored seats, not the request's order. Delete the relationship afterwards |
+| KIND-28 | PUT /organizations/O1/coaching_relationships/R1/kind `{kind: "colleague"}` | ADMIN | 409, `details.reason` `kind_switch_needs_confirmation`; `details.actions_becoming_visible` `[{user_id: COACHEE, by_assignee: [{assignee_id: COACH, count: 1}]}]` (A1); `details.scheduling_gained` `[COACHEE]`, `details.scheduling_lost` `[]`; psql R1 unchanged | `domain::coaching_relationship::kind_switch::switch_for_caller` (`consequences`, from each kind's rules) | No `confirmed: true`, no change |
+| KIND-29 | KIND-28 with `confirmed: true`, then GET /organizations/O1/coaching_relationships/R1 as COACHEE | ADMIN, then COACHEE | 200, `"kind": "colleague"`, `"viewer": null`; psql `kind = 'colleague'`; COACHEE's `viewer` `{"role": "colleague", "can_schedule_sessions": true, "sees_all_actions": true}` | same; `entity_api::coaching_relationship::change_kind` | Switch R1 back afterwards (KIND-30 with `coach_id: COACH`) |
+| KIND-30 | PUT /organizations/O1/coaching_relationships/RC/kind `{kind: "coaching", coach_id: <the colleague in coachee_id>, confirmed: true}`, RC a colleague relationship | ADMIN | 200, `"kind": "coaching"`; psql `coach_id` and `coachee_id` swapped | `kind_switch::target_of` | |
+| KIND-31 | PUT /organizations/O1/coaching_relationships/R1/kind with `confirmed: true` and `{kind: "coaching", coach_id: MEMBER}`; `{kind: "coaching"}`; `{kind: "colleague", coach_id: COACH}` | ADMIN | each 422, `details.reason` `coach_not_a_participant`, `coach_required`, `coach_not_applicable`; psql R1 unchanged | `kind_switch::target_of` | |
+| KIND-32 | PUT /organizations/O1/coaching_relationships/R1/kind `{kind: "coaching", coach_id: COACHEE}`, then again with `confirmed: true` | ADMIN | first 409 `kind_switch_needs_confirmation`, `scheduling_gained` `[COACHEE]`, `scheduling_lost` `[COACH]`, COACHEE gains sight of A1; then 200, psql R1's seats swapped | same | A reversal moves scheduling and visibility, so it needs confirming. Swap back afterwards |
+| KIND-33 | With RB `{coach_id: COACHEE, coachee_id: COACH}` created (KIND-14): PUT /organizations/O1/coaching_relationships/R1/kind `{kind: "colleague", confirmed: true}`; RB the same; R1 `{kind: "coaching", coach_id: COACHEE, confirmed: true}` | ADMIN | each 409, `details.reason` `pair_already_related`, `details.relationship_id` the other of R1 and RB; nothing changed | `entity_api::coaching_relationship::ensure_pair_allows` (the create's `settle`), re-checked by `change_kind` under the pair's advisory lock | Delete RB afterwards |
+| KIND-34 | PUT /organizations/O1/coaching_relationships/R1/kind `{kind: "colleague", confirmed: true}`; PUT /organizations/O2/coaching_relationships/R1/kind; PUT /organizations/O1/coaching_relationships/{unknown id}/kind | COACH, COACHEE, OTHER_COACH, MEMBER, OUTSIDER, REMOVED; SUPER; ADMIN | 403 each; 404; 404; nothing changed | `web/src/extractors/organization_admin_access.rs`; `entity_api::coaching_relationship::find_by_id_in_organization` | |
+| KIND-35 | PUT /organizations/O1/coaching_relationships/R1/kind `{kind: "coaching", coach_id: COACH}` | ADMIN | 200, R1 as it is; psql `updated_at` unchanged | `kind_switch::switch_for_caller` | Nothing to switch, so no confirmation |
+| KIND-36 | PUT /organizations/O1/coaching_relationships/R3/kind `{kind: "colleague"}`, and with `confirmed: true` | ADMIN | each 409, `details.reason` `participant_not_a_member`, `details.user_id` REMOVED, `details.organization_id` O1; psql R3 unchanged | `domain::coaching_relationship::ensure_members` | Checked before the confirmation step. Re-add the person first |
+| KIND-37 | With a session in R1 starting within the reminder lead (default 24 hours): KIND-29, then wait for a reminder sweep tick, with a mock Resend | ADMIN | psql `coaching_session_reminders` holds a row for that session and COACH, `sent_for_start` its `date`; no row for S1; the sweep sends COACH no reminder for that session | `entity_api::coaching_session::mark_reminders_sent`, in the switch's transaction | The sweep's claim is Postgres-only SQL, so the automated test stops at the row; the send half is by hand |
 
 KIND-09's checks:
 
@@ -1154,3 +1165,13 @@ a frozen `domain` test, or by hand with the reason.
 | TRN-33 | `domain/src/transcription_analysis_hook_sqlite_tests.rs::completing_a_colleague_transcript_writes_no_analysis`, `domain/src/transcription_analysis_hook_sqlite_tests.rs::completing_with_a_target_writes_one_pending_analysis_with_the_segments` |
 | KIND-27 | `domain/src/coaching_relationship_sqlite_tests.rs::a_returned_colleague_relationship_names_each_seat_by_its_own_user` |
 | SER-29 | `domain/src/coaching_session_series.rs::tests::an_unchanged_following_save_from_another_zone_moves_nothing` (mock: reschedule-following takes Postgres advisory locks) |
+| KIND-28 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::an_unconfirmed_switch_to_colleague_lists_its_consequences_and_changes_nothing` |
+| KIND-29 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_confirmed_switch_to_colleague_gives_the_former_coachee_everything` |
+| KIND-30 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_confirmed_switch_to_coaching_seats_the_chosen_coach` |
+| KIND-31 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_switch_naming_the_coach_wrongly_is_refused` |
+| KIND-32 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::reversing_a_coaching_relationship_needs_confirmation_then_swaps_the_seats` |
+| KIND-33 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_pair_coaching_each_other_cannot_switch_either_relationship` |
+| KIND-34 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::only_the_organizations_admins_switch_a_relationship` |
+| KIND-35 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::switching_to_what_the_relationship_already_is_changes_nothing` |
+| KIND-36 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_relationship_whose_participant_left_cannot_switch` |
+| KIND-37 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_switch_marks_the_newly_reminded_participants_imminent_reminders_sent`; by hand for the sweep's send: its claim is Postgres-only SQL |

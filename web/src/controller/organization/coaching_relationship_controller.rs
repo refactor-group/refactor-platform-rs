@@ -7,17 +7,17 @@ use crate::extractors::{
     authenticated_user::AuthenticatedUser, compare_api_version::CompareApiVersion,
 };
 use crate::params::coaching_relationship::goal_progress::IndexParams as GoalProgressIndexParams;
-use crate::params::coaching_relationship::CreateParams;
+use crate::params::coaching_relationship::{CreateParams, KindParams};
 use crate::{AppState, Error};
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use domain::coaching_relationship::CoachingRelationshipWithUserNames;
+use domain::coaching_relationship::{kind_switch, CoachingRelationshipWithUserNames};
 use domain::coaching_relationship_kind::Kind;
 use domain::{
     action as ActionApi, coaching_relationship as CoachingRelationshipApi,
-    goal_progress as GoalProgressApi,
+    goal_progress as GoalProgressApi, Id,
 };
 use service::config::ApiVersion;
 
@@ -83,6 +83,60 @@ pub async fn create(
         StatusCode::CREATED.into(),
         coaching_relationship,
     )))
+}
+
+/// SWITCH a CoachingRelationship's kind in place.
+///
+/// Restricted to administrators of the organization named in the path. The relationship keeps
+/// its id and history; who may do what follows the new kind from then on. Until the body says
+/// `confirmed: true`, nothing changes and the response is a 409 whose `details` list what the
+/// switch would change, so the administrator can confirm it first.
+#[utoipa::path(
+    put,
+    path = "/organizations/{organization_id}/coaching_relationships/{relationship_id}/kind",
+    params(
+        ApiVersion,
+        ("organization_id" = Uuid, Path, description = "Organization id"),
+        ("relationship_id" = Uuid, Path, description = "Coaching relationship id"),
+    ),
+    request_body = KindParams,
+    responses(
+        (status = 200, description = "The relationship as switched, or unchanged when it already had the requested kind and coach", body = domain::coaching_relationship::CoachingRelationshipWithUserNames),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Caller does not administer the organization"),
+        (status = 404, description = "Organization not found, or no such relationship in it"),
+        (status = 405, description = "Method not allowed"),
+        (status = 409, description = "Nothing changed. `details.reason` says why: `participant_not_a_member` (`details.user_id` the participant no longer in `details.organization_id`; re-add them first), `pair_already_related` (`details.relationship_id` the pair's other relationship that leaves no room for the switch), or `kind_switch_needs_confirmation` (`details` also holds the fields of `domain.coaching_relationship.kind_switch.Consequences`; re-send with `confirmed: true` to switch)"),
+        (status = 422, description = "Nothing changed: `coach_id` missing for `coaching` (`details.reason` `coach_required`), given for `colleague` (`coach_not_applicable`), or not a participant (`coach_not_a_participant`)"),
+        (status = 503, description = "Service temporarily unavailable")
+    ),
+    security(
+        ("cookie_auth" = [])
+    )
+)]
+pub async fn switch_kind(
+    CompareApiVersion(_v): CompareApiVersion,
+    State(app_state): State<AppState>,
+    OrganizationAdminAccess {
+        organization,
+        authenticated_user,
+    }: OrganizationAdminAccess,
+    Path((_organization_id, relationship_id)): Path<(Id, Id)>,
+    Json(params): Json<KindParams>,
+) -> Result<impl IntoResponse, Error> {
+    debug!("SWITCH Coaching Relationship {relationship_id} kind: {params:?}");
+
+    let relationship = kind_switch::switch_for_caller(
+        app_state.db_conn_ref(),
+        &app_state.config,
+        &authenticated_user,
+        organization.id,
+        relationship_id,
+        params.into(),
+    )
+    .await?;
+
+    Ok(Json(ApiResponse::new(StatusCode::OK.into(), relationship)))
 }
 
 /// GET a particular CoachingRelationship specified by the organization Id and relationship Id.

@@ -149,6 +149,8 @@ const MIGRATION_INDEXES: &[&str] = &[
      ON coaching_sessions_goals (coaching_session_id, goal_id)",
     "CREATE UNIQUE INDEX refactor_platform.uq_coaching_session_notices_session_user \
      ON coaching_session_notices (coaching_session_id, user_id)",
+    "CREATE UNIQUE INDEX refactor_platform.uq_coaching_session_reminders_session_user \
+     ON coaching_session_reminders (coaching_session_id, user_id)",
 ];
 
 /// Rebuilds every table with the column defaults the migrations declare
