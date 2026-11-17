@@ -185,6 +185,87 @@ async fn a_refused_relationship_adds_no_member_and_sends_no_email() {
     .await;
 }
 
+/// ORG-41
+#[tokio::test]
+async fn admins_add_a_member_as_the_coach() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, coachee) = (app.fixture.o1, app.fixture.user(Caller::Coachee));
+        let mut body = new_member_body(coachee);
+        body["relationship"]["role"] = json!("coach");
+        app.take_emailed();
+
+        let reply = app
+            .send(
+                Caller::Admin,
+                Method::POST,
+                &format!("/organizations/{o1}/users"),
+                Some(body),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(reply.body["status_code"], 201);
+        let user = user_with_email(app.db(), NEW_EMAIL)
+            .await
+            .expect("the member is stored");
+        assert_eq!(
+            relationships_between(app.db(), user, coachee)
+                .await
+                .into_iter()
+                .map(|relationship| relationship.kind)
+                .collect::<Vec<_>>(),
+            vec![Kind::Coaching]
+        );
+        assert!(relationships_between(app.db(), coachee, user)
+            .await
+            .is_empty());
+        assert_eq!(app.take_emailed(), vec![NEW_EMAIL.to_string()]);
+    })
+    .await;
+}
+
+/// ORG-42
+#[tokio::test]
+async fn a_role_the_kind_lacks_adds_no_member_and_sends_no_email() {
+    within_time_limit(async {
+        for (kind, role) in [("coaching", "colleague"), ("colleague", "coach")] {
+            let mut app = TestApp::new().await;
+            let (o1, coach) = (app.fixture.o1, app.fixture.user(Caller::Coach));
+            let mut body = new_member_body(coach);
+            body["relationship"]["kind"] = json!(kind);
+            body["relationship"]["role"] = json!(role);
+            app.take_emailed();
+
+            let reply = app
+                .send(
+                    Caller::Admin,
+                    Method::POST,
+                    &format!("/organizations/{o1}/users"),
+                    Some(body),
+                )
+                .await;
+
+            assert_eq!(
+                reply.status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{kind} {role}"
+            );
+            assert_eq!(
+                reply.body["details"]["reason"], "role_not_in_kind",
+                "{kind} {role}"
+            );
+            assert_eq!(
+                user_with_email(app.db(), NEW_EMAIL).await,
+                None,
+                "{kind} {role}"
+            );
+            assert_eq!(app.take_emailed(), Vec::<String>::new(), "{kind} {role}");
+        }
+    })
+    .await;
+}
+
 /// ORG-40
 #[tokio::test]
 async fn a_member_body_with_the_replaced_coach_id_is_refused() {

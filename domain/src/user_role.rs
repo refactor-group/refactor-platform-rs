@@ -38,7 +38,9 @@ pub struct UserLookupResult {
 ///
 /// `NotFound` when the organization or user does not exist, `OrganizationArchived`
 /// when the organization is archived, `UserAlreadyInOrganization` when the user
-/// already holds a role there, plus any error from the relationship create.
+/// already holds a role there, a 422 (`role_not_in_kind`) before anything is written
+/// when `relationship.role` is no role of its kind, plus any error from the relationship
+/// create.
 pub async fn attach_to_organization(
     db: &DatabaseConnection,
     actor: Actor,
@@ -47,6 +49,8 @@ pub async fn attach_to_organization(
     role: Role,
     relationship: Option<InviteeRelationship>,
 ) -> Result<users::Model, Error> {
+    let relationship = relationship.map(InviteeRelationship::seated).transpose()?;
+
     let txn = db.begin().await.map_err(EntityApiError::from)?;
 
     let organization = organization::find_by_id(&txn, organization_id).await?;

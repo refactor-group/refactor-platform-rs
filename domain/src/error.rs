@@ -198,6 +198,7 @@ pub(crate) mod reason {
     pub(crate) const LEGACY_SERIES: &str = "legacy_series";
     pub(crate) const PAIR_ALREADY_RELATED: &str = "pair_already_related";
     pub(crate) const ASSIGNEE_SCOPE_NOT_APPLICABLE: &str = "assignee_scope_not_applicable";
+    pub(crate) const ROLE_NOT_IN_KIND: &str = "role_not_in_kind";
 }
 
 impl fmt::Display for Error {

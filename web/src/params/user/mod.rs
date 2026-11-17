@@ -27,6 +27,7 @@ pub struct LookupParams {
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AttachRoleParams {
+    /// The organization role granted; `relationship.role` is the role in the relationship.
     pub role: Role,
     /// Relationship to create in the same transaction as the membership.
     pub relationship: Option<InviteeRelationshipParams>,
