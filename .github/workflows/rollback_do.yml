@@ -35,13 +35,14 @@ jobs:
         run: |
           echo "Waiting for Tailscale to establish path to ${{ secrets.DO_TAILSCALE_NAME }}..."
           for i in {1..20}; do
-            if tailscale ping --c 1 --timeout 2s ${{ secrets.DO_TAILSCALE_NAME }} >/dev/null 2>&1; then
+            if tailscale ping --c 1 --timeout 2s --until-direct=false ${{ secrets.DO_TAILSCALE_NAME }} >/dev/null 2>&1; then
               echo "Tailscale path ready (attempt $i)"
               exit 0
             fi
             sleep 2
           done
           echo "ERROR: Tailscale never reached ${{ secrets.DO_TAILSCALE_NAME }} after 40s"
+          tailscale ping --c 1 --timeout 2s --until-direct=false ${{ secrets.DO_TAILSCALE_NAME }} || true
           tailscale status || true
           exit 1
 

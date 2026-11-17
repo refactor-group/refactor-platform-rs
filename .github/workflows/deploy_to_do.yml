@@ -41,18 +41,20 @@ jobs:
       # deploy step can race Tailscale's MagicDNS / route propagation and
       # `ssh-keyscan` will fail silently under `bash -e`, exiting the step
       # before any echo runs. `tailscale ping` confirms the actual peer path,
-      # not just DNS resolution.
+      # not just DNS resolution. A relayed (DERP) path counts: SSH works over it,
+      # and without --until-direct=false a relayed pong exits 1.
       - name: Wait for Tailscale path to deploy host
         run: |
           echo "Waiting for Tailscale to establish path to ${{ secrets.DO_TAILSCALE_NAME }}..."
           for i in {1..20}; do
-            if tailscale ping --c 1 --timeout 2s ${{ secrets.DO_TAILSCALE_NAME }} >/dev/null 2>&1; then
+            if tailscale ping --c 1 --timeout 2s --until-direct=false ${{ secrets.DO_TAILSCALE_NAME }} >/dev/null 2>&1; then
               echo "Tailscale path ready (attempt $i)"
               exit 0
             fi
             sleep 2
           done
           echo "ERROR: Tailscale never reached ${{ secrets.DO_TAILSCALE_NAME }} after 40s"
+          tailscale ping --c 1 --timeout 2s --until-direct=false ${{ secrets.DO_TAILSCALE_NAME }} || true
           tailscale status || true
           exit 1
 
