@@ -61,17 +61,18 @@ pub async fn create(
 ) -> Result<impl IntoResponse, Error> {
     debug!("CREATE new Coaching Relationship from: {params:?}");
 
-    let coaching_relationship: CoachingRelationshipWithUserNames = CoachingRelationshipApi::create(
-        app_state.db_conn_ref(),
-        organization.id,
-        CoachingRelationshipApi::Draft {
-            coach_id: params.coach_id,
-            coachee_id: params.coachee_id,
-            kind: params.kind.unwrap_or(Kind::Coaching),
-        },
-    )
-    .await?
-    .for_caller(&authenticated_user);
+    let coaching_relationship: CoachingRelationshipWithUserNames =
+        CoachingRelationshipApi::create_for_caller(
+            app_state.db_conn_ref(),
+            &authenticated_user,
+            organization.id,
+            CoachingRelationshipApi::Draft {
+                coach_id: params.coach_id,
+                coachee_id: params.coachee_id,
+                kind: params.kind.unwrap_or(Kind::Coaching),
+            },
+        )
+        .await?;
 
     debug!(
         "Newly created Coaching Relationship: {:?}",
@@ -117,12 +118,12 @@ pub async fn read(
     debug!("GET CoachingRelationship by id: {relationship_id}");
 
     let relationship: Option<CoachingRelationshipWithUserNames> =
-        CoachingRelationshipApi::get_relationship_with_user_names(
+        CoachingRelationshipApi::get_relationship_with_user_names_for_caller(
             app_state.db_conn_ref(),
+            &user,
             relationship_id,
         )
-        .await?
-        .map(|relationship| relationship.for_caller(&user));
+        .await?;
 
     Ok(Json(ApiResponse::new(StatusCode::OK.into(), relationship)))
 }
@@ -159,13 +160,10 @@ pub async fn index(
     let coaching_relationships: Vec<CoachingRelationshipWithUserNames> =
         CoachingRelationshipApi::find_by_organization_for_user_with_user_names(
             app_state.db_conn_ref(),
-            user.id,
+            &user,
             organization_id,
         )
-        .await?
-        .into_iter()
-        .map(|relationship| relationship.for_caller(&user))
-        .collect();
+        .await?;
 
     debug!("Found CoachingRelationships: {coaching_relationships:?}");
 
