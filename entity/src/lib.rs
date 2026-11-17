@@ -6,6 +6,7 @@ pub mod prelude;
 pub mod actions;
 pub mod actions_users;
 pub mod agreements;
+pub mod audit_events;
 pub mod coachees;
 pub mod coaches;
 pub mod coaching_relationship_kind;
