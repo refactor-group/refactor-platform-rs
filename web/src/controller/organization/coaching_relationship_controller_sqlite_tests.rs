@@ -9,7 +9,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use axum::http::{Method, StatusCode};
-use domain::coaching_relationship::{create, Draft};
 use domain::coaching_relationship_kind::Kind;
 use domain::test_utils::sqlite::fixture::{
     archive_organization, make_colleagues, remove_roles, set_role,
@@ -671,17 +670,11 @@ async fn an_unrelatable_pair_is_a_conflict() {
             fixture.user(Caller::Outsider),
         );
         let path = format!("/organizations/{o1}/coaching_relationships");
-        create(
-            app.db(),
-            o1,
-            Draft {
-                coach_id: coach,
-                coachee_id: member,
-                kind: Kind::Colleague,
-            },
+        admin_creates(
+            &mut app,
+            json!({ "coach_id": coach, "coachee_id": member, "kind": "colleague" }),
         )
-        .await
-        .expect("the colleague relationship is seeded");
+        .await;
 
         for (case, coachee_id) in [
             ("self", coach),

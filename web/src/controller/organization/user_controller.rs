@@ -65,7 +65,7 @@ pub async fn index(
         (status = 401, description = "Unauthorized"),
         (status = 405, description = "Method not allowed"),
         (status = 409, description = "The relationship is refused, and nothing is created and no email sent: the organization is archived, the person named in `relationship` is not a member of it, or the two people already have a relationship of the other kind in the organization (`details.reason` `pair_already_related`, `details.relationship_id` the existing relationship)"),
-        (status = 422, description = "Nothing is created and no email sent: the body carries `coach_id`, which `relationship` replaced, or `relationship.role` is a role its kind has no seat for (`details.reason` `role_not_in_kind`)"),
+        (status = 422, description = "Nothing is created and no email sent: the body carries `coach_id`, which `relationship` replaced, or an invalid `relationship`, such as a `relationship.role` its kind has no seat for (`details.reason` `role_not_in_kind`)"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(

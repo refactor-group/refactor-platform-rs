@@ -72,7 +72,10 @@ async fn seed_role(db: &DatabaseConnection, user_id: Id, role: Role, organizatio
 
 /// `caller`'s view of the organization's one relationship.
 async fn listed(s: &Seeded, caller: Id) -> CoachingRelationshipWithUserNames {
-    let mut listed = find_by_organization_for_user_with_user_names(&s.db, caller, s.organization)
+    let caller = entity_api::user::find_by_id(&s.db, caller)
+        .await
+        .expect("the caller is read");
+    let mut listed = find_by_organization_for_user_with_user_names(&s.db, &caller, s.organization)
         .await
         .expect("the list reads");
     assert_eq!(listed.len(), 1, "{listed:?}");
