@@ -262,6 +262,22 @@ pub async fn seed_relationship_with_actions(
     (relationship, actions)
 }
 
+/// An action in a new session of `relationship_id`, written by its coach and assigned to each of
+/// `assignees`. Seed it per test so list rows never see it.
+pub async fn seed_action_assigned_to(
+    db: &DatabaseConnection,
+    relationship_id: Id,
+    assignees: &[Id],
+) -> Id {
+    let session = seed_content_free_session(db, relationship_id).await;
+    let author = coach_of(db, relationship_id).await;
+    let id = seed_action(db, session, author, &searchable("Action")).await;
+    for &user_id in assignees {
+        assign(db, id, user_id).await;
+    }
+    id
+}
+
 /// Drops every role `user_id` holds in `organization_id`, with no audit row.
 pub async fn remove_roles(db: &DatabaseConnection, user_id: Id, organization_id: Id) {
     user_roles::Entity::delete_many()
@@ -598,19 +614,24 @@ async fn seed_assigned_action(
 ) -> Id {
     let id = seed_action(db, session_id, author, &searchable("Action")).await;
     if let Some(user_id) = assignee {
-        let now = Utc::now();
-        actions_users::ActiveModel {
-            id: Set(Id::new_v4()),
-            action_id: Set(id),
-            user_id: Set(user_id),
-            created_at: Set(now.into()),
-            updated_at: Set(now.into()),
-        }
-        .insert(db)
-        .await
-        .expect("the assignment is seeded");
+        assign(db, id, user_id).await;
     }
     id
+}
+
+/// Assigns `action_id` to `user_id`.
+async fn assign(db: &DatabaseConnection, action_id: Id, user_id: Id) {
+    let now = Utc::now();
+    actions_users::ActiveModel {
+        id: Set(Id::new_v4()),
+        action_id: Set(action_id),
+        user_id: Set(user_id),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("the assignment is seeded");
 }
 
 /// A note image row in `session_id`; the bytes are the caller's to store at the key.

@@ -187,7 +187,7 @@ pub async fn index(
         ("sort_by" = Option<crate::params::coaching_relationship::goal_progress::SortField>, Query, description = "Sort by field. Valid values: 'updated_at', 'status_changed_at', 'created_at'.", example = "updated_at"),
         ("sort_order" = Option<crate::params::sort::SortOrder>, Query, description = "Sort order. Valid values: 'asc', 'desc'.", example = "desc"),
         ("limit" = Option<u32>, Query, description = "Cap on the number of goals returned. Values above 100 are silently clamped. Omit for unbounded results.", example = 3),
-        ("assignee" = Option<String>, Query, description = "Scope action counts / next-due to a specific assignee. Values: 'coach', 'coachee' (case-insensitive), or a user UUID. 'coach' and 'coachee' are refused on a colleague relationship. Omit for relationship-wide counts."),
+        ("assignee" = Option<String>, Query, description = "Scope action counts / next-due to a specific assignee. Values: 'coach', 'coachee', 'colleague' (case-insensitive), or a user UUID. A role names the participant holding it, the one who isn't the caller when both do: 'colleague' is the caller's colleague. A role no participant holds is refused: 'coach' and 'coachee' on a colleague relationship, 'colleague' on a coaching one. Omit for relationship-wide counts."),
         ("coaching_session_id" = Option<Uuid>, Query, description = "Restrict to goals linked to this coaching session via the session↔goal join table."),
     ),
     responses(
@@ -195,7 +195,7 @@ pub async fn index(
         (status = 400, description = "Invalid query parameter value"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Coaching relationship not found"),
-        (status = 422, description = "`assignee=coach` or `assignee=coachee` on a colleague relationship; `details.reason` is `assignee_scope_not_applicable`"),
+        (status = 422, description = "`assignee=coach` or `assignee=coachee` on a colleague relationship, or `assignee=colleague` on a coaching one; `details.reason` is `assignee_scope_not_applicable`"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -204,6 +204,7 @@ pub async fn index(
 )]
 pub async fn goal_progress(
     CompareApiVersion(_v): CompareApiVersion,
+    AuthenticatedUser(user): AuthenticatedUser,
     CoachingRelationshipAccess(relationship): CoachingRelationshipAccess,
     State(app_state): State<AppState>,
     Query(params): Query<GoalProgressIndexParams>,
@@ -225,7 +226,7 @@ pub async fn goal_progress(
         Some(ActionApi::AssigneeScope::User(id)) if !relationship.includes_user(id) => {
             return Err(Error::Web(WebErrorKind::Input));
         }
-        Some(scope) => Some(ActionApi::assignee_user_id(&relationship, &scope)?),
+        Some(scope) => Some(ActionApi::assignee_user_id(&relationship, &scope, user.id)?),
         None => None,
     };
 
