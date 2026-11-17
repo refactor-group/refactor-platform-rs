@@ -379,6 +379,64 @@ async fn the_session_space_with_a_host_attributes_the_coach_and_the_coachee() {
         .any(|sql| sql.contains("oauth_connections")));
 }
 
+/// The Google account lookup made for `session`; returns the oauth statements it issued.
+async fn account_lookups(people: &People, session: coaching_sessions::Model) -> Vec<String> {
+    let transcription = transcription(&session);
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([vec![session.clone()]])
+        .append_query_results([vec![coach_and_coachee_row(people)]])
+        .append_query_results([vec![recording(&transcription)]])
+        .append_query_results([Vec::<oauth_connections::Model>::new()])
+        .into_connection();
+    let bot = FakeBot::in_meeting(SESSION_CODE);
+
+    attribute_speakers(
+        &db,
+        Some(&bot),
+        &Config::default(),
+        &transcription,
+        &speakers(),
+    )
+    .await;
+
+    statements(db)
+        .into_iter()
+        .filter(|sql| sql.contains("oauth_connections"))
+        .collect()
+}
+
+/// The attendee list is read with the account that made the session's Meet link.
+#[tokio::test]
+async fn attribution_looks_up_the_account_that_made_the_meeting_link() {
+    let people = people();
+    let session = coaching_sessions::Model {
+        meeting_url_created_by_user_id: Some(people.coachee.id),
+        ..session(&people, Some(MeetingProvider::Google))
+    };
+
+    let lookups = account_lookups(&people, session).await;
+
+    assert!(!lookups.is_empty());
+    assert!(lookups
+        .iter()
+        .all(|sql| sql.contains(&people.coachee.id.to_string())
+            && !sql.contains(&people.coach.id.to_string())));
+}
+
+/// A session with no recorded link maker is read with the coach seat's account.
+#[tokio::test]
+async fn attribution_without_a_recorded_link_maker_looks_up_the_coach() {
+    let people = people();
+    let session = session(&people, Some(MeetingProvider::Google));
+
+    let lookups = account_lookups(&people, session).await;
+
+    assert!(!lookups.is_empty());
+    assert!(lookups
+        .iter()
+        .all(|sql| sql.contains(&people.coach.id.to_string())));
+}
+
 /// Runs `handle_completion` against a Google session with the given bot; returns its result,
 /// the statement log, and the session's people.
 async fn complete_with(bot: &FakeBot) -> (Result<(), Error>, Vec<String>, People) {

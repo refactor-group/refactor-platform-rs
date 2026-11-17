@@ -14,6 +14,7 @@ use log::*;
 use super::error::{EntityApiErrorKind, Error};
 use super::{actions_user, coaching_relationship};
 use entity::actions::{ActiveModel, Entity, Model};
+use entity::coaching_relationship_kind::Seat;
 use entity::coaching_relationships::Visibility;
 use entity::{actions, coaching_relationships, coaching_sessions, status::Status, Id};
 
@@ -468,17 +469,15 @@ impl AssigneeScope {
     /// The user this scope names in `relationship`, or `None` for `Coach` or `Coachee` on a
     /// relationship whose seats hold the same role, where neither names anyone in particular.
     pub fn user_id_in(&self, relationship: &entity::coaching_relationships::Model) -> Option<Id> {
-        match self {
-            AssigneeScope::Coach => relationship
-                .kind
-                .seats_differ()
-                .then_some(relationship.coach_id),
-            AssigneeScope::Coachee => relationship
-                .kind
-                .seats_differ()
-                .then_some(relationship.coachee_id),
-            AssigneeScope::User(id) => Some(*id),
-        }
+        let seat = match self {
+            AssigneeScope::Coach => Seat::CoachId,
+            AssigneeScope::Coachee => Seat::CoacheeId,
+            AssigneeScope::User(id) => return Some(*id),
+        };
+        relationship
+            .kind
+            .seats_differ()
+            .then(|| relationship.participant(seat))
     }
 }
 

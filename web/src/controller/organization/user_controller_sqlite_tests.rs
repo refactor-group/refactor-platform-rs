@@ -185,6 +185,39 @@ async fn a_refused_relationship_adds_no_member_and_sends_no_email() {
     .await;
 }
 
+/// ORG-40
+#[tokio::test]
+async fn a_member_body_with_the_replaced_coach_id_is_refused() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, coach) = (app.fixture.o1, app.fixture.user(Caller::Coach));
+        let mut body = new_member_body(coach);
+        body["coach_id"] = json!(coach);
+        app.take_emailed();
+
+        let reply = app
+            .send(
+                Caller::Admin,
+                Method::POST,
+                &format!("/organizations/{o1}/users"),
+                Some(body),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+        // The rejection an unknown field in any other body gets.
+        let message = reply.body.as_str().unwrap_or_default();
+        assert!(
+            message.starts_with("Failed to deserialize the JSON body into the target type")
+                && message.contains("unknown field `coach_id`"),
+            "{message}"
+        );
+        assert_eq!(user_with_email(app.db(), NEW_EMAIL).await, None);
+        assert_eq!(app.take_emailed(), Vec::<String>::new());
+    })
+    .await;
+}
+
 /// ORG-02
 #[tokio::test]
 async fn non_admins_cannot_add_a_member() {

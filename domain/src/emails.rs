@@ -870,7 +870,7 @@ pub enum Delivery {
 
 /// What a session email did for each participant.
 ///
-/// The two sends fail independently, and only the coachee's bears on the reminder, so a
+/// The two sends fail independently, and each participant's notice is their own, so a
 /// single "it worked" would record notice for someone who was never told.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Delivered {
@@ -879,6 +879,28 @@ pub struct Delivered {
 }
 
 impl Delivered {
+    /// What this send did for each participant it owed, coachee seat first: everyone but the
+    /// owner of the schedule of a session `scheduler_id` scheduled, who already knows it.
+    pub fn owed(
+        &self,
+        relationship: &coaching_relationships::Model,
+        scheduler_id: Id,
+    ) -> Vec<(Seat, Delivery)> {
+        let owner = relationship.schedule_owner_seat(scheduler_id);
+        [(Seat::CoacheeId, self.coachee), (Seat::CoachId, self.coach)]
+            .into_iter()
+            .filter(|(seat, _)| *seat != owner)
+            .collect()
+    }
+
+    /// Whether everyone this send owed has it or is no longer a member, so nothing is left to
+    /// retry.
+    pub fn settles(&self, relationship: &coaching_relationships::Model, scheduler_id: Id) -> bool {
+        self.owed(relationship, scheduler_id)
+            .iter()
+            .all(|(_, delivery)| *delivery != Delivery::Failed)
+    }
+
     /// The participants of `relationship` this send reached.
     pub fn reached(&self, relationship: &coaching_relationships::Model) -> Vec<Id> {
         [
@@ -906,17 +928,14 @@ impl Delivered {
 
 impl<'a> Participants<'a> {
     /// Whose zone anchors the invites for `session`: its schedule owner, given who scheduled it.
-    /// A scheduler outside the pair falls back to the coach.
     pub(crate) fn schedule_owner(&self, session: &coaching_sessions::Model) -> &'a users::Model {
-        let owner_id = self.kind.rules().schedule_owner().user_id(
-            self.coach.id,
-            self.coachee.id,
-            session.scheduled_by_user_id,
-        );
-        [self.coachee, self.coach]
+        let scheduler_seat = [(self.coach, Seat::CoachId), (self.coachee, Seat::CoacheeId)]
             .into_iter()
-            .find(|user| user.id == owner_id)
-            .unwrap_or(self.coach)
+            .find_map(|(user, seat)| (user.id == session.scheduled_by_user_id).then_some(seat));
+        match self.kind.rules().schedule_owner().seat(scheduler_seat) {
+            Seat::CoachId => self.coach,
+            Seat::CoacheeId => self.coachee,
+        }
     }
 
     /// Both participants, for a send that reaches them regardless of membership.
@@ -1315,16 +1334,6 @@ fn build_session_ics(
     }
 }
 
-/// What a deferred session-rescheduled send did.
-#[derive(Debug, PartialEq, Eq)]
-pub enum RescheduleOutcome {
-    /// Sent to each participant still in the organization.
-    Sent(Delivered),
-    /// The coachee left the organization, so no one is owed the change; a coach still in
-    /// it was sent their copy, with `coach` saying how that went.
-    CoacheeNoLongerAMember { coach: Delivery },
-}
-
 /// Sends the session-rescheduled emails to the participants still in the organization.
 ///
 /// Membership is checked here, not trusted from the edit: the send runs after a settle
@@ -1332,13 +1341,13 @@ pub enum RescheduleOutcome {
 ///
 /// A delivered send must settle the session's pending reschedule (via
 /// `coaching_session_pending_reschedule::complete`). Returns the session's relationship
-/// beside the outcome.
+/// beside what the send did for each participant.
 pub async fn send_session_rescheduled(
     db: &DatabaseConnection,
     config: &Config,
     session: &coaching_sessions::Model,
     previous_start: NaiveDateTime,
-) -> Result<(coaching_relationships::Model, RescheduleOutcome), Error> {
+) -> Result<(coaching_relationships::Model, Delivered), Error> {
     let relationship =
         coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
     let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
@@ -1348,7 +1357,8 @@ pub async fn send_session_rescheduled(
     if member_ids.is_empty() {
         return Ok((
             relationship,
-            RescheduleOutcome::CoacheeNoLongerAMember {
+            Delivered {
+                coachee: Delivery::NoLongerAMember,
                 coach: Delivery::NoLongerAMember,
             },
         ));
@@ -1370,13 +1380,7 @@ pub async fn send_session_rescheduled(
         previous_start,
     )
     .await?;
-    let outcome = match member_ids.contains(&coachee.id) {
-        true => RescheduleOutcome::Sent(delivered),
-        false => RescheduleOutcome::CoacheeNoLongerAMember {
-            coach: delivered.coach,
-        },
-    };
-    Ok((relationship, outcome))
+    Ok((relationship, delivered))
 }
 
 /// Whether a reminder attempt actually mailed anyone.

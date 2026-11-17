@@ -6,7 +6,6 @@ use std::future::Future;
 use crate::coaching_relationship::{
     ensure_required_participants_are_members, participant_not_a_member,
 };
-use crate::coaching_relationship_kind::Seat;
 use crate::coaching_relationships;
 use crate::coaching_session_hydration::{
     run_coaching_session_hydration_tasks, CoachingSessionHydrationContext,
@@ -296,7 +295,7 @@ fn truncated(dates: Vec<NaiveDateTime>) -> Result<Vec<NaiveDateTime>, Error> {
 ///
 /// Provider is resolved at hydration time from the most-recently-updated OAuth
 /// connection of the first account in the relationship's meeting accounts, among
-/// participants still in its organization, that has one — not at session-create time.
+/// participants still in its organization, that has one, rather than at session-create time.
 /// For recurring series created via [`bulk_create_recurring`], this means changing or reconnecting providers
 /// between bulk-create and first read will change which provider the session
 /// uses. This is the intended behavior: recurring sessions defer the choice
@@ -699,28 +698,30 @@ pub(crate) async fn resend_invite(
         &parties.organization,
     )
     .await?;
-    ensure_coachee_reached(&delivered, &relationship)?;
+    ensure_others_told(&delivered, &relationship, bumped.scheduled_by_user_id)?;
     record_announced(db, &bumped).await;
     Ok(())
 }
 
-/// A resend is only done once the coachee has it. Missing the coach is not a failure: the
-/// coach is the one asking. An `Audience` that leaves the coachee out of `member_ids` gets
-/// the not-a-member 409.
-pub(crate) fn ensure_coachee_reached(
+/// A resend of a session scheduled by `scheduler_id` is only done once everyone but its
+/// schedule owner has it. Missing the owner is not a failure: they set the schedule. Someone
+/// owed it whom the `Audience` left out of `member_ids` gets the not-a-member 409 for their seat.
+pub(crate) fn ensure_others_told(
     delivered: &emails::Delivered,
     relationship: &coaching_relationships::Model,
+    scheduler_id: Id,
 ) -> Result<(), Error> {
-    match delivered.coachee {
-        emails::Delivery::Sent => Ok(()),
-        emails::Delivery::NoLongerAMember => {
-            Err(participant_not_a_member(relationship, Seat::CoacheeId))
-        }
-        emails::Delivery::Failed => Err(Error {
-            source: None,
-            error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
-        }),
-    }
+    delivered
+        .owed(relationship, scheduler_id)
+        .into_iter()
+        .try_for_each(|(seat, delivery)| match delivery {
+            emails::Delivery::Sent => Ok(()),
+            emails::Delivery::NoLongerAMember => Err(participant_not_a_member(relationship, seat)),
+            emails::Delivery::Failed => Err(Error {
+                source: None,
+                error_kind: DomainErrorKind::External(ExternalErrorKind::Network),
+            }),
+        })
 }
 
 /// The accounts a new meeting link for a session scheduled by `scheduler_id` may be made
@@ -2737,9 +2738,10 @@ mod tests {
     fn m7_06_a_coachee_skipped_as_not_a_member_is_the_resend_409() {
         let relationship = test_coaching_relationship(Id::new_v4(), Id::new_v4());
 
-        let err = ensure_coachee_reached(
+        let err = ensure_others_told(
             &coachee_delivery(emails::Delivery::NoLongerAMember),
             &relationship,
+            relationship.coach_id,
         )
         .unwrap_err();
 
@@ -2766,9 +2768,12 @@ mod tests {
     fn m7_07_a_failed_send_to_the_coachee_is_a_network_error() {
         let relationship = test_coaching_relationship(Id::new_v4(), Id::new_v4());
 
-        let err =
-            ensure_coachee_reached(&coachee_delivery(emails::Delivery::Failed), &relationship)
-                .unwrap_err();
+        let err = ensure_others_told(
+            &coachee_delivery(emails::Delivery::Failed),
+            &relationship,
+            relationship.coach_id,
+        )
+        .unwrap_err();
 
         assert!(
             matches!(

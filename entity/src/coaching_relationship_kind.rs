@@ -7,8 +7,6 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::Id;
-
 /// What a coaching relationship is, which decides what each participant may do.
 #[derive(
     Debug, Clone, Copy, Eq, PartialEq, EnumIter, Deserialize, Serialize, DeriveActiveEnum, ToSchema,
@@ -63,12 +61,12 @@ pub enum ScheduleOwner {
 }
 
 impl ScheduleOwner {
-    /// The owner's user id, given a relationship's coach and coachee and who scheduled.
-    pub fn user_id(self, coach_id: Id, coachee_id: Id, scheduler_id: Id) -> Id {
+    /// The owner's seat, given the seat of whoever scheduled; the coach seat when the scheduler
+    /// holds none.
+    pub fn seat(self, scheduler_seat: Option<Seat>) -> Seat {
         match self {
-            ScheduleOwner::Seat(Seat::CoachId) => coach_id,
-            ScheduleOwner::Seat(Seat::CoacheeId) => coachee_id,
-            ScheduleOwner::Scheduler => scheduler_id,
+            ScheduleOwner::Seat(seat) => seat,
+            ScheduleOwner::Scheduler => scheduler_seat.unwrap_or(Seat::CoachId),
         }
     }
 }

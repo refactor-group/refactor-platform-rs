@@ -68,6 +68,14 @@ impl SeriesRule {
     pub(crate) fn slots(&self) -> Result<Vec<NaiveDateTime>, Error> {
         coaching_session::series_slots(self.start_at, &self.recurrence, self.zone())
     }
+
+    /// Whether `other` sets the same start, recurrence and length, whatever zone either was
+    /// published in.
+    fn schedules_as(&self, other: &SeriesRule) -> bool {
+        self.start_at == other.start_at
+            && self.recurrence == other.recurrence
+            && self.duration_minutes == other.duration_minutes
+    }
 }
 
 /// Create a series and materialize its sessions in a single transaction.
@@ -182,10 +190,10 @@ pub struct Rescheduled {
 /// agreements do not, so a future session holding any of them fails the delete.
 /// Tiptap documents are cleaned up best-effort after the DB transaction commits.
 ///
-/// A request whose rule matches the stored one short-circuits: re-materializing
-/// would destroy live session rows and their notes to recreate an identical
-/// schedule, and would re-send invites under a burned SEQUENCE. Any other is
-/// refused when the coachee is no longer in the organization.
+/// A request whose start, recurrence and duration match the stored rule's short-circuits,
+/// whoever saves it: re-materializing would destroy live session rows and their notes to
+/// recreate an identical schedule, and would re-send invites under a burned SEQUENCE. Any
+/// other is refused when the coachee is no longer in the organization.
 pub(crate) async fn reschedule(
     db: &DatabaseConnection,
     config: &Config,
@@ -243,7 +251,12 @@ pub(crate) async fn reschedule(
 
     // Compared as parsed rules, not as JSON: field order, an omitted-vs-null optional, or
     // a field that gained a serde default would all read as "changed" on a blob compare.
-    if existing_rule.as_ref() == Some(&new_rule) {
+    // The zone is left out: it is whoever saves, so either colleague saving an unchanged
+    // schedule must not re-materialize it.
+    if existing_rule
+        .as_ref()
+        .is_some_and(|rule| rule.schedules_as(&new_rule))
+    {
         debug!("Reschedule of series {series_id} matches the stored rule; nothing to do");
         return Ok(Rescheduled {
             series: existing,
@@ -792,8 +805,8 @@ pub(crate) async fn reschedule_following(
 
 /// Records what a "this and following" email did for the `moved` sessions. Created sessions
 /// were stamped on insert. Each participant the email reached has their own notice restamped
-/// on the moved ones. The moves' pending reschedules settle once the coachee was told, or
-/// immediately when the coachee is no longer in the organization, since they are owed nothing.
+/// on the moved ones. A move's pending reschedule settles once everyone but its schedule owner
+/// was told or is no longer in the organization, since someone who left is owed nothing.
 async fn record_following_notice(
     db: &DatabaseConnection,
     relationship: &coaching_relationships::Model,
@@ -802,14 +815,12 @@ async fn record_following_notice(
 ) {
     let moved_ids: Vec<Id> = moved.iter().map(|session| session.id).collect();
     coaching_session::record_delivered_notice(db, relationship, &told, &moved_ids).await;
-    if matches!(
-        told.coachee,
-        emails::Delivery::Sent | emails::Delivery::NoLongerAMember
-    ) {
-        stream::iter(moved)
-            .for_each(|session| coaching_session::record_announced(db, session))
-            .await;
-    }
+    let settled = moved
+        .iter()
+        .filter(|session| told.settles(relationship, session.scheduled_by_user_id));
+    stream::iter(settled)
+        .for_each(|session| coaching_session::record_announced(db, session))
+        .await;
 }
 
 /// Delete the series row and its future sessions. Past sessions survive as
@@ -945,7 +956,13 @@ pub(crate) async fn resend_invite(
         &parties.organization,
     )
     .await?;
-    coaching_session::ensure_coachee_reached(&delivered, &relationship)?;
+    upcoming.iter().try_for_each(|session| {
+        coaching_session::ensure_others_told(
+            &delivered,
+            &relationship,
+            session.scheduled_by_user_id,
+        )
+    })?;
     stream::iter(&upcoming)
         .for_each(|session| coaching_session::record_announced(db, session))
         .await;

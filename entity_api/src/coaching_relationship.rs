@@ -173,23 +173,33 @@ async fn lock_pair(
     }
     db.execute_raw(Statement::from_sql_and_values(
         DbBackend::Postgres,
-        "SELECT pg_advisory_xact_lock($1)",
-        [pair_lock_key(organization_id, a, b).into()],
+        "SELECT pg_advisory_xact_lock($1, $2)",
+        [
+            PAIR_LOCK_NAMESPACE.into(),
+            pair_lock_key(organization_id, a, b).into(),
+        ],
     ))
     .await?;
     Ok(())
 }
 
-/// The advisory lock key for a pair in an organization, the same whichever person is first.
-fn pair_lock_key(organization_id: Id, a: Id, b: Id) -> i64 {
+/// The first key of every pair lock. Pair locks take the two-key form, which Postgres keeps
+/// apart from the single-key session locks, and this namespace keeps them apart from any
+/// other two-key lock.
+const PAIR_LOCK_NAMESPACE: i32 = 1;
+
+/// The second key of the advisory lock for a pair in an organization, the same whichever
+/// person is first.
+fn pair_lock_key(organization_id: Id, a: Id, b: Id) -> i32 {
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-    [organization_id, Ord::min(a, b), Ord::max(a, b)]
+    let hash = [organization_id, Ord::min(a, b), Ord::max(a, b)]
         .iter()
         .map(|id| {
             let (upper, lower) = id.as_u64_pair();
             upper ^ lower
         })
-        .fold(0, |key: u64, part| key.wrapping_mul(FNV_PRIME) ^ part) as i64
+        .fold(0, |key: u64, part| key.wrapping_mul(FNV_PRIME) ^ part);
+    (hash ^ (hash >> 32)) as i32
 }
 
 /// Decides a create from the pair's existing relationships in the organization: the one to

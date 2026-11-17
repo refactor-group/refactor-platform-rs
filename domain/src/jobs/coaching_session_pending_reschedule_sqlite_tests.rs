@@ -9,6 +9,7 @@ use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, IntoActiveModel
 use serde_json::json;
 
 use super::*;
+use crate::test_utils::sqlite::fixture::make_colleagues;
 use crate::test_utils::sqlite::{
     database, mirror_migration_defaults, organization_of, seed_coaching_session, seed_membership,
     seed_organization, seed_user, within_time_limit,
@@ -492,6 +493,68 @@ async fn a_change_told_to_nobody_restamps_no_notice() {
             .expect("the tick runs");
 
         assert_eq!(notices(&ctx.db, id).await, before);
+    })
+    .await;
+}
+
+/// Sweeps a colleague session the coachee-seat colleague moved, with Resend failing for the
+/// coach seat's copy (`coach_fails`) or the coachee seat's; returns whether the change is
+/// still pending afterwards.
+async fn sweep_colleague_change_failing_for(coach_fails: bool) -> bool {
+    let mut server = Server::new_async().await;
+    let db = database().await;
+    let (id, coach_id, coachee_id) = moved_session_between_two(&db, Members::Both).await;
+    make_colleagues(&db, session(&db, id).await.coaching_relationship_id).await;
+    coaching_sessions::ActiveModel {
+        id: Set(id),
+        scheduled_by_user_id: Set(coachee_id),
+        ..Default::default()
+    }
+    .update(&db)
+    .await
+    .expect("the coachee-seat colleague moved it");
+    let (failing, told) = match coach_fails {
+        true => (coach_id, coachee_id),
+        false => (coachee_id, coach_id),
+    };
+    let _failing = server
+        .mock("POST", "/emails")
+        .match_body(Matcher::Regex(failing.to_string()))
+        .with_status(500)
+        .with_body("down")
+        .create_async()
+        .await;
+    let _told = server
+        .mock("POST", "/emails")
+        .match_body(Matcher::Regex(told.to_string()))
+        .with_status(200)
+        .with_body(r#"{"id":"email_1"}"#)
+        .create_async()
+        .await;
+    let ctx = context(db, sending(&server));
+
+    Sweep::from_config(&ctx.config)
+        .run(&ctx)
+        .await
+        .expect("the tick runs");
+
+    pending(&ctx.db, id).await.is_some()
+}
+
+/// A colleague's change is retried until the other colleague is told.
+#[tokio::test]
+async fn a_colleague_change_the_other_colleague_missed_is_retried() {
+    within_time_limit(async {
+        assert!(sweep_colleague_change_failing_for(true).await);
+    })
+    .await;
+}
+
+/// The colleague who moved a session already knows, so missing only their copy settles it.
+#[tokio::test]
+async fn a_colleague_change_that_missed_only_the_scheduler_settles() {
+    within_time_limit(async {
+        assert!(!sweep_colleague_change_failing_for(false).await);
     })
     .await;
 }

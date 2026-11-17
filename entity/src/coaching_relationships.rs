@@ -113,13 +113,19 @@ impl Model {
         })
     }
 
-    /// Whose zone, default session length and meeting account a session scheduled by
-    /// `scheduler_id` uses.
-    pub fn schedule_owner_id(&self, scheduler_id: Id) -> Id {
+    /// The seat of whoever owns the schedule of a session scheduled by `scheduler_id`: whose
+    /// zone, default session length and meeting account it uses, and who need not be told of it.
+    pub fn schedule_owner_seat(&self, scheduler_id: Id) -> Seat {
         self.kind
             .rules()
             .schedule_owner()
-            .user_id(self.coach_id, self.coachee_id, scheduler_id)
+            .seat(self.seat(scheduler_id))
+    }
+
+    /// Whose zone, default session length and meeting account a session scheduled by
+    /// `scheduler_id` uses.
+    pub fn schedule_owner_id(&self, scheduler_id: Id) -> Id {
+        self.participant(self.schedule_owner_seat(scheduler_id))
     }
 
     /// The accounts a new meeting link for a session scheduled by `scheduler_id` may be made
@@ -210,8 +216,9 @@ impl SchedulingPermit {
 pub struct Viewer {
     /// What the caller is to the relationship.
     pub role: coaching_relationship_kind::Role,
-    /// Whether the caller may schedule, reschedule and cancel its sessions now, which also
-    /// needs them still in its organization.
+    /// Whether the caller's own seat and organization membership let them schedule, reschedule
+    /// and cancel its sessions. The other participant's membership is reported separately, by
+    /// `scheduling_blocked_by`.
     pub can_schedule_sessions: bool,
     /// Whether the caller sees every action in the relationship, not only their own and
     /// unassigned ones.

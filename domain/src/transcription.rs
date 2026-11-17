@@ -200,7 +200,8 @@ pub(crate) async fn persist_completion(
     persist_completion_with(db, transcription, result, attributions, &[]).await
 }
 
-/// Like `persist_completion`, also recording a pending analysis per target in the same transaction.
+/// Like `persist_completion`, also recording a pending analysis per target in the same
+/// transaction, unless the session's relationship suggests no actions.
 ///
 /// Writing the pending rows with the segments means a completed transcript is never left without
 /// the analyses it was due, and an analysis never exists for a transcript that did not complete.
@@ -211,6 +212,7 @@ pub(crate) async fn persist_completion_with(
     attributions: &[Attribution],
     analyses: &[Target],
 ) -> Result<(), Error> {
+    let analyses = owed_analyses(db, transcription, analyses).await?;
     let txn = db.begin().await.map_err(EntityApiError::from)?;
 
     if !(result.participants.is_empty() && result.segments.is_empty()) {
@@ -239,6 +241,27 @@ pub(crate) async fn persist_completion_with(
     txn.commit().await.map_err(EntityApiError::from)?;
 
     Ok(())
+}
+
+/// The `analyses` a transcription is owed: none when its session's relationship suggests no
+/// actions.
+async fn owed_analyses<'a>(
+    db: &DatabaseConnection,
+    transcription: &Model,
+    analyses: &'a [Target],
+) -> Result<&'a [Target], Error> {
+    if analyses.is_empty() {
+        return Ok(analyses);
+    }
+    let (_, relationship) = coaching_session_api::find_by_id_with_coaching_relationship(
+        db,
+        transcription.coaching_session_id,
+    )
+    .await?;
+    Ok(match relationship.kind.rules().suggests_actions() {
+        true => analyses,
+        false => &[],
+    })
 }
 
 async fn store_speakers_and_segments(
@@ -390,6 +413,8 @@ fn unattributed(speakers: &[transcription_types::Participant]) -> Vec<Attributio
 }
 
 /// Gathers what is known about the coach; every failure degrades the evidence, none is fatal.
+/// The attendee list is read with the account of whoever made the session's meeting link,
+/// or the coach's when no maker was recorded.
 async fn gather_evidence(
     db: &DatabaseConnection,
     recording_bot: Option<&dyn recording_bot::Provider>,
@@ -398,6 +423,7 @@ async fn gather_evidence(
     session: &coaching_sessions::Model,
     coach_id: Id,
 ) -> Gathered {
+    let link_maker_id = session.meeting_url_created_by_user_id.unwrap_or(coach_id);
     let Some(code) = session_meet_code(session) else {
         debug!(
             "Attribution for transcription {}: not a Google Meet session",
@@ -408,11 +434,11 @@ async fn gather_evidence(
     let Some(recording) = recording_of_space(db, recording_bot, transcription, &code).await else {
         return Gathered::default();
     };
-    let coach_account_id = external_account_id(db, config, coach_id, MeetingProvider::Google)
+    let coach_account_id = external_account_id(db, config, link_maker_id, MeetingProvider::Google)
         .await
         .inspect_err(|_| {
             warn!(
-                "Attribution for transcription {}: looking up the coach's Google account failed",
+                "Attribution for transcription {}: looking up the meeting link maker's Google account failed",
                 transcription.id
             )
         })
@@ -425,7 +451,7 @@ async fn gather_evidence(
                 db,
                 config,
                 transcription.id,
-                coach_id,
+                link_maker_id,
                 &code,
                 (started_at.with_timezone(&Utc), ended_at.with_timezone(&Utc)),
             )
@@ -504,12 +530,12 @@ async fn recording_of_space(
     }
 }
 
-/// Attendees of the recorded conference, read with the coach's Google token.
+/// Attendees of the recorded conference, read with `account_holder_id`'s Google token.
 async fn conference_attendees(
     db: &DatabaseConnection,
     config: &Config,
     transcription_id: Id,
-    coach_id: Id,
+    account_holder_id: Id,
     code: &str,
     (started_at, ended_at): (DateTime<Utc>, DateTime<Utc>),
 ) -> Option<Vec<google_meet::Participant>> {
@@ -517,9 +543,9 @@ async fn conference_attendees(
         warn!("Attribution for transcription {transcription_id}: {step} failed");
     };
 
-    let token = get_valid_access_token(db, config, coach_id, MeetingProvider::Google)
+    let token = get_valid_access_token(db, config, account_holder_id, MeetingProvider::Google)
         .await
-        .inspect_err(|_| warn_step("getting the coach's Google token"))
+        .inspect_err(|_| warn_step("getting the account holder's Google token"))
         .ok()?;
     let client = google_meet::Client::new(&token, config.google_meet_api_url())
         .inspect_err(|_| warn_step("building the Google Meet client"))

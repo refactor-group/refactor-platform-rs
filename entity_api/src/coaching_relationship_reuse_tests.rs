@@ -1,6 +1,6 @@
 use super::*;
 use entity::{organizations, user_roles, users};
-use sea_orm::{DatabaseBackend, DatabaseConnection, MockDatabase, MockExecResult};
+use sea_orm::{DatabaseBackend, DatabaseConnection, MockDatabase, MockExecResult, Value};
 
 fn organization(id: Id, archived: bool) -> organizations::Model {
     let now = Utc::now();
@@ -324,9 +324,15 @@ async fn takes_the_pairs_advisory_lock_before_the_pair_lookup() -> Result<(), Er
         .position(|(sql, _)| sql.contains("\"coach_id\" = "))
         .expect("the pair is looked up");
     assert!(lock < lookup, "{logged:?}");
-    assert!(
-        logged[lock].1[0]
-            .contains(&pair_lock_key(organization_id, coach.id, coachee.id).to_string()),
+    assert_eq!(
+        logged[lock].1,
+        [
+            format!("{:?}", Value::from(PAIR_LOCK_NAMESPACE)),
+            format!(
+                "{:?}",
+                Value::from(pair_lock_key(organization_id, coach.id, coachee.id))
+            ),
+        ],
         "{logged:?}"
     );
 

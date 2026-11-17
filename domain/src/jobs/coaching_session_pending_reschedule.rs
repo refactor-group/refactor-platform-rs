@@ -11,15 +11,16 @@
 //! A failed send is retried up to [`coaching_session_pending_reschedule::MAX_ATTEMPTS`] times, then given up;
 //! the regular reminder is the fallback.
 //!
-//! Only participants still in the session's organization are emailed; a coachee who left
-//! is owed nothing, so the change settles unsent.
+//! Only participants still in the session's organization are emailed. The change settles
+//! once everyone but its schedule owner was told or has left the organization, since someone
+//! who left is owed nothing.
 //!
 //! Without Resend or the rescheduled template the sweep still runs, dropping due rows
 //! unsent, since a pending row suppresses the session's reminder.
 //!
 //! A delivered send leaves the row to `coaching_session_pending_reschedule::complete`, which
 //! keeps it when a newer change landed mid-send. Each participant whose copy went out has
-//! their own notice restamped, even when the coachee's failed and the send is retried.
+//! their own notice restamped, even when another's failed and the send is retried.
 //!
 //! See [`crate::jobs`] for why this is a sweep rather than an enqueued job.
 
@@ -37,7 +38,7 @@ use sea_orm::DatabaseConnection;
 use service::config::Config;
 
 use crate::coaching_session::record_delivered_notice;
-use crate::emails::{self, Delivered, Delivery, RescheduleOutcome};
+use crate::emails::{self, Delivered, Delivery};
 use crate::error::Error;
 use crate::jobs::{Context, FirstRun, Job, Outcome};
 use crate::{coaching_relationships, coaching_sessions, Id};
@@ -123,26 +124,15 @@ impl Sweep {
         match emails::send_session_rescheduled(db, &ctx.config, &session, claimed.announced.date)
             .await
         {
-            Ok((relationship, RescheduleOutcome::Sent(delivered)))
-                if delivered.coachee == Delivery::Sent =>
-            {
-                let handled = settle(db, claimed, current).await;
+            Ok((relationship, delivered)) => {
                 record_participant_notice(db, &session, &relationship, &delivered).await;
-                handled
-            }
-            Ok((relationship, RescheduleOutcome::CoacheeNoLongerAMember { coach })) => {
-                info!("[coaching-session-pending-reschedule] session {id} coachee is no longer a member; nothing to tell");
-                let delivered = Delivered {
-                    coachee: Delivery::NoLongerAMember,
-                    coach,
-                };
-                record_participant_notice(db, &session, &relationship, &delivered).await;
-                settle(db, claimed, current).await
-            }
-            Ok((relationship, RescheduleOutcome::Sent(delivered))) => {
-                warn!("[coaching-session-pending-reschedule] session {id} coachee was not told: {delivered:?}");
-                record_participant_notice(db, &session, &relationship, &delivered).await;
-                retry(db, claimed).await
+                match delivered.settles(&relationship, session.scheduled_by_user_id) {
+                    true => settle(db, claimed, current).await,
+                    false => {
+                        warn!("[coaching-session-pending-reschedule] session {id} was not told to everyone owed it: {delivered:?}");
+                        retry(db, claimed).await
+                    }
+                }
             }
             Err(e) => {
                 warn!("[coaching-session-pending-reschedule] send failed for session {id}: {e:?}");

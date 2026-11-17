@@ -7,7 +7,8 @@ use domain::error::Error;
 use domain::user::{self as UserApi, WorkingHoursPatch};
 use domain::{users, users::Role, IntoUpdateMap, UpdateMap};
 use sea_orm::Value;
-use serde::Deserialize;
+use serde::de::{Error as _, IgnoredAny};
+use serde::{Deserialize, Deserializer};
 use utoipa::{IntoParams, ToSchema};
 
 use super::coaching_relationship::InviteeRelationshipParams;
@@ -44,14 +45,26 @@ pub struct UpdateRoleParams {
 /// Body for creating a new member of an organization.
 ///
 /// The user fields are flattened so a client that sends only them still
-/// deserializes. serde rejects `deny_unknown_fields` alongside `flatten`, so
-/// unknown keys are ignored rather than refused here.
+/// deserializes. serde rejects `deny_unknown_fields` alongside `flatten`, so other
+/// unknown keys are ignored, but the replaced `coach_id` is refused as an unknown field,
+/// so a stale client is not led to believe a coach was assigned.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateMemberParams {
     #[serde(flatten)]
     pub user: users::Model,
     /// Relationship to create in the same transaction as the new account.
     pub relationship: Option<InviteeRelationshipParams>,
+    /// Never accepted: replaced by `relationship`.
+    #[serde(default, rename = "coach_id", deserialize_with = "refuse_coach_id")]
+    #[schema(ignore)]
+    _coach_id: Option<IgnoredAny>,
+}
+
+/// Refuses a `coach_id` key as the unknown field it now is.
+fn refuse_coach_id<'de, D: Deserializer<'de>>(_: D) -> Result<Option<IgnoredAny>, D::Error> {
+    Err(D::Error::custom(
+        "unknown field `coach_id`, replaced by `relationship`",
+    ))
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]

@@ -11,7 +11,6 @@ use serde_json::json;
 
 use super::*;
 use crate::events::{DomainEvent, EventHandler};
-use crate::test_utils::sqlite::fixture::make_colleagues;
 use crate::test_utils::sqlite::{database, seed_transcription, within_time_limit};
 use crate::transcript_analysis::{create_pending, Status};
 use crate::Id;
@@ -501,33 +500,4 @@ fn only_bad_credentials_and_missing_records_are_permanent() {
     assert!(should_retry(&domain(InternalErrorKind::Other(
         "pool timed out".to_string()
     ))));
-}
-
-/// TRN-30: the sweep leaves a colleague session's analysis unclaimed and claims the
-/// coaching one beside it.
-#[tokio::test]
-async fn a_colleague_sessions_analysis_is_never_claimed() {
-    within_time_limit(async {
-        let db = database().await;
-        let (colleague, colleague_session) = seed_pending(&db, 0).await;
-        let (coaching, _) = seed_pending(&db, 0).await;
-        let relationship = coaching_sessions::Entity::find_by_id(colleague_session)
-            .one(&db)
-            .await
-            .expect("the session is read")
-            .expect("the session exists")
-            .coaching_relationship_id;
-        make_colleagues(&db, relationship).await;
-        let ctx = context(db);
-
-        let outcome = sweep(None).run(&ctx).await.expect("the tick runs");
-
-        assert_eq!((outcome.processed, outcome.attempted), (1, 1));
-        assert_eq!(reread(&ctx, coaching).await.status, Status::Completed);
-        let untouched = reread(&ctx, colleague).await;
-        assert_eq!(untouched.status, Status::Pending);
-        assert_eq!(untouched.attempts, 0);
-        assert_eq!(untouched.claimed_at, None);
-    })
-    .await;
 }

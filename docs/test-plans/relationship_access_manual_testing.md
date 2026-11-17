@@ -249,6 +249,7 @@ How to read the tables:
 | SES-44 | GET /users/{SUPER_ID}/coaching_sessions | SUPER, once they also coach OUTSIDER in a new O2 relationship R5 with one session | 200, R5's session | `web/src/extractors/user_self_access.rs:28`; `web/src/controller/user/coaching_session_controller.rs:93`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in |
 | SES-45 | GET /users/{SUPER_ID}/coaching_sessions/nearest?coaching_relationship_ids=R5 | SUPER, once they also coach OUTSIDER in a new O2 relationship R5 with one session | 200, R5's session | `web/src/extractors/user_self_access.rs:28`; `web/src/controller/user/coaching_session_controller.rs:162`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in |
 | SES-46 | POST /coaching_sessions `{coaching_relationship_id: RC}`, RC the KIND-04 colleague relationship of COACH and MEMBER, after MEMBER's O1 role is removed (ORG-04) | COACH | 409 `participant_not_a_member`, `details.user_id` MEMBER, nothing written, no email | `domain/src/coaching_relationship.rs:104` | [membership] Either seat's colleague leaving refuses the other. Restore MEMBER's role afterwards |
+| SES-47 | POST /coaching_sessions/{RC session}/resend_invite, RC the KIND-04 colleague relationship, a session MEMBER scheduled with a pending reschedule; Resend refusing COACH's copy, then (second run) refusing MEMBER's | MEMBER | first run 502 (network), the pending reschedule kept; second run 204, the pending reschedule cleared | `domain::emails::Delivered::owed`; `domain::coaching_session::ensure_others_told` | A send is done once everyone but whoever scheduled the session is told. Coaching unchanged: the coach scheduled, so the coachee's copy decides |
 
 ### 4.3 Series (`SER`)
 
@@ -280,6 +281,8 @@ How to read the tables:
 | SER-24 | POST /coaching_session_series `{coaching_relationship_id: RC}`, RC the KIND-04 colleague relationship of COACH and MEMBER, after MEMBER's O1 role is removed (ORG-04) | COACH | 409 `participant_not_a_member`, `details.user_id` MEMBER, nothing written, no email | `domain/src/coaching_relationship.rs:104` | [membership] Restore MEMBER's role afterwards |
 | SER-25 | POST /coaching_session_series `{coaching_relationship_id: RC}` with `start_at` before a New York DST change | MEMBER | 200 (201); the series `rule.timezone` is `America/New_York` and the sessions keep New York wall-clock time across the change; the invites' `DTSTART;TZID` is `America/New_York` | `domain/src/coaching_session_series.rs:99` | A colleague series follows whoever created it. Set the zones first: `UPDATE refactor_platform.users SET timezone = 'Asia/Tokyo' WHERE id = '<COACH_ID>'; UPDATE refactor_platform.users SET timezone = 'America/New_York' WHERE id = '<MEMBER_ID>';` |
 | SER-26 | PUT /coaching_session_series/SRC, a series on RC that COACH created | MEMBER | 200; `rule.timezone` becomes `America/New_York` | `domain/src/coaching_session_series.rs:212` | A reschedule re-publishes in the zone of whoever made it; reschedule-following (`:624`) the same. Zones as SER-25 |
+| SER-27 | POST /coaching_session_series/{SRC}/reschedule_following on a series MEMBER created, with Resend refusing COACH's copy, then (second run) refusing MEMBER's | MEMBER | first run: moved sessions keep their pending reschedules; second run: they settle | `domain::coaching_session_series::record_following_notice` | Each moved session settles once everyone but its scheduler is told |
+| SER-28 | PUT /coaching_session_series/SRC, a series on RC that COACH created in Tokyo, with the same start, recurrence and duration | MEMBER (New York) | 200, `changed: false`; session ids unchanged; `rule.timezone` still `Asia/Tokyo`; no email | `domain/src/coaching_session_series.rs` `SeriesRule::schedules_as` | An unchanged save is a no-op whoever saves it. A changed start re-publishes in MEMBER's zone (SER-26). Zones as SER-25 |
 
 ### 4.4 Agreements (`AGR`)
 
@@ -450,8 +453,10 @@ How to read the tables:
 | TRN-27 | GET, DELETE, POST restore /coaching_session_images/IMG1 | non-participants | 403 | `web/src/extractors/coaching_session_image_access.rs:55` | Unknown image: 404 |
 | TRN-28 | POST /coaching_sessions/S3/transcript_suggestions/SG3/accept | COACH | 409 `assignee_not_a_member`, no action written, no email | `domain/src/transcript_suggestion/review.rs:339` | [membership] |
 | TRN-29 | any transcription, suggestion, recording or image route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
-| TRN-30 | Transcript suggestions sweep (JOB-03) with a pending analysis for a colleague session's completed transcript and one for a coaching session | operator | the coaching analysis is claimed and completed; the colleague one stays `pending`, `attempts = 0` (psql) | `entity_api/src/transcript_analysis.rs:31`, `:50` | Excluded where work is claimed, so no attempt is spent |
+| TRN-30 | Replaced by TRN-33: a colleague transcript is never given an analysis, so the sweep has none to skip | | | | |
 | TRN-31 | GET, POST /coaching_sessions/{RC session}/transcript_suggestions/scan, RC the KIND-04 colleague relationship, its session with a completed transcript | COACH, MEMBER | GET 200 `status: unavailable`; POST 422, no analysis written | `domain/src/transcript_suggestion/review.rs:515` | The status the route already gives when nothing can be scanned |
+| TRN-32 | Transcript completion for a Google Meet session on RC whose link MEMBER made (`meeting_url_created_by_user_id` = MEMBER_ID) | operator | the attendee list is read with MEMBER's Google account and token; with no recorded link maker, COACH's | `domain/src/transcription.rs` `gather_evidence` | Who is attributed is unchanged |
+| TRN-33 | Transcript completion for RC's session with suggestions configured, beside one for R1 | operator | RC's transcript gets no `transcript_analyses` row; R1's gets one `pending` (psql) | `domain/src/transcription.rs` `owed_analyses` | Nothing is queued that the sweep would never claim. Replaces TRN-30 |
 
 ### 4.9 Meeting links and OAuth-dependent flows (`MEET`)
 
@@ -557,6 +562,7 @@ Organization membership changes decide `is_participant_and_member`; these rows c
 | ORG-37 | GET /organizations/O1 | COACH, COACHEE, OTHER_COACH, MEMBER, ADMIN, SUPER | 200, O1 | `web/src/extractors/organization_member_access.rs:81`, `:86` | |
 | ORG-38 | GET /organizations/O1 | OUTSIDER, REMOVED; OUTSIDER holding `SuperAdmin` scoped to O2 | 403 | `web/src/extractors/organization_member_access.rs:91`; `entity/src/users.rs:95` | Not a member of O1 |
 | ORG-39 | GET /organizations/{unknown} | SUPER, OUTSIDER | 404 | `web/src/extractors/organization_member_access.rs:59` | The existence check runs before the membership check, as on every route with this extractor (REL-19) |
+| ORG-40 | POST /organizations/O1/users with the replaced `coach_id` beside `relationship` | ADMIN | 422, the unknown-field rejection; no user, no email | `web/src/params/user/mod.rs` `CreateMemberParams` | The same rejection an unknown field in a role body gets |
 
 ### 4.14 Real-time events (`SSE`)
 
@@ -711,6 +717,7 @@ SELECT typowner::regrole FROM pg_type WHERE typname = 'coaching_relationship_kin
 | JOB-04 | Note image purge (`domain/src/jobs/coaching_session_image_purge.rs`) | None | not relationship-scoped | |
 | JOB-05 | Password reset token cleanup (`domain/src/jobs/password_reset.rs`) | None | not relationship-scoped | |
 | JOB-06 | Session reminder sweep (JOB-01) on a colleague relationship, both colleagues O1 members, no notice rows | Both colleagues, one claim and one email each per start; a second sweep sends nothing. A coaching relationship still reminds only its coachee | `entity_api/src/coaching_session.rs:447` (`Rules::is_reminded` per seat); `domain/src/emails.rs:1386` | Automated: SQL-shape mock and the sweep with mock Resend; check recipients by hand on Postgres. |
+| JOB-07 | Pending reschedule settle (JOB-02) on an RC session MEMBER moved, with Resend refusing COACH's copy, then (second run) refusing MEMBER's | COACH and MEMBER; first run retried, second run settled | `domain/src/jobs/coaching_session_pending_reschedule.rs`; `domain::emails::Delivered::settles` | Settles once everyone but whoever scheduled is told or has left |
 | MAIL-01 | Session scheduled: `POST /coaching_sessions` (`domain/src/coaching_session.rs:149`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:1056` | |
 | MAIL-02 | Session rescheduled (JOB-02) | COACH and COACHEE, each only if still an org member; none if both left | `domain/src/emails.rs:1286` | |
 | MAIL-03 | Session cancelled: `DELETE /coaching_sessions/{id}` (`domain/src/coaching_session.rs:541`); also orphan cancels in series edits (`domain/src/emails.rs:2640`) | COACH and COACHEE, members or not [membership]; nothing for a past session. In a series edit a removed participant gets only the cancel, not the reschedule | `domain/src/emails.rs:1612`, `:2623`, `:2640` | |
@@ -1093,7 +1100,7 @@ a frozen `domain` test, or by hand with the reason.
 | MAIL-15 | `domain/src/jobs/session_reminder_tests.rs::both_colleagues_are_reminded_once_each_naming_the_other` |
 | SES-46 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_colleague_cannot_schedule_with_a_colleague_who_left` |
 | SER-24 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_series_with_a_colleague_who_left_is_refused` |
-| TRN-30 | `domain/src/jobs/transcript_suggestions_sqlite_tests.rs::a_colleague_sessions_analysis_is_never_claimed` |
+| TRN-30 | replaced by TRN-33 |
 | TRN-31 | `domain/src/transcript_suggestion/review_sqlite_tests.rs::a_colleague_session_cannot_be_scanned` |
 | SER-25 | `domain/src/coaching_session_series_sqlite_tests.rs::a_colleague_series_follows_the_zone_of_the_colleague_who_created_it` |
 | SER-26 | `domain/src/coaching_session_series_sqlite_tests.rs::a_rescheduled_colleague_series_follows_the_zone_of_the_colleague_who_moved_it`, `domain/src/coaching_session_series_sqlite_tests.rs::a_rescheduled_coaching_series_keeps_the_coachs_zone`; by hand for reschedule-following: it takes Postgres advisory locks |
@@ -1120,3 +1127,10 @@ a frozen `domain` test, or by hand with the reason.
 | MAIL-17 | `domain/src/jobs/session_reminder_tests.rs::each_colleagues_reminder_names_the_other_a_colleague`, `domain/src/jobs/session_reminder_tests.rs::a_coachees_reminder_names_their_coach`; `domain/src/emails_tests.rs::test_send_session_reminder_email_variables` |
 | MAIL-18 | `domain/src/emails_tests.rs::each_colleagues_scheduled_email_names_the_other_a_colleague`, `domain/src/emails_tests.rs::each_colleagues_rescheduled_email_names_the_other_a_colleague`, `domain/src/emails_tests.rs::each_colleagues_cancelled_email_names_the_other_a_colleague`; series sends share `Participants::copies` |
 | MAIL-19 | `domain/src/emails_tests.rs::a_coaching_description_names_the_coach_as_before`, `domain/src/emails_tests.rs::a_colleague_description_names_both_colleagues_and_no_coach`, `domain/src/emails_tests.rs::each_colleagues_scheduled_email_names_the_other_a_colleague` |
+| SES-47 | `domain/src/emails_sqlite_tests.rs::a_colleague_resend_the_other_colleague_missed_fails_and_stays_unannounced`, `domain/src/emails_sqlite_tests.rs::a_colleague_resend_that_missed_only_the_scheduler_succeeds_and_is_announced` |
+| JOB-07 | `domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_colleague_change_the_other_colleague_missed_is_retried`, `domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs::a_colleague_change_that_missed_only_the_scheduler_settles` |
+| SER-27 | `domain/src/coaching_session_series_sqlite_tests.rs::a_colleague_following_reschedule_the_other_colleague_missed_stays_pending`, `domain/src/coaching_session_series_sqlite_tests.rs::a_colleague_following_reschedule_that_missed_only_the_scheduler_settles` |
+| ORG-40 | `web/src/controller/organization/user_controller_sqlite_tests.rs::a_member_body_with_the_replaced_coach_id_is_refused` |
+| SER-28 | `domain/src/coaching_session_series_sqlite_tests.rs::an_unchanged_colleague_series_saved_from_another_zone_changes_nothing` |
+| TRN-32 | `domain/src/transcription_completion_tests.rs::attribution_looks_up_the_account_that_made_the_meeting_link`, `domain/src/transcription_completion_tests.rs::attribution_without_a_recorded_link_maker_looks_up_the_coach` |
+| TRN-33 | `domain/src/transcription_analysis_hook_sqlite_tests.rs::completing_a_colleague_transcript_writes_no_analysis`, `domain/src/transcription_analysis_hook_sqlite_tests.rs::completing_with_a_target_writes_one_pending_analysis_with_the_segments` |
