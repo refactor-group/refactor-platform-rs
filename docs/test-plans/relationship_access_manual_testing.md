@@ -283,6 +283,7 @@ How to read the tables:
 | SER-26 | PUT /coaching_session_series/SRC, a series on RC that COACH created | MEMBER | 200; `rule.timezone` becomes `America/New_York` | `domain/src/coaching_session_series.rs:212` | A reschedule re-publishes in the zone of whoever made it; reschedule-following (`:624`) the same. Zones as SER-25 |
 | SER-27 | POST /coaching_session_series/{SRC}/reschedule_following on a series MEMBER created, with Resend refusing COACH's copy, then (second run) refusing MEMBER's | MEMBER | first run: moved sessions keep their pending reschedules; second run: they settle | `domain::coaching_session_series::record_following_notice` | Each moved session settles once everyone but its scheduler is told |
 | SER-28 | PUT /coaching_session_series/SRC, a series on RC that COACH created in Tokyo, with the same start, recurrence and duration | MEMBER (New York) | 200, `changed: false`; session ids unchanged; `rule.timezone` still `Asia/Tokyo`; no email | `domain/src/coaching_session_series.rs` `SeriesRule::schedules_as` | An unchanged save is a no-op whoever saves it. A changed start re-publishes in MEMBER's zone (SER-26). Zones as SER-25 |
+| SER-29 | POST /coaching_session_series/{SRC}/reschedule_following on a weekly series on RC that COACH created in New York across March's US and UK DST changes, from a session before both, with that session's own start and no recurrence or duration | MEMBER (London) | 200, `changed: false`; no session's date changes; `rule.timezone` still `America/New_York`; no email | `domain/src/coaching_session_series.rs` `plan_following` (`SeriesRule::schedules_as`) | An unchanged "this and following" save is planned in the series' zone, as SER-28. Set COACH to `America/New_York` and MEMBER to `Europe/London` first |
 
 ### 4.4 Agreements (`AGR`)
 
@@ -695,6 +696,7 @@ lowercase.
 | KIND-24 | GET /organizations/O1/coaching_relationships/R3 (REL-12); R1; RC after ORG-04 removes the colleague in the coach seat | COACH; COACH; the other colleague | R3: `"scheduling_blocked_by"` REMOVED's id; R1: `null`; RC: the removed colleague's id | `entity::coaching_relationships::Model::seat_blocking_scheduling`, shared with the scheduling 409 (`details.user_id`) | |
 | KIND-25 | GET /users/{COACHEE_ID}/coaching-relationships (REL-13) | COACHEE | 200; each relationship has COACHEE's `viewer` | `web/src/controller/user/coaching_relationships_controller.rs` | |
 | KIND-26 | POST /organizations/O1/coaching_relationships (REL-15) | ADMIN | 200 (201); `"viewer": null`, `"suggests_actions": true`, `"scheduling_blocked_by": null` | `web/src/controller/organization/coaching_relationship_controller.rs` | Delete the relationship afterwards |
+| KIND-27 | KIND-11's two creates | ADMIN | the second response's `coach_first_name`/`coach_last_name` are COACH's and `coachee_first_name`/`coachee_last_name` MEMBER's, matching the stored `coach_id`/`coachee_id` | `entity_api::coaching_relationship::create` (`in_stored_seats`) | Names follow the stored seats, not the request's order. Delete the relationship afterwards |
 
 KIND-09's checks:
 
@@ -1136,3 +1138,5 @@ a frozen `domain` test, or by hand with the reason.
 | SER-28 | `domain/src/coaching_session_series_sqlite_tests.rs::an_unchanged_colleague_series_saved_from_another_zone_changes_nothing` |
 | TRN-32 | `domain/src/transcription_completion_tests.rs::attribution_matches_the_coach_and_reads_attendees_as_the_link_maker`, `domain/src/transcription_completion_tests.rs::attribution_without_a_recorded_link_maker_reads_as_the_coach` |
 | TRN-33 | `domain/src/transcription_analysis_hook_sqlite_tests.rs::completing_a_colleague_transcript_writes_no_analysis`, `domain/src/transcription_analysis_hook_sqlite_tests.rs::completing_with_a_target_writes_one_pending_analysis_with_the_segments` |
+| KIND-27 | `domain/src/coaching_relationship_sqlite_tests.rs::a_returned_colleague_relationship_names_each_seat_by_its_own_user` |
+| SER-29 | `domain/src/coaching_session_series.rs::tests::an_unchanged_following_save_from_another_zone_moves_nothing` (mock: reschedule-following takes Postgres advisory locks) |

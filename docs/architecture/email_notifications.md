@@ -86,6 +86,8 @@ Session and series lifecycle emails carry an `invite.ics` attachment, base64-inl
 
 The anchor timezone is the schedule owner's `users.timezone` (the coach for a coaching relationship; for colleagues, whoever scheduled the session or series), with a real IANA `VTIMEZONE` block spliced in so strict clients render local time rather than floating time. When the zone is UTC or unrecognized, times are emitted as UTC with no `TZID`.
 
+A series keeps the zone it was published in (`rule.timezone`). A save that keeps the stored start, recurrence and duration, for the whole series or for "this and following", changes nothing and keeps that zone, whoever saves it; this holds for coaching too, so a coach who has since changed timezone does not republish an unchanged series in the new zone. Any other change republishes in the schedule owner's zone as it is now.
+
 Single sessions and series use separate templates for both reschedule and cancel. Resend templates have no conditional syntax, and the two paths supply different variables, so one template cannot render both shapes.
 
 A series is a single recurring event with one `UID`, so rescheduling or cancelling one replaces or removes the whole event, including occurrences already in the past. Those sessions remain in the database; only the calendar view of them is lost.

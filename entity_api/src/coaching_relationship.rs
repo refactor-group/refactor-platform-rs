@@ -117,7 +117,22 @@ pub async fn create(
     };
 
     txn.commit().await?;
-    Ok(with_user_names(&relationship, &coach, &coachee))
+    let (seated_coach, seated_coachee) = in_stored_seats(&relationship, &coach, &coachee);
+    Ok(with_user_names(&relationship, seated_coach, seated_coachee))
+}
+
+/// The two users in the seats `relationship` stores them in, which for a returned colleague
+/// relationship may be the reverse of the request's.
+fn in_stored_seats<'a>(
+    relationship: &Model,
+    one: &'a users::Model,
+    other: &'a users::Model,
+) -> (&'a users::Model, &'a users::Model) {
+    if relationship.coach_id == one.id {
+        (one, other)
+    } else {
+        (other, one)
+    }
 }
 
 /// Inserts the drafted relationship, or returns the one a concurrent request inserted first.

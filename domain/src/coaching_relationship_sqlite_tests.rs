@@ -16,7 +16,8 @@ use super::{find_by_user_id_with_user_names, is_coach_of, RoleFilterable};
 
 use crate::test_utils::sqlite::read_back::relationships_between;
 use crate::test_utils::sqlite::{
-    self, seed_lapsed_membership, seed_membership, seed_organization, seed_user, within_time_limit,
+    self, seed_lapsed_membership, seed_membership, seed_organization, seed_user, seed_user_as,
+    within_time_limit,
 };
 
 /// The synced schema plus the relationships table's production unique index.
@@ -170,6 +171,44 @@ async fn create_returns_the_existing_relationship_of_the_same_kind() {
 
         assert_eq!(again.id, first.id);
         assert_eq!(relationships_between(&db, coach, coachee).await.len(), 1);
+    })
+    .await
+}
+
+/// KIND-27
+#[tokio::test]
+async fn a_returned_colleague_relationship_names_each_seat_by_its_own_user() {
+    within_time_limit(async {
+        let (db, o, _) = three_members().await;
+        let (a, b) = (Id::new_v4(), Id::new_v4());
+        for (id, name) in [(a, ("Ada", "Lovelace")), (b, ("Grace", "Hopper"))] {
+            seed_user_as(&db, id, format!("{id}@example.com"), name, None).await;
+            seed_membership(&db, id, o).await;
+        }
+        let first = create(&db, o, draft(a, b, Kind::Colleague))
+            .await
+            .expect("the relationship is created");
+
+        let again = create(&db, o, draft(b, a, Kind::Colleague))
+            .await
+            .expect("the existing relationship is returned");
+
+        assert_eq!(again.id, first.id);
+        assert_eq!((again.coach_id, again.coachee_id), (a, b));
+        assert_eq!(
+            (
+                again.coach_first_name.as_str(),
+                again.coach_last_name.as_str()
+            ),
+            ("Ada", "Lovelace")
+        );
+        assert_eq!(
+            (
+                again.coachee_first_name.as_str(),
+                again.coachee_last_name.as_str()
+            ),
+            ("Grace", "Hopper")
+        );
     })
     .await
 }

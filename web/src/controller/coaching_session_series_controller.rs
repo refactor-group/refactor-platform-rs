@@ -301,7 +301,7 @@ pub async fn delete(
         (status = 403, description = "Forbidden — not permitted to schedule the relationship's sessions"),
         (status = 404, description = "Not found"),
         (status = 409, description = "Not resendable; `details.reason` is `no_upcoming_sessions`, `legacy_series`, `coachee_not_a_member`, or `participant_not_a_member` for a colleague (with `details.user_id` and `details.organization_id`)"),
-        (status = 502, description = "The invite did not reach the coachee")
+        (status = 502, description = "The invite did not reach a participant other than the scheduler")
     ),
     security(("cookie_auth" = []))
 )]

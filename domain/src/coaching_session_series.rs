@@ -194,6 +194,10 @@ pub struct Rescheduled {
 /// whoever saves it: re-materializing would destroy live session rows and their notes to
 /// recreate an identical schedule, and would re-send invites under a burned SEQUENCE. Any
 /// other is refused when the coachee is no longer in the organization.
+///
+/// The short-circuit keeps the stored zone for coaching too: a coach who changed timezone
+/// and saves an unchanged series does not republish it in the new zone.
+/// [`reschedule_following`] does the same for an unchanged "this and following" save.
 pub(crate) async fn reschedule(
     db: &DatabaseConnection,
     config: &Config,
@@ -467,11 +471,15 @@ fn had_override(session: &coaching_sessions::Model, rule: &SeriesRule) -> bool {
 ///
 /// The series splits only when a session left behind still holds one of the old rule's
 /// slots. Otherwise the rule is replaced in place, as a full series reschedule does.
+///
+/// A request that keeps the stored schedule from the anchor on is planned in the stored
+/// rule's zone, so saving it unchanged from another zone moves nothing; any other request
+/// is planned in `owner_zone`.
 fn plan_following(
     existing: &SeriesRule,
     sessions: &[coaching_sessions::Model],
     request: &FollowingReschedule,
-    zone: Tz,
+    owner_zone: Tz,
     now: NaiveDateTime,
 ) -> Result<FollowingPlan, Error> {
     let anchor_index = sessions
@@ -491,24 +499,35 @@ fn plan_following(
         return Err(RecurrenceError::StartAtInPast.into());
     }
 
-    let recurrence = request
-        .recurrence
-        .clone()
-        .unwrap_or_else(|| existing.recurrence.continued(affected.len()));
-    let slots = coaching_session::publishable_slots(request.start_at, &recurrence, zone)?;
-    let rule = SeriesRule {
+    let anchor_slot = anchor.ical_recurrence_id.unwrap_or(anchor.date);
+    let continued = existing.recurrence.continued(affected.len());
+    let requested = SeriesRule {
         start_at: request.start_at,
-        recurrence,
+        recurrence: request.recurrence.clone().unwrap_or(continued.clone()),
         duration_minutes: request
             .duration
             .map_or(existing.duration_minutes, |duration| duration.minutes()),
+        timezone: owner_zone.name().to_string(),
+    };
+    let stored_from_anchor = SeriesRule {
+        start_at: anchor_slot,
+        recurrence: continued,
+        ..existing.clone()
+    };
+    let zone = if stored_from_anchor.schedules_as(&requested) {
+        existing.zone()
+    } else {
+        owner_zone
+    };
+    let slots = coaching_session::publishable_slots(request.start_at, &requested.recurrence, zone)?;
+    let rule = SeriesRule {
         timezone: zone.name().to_string(),
+        ..requested
     };
 
     // The series splits when a session left behind still holds one of the old rule's slots,
     // so its meeting stays on calendars. Its rule then runs through the latest such slot,
     // even past the anchor's for a session moved on its own; emptied slots are excluded.
-    let anchor_slot = anchor.ical_recurrence_id.unwrap_or(anchor.date);
     let old_slots = existing.slots()?;
     let kept_slots: Vec<NaiveDateTime> = earlier
         .iter()
@@ -622,8 +641,10 @@ fn rule_of(series: &Model) -> Result<SeriesRule, Error> {
 /// unless one holds content, which refuses the whole request with a 409 instead. When
 /// earlier occurrences stay behind, the series splits: the old one's rule ends before the
 /// moved session and a new series holds the moved ones, as calendars model "this and
-/// following". A request that changes nothing writes nothing and sends no email; any other
-/// is refused when the coachee is no longer in the organization.
+/// following". A request that keeps the stored schedule is planned in the series' own
+/// zone, so it changes nothing whoever saves it. A request that changes nothing writes
+/// nothing and sends no email; any other is refused when the coachee is no longer in the
+/// organization.
 pub(crate) async fn reschedule_following(
     db: &DatabaseConnection,
     config: &Config,
@@ -635,13 +656,13 @@ pub(crate) async fn reschedule_following(
     let relationship =
         coaching_relationship::find_by_id(db, snapshot_series.coaching_relationship_id).await?;
     let owner_id = relationship.schedule_owner_id(acting_user_id);
-    let zone = publication_zone(db, owner_id).await?;
+    let owner_zone = publication_zone(db, owner_id).await?;
     let now = chrono::Utc::now().naive_utc();
 
     // Planned once to reject a bad request before taking locks, then again under them.
     let snapshot_rule = rule_of(&snapshot_series)?;
     let snapshot = entity_api::coaching_session::find_by_series_id(db, series_id).await?;
-    let draft = plan_following(&snapshot_rule, &snapshot, &request, zone, now)?;
+    let draft = plan_following(&snapshot_rule, &snapshot, &request, owner_zone, now)?;
 
     // Session locks first, then the series row: the order the other series writes take.
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
@@ -651,7 +672,7 @@ pub(crate) async fn reschedule_following(
     let existing = coaching_session_series::find_by_id_for_update(&txn, series_id).await?;
     let existing_rule = rule_of(&existing)?;
     let sessions = entity_api::coaching_session::find_by_series_id(&txn, series_id).await?;
-    let plan = plan_following(&existing_rule, &sessions, &request, zone, now)?;
+    let plan = plan_following(&existing_rule, &sessions, &request, owner_zone, now)?;
 
     if plan.changes_nothing() {
         debug!("Following reschedule of series {series_id} matches its sessions; nothing to do");
@@ -2228,6 +2249,75 @@ mod tests {
         assert_eq!(rescheduled.sessions, sessions[1..].to_vec());
         let sql = written_sql(db);
         assert!(writes(&sql).is_empty(), "a no-op must not write: {sql:?}");
+        Ok(())
+    }
+
+    /// SER-29: a colleague in London saving "this and following" unchanged on a series
+    /// published in New York moves nothing past the DST change only New York has made.
+    #[tokio::test]
+    async fn an_unchanged_following_save_from_another_zone_moves_nothing() -> Result<(), Error> {
+        let mailbox = Mailbox::new().await;
+        // 10:00 in New York weekly from 2027-03-01, across the US change (Mar 14) and the
+        // UK one (Mar 28).
+        let rule = SeriesRule {
+            start_at: NaiveDate::from_ymd_opt(2027, 3, 1)
+                .and_then(|day| day.and_hms_opt(15, 0, 0))
+                .expect("a valid start"),
+            recurrence: weekly_rule_count(6),
+            duration_minutes: 60,
+            timezone: "America/New_York".into(),
+        };
+        let (fixture, _, fixture_sessions) = following_fixture(6);
+        let series = Model {
+            rule: serde_json::to_value(&rule)?,
+            ..fixture
+        };
+        let sessions: Vec<_> = fixture_sessions
+            .into_iter()
+            .zip(rule.slots()?)
+            .map(|(session, slot)| coaching_sessions::Model {
+                date: slot,
+                ical_recurrence_id: Some(slot),
+                ..session
+            })
+            .collect();
+        let anchor = sessions[1].clone();
+        let relationship = entity::coaching_relationships::Model {
+            kind: crate::coaching_relationship_kind::Kind::Colleague,
+            ..member_relationship(series.coaching_relationship_id)
+        };
+        let london_colleague = relationship.coachee_id;
+
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![vec![relationship]])
+            .append_query_results(vec![vec![coach_row("Europe/London")]])
+            .append_query_results(vec![sessions.clone()])
+            .append_exec_results(vec![exec_ok(), exec_ok(), exec_ok(), exec_ok(), exec_ok()])
+            // the series, locked
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_results(vec![sessions.clone()])
+            .into_connection();
+
+        let rescheduled = reschedule_following(
+            &db,
+            &mailbox.config(),
+            series.id,
+            london_colleague,
+            FollowingReschedule {
+                coaching_session_id: anchor.id,
+                start_at: anchor.date,
+                duration: None,
+                recurrence: None,
+            },
+        )
+        .await?;
+
+        assert!(!rescheduled.changed);
+        assert_eq!(rescheduled.sessions, sessions[1..].to_vec());
+        let sql = written_sql(db);
+        assert!(writes(&sql).is_empty(), "a no-op must not write: {sql:?}");
+        assert_eq!(mailbox.recipients(), Vec::<String>::new());
         Ok(())
     }
 
