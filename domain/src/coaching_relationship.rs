@@ -1,19 +1,21 @@
 use crate::coaching_relationship_kind::{Kind, Role, Seat};
 use crate::coaching_relationships::{Model, SchedulingPermit};
 use crate::error::{reason, DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
-use crate::Id;
+use crate::search::visibility_for;
+use crate::{users, Id};
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
 use entity_api::user_role::retain_organization_members;
 use entity_api::{coaching_relationships, query};
 use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 
-pub(crate) use entity_api::coaching_relationship::notify_member_ids;
+pub(crate) use entity_api::coaching_relationship::{
+    create, find_by_organization_with_user_names, find_by_user_and_organization_with_user_names,
+    find_by_user_id_with_user_names, get_relationship_with_user_names, notify_member_ids,
+};
 pub use entity_api::coaching_relationship::{
-    create, find_by_coach_and_organization, find_by_id, find_by_organization_with_user_names,
-    find_by_user, find_by_user_and_organization, find_by_user_and_organization_with_user_names,
-    find_by_user_id_with_user_names, find_coach_and_coachee, get_relationship_with_user_names,
-    is_coach_of, Capabilities, CoachingRelationshipWithUserNames, Draft, Membership,
-    RoleFilterable, WithMembership,
+    find_by_coach_and_organization, find_by_id, find_by_user, find_by_user_and_organization,
+    find_coach_and_coachee, is_coach_of, Capabilities, CoachingRelationshipWithUserNames, Draft,
+    Membership, RoleFilterable, WithMembership,
 };
 
 /// The relationship to create for a person joining an organization: with whom, and what kind.
@@ -47,7 +49,46 @@ where
     Ok(coaching_relationships)
 }
 
-/// Finds coaching relationships for a user within an organization, respecting role-based access.
+/// Creates the relationship `draft` describes in the organization, or returns the pair's
+/// existing one of that kind, as `caller` sees it.
+pub async fn create_for_caller(
+    db: &(impl ConnectionTrait + TransactionTrait),
+    caller: &users::Model,
+    organization_id: Id,
+    draft: Draft,
+) -> Result<CoachingRelationshipWithUserNames, Error> {
+    Ok(create(db, organization_id, draft).await?.for_caller(caller))
+}
+
+/// The relationship with its participants' names, as `caller` sees it; `None` if there is none.
+pub async fn get_relationship_with_user_names_for_caller(
+    db: &DatabaseConnection,
+    caller: &users::Model,
+    relationship_id: Id,
+) -> Result<Option<CoachingRelationshipWithUserNames>, Error> {
+    Ok(get_relationship_with_user_names(db, relationship_id)
+        .await?
+        .map(|relationship| relationship.for_caller(caller)))
+}
+
+/// The relationships `caller` is in, narrowed by `role_filter`, with their participants'
+/// names, each as `caller` sees it.
+pub async fn find_by_user_id_with_user_names_for_caller(
+    db: &DatabaseConnection,
+    caller: &users::Model,
+    role_filter: impl RoleFilterable,
+) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
+    Ok(
+        find_by_user_id_with_user_names(db, &visibility_for(caller), role_filter)
+            .await?
+            .into_iter()
+            .map(|relationship| relationship.for_caller(caller))
+            .collect(),
+    )
+}
+
+/// Finds coaching relationships for `caller` within an organization, respecting role-based
+/// access, each as `caller` sees it.
 ///
 /// - SuperAdmins (global role with organization_id = NULL) see all relationships in the organization
 /// - Admins (organization-specific role) see all relationships in their organization
@@ -58,7 +99,7 @@ where
 /// a consistent database snapshot.
 pub async fn find_by_organization_for_user_with_user_names(
     db: &DatabaseConnection,
-    user_id: crate::Id,
+    caller: &users::Model,
     organization_id: crate::Id,
 ) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
     // Begin transaction to ensure atomicity and prevent TOCTOU vulnerabilities
@@ -70,7 +111,7 @@ pub async fn find_by_organization_for_user_with_user_names(
     })?;
 
     // Check if user has admin access using entity_api layer
-    let is_admin = entity_api::user::has_admin_access(&txn, user_id, organization_id)
+    let is_admin = entity_api::user::has_admin_access(&txn, caller.id, organization_id)
         .await
         .map_err(|e| Error {
             source: Some(Box::new(e)),
@@ -84,7 +125,7 @@ pub async fn find_by_organization_for_user_with_user_names(
         find_by_organization_with_user_names(&txn, organization_id).await?
     } else {
         // Regular users see only relationships they're associated with (as coach or coachee)
-        find_by_user_and_organization_with_user_names(&txn, user_id, organization_id).await?
+        find_by_user_and_organization_with_user_names(&txn, caller.id, organization_id).await?
     };
 
     // Commit transaction
@@ -95,7 +136,10 @@ pub async fn find_by_organization_for_user_with_user_names(
         )),
     })?;
 
-    Ok(coaching_relationships)
+    Ok(coaching_relationships
+        .into_iter()
+        .map(|relationship| relationship.for_caller(caller))
+        .collect())
 }
 
 /// A 409 for the first participant, coach seat first, whose seat must still be in the
