@@ -284,6 +284,11 @@ the 409's consequences before re-sending with `confirmed: true`) is posted at th
     - Session and series scheduled, rescheduled and cancelled (the six `SESSION_*` and
       `RECURRING_SESSIONS_*` templates): no variable changes; check each sentence using
       `other_user_role` reads naturally as "your colleague".
+    - All seven session templates (the six above and the session reminder): replace
+      "coaching session" with `{{{session_label}}}`, which is `coaching session` for coaching
+      and `session` for colleagues. It is lower case, so write the copy so it never starts a
+      sentence or the subject. The variable is additive, so a template can switch any time after
+      the deploy that sends it.
     - `.ics` DESCRIPTION: no template. A colleague invite reads `Colleagues: {A} and {B}`; a
       coaching one is unchanged (`Coach: {name}`).
   - Frontend copy, in the phase 4 frontend PRs: every label picked for a coaching relationship
