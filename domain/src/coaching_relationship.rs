@@ -1,12 +1,15 @@
+use crate::audit_event::{self, Recorder};
 use crate::coaching_relationship_kind::{Kind, Role, Seat};
 use crate::coaching_relationships::{Model, SchedulingPermit};
 use crate::error::{reason, DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::search::visibility_for;
-use crate::{users, Id};
+use crate::{users, Actor, Id};
+use entity_api::coaching_relationship::Settled;
+use entity_api::error::Error as EntityApiError;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
 use entity_api::user_role::retain_organization_members;
 use entity_api::{coaching_relationships, query};
-use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
+use sea_orm::{ConnectionTrait, DatabaseConnection, DatabaseTransaction, TransactionTrait};
 
 pub(crate) use entity_api::coaching_relationship::{
     create, find_by_organization_with_user_names, find_by_user_and_organization_with_user_names,
@@ -92,14 +95,50 @@ where
 }
 
 /// Creates the relationship `draft` describes in the organization, or returns the pair's
-/// existing one of that kind, as `caller` sees it.
+/// existing one of that kind, as `caller` sees it. A new relationship is recorded in the
+/// audit log with `caller` as the actor.
 pub async fn create_for_caller(
-    db: &(impl ConnectionTrait + TransactionTrait),
+    db: &DatabaseConnection,
+    recorder: &dyn Recorder,
     caller: &users::Model,
     organization_id: Id,
     draft: Draft,
 ) -> Result<CoachingRelationshipWithUserNames, Error> {
-    Ok(create(db, organization_id, draft).await?.for_caller(caller))
+    let txn = db.begin().await.map_err(EntityApiError::from)?;
+    let relationship = create_recorded(
+        &txn,
+        recorder,
+        Actor::new(caller.id),
+        organization_id,
+        draft,
+    )
+    .await?;
+    txn.commit().await.map_err(EntityApiError::from)?;
+    Ok(relationship.for_caller(caller))
+}
+
+/// Creates the relationship `draft` describes on `txn`, or returns the pair's existing one of
+/// that kind, recording the creation by `actor` only when this call inserted it.
+pub(crate) async fn create_recorded(
+    txn: &DatabaseTransaction,
+    recorder: &dyn Recorder,
+    actor: Actor,
+    organization_id: Id,
+    draft: Draft,
+) -> Result<CoachingRelationshipWithUserNames, Error> {
+    let Settled {
+        relationship,
+        is_new,
+    } = create(txn, organization_id, draft).await?;
+    if is_new {
+        recorder
+            .record(
+                txn,
+                audit_event::relationship_created(actor, &relationship.relationship()),
+            )
+            .await?;
+    }
+    Ok(relationship)
 }
 
 /// The relationship with its participants' names, as `caller` sees it; `None` if there is none.

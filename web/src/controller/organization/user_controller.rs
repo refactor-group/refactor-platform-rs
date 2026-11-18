@@ -8,6 +8,7 @@ use crate::extractors::{
 use crate::params::user::CreateMemberParams;
 use crate::{controller::ApiResponse, AppState, Error};
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use domain::audit_event::DatabaseRecorder;
 use domain::users::Role;
 use domain::Actor;
 use domain::{emails as EmailsAPI, user as UserApi};
@@ -83,6 +84,7 @@ pub(crate) async fn create(
 ) -> Result<impl IntoResponse, Error> {
     let user = UserApi::create_in_organization(
         app_state.db_conn_ref(),
+        &DatabaseRecorder,
         Actor::new(authenticated_user.id),
         organization.id,
         params.user,
@@ -190,6 +192,7 @@ pub async fn delete(
     info!("Deleting user: {:?}", user.id);
     let destroyed_roles = UserApi::delete(
         app_state.db_conn_ref(),
+        &DatabaseRecorder,
         Actor::new(authenticated_user.id),
         user.id,
     )

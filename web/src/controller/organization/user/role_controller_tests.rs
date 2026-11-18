@@ -11,9 +11,9 @@ use axum_login::{
 };
 use chrono::Utc;
 use domain::user::Backend;
-use domain::{organizations, user_role_changes, user_roles, users, Id};
+use domain::{audit_events, organizations, user_role_changes, user_roles, users, Id};
 use password_auth::generate_hash;
-use sea_orm::{DatabaseBackend, MockDatabase, Value};
+use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult, Value};
 use service::config::Config;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -334,6 +334,22 @@ async fn attach_forwards_the_requested_relationship_to_the_domain_call() {
 /// The queries the PUT runs after the extractor, for a change allowed to proceed.
 /// The domain layer re-reads the organization; the extractor's own lookup is a
 /// separate statement and does not stand in for it.
+/// A stored `member_role_changed` event, as the audit append's insert returns it.
+fn audit_event_row(organization_id: Id, actor_id: Id, target_id: Id) -> audit_events::Model {
+    audit_events::Model {
+        id: Id::new_v4(),
+        organization_id,
+        actor_user_id: Some(actor_id),
+        action: "member_role_changed".to_string(),
+        subject_type: "user".to_string(),
+        subject_id: target_id,
+        details: serde_json::json!({ "from": "user", "to": "admin" }),
+        occurred_at: Utc::now().into(),
+        prev_hash: None,
+        hash: String::new(),
+    }
+}
+
 fn mock_update_through_domain(
     mock: MockDatabase,
     actor_id: Id,
@@ -355,6 +371,13 @@ fn mock_update_through_domain(
             Some(current),
             Some(requested),
         )]])
+        // The audit append: its organization lock, no earlier event, then the event.
+        .append_exec_results([MockExecResult {
+            last_insert_id: 0,
+            rows_affected: 1,
+        }])
+        .append_query_results([Vec::<audit_events::Model>::new()])
+        .append_query_results([vec![audit_event_row(organization_id, actor_id, target_id)]])
         .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
             requester(),
             Some(updated),

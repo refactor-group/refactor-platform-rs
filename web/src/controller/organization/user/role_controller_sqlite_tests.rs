@@ -11,7 +11,9 @@ use std::collections::BTreeSet;
 use axum::http::{Method, StatusCode};
 use domain::coaching_relationship_kind::Kind;
 use domain::test_utils::sqlite::fixture::{record_removal, set_role};
-use domain::test_utils::sqlite::read_back::{holds_role, relationships_between, role_in};
+use domain::test_utils::sqlite::read_back::{
+    holds_role, relationships_between, role_in, verified_audit_trail, AuditEntry,
+};
 use domain::test_utils::sqlite::{seed_membership, seed_user, within_time_limit, Caller};
 use domain::users::Role;
 use domain::Id;
@@ -577,6 +579,183 @@ async fn admins_change_a_members_role() {
                 "{caller:?}"
             );
         }
+    })
+    .await;
+}
+
+/// The audit entry for `user` joining O1 as a `User`, added by ADMIN.
+fn member_added(app: &TestApp, user: Id) -> AuditEntry {
+    AuditEntry {
+        actor_user_id: Some(app.fixture.user(Caller::Admin)),
+        action: "member_added".into(),
+        subject_type: "user".into(),
+        subject_id: user,
+        details: json!({ "role": "user" }),
+    }
+}
+
+/// ORG-47
+#[tokio::test]
+async fn attaching_a_member_records_the_membership_and_the_relationship() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, coach) = (app.fixture.o1, app.fixture.user(Caller::Coach));
+        // A former O1 member with no relationship, so ADMIN may see them.
+        let target = seed_user(app.db()).await;
+        record_removal(app.db(), target, o1).await;
+
+        let reply = app
+            .send(
+                Caller::Admin,
+                Method::POST,
+                &role_path(&app, target),
+                Some(json!({
+                    "role": "User",
+                    "relationship": { "with_user_id": coach, "kind": "colleague" },
+                })),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::OK);
+        let relationship = relationships_between(app.db(), coach, target)
+            .await
+            .pop()
+            .expect("the relationship is stored");
+        assert_eq!(
+            verified_audit_trail(app.db(), o1).await,
+            vec![
+                member_added(&app, target),
+                AuditEntry {
+                    actor_user_id: Some(app.fixture.user(Caller::Admin)),
+                    action: "relationship_created".into(),
+                    subject_type: "coaching_relationship".into(),
+                    subject_id: relationship.id,
+                    details: json!({ "kind": "colleague", "coach_id": coach, "coachee_id": target }),
+                },
+            ]
+        );
+    })
+    .await;
+}
+
+/// ORG-48
+#[tokio::test]
+async fn attaching_a_member_with_their_existing_relationship_records_only_the_membership() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, coach) = (app.fixture.o1, app.fixture.user(Caller::Coach));
+        // A former O1 member whom COACH still coaches (R3), which the attach reuses.
+        let target = app.fixture.user(Caller::Removed);
+        record_removal(app.db(), target, o1).await;
+
+        let reply = app
+            .send(
+                Caller::Admin,
+                Method::POST,
+                &role_path(&app, target),
+                Some(json!({
+                    "role": "User",
+                    "relationship": { "with_user_id": coach, "kind": "coaching" },
+                })),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(
+            verified_audit_trail(app.db(), o1).await,
+            vec![member_added(&app, target)]
+        );
+    })
+    .await;
+}
+
+/// ORG-49
+#[tokio::test]
+async fn a_refused_attach_records_nothing() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, coach) = (app.fixture.o1, app.fixture.user(Caller::Coach));
+        // A former O1 member whom COACH still coaches (R3), so colleagues is refused.
+        let target = app.fixture.user(Caller::Removed);
+        record_removal(app.db(), target, o1).await;
+
+        let reply = app
+            .send(
+                Caller::Admin,
+                Method::POST,
+                &role_path(&app, target),
+                Some(json!({
+                    "role": "User",
+                    "relationship": { "with_user_id": coach, "kind": "colleague" },
+                })),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::CONFLICT);
+        assert_eq!(reply.body["details"]["reason"], "pair_already_related");
+        assert_eq!(verified_audit_trail(app.db(), o1).await, vec![]);
+    })
+    .await;
+}
+
+/// ORG-50
+#[tokio::test]
+async fn removing_a_member_records_it() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, member) = (app.fixture.o1, app.fixture.user(Caller::Member));
+
+        let reply = app
+            .send(
+                Caller::Admin,
+                Method::DELETE,
+                &role_path(&app, member),
+                None,
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(
+            verified_audit_trail(app.db(), o1).await,
+            vec![AuditEntry {
+                actor_user_id: Some(app.fixture.user(Caller::Admin)),
+                action: "member_removed".into(),
+                subject_type: "user".into(),
+                subject_id: member,
+                details: json!({}),
+            }]
+        );
+    })
+    .await;
+}
+
+/// ORG-51
+#[tokio::test]
+async fn changing_a_members_role_records_both_roles() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, member) = (app.fixture.o1, app.fixture.user(Caller::Member));
+
+        let reply = app
+            .send(
+                Caller::Admin,
+                Method::PUT,
+                &role_path(&app, member),
+                Some(json!({ "role": "Admin" })),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(
+            verified_audit_trail(app.db(), o1).await,
+            vec![AuditEntry {
+                actor_user_id: Some(app.fixture.user(Caller::Admin)),
+                action: "member_role_changed".into(),
+                subject_type: "user".into(),
+                subject_id: member,
+                details: json!({ "from": "user", "to": "admin" }),
+            }]
+        );
     })
     .await;
 }

@@ -5,12 +5,13 @@
 //! never touch the `users` row itself.
 
 use entity_api::error::{EntityApiErrorKind, Error as EntityApiError};
-use entity_api::{coaching_relationship, organization, user, user_role, user_role_change};
+use entity_api::{organization, user, user_role, user_role_change};
 use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::coaching_relationship::InviteeRelationship;
+use crate::audit_event::{self, Recorder};
+use crate::coaching_relationship::{create_recorded, InviteeRelationship};
 use crate::error::Error;
 use crate::user::Role;
 use crate::{user_roles, users, Actor, Id};
@@ -43,6 +44,7 @@ pub struct UserLookupResult {
 /// create.
 pub async fn attach_to_organization(
     db: &DatabaseConnection,
+    recorder: &dyn Recorder,
     actor: Actor,
     organization_id: Id,
     user_id: Id,
@@ -79,10 +81,22 @@ pub async fn attach_to_organization(
     }
 
     user_role::create(&txn, actor, user_id, organization_id, role).await?;
+    recorder
+        .record(
+            &txn,
+            audit_event::member_added(actor, organization_id, user_id, role),
+        )
+        .await?;
 
     if let Some(relationship) = relationship {
-        coaching_relationship::create(&txn, organization_id, relationship.draft_for(user_id))
-            .await?;
+        create_recorded(
+            &txn,
+            recorder,
+            actor,
+            organization_id,
+            relationship.draft_for(user_id),
+        )
+        .await?;
     }
 
     let mut attached_user = user::find_by_id(&txn, user_id).await?;
@@ -108,6 +122,7 @@ pub async fn attach_to_organization(
 /// `LastOrganizationAdmin` when they are its only admin.
 pub async fn remove_from_organization(
     db: &DatabaseConnection,
+    recorder: &dyn Recorder,
     actor: Actor,
     organization_id: Id,
     user_id: Id,
@@ -142,6 +157,12 @@ pub async fn remove_from_organization(
     }
 
     user_role::delete(&txn, actor, &membership).await?;
+    recorder
+        .record(
+            &txn,
+            audit_event::member_removed(actor, organization_id, user_id),
+        )
+        .await?;
 
     txn.commit().await.map_err(EntityApiError::from)?;
 
@@ -189,6 +210,7 @@ pub async fn find_role_in_organization(
 /// `ValidationError` for `Role::SuperAdmin`.
 pub async fn update_role_in_organization(
     db: &DatabaseConnection,
+    recorder: &dyn Recorder,
     actor: Actor,
     organization_id: Id,
     user_id: Id,
@@ -238,6 +260,18 @@ pub async fn update_role_in_organization(
     let previous_role = membership.role;
     if previous_role != role {
         user_role::update_role(&txn, actor, &membership, role).await?;
+        recorder
+            .record(
+                &txn,
+                audit_event::member_role_changed(
+                    actor,
+                    organization_id,
+                    user_id,
+                    previous_role,
+                    role,
+                ),
+            )
+            .await?;
     }
 
     let mut updated_user = user::find_by_id(&txn, user_id).await?;

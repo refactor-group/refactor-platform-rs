@@ -2,9 +2,14 @@
 //! them. See `docs/architecture/audit_log.md`.
 
 use async_trait::async_trait;
-use sea_orm::DatabaseTransaction;
+use sea_orm::{ActiveEnum, DatabaseTransaction};
+use serde_json::{json, Value};
 
+use crate::audit_events::Action;
+use crate::coaching_relationships;
 use crate::error::Error;
+use crate::user::Role;
+use crate::{Actor, Id};
 
 pub use entity_api::audit_event::{verify_chain, ChainCheck, NewEvent};
 
@@ -25,6 +30,97 @@ impl Recorder for DatabaseRecorder {
     async fn record(&self, txn: &DatabaseTransaction, event: NewEvent) -> Result<(), Error> {
         entity_api::audit_event::append(txn, event).await?;
         Ok(())
+    }
+}
+
+/// `actor` created `relationship`.
+pub fn relationship_created(
+    actor: Actor,
+    relationship: &coaching_relationships::Model,
+) -> NewEvent {
+    relationship_event(actor, Action::RelationshipCreated, relationship)
+}
+
+/// `actor` deleted `relationship`.
+pub fn relationship_deleted(
+    actor: Actor,
+    relationship: &coaching_relationships::Model,
+) -> NewEvent {
+    relationship_event(actor, Action::RelationshipDeleted, relationship)
+}
+
+/// `actor` gave `user_id` a `role` in the organization.
+pub fn member_added(actor: Actor, organization_id: Id, user_id: Id, role: Role) -> NewEvent {
+    member_event(
+        actor,
+        Action::MemberAdded,
+        organization_id,
+        user_id,
+        json!({ "role": role.to_value() }),
+    )
+}
+
+/// `actor` removed `user_id` from the organization.
+pub fn member_removed(actor: Actor, organization_id: Id, user_id: Id) -> NewEvent {
+    member_event(
+        actor,
+        Action::MemberRemoved,
+        organization_id,
+        user_id,
+        json!({}),
+    )
+}
+
+/// `actor` changed `user_id`'s role in the organization from `from` to `to`.
+pub fn member_role_changed(
+    actor: Actor,
+    organization_id: Id,
+    user_id: Id,
+    from: Role,
+    to: Role,
+) -> NewEvent {
+    member_event(
+        actor,
+        Action::MemberRoleChanged,
+        organization_id,
+        user_id,
+        json!({ "from": from.to_value(), "to": to.to_value() }),
+    )
+}
+
+/// An event about `relationship`, in its organization, naming its kind and who holds each seat.
+fn relationship_event(
+    actor: Actor,
+    action: Action,
+    relationship: &coaching_relationships::Model,
+) -> NewEvent {
+    NewEvent {
+        organization_id: relationship.organization_id,
+        actor: Some(actor),
+        action,
+        subject_id: relationship.id,
+        details: json!({
+            "kind": relationship.kind.to_value(),
+            "coach_id": relationship.coach_id,
+            "coachee_id": relationship.coachee_id,
+        }),
+    }
+}
+
+/// An event about `user_id`'s membership of the organization.
+fn member_event(
+    actor: Actor,
+    action: Action,
+    organization_id: Id,
+    user_id: Id,
+    details: Value,
+) -> NewEvent {
+    NewEvent {
+        organization_id,
+        actor: Some(actor),
+        action,
+        subject_id: user_id,
+        details,
     }
 }
 
