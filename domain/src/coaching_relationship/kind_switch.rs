@@ -5,9 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{TimeDelta, Utc};
 use entity_api::coaching_session_pending_invite::{self, Target};
-use entity_api::{coaching_relationship, coaching_session};
+use entity_api::error::EntityApiErrorKind;
+use entity_api::{coaching_relationship, coaching_session, organization};
 use log::error;
-use sea_orm::{ActiveEnum, DatabaseConnection, TransactionTrait};
+use sea_orm::{DatabaseConnection, TransactionTrait};
 use serde::Serialize;
 use service::config::Config;
 use utoipa::ToSchema;
@@ -98,6 +99,7 @@ pub async fn switch_for_caller(
     let target = target_of(&relationship, request)?;
 
     if target != draft_of(&relationship) {
+        ensure_not_archived(db, organization_id).await?;
         let switched = Model {
             coach_id: target.coach_id,
             coachee_id: target.coachee_id,
@@ -119,8 +121,9 @@ pub async fn switch_for_caller(
                 consequences(db, &relationship, &switched).await?,
             ));
         }
-        apply(db, config, &relationship, &switched, target).await?;
-        publish_kind_changed(db, event_publisher, &relationship, &switched).await;
+        if let Some((before, after)) = apply(db, config, &relationship, request).await? {
+            publish_kind_changed(db, event_publisher, &before, &after).await;
+        }
     }
 
     get_relationship_with_user_names_for_caller(db, caller, relationship.id)
@@ -256,42 +259,53 @@ fn needs_confirmation(consequences: Consequences) -> Error {
     }
 }
 
-/// Switches `relationship` to `target`, marks as sent the reminders `switched` newly owes for
-/// sessions inside the reminder window, and owes both participants the invite of every
-/// upcoming session and series, in one transaction.
+/// Refuses, with a 409, a switch in an archived organization, as a create is refused.
+async fn ensure_not_archived(db: &DatabaseConnection, organization_id: Id) -> Result<(), Error> {
+    organization::find_by_id(db, organization_id)
+        .await?
+        .archived_at
+        .map_or(Ok(()), |_| {
+            Err(entity_api::error::Error {
+                source: None,
+                error_kind: EntityApiErrorKind::OrganizationArchived,
+            }
+            .into())
+        })
+}
+
+/// Under the pair's lock, switches `relationship` as it now stands to what `request` asks,
+/// marks as sent the reminders the switch newly owes for sessions inside the reminder window,
+/// and owes both participants the invite of every upcoming session and series, in one
+/// transaction. Returns the relationship before and after, or `None` when it already was
+/// what `request` asks, writing nothing.
 async fn apply(
     db: &DatabaseConnection,
     config: &Config,
     relationship: &Model,
-    switched: &Model,
-    target: Draft,
-) -> Result<(), Error> {
-    let newly_reminded: Vec<Id> = participants(relationship)
-        .into_iter()
-        .filter(|&id| !relationship.is_reminded(id) && switched.is_reminded(id))
-        .collect();
+    request: Request,
+) -> Result<Option<(Model, Model)>, Error> {
     // An out-of-range lead turns the sweep off, so there is nothing to suppress.
     let lead = TimeDelta::from_std(config.session_reminder_lead()).unwrap_or_default();
     let now = Utc::now().naive_utc();
 
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
-    coaching_relationship::change_kind(&txn, relationship, target).await?;
-    coaching_session::mark_reminders_sent(
-        &txn,
-        relationship.id,
-        &newly_reminded,
-        (now, now + lead),
-    )
-    .await?;
-    let upcoming = coaching_session::find_by_relationship_after(&txn, relationship.id, now).await?;
-    coaching_session_pending_invite::queue(
-        &txn,
-        &invites_of(&upcoming),
-        &participants(relationship),
-    )
-    .await?;
+    let current = coaching_relationship::find_locked(&txn, relationship).await?;
+    let target = target_of(&current, request)?;
+    if target == draft_of(&current) {
+        return Ok(None);
+    }
+    let switched = coaching_relationship::change_kind(&txn, &current, target).await?;
+    let newly_reminded: Vec<Id> = participants(&current)
+        .into_iter()
+        .filter(|&id| !current.is_reminded(id) && switched.is_reminded(id))
+        .collect();
+    coaching_session::mark_reminders_sent(&txn, current.id, &newly_reminded, (now, now + lead))
+        .await?;
+    let upcoming = coaching_session::find_by_relationship_after(&txn, current.id, now).await?;
+    coaching_session_pending_invite::queue(&txn, &invites_of(&upcoming), &participants(&current))
+        .await?;
     txn.commit().await.map_err(entity_api::error::Error::from)?;
-    Ok(())
+    Ok(Some((current, switched)))
 }
 
 /// The invites that announced `sessions`: a series member's is its series', any other
@@ -311,31 +325,49 @@ fn invites_of(sessions: &[coaching_sessions::Model]) -> BTreeSet<Target> {
         .collect()
 }
 
-/// Tells the participants who may still read `relationship` that it is now `switched`'s kind.
-/// Best-effort: the switch has committed, so a failed lookup is logged.
+/// Tells the participants who may still read the relationship that it went from `before`'s
+/// kind to `after`'s. Best-effort: the switch has committed, so a failure is logged.
 async fn publish_kind_changed(
     db: &DatabaseConnection,
     event_publisher: &EventPublisher,
-    relationship: &Model,
-    switched: &Model,
+    before: &Model,
+    after: &Model,
 ) {
-    let notify_user_ids = match coaching_relationship::notify_member_ids(db, switched).await {
+    let notify_user_ids = match coaching_relationship::notify_member_ids(db, after).await {
         Ok(ids) => ids,
         Err(e) => {
             error!(
                 "CoachingRelationshipKindChanged: failed to resolve recipients for relationship {}: {e:?}",
-                relationship.id
+                after.id
             );
             return;
         }
     };
+    let (Some(from), Some(to)) = (wire_name(before.kind), wire_name(after.kind)) else {
+        error!(
+            "CoachingRelationshipKindChanged: a kind of relationship {} did not serialize",
+            after.id
+        );
+        return;
+    };
     event_publisher
         .publish(DomainEvent::CoachingRelationshipKindChanged {
-            coaching_relationship_id: relationship.id,
-            organization_id: relationship.organization_id,
-            from: relationship.kind.to_value(),
-            to: switched.kind.to_value(),
+            coaching_relationship_id: after.id,
+            organization_id: after.organization_id,
+            from,
+            to,
             notify_user_ids,
         })
         .await;
 }
+
+/// `kind` as the REST API writes it.
+fn wire_name(kind: Kind) -> Option<String> {
+    serde_json::to_value(kind)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+}
+
+#[cfg(test)]
+#[path = "kind_switch_sqlite_tests.rs"]
+mod sqlite_tests;

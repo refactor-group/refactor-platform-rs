@@ -2,7 +2,7 @@
 //!
 //! A row means one participant is owed a fresh copy of one invite: a session's own or a
 //! series'. Each invite is owed to each participant at most once, however often it is
-//! queued before the sweep sends it. The sweep claims rows under a lease, sends, then
+//! queued before the sweep sends it; queued while a send holds it, it is sent again. The sweep claims rows under a lease, sends, then
 //! completes or releases them, so delivery is at least once.
 
 use std::collections::BTreeSet;
@@ -37,7 +37,8 @@ pub struct Claimed {
     pub claim_id: Id,
 }
 
-/// Owes each of `targets` to each of `user_ids`, leaving alone any already owed.
+/// Owes each of `targets` to each of `user_ids`. One already owed stays a single row, released
+/// from any claim with a fresh retry budget, so a send already under way leaves it owed.
 pub async fn queue(
     db: &impl ConnectionTrait,
     targets: &BTreeSet<Target>,
@@ -84,8 +85,16 @@ pub async fn queue(
         }
         Entity::insert_many(rows)
             .on_conflict(
+                // An owed row a send holds is owed afresh: that send predates this change,
+                // so its completion must not settle the row.
                 OnConflict::columns([target_column, Column::UserId])
-                    .do_nothing()
+                    .value(Column::ClaimId, Expr::value(Option::<Id>::None))
+                    .value(
+                        Column::ClaimedAt,
+                        Expr::value(Option::<NaiveDateTime>::None),
+                    )
+                    .value(Column::Attempts, 0)
+                    .value(Column::UpdatedAt, now)
                     .to_owned(),
             )
             .exec_without_returning(db)
@@ -145,6 +154,21 @@ pub async fn claim(
 /// Drops a claimed row once its invite was sent or is no longer owed.
 pub async fn complete(db: &impl ConnectionTrait, claimed: &Claimed) -> Result<(), Error> {
     Entity::delete_many().filter(held(claimed)).exec(db).await?;
+    Ok(())
+}
+
+/// Hands back a claimed row the sweep did not attempt, charging it no attempt.
+pub async fn hand_back(db: &impl ConnectionTrait, claimed: &Claimed) -> Result<(), Error> {
+    Entity::update_many()
+        .col_expr(Column::ClaimId, Expr::value(Option::<Id>::None))
+        .col_expr(
+            Column::ClaimedAt,
+            Expr::value(Option::<NaiveDateTime>::None),
+        )
+        .col_expr(Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(held(claimed))
+        .exec(db)
+        .await?;
     Ok(())
 }
 

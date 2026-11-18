@@ -1523,3 +1523,28 @@ async fn a_switch_tells_both_participants_once() {
     })
     .await;
 }
+
+/// KIND-44
+#[tokio::test]
+async fn a_relationship_in_an_archived_organization_cannot_switch() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, r1) = (app.fixture.o1, app.fixture.r1);
+        let admin = app.fixture.user(Caller::Admin);
+        archive_organization(app.db(), o1, admin).await;
+        let before = relationship_row(app.db(), r1).await;
+
+        for body in [
+            json!({ "kind": "colleague" }),
+            json!({ "kind": "colleague", "confirmed": true }),
+        ] {
+            let reply = admin_switches(&mut app, r1, body.clone()).await;
+
+            assert_eq!(reply.status, StatusCode::CONFLICT, "{body}: {}", reply.body);
+            assert_eq!(reply.body["error"], "organization_archived", "{body}");
+            assert_eq!(relationship_row(app.db(), r1).await, before, "{body}");
+            assert_eq!(pending_invites(app.db()).await, BTreeSet::new(), "{body}");
+        }
+    })
+    .await;
+}

@@ -106,7 +106,7 @@ pub async fn create(
         (status = 403, description = "Caller does not administer the organization"),
         (status = 404, description = "Organization not found, or no such relationship in it"),
         (status = 405, description = "Method not allowed"),
-        (status = 409, description = "Nothing changed. `details.reason` says why: `participant_not_a_member` (`details.user_id` the participant no longer in `details.organization_id`; re-add them first), `pair_already_related` (`details.relationship_id` the pair's other relationship that leaves no room for the switch), or `kind_switch_needs_confirmation` (`details` also holds the fields of `domain.coaching_relationship.kind_switch.Consequences`; re-send with `confirmed: true` to switch)"),
+        (status = 409, description = "Nothing changed. The organization is archived (`error` `organization_archived`, no `details`), or `details.reason` says why: `participant_not_a_member` (`details.user_id` the participant no longer in `details.organization_id`; re-add them first), `pair_already_related` (`details.relationship_id` the pair's other relationship that leaves no room for the switch), or `kind_switch_needs_confirmation` (`details` also holds the fields of `domain.coaching_relationship.kind_switch.Consequences`; re-send with `confirmed: true` to switch)"),
         (status = 422, description = "Nothing changed: `coach_id` missing for `coaching` (`details.reason` `coach_required`), given for `colleague` (`coach_not_applicable`), or not a participant (`coach_not_a_participant`)"),
         (status = 503, description = "Service temporarily unavailable")
     ),

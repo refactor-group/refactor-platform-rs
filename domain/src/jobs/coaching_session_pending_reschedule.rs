@@ -26,7 +26,11 @@
 //! kind (`coaching_session_pending_invite`): one email per row, to that participant alone,
 //! under the same lease, retry and give-up rules. A participant who has left the
 //! organization, a session that has passed and a series with nothing left to attend are
-//! owed nothing. Without Resend or the scheduled templates those rows are dropped unsent.
+//! owed nothing. A row whose template (session or series scheduled) is not configured, or
+//! with no Resend key, is dropped unsent. A switch can owe many invites at once, so a tick
+//! claims at most [`INVITE_BATCH`] of them, and a failed send hands the rest of the tick's
+//! back uncharged, as the reminder sweep does when Resend is unusable: the interval is the
+//! backoff.
 //!
 //! See [`crate::jobs`] for why this is a sweep rather than an enqueued job.
 
@@ -54,8 +58,12 @@ use crate::{coaching_relationships, coaching_sessions, Id};
 /// How often the sweep looks for due rows.
 const INTERVAL: Duration = Duration::from_secs(15);
 
-/// Most rows one tick will claim.
+/// Most pending reschedules one tick will claim.
 const BATCH: u64 = 50;
+
+/// Most owed invites one tick will claim, so a large switch drains over several ticks
+/// rather than bursting Resend.
+const INVITE_BATCH: u64 = 10;
 
 /// Settle period used when the configured one does not fit a `TimeDelta`.
 const DEFAULT_SETTLE: TimeDelta = TimeDelta::seconds(60);
@@ -66,8 +74,10 @@ const DEFAULT_SETTLE_MAX: TimeDelta = TimeDelta::seconds(300);
 pub struct Sweep {
     timing: Timing,
     mode: Mode,
-    /// Whether owed invites are re-sent or dropped unsent.
-    invites: Mode,
+    /// Whether a session's owed invite is re-sent or dropped unsent.
+    session_invites: Mode,
+    /// Whether a series' owed invite is re-sent or dropped unsent.
+    series_invites: Mode,
 }
 
 /// Whether due rows are emailed or dropped unsent.
@@ -75,6 +85,24 @@ pub struct Sweep {
 enum Mode {
     Send,
     Drain,
+}
+
+/// What one owed invite's turn left behind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Resent {
+    Handled,
+    Unhandled,
+    /// Resend did not take the email, so the rest of the tick waits for the next one.
+    SendFailed,
+}
+
+impl From<bool> for Resent {
+    fn from(handled: bool) -> Self {
+        match handled {
+            true => Resent::Handled,
+            false => Resent::Unhandled,
+        }
+    }
 }
 
 impl Sweep {
@@ -106,37 +134,38 @@ impl Sweep {
             Mode::Drain
         };
 
-        let invites = if config.resend_api_key().is_some()
-            && config.session_scheduled_email_template_id().is_some()
-            && config
-                .recurring_sessions_scheduled_email_template_id()
-                .is_some()
-        {
-            Mode::Send
-        } else {
-            info!(
-                "[coaching-session-pending-reschedule] invite emails are off; owed invites will be \
-                 dropped unsent"
-            );
-            Mode::Drain
+        let invites_with = |template: Option<String>, name: &str| {
+            if config.resend_api_key().is_some() && template.is_some() {
+                Mode::Send
+            } else {
+                info!(
+                    "[coaching-session-pending-reschedule] {name} invite emails are off; those owed \
+                     will be dropped unsent"
+                );
+                Mode::Drain
+            }
         };
 
         Self {
             timing,
             mode,
-            invites,
+            session_invites: invites_with(config.session_scheduled_email_template_id(), "session"),
+            series_invites: invites_with(
+                config.recurring_sessions_scheduled_email_template_id(),
+                "series",
+            ),
         }
     }
 
-    /// Re-sends or drops one claimed owed invite; returns whether it was handled.
+    /// Re-sends or drops one claimed owed invite.
     async fn resend_invite(
         &self,
         ctx: &Context,
         claimed: &coaching_session_pending_invite::Claimed,
-    ) -> bool {
+    ) -> Resent {
         let db = &*ctx.db;
         let user_id = claimed.user_id;
-        let resent = match (self.invites, claimed.target) {
+        let resent = match (self.invites_for(claimed.target), claimed.target) {
             (Mode::Drain, _) => Ok(None),
             (Mode::Send, Target::Session(id)) => {
                 crate::coaching_session::resend_invite_to(db, &ctx.config, id, user_id).await
@@ -151,13 +180,22 @@ impl Sweep {
                     "[coaching-session-pending-reschedule] invite {:?} did not reach {user_id}",
                     claimed.target
                 );
-                retry_invite(db, claimed).await
+                retry_invite(db, claimed).await;
+                Resent::SendFailed
             }
-            Ok(_) => complete_invite(db, claimed).await,
+            Ok(_) => Resent::from(complete_invite(db, claimed).await),
             Err(e) => {
                 warn!("[coaching-session-pending-reschedule] could not resend invite {:?} to {user_id}: {e:?}", claimed.target);
-                retry_invite(db, claimed).await
+                Resent::from(retry_invite(db, claimed).await)
             }
+        }
+    }
+
+    /// Whether owed invites of `target`'s kind are re-sent or dropped unsent.
+    fn invites_for(&self, target: Target) -> Mode {
+        match target {
+            Target::Session(_) => self.session_invites,
+            Target::Series(_) => self.series_invites,
         }
     }
 
@@ -283,6 +321,22 @@ async fn complete_invite(
         .is_ok()
 }
 
+/// Hands back a claimed owed invite the tick did not attempt. Best-effort: its lease runs out
+/// anyway.
+async fn hand_back_invite(
+    db: &DatabaseConnection,
+    claimed: &coaching_session_pending_invite::Claimed,
+) {
+    let _ = coaching_session_pending_invite::hand_back(db, claimed)
+        .await
+        .inspect_err(|e| {
+            warn!(
+                "[coaching-session-pending-reschedule] could not hand back invite {}: {e:?}",
+                claimed.id
+            )
+        });
+}
+
 /// Releases a claimed owed invite after a failed send; returns whether it was handled.
 async fn retry_invite(
     db: &DatabaseConnection,
@@ -328,7 +382,8 @@ impl Job for Sweep {
         )
         .await?;
         let owed =
-            coaching_session_pending_invite::claim(&*ctx.db, now, Id::new_v4(), BATCH).await?;
+            coaching_session_pending_invite::claim(&*ctx.db, now, Id::new_v4(), INVITE_BATCH)
+                .await?;
 
         let mut handled = 0;
         for row in &claimed {
@@ -336,10 +391,16 @@ impl Job for Sweep {
                 handled += 1;
             }
         }
-        for row in &owed {
-            if self.resend_invite(ctx, row).await {
-                handled += 1;
+        let mut unattempted = owed.iter();
+        for row in unattempted.by_ref() {
+            match self.resend_invite(ctx, row).await {
+                Resent::Handled => handled += 1,
+                Resent::Unhandled => {}
+                Resent::SendFailed => break,
             }
+        }
+        for row in unattempted {
+            hand_back_invite(&ctx.db, row).await;
         }
 
         Ok(Outcome::partial(
@@ -390,19 +451,19 @@ mod tests {
     }
 
     #[test]
-    fn from_config_resends_invites_only_with_a_key_and_both_scheduled_templates() {
-        let templates = [
-            "--session-scheduled-email-template-id=scheduled_tpl",
-            "--recurring-sessions-scheduled-email-template-id=recurring_tpl",
-        ];
-        let with = |args: &[&str]| Sweep::from_config(&config(args)).invites;
+    fn from_config_resends_each_invite_with_a_key_and_its_own_template() {
+        let modes = |args: &[&str]| {
+            let sweep = Sweep::from_config(&config(args));
+            (sweep.session_invites, sweep.series_invites)
+        };
+        let session = "--session-scheduled-email-template-id=scheduled_tpl";
+        let series = "--recurring-sessions-scheduled-email-template-id=recurring_tpl";
+        let key = "--resend-api-key=key";
 
-        assert_eq!(
-            with(&[&["--resend-api-key=key"], &templates[..]].concat()),
-            Mode::Send
-        );
-        assert_eq!(with(&templates), Mode::Drain);
-        assert_eq!(with(&["--resend-api-key=key", templates[0]]), Mode::Drain);
+        assert_eq!(modes(&[key, session, series]), (Mode::Send, Mode::Send));
+        assert_eq!(modes(&[key, session]), (Mode::Send, Mode::Drain));
+        assert_eq!(modes(&[key, series]), (Mode::Drain, Mode::Send));
+        assert_eq!(modes(&[session, series]), (Mode::Drain, Mode::Drain));
     }
 
     #[test]

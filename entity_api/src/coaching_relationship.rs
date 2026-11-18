@@ -266,6 +266,24 @@ pub async fn ensure_pair_allows(
     })
 }
 
+/// `relationship` as it stands once the pair's advisory lock is held, so any concurrent
+/// create or switch for the pair has finished. Run it on a transaction: the lock lasts until
+/// that transaction ends.
+///
+/// # Errors
+///
+/// `RecordNotFound` when the relationship no longer exists in its organization.
+pub async fn find_locked(db: &impl ConnectionTrait, relationship: &Model) -> Result<Model, Error> {
+    lock_pair(
+        db,
+        relationship.organization_id,
+        relationship.coach_id,
+        relationship.coachee_id,
+    )
+    .await?;
+    find_by_id_in_organization(db, relationship.organization_id, relationship.id).await
+}
+
 /// Changes `relationship` in place to `target`'s kind and seats, keeping its id and history.
 ///
 /// Holds the pair's advisory lock and re-checks [`ensure_pair_allows`] under it, so a
