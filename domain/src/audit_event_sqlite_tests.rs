@@ -12,17 +12,18 @@ use serde_json::json;
 
 use super::{verify_chain, ChainCheck, DatabaseRecorder, NewEvent, Recorder};
 
+use crate::test_utils::audit_event::MemoryRecorder;
 use crate::test_utils::sqlite::{database, seed_organization, within_time_limit};
 use crate::Actor;
 
-/// A kind switch in `organization_id` by a fresh actor.
-fn kind_switch(organization_id: Id) -> NewEvent {
+/// A role change in `organization_id` by a fresh actor.
+fn role_change(organization_id: Id) -> NewEvent {
     NewEvent {
         organization_id,
         actor: Some(Actor::new(Id::new_v4())),
-        action: Action::RelationshipKindChanged,
+        action: Action::MemberRoleChanged,
         subject_id: Id::new_v4(),
-        details: json!({ "from": "coaching", "to": "colleague" }),
+        details: json!({ "from": "user", "to": "admin" }),
     }
 }
 
@@ -36,7 +37,7 @@ async fn append_committed(
     for _ in 0..count {
         let txn = db.begin().await.expect("a transaction begins");
         events.push(
-            append(&txn, kind_switch(organization_id))
+            append(&txn, role_change(organization_id))
                 .await
                 .expect("the event appends"),
         );
@@ -95,7 +96,7 @@ async fn an_edited_event_breaks_the_chain_at_that_event() {
         Entity::update_many()
             .col_expr(
                 Column::Details,
-                Expr::value(json!({ "from": "coaching", "to": "coaching" })),
+                Expr::value(json!({ "from": "user", "to": "user" })),
             )
             .filter(Column::Id.eq(events[1].id))
             .exec(&db)
@@ -173,7 +174,7 @@ async fn details_hash_the_same_whatever_order_their_keys_are_stored_in() {
         Entity::update_many()
             .col_expr(
                 Column::Details,
-                Expr::value(r#"{"to":"colleague","from":"coaching"}"#),
+                Expr::value(r#"{"to":"admin","from":"user"}"#),
             )
             .filter(Column::Id.eq(events[0].id))
             .exec(&db)
@@ -196,14 +197,14 @@ async fn an_event_recorded_in_a_rolled_back_transaction_is_not_stored() {
 
         let committed = db.begin().await.expect("a transaction begins");
         DatabaseRecorder
-            .record(&committed, kind_switch(org))
+            .record(&committed, role_change(org))
             .await
             .expect("the event records");
         committed.commit().await.expect("the transaction commits");
 
         let rolled_back = db.begin().await.expect("a transaction begins");
         DatabaseRecorder
-            .record(&rolled_back, kind_switch(org))
+            .record(&rolled_back, role_change(org))
             .await
             .expect("the event records");
         rolled_back
@@ -216,6 +217,31 @@ async fn an_event_recorded_in_a_rolled_back_transaction_is_not_stored() {
             verify_chain(&db, org).await.expect("the chain reads"),
             ChainCheck::Intact { count: 1 }
         );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn record_all_records_organization_by_organization_keeping_each_ones_order() {
+    within_time_limit(async {
+        let db = database().await;
+        let (low, high) = {
+            let (a, b) = (Id::new_v4(), Id::new_v4());
+            (a.min(b), a.max(b))
+        };
+        let [first_high, low_event, second_high] = [high, low, high].map(role_change);
+        let recorder = MemoryRecorder::default();
+
+        let txn = db.begin().await.expect("a transaction begins");
+        recorder
+            .record_all(
+                &txn,
+                vec![first_high.clone(), low_event.clone(), second_high.clone()],
+            )
+            .await
+            .expect("the events record");
+
+        assert_eq!(recorder.events(), vec![low_event, first_high, second_high]);
     })
     .await;
 }

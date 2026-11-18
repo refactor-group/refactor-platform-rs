@@ -13,12 +13,28 @@ use crate::{Actor, Id};
 
 pub use entity_api::audit_event::{verify_chain, ChainCheck, NewEvent};
 
-/// Records audit events. A domain write takes one beside its `EventPublisher` and calls
-/// `record` before committing, so a failed record rolls the change back.
+/// Records audit events. A domain write takes one beside its `EventPublisher` and records
+/// after its last other write, immediately before committing, so a failed record rolls the
+/// change back and the audit lock is always the last lock its transaction takes.
 #[async_trait]
 pub trait Recorder: Send + Sync {
     /// Records `event` as part of `txn`.
     async fn record(&self, txn: &DatabaseTransaction, event: NewEvent) -> Result<(), Error>;
+
+    /// Records `events` as part of `txn`, ordered by organization and otherwise in the order
+    /// given, so transactions touching several organizations take their audit locks in one
+    /// order.
+    async fn record_all(
+        &self,
+        txn: &DatabaseTransaction,
+        mut events: Vec<NewEvent>,
+    ) -> Result<(), Error> {
+        events.sort_by_key(|event| event.organization_id);
+        for event in events {
+            self.record(txn, event).await?;
+        }
+        Ok(())
+    }
 }
 
 /// The production recorder: appends each event to the organization's chain in the database.

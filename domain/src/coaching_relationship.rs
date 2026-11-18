@@ -1,4 +1,4 @@
-use crate::audit_event::{self, Recorder};
+use crate::audit_event::{self, NewEvent, Recorder};
 use crate::coaching_relationship_kind::{Kind, Role, Seat};
 use crate::coaching_relationships::{Model, SchedulingPermit};
 use crate::error::{reason, DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
@@ -9,7 +9,7 @@ use entity_api::error::Error as EntityApiError;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
 use entity_api::user_role::retain_organization_members;
 use entity_api::{coaching_relationships, query};
-use sea_orm::{ConnectionTrait, DatabaseConnection, DatabaseTransaction, TransactionTrait};
+use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 
 pub(crate) use entity_api::coaching_relationship::{
     create, find_by_organization_with_user_names, find_by_user_and_organization_with_user_names,
@@ -105,40 +105,25 @@ pub async fn create_for_caller(
     draft: Draft,
 ) -> Result<CoachingRelationshipWithUserNames, Error> {
     let txn = db.begin().await.map_err(EntityApiError::from)?;
-    let relationship = create_recorded(
-        &txn,
-        recorder,
-        Actor::new(caller.id),
-        organization_id,
-        draft,
-    )
-    .await?;
+    let settled = create(&txn, organization_id, draft).await?;
+    recorder
+        .record_all(
+            &txn,
+            creation_event(Actor::new(caller.id), &settled)
+                .into_iter()
+                .collect(),
+        )
+        .await?;
     txn.commit().await.map_err(EntityApiError::from)?;
-    Ok(relationship.for_caller(caller))
+    Ok(settled.relationship.for_caller(caller))
 }
 
-/// Creates the relationship `draft` describes on `txn`, or returns the pair's existing one of
-/// that kind, recording the creation by `actor` only when this call inserted it.
-pub(crate) async fn create_recorded(
-    txn: &DatabaseTransaction,
-    recorder: &dyn Recorder,
-    actor: Actor,
-    organization_id: Id,
-    draft: Draft,
-) -> Result<CoachingRelationshipWithUserNames, Error> {
-    let Settled {
-        relationship,
-        is_new,
-    } = create(txn, organization_id, draft).await?;
-    if is_new {
-        recorder
-            .record(
-                txn,
-                audit_event::relationship_created(actor, &relationship.relationship()),
-            )
-            .await?;
-    }
-    Ok(relationship)
+/// The audit event for `actor`'s create: `relationship_created` when it inserted the
+/// relationship, none when it returned the pair's existing one.
+pub(crate) fn creation_event(actor: Actor, settled: &Settled) -> Option<NewEvent> {
+    settled
+        .is_new
+        .then(|| audit_event::relationship_created(actor, &settled.relationship.relationship()))
 }
 
 /// The relationship with its participants' names, as `caller` sees it; `None` if there is none.

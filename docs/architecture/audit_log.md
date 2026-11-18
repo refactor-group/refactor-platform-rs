@@ -9,14 +9,13 @@ the `Recorder` trait in [`domain::audit_event`](../../domain/src/audit_event.rs)
 
 One row per change: the organization, the acting user (null when the system acted), an action,
 the changed record (`subject_type`, `subject_id`), a small `details` object and the time.
-Events carry ids only, never names or emails. `details` holds small facts such as a kind before
+Events carry ids only, never names or emails. `details` holds small facts such as a role before
 and after; keep it to strings, integers, booleans and ids.
 
 | Action | Subject |
 |---|---|
 | `relationship_created` | `coaching_relationship` |
 | `relationship_deleted` | `coaching_relationship` |
-| `relationship_kind_changed` | `coaching_relationship` |
 | `member_added` | `user` |
 | `member_removed` | `user` |
 | `member_role_changed` | `user` |
@@ -26,6 +25,9 @@ and after; keep it to strings, integers, booleans and ids.
 - **Same transaction.** A domain write calls `Recorder::record` with its own transaction before
   committing. An event exists exactly when its change committed, and a failed record rolls the
   change back.
+- **Audit lock last.** A write records after all its other writes, immediately before commit,
+  and records several organizations' events in organization order (`Recorder::record_all`), so
+  the audit locks are the last locks a transaction takes and always in one order.
 - **Outlives its subjects.** The table has no foreign keys, so deleting an organization, a user
   or a relationship leaves its events in place.
 - **Append-only.** A trigger refuses every `UPDATE` and `DELETE` on the table, and `TRUNCATE`.
@@ -50,7 +52,8 @@ event breaks at itself; a removed event breaks at the one after it.
 
 ## What it does not protect against
 
-A database superuser can disable the trigger, rewrite rows *and* recompute every hash after
-them; the chain then verifies. The chain detects edits by anyone who does not recompute it, and
+The app's own role, `refactor`, owns the table and the trigger function, so anyone with the
+app's database credentials, not only a superuser, can disable the trigger, rewrite events *and*
+recompute every hash after them; the chain then verifies. The chain detects edits by anyone who does not recompute it, and
 removal of an organization's newest events is not detectable from the table alone. Keeping a
 copy of each organization's latest hash outside the database would close both gaps.

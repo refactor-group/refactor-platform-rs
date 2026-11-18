@@ -10,13 +10,14 @@ use entity::audit_events::{Action, Column, Entity, Model};
 use entity::Id;
 use futures::TryStreamExt;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseTransaction, DbBackend, EntityTrait,
-    IntoActiveModel, QueryFilter, QueryOrder, Statement, StreamTrait,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseTransaction, EntityTrait,
+    IntoActiveModel, QueryFilter, QueryOrder, StreamTrait,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::actor::Actor;
+use super::advisory_lock::{advisory_xact_lock, fold};
 use super::error::Error;
 
 /// One change to record. Carries ids only, never names or emails.
@@ -28,7 +29,7 @@ pub struct NewEvent {
     pub action: Action,
     /// The changed record, whose type the action names.
     pub subject_id: Id,
-    /// Small facts about the change, such as the kind before and after. Strings, integers,
+    /// Small facts about the change, such as the role before and after. Strings, integers,
     /// booleans and ids only: floats may not read back from `jsonb` exactly as written.
     pub details: Value,
 }
@@ -53,7 +54,12 @@ pub enum ChainCheck {
 ///
 /// Returns `EntityApiErrorKind::SystemError` when the lock, the read or the insert fails.
 pub async fn append(txn: &DatabaseTransaction, event: NewEvent) -> Result<Model, Error> {
-    lock_organization(txn, event.organization_id).await?;
+    advisory_xact_lock(
+        txn,
+        AUDIT_LOCK_NAMESPACE,
+        organization_lock_key(event.organization_id),
+    )
+    .await?;
     let previous = latest(txn, event.organization_id).await?;
 
     let unhashed = Model {
@@ -176,24 +182,6 @@ async fn latest(db: &impl ConnectionTrait, organization_id: Id) -> Result<Option
         .await?)
 }
 
-/// Takes the organization's audit lock, held until the transaction ends.
-async fn lock_organization(db: &impl ConnectionTrait, organization_id: Id) -> Result<(), Error> {
-    // SQLite, the test tier, has no advisory locks and runs on one connection.
-    if db.get_database_backend() != DbBackend::Postgres {
-        return Ok(());
-    }
-    db.execute_raw(Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        "SELECT pg_advisory_xact_lock($1, $2)",
-        [
-            AUDIT_LOCK_NAMESPACE.into(),
-            organization_lock_key(organization_id).into(),
-        ],
-    ))
-    .await?;
-    Ok(())
-}
-
 /// The first key of every audit lock, apart from the pair locks' namespace (1) in
 /// `coaching_relationship`.
 const AUDIT_LOCK_NAMESPACE: i32 = 2;
@@ -201,6 +189,5 @@ const AUDIT_LOCK_NAMESPACE: i32 = 2;
 /// The second key of an organization's audit lock.
 fn organization_lock_key(organization_id: Id) -> i32 {
     let (upper, lower) = organization_id.as_u64_pair();
-    let folded = upper ^ lower;
-    (folded ^ (folded >> 32)) as i32
+    fold(upper ^ lower)
 }

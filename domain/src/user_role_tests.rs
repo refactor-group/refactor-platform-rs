@@ -616,6 +616,34 @@ async fn remove_from_organization_deletes_only_the_target_org_membership() -> Re
     Ok(())
 }
 
+/// A membership already gone by the delete, such as one removed concurrently, records
+/// no removal in the audit log, as it writes no `user_role_changes` row.
+#[tokio::test]
+async fn remove_from_organization_records_nothing_when_no_row_was_deleted() -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let user_id = Id::new_v4();
+    let recorder = MemoryRecorder::default();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user(user_id, vec![])]])
+        .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
+        .append_exec_results([exec_result(0)])
+        .into_connection();
+
+    remove_from_organization(
+        &db,
+        &recorder,
+        Actor::new(Id::new_v4()),
+        organization_id,
+        user_id,
+    )
+    .await?;
+
+    assert_eq!(recorder.events(), vec![]);
+
+    Ok(())
+}
+
 /// A removal records the role that was lost, which is the whole point: after the
 /// delete the `user_roles` row no longer says the user was ever an admin.
 #[tokio::test]

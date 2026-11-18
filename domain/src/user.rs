@@ -10,7 +10,7 @@ use entity_api::{
 
 use crate::{
     audit_event::{self, Recorder},
-    coaching_relationship::{create_recorded, InviteeRelationship},
+    coaching_relationship::{creation_event, InviteeRelationship},
     error::Error,
     error::{reason, DomainErrorKind, EntityErrorKind, InternalErrorKind},
     magic_link_token, magic_link_tokens, users, Actor, Id,
@@ -157,25 +157,29 @@ pub async fn create_in_organization(
     let txn = db.begin().await.map_err(EntityApiError::from)?;
 
     let new_user = user::create_by_organization(&txn, actor, organization_id, user_model).await?;
-    for granted in &new_user.roles {
-        recorder
-            .record(
+    let settled = match relationship {
+        Some(relationship) => Some(
+            coaching_relationship::create(
                 &txn,
-                audit_event::member_added(actor, organization_id, new_user.id, granted.role),
+                organization_id,
+                relationship.draft_for(new_user.id),
             )
-            .await?;
-    }
+            .await?,
+        ),
+        None => None,
+    };
 
-    if let Some(relationship) = relationship {
-        create_recorded(
-            &txn,
-            recorder,
-            actor,
-            organization_id,
-            relationship.draft_for(new_user.id),
+    let events = new_user
+        .roles
+        .iter()
+        .map(|granted| audit_event::member_added(actor, organization_id, new_user.id, granted.role))
+        .chain(
+            settled
+                .as_ref()
+                .and_then(|settled| creation_event(actor, settled)),
         )
-        .await?;
-    }
+        .collect();
+    recorder.record_all(&txn, events).await?;
 
     txn.commit().await.map_err(EntityApiError::from)?;
 
@@ -189,9 +193,9 @@ pub async fn create_in_organization(
 ///
 /// Returns the roles that were destroyed, so the caller can log them. Each is
 /// also written to the audit trail inside the transaction. A global SuperAdmin
-/// grant is among them, and that is the change most worth recording. Each deleted
-/// relationship is then recorded in its organization's audit log, followed by the
-/// user's removal from each organization they belonged to.
+/// grant is among them, and that is the change most worth recording. After the
+/// deletes, the audit log records them organization by organization: in each, every
+/// deleted relationship, then the user's removal from it.
 pub async fn delete(
     db: &DatabaseConnection,
     recorder: &dyn Recorder,
@@ -255,24 +259,22 @@ pub async fn delete(
                 err.into()
             }
         })?;
-    for relationship in &deleted_relationships {
-        recorder
-            .record(&txn, audit_event::relationship_deleted(actor, relationship))
-            .await?;
-    }
     let destroyed_roles = user_role::delete_by_user_id(&txn, actor, user_id).await?;
-    for organization_id in destroyed_roles
-        .iter()
-        .filter_map(|role| role.organization_id)
-    {
-        recorder
-            .record(
-                &txn,
-                audit_event::member_removed(actor, organization_id, user_id),
-            )
-            .await?;
-    }
     user::delete(&txn, user_id).await?;
+
+    let events = deleted_relationships
+        .iter()
+        .map(|relationship| audit_event::relationship_deleted(actor, relationship))
+        .chain(
+            destroyed_roles
+                .iter()
+                .filter_map(|role| role.organization_id)
+                .map(|organization_id| {
+                    audit_event::member_removed(actor, organization_id, user_id)
+                }),
+        )
+        .collect();
+    recorder.record_all(&txn, events).await?;
 
     txn.commit().await.map_err(|e| Error {
         source: Some(Box::new(e)),

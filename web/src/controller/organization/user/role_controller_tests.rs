@@ -371,17 +371,18 @@ fn mock_update_through_domain(
             Some(current),
             Some(requested),
         )]])
-        // The audit append: its organization lock, no earlier event, then the event.
+        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
+            requester(),
+            Some(updated),
+        )]])
+        // The audit append, last before commit: its organization lock, no earlier event,
+        // then the event.
         .append_exec_results([MockExecResult {
             last_insert_id: 0,
             rows_affected: 1,
         }])
         .append_query_results([Vec::<audit_events::Model>::new()])
         .append_query_results([vec![audit_event_row(organization_id, actor_id, target_id)]])
-        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([vec![(
-            requester(),
-            Some(updated),
-        )]])
 }
 
 #[tokio::test]

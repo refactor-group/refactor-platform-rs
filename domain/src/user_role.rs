@@ -5,13 +5,13 @@
 //! never touch the `users` row itself.
 
 use entity_api::error::{EntityApiErrorKind, Error as EntityApiError};
-use entity_api::{organization, user, user_role, user_role_change};
+use entity_api::{coaching_relationship, organization, user, user_role, user_role_change};
 use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::audit_event::{self, Recorder};
-use crate::coaching_relationship::{create_recorded, InviteeRelationship};
+use crate::coaching_relationship::{creation_event, InviteeRelationship};
 use crate::error::Error;
 use crate::user::Role;
 use crate::{user_roles, users, Actor, Id};
@@ -81,26 +81,30 @@ pub async fn attach_to_organization(
     }
 
     user_role::create(&txn, actor, user_id, organization_id, role).await?;
-    recorder
-        .record(
-            &txn,
-            audit_event::member_added(actor, organization_id, user_id, role),
-        )
-        .await?;
-
-    if let Some(relationship) = relationship {
-        create_recorded(
-            &txn,
-            recorder,
-            actor,
-            organization_id,
-            relationship.draft_for(user_id),
-        )
-        .await?;
-    }
+    let settled = match relationship {
+        Some(relationship) => Some(
+            coaching_relationship::create(&txn, organization_id, relationship.draft_for(user_id))
+                .await?,
+        ),
+        None => None,
+    };
 
     let mut attached_user = user::find_by_id(&txn, user_id).await?;
     user::scope_roles_to_organization(&mut attached_user, organization_id);
+
+    let events = std::iter::once(audit_event::member_added(
+        actor,
+        organization_id,
+        user_id,
+        role,
+    ))
+    .chain(
+        settled
+            .as_ref()
+            .and_then(|settled| creation_event(actor, settled)),
+    )
+    .collect();
+    recorder.record_all(&txn, events).await?;
 
     txn.commit().await.map_err(EntityApiError::from)?;
 
@@ -156,13 +160,14 @@ pub async fn remove_from_organization(
         .into());
     }
 
-    user_role::delete(&txn, actor, &membership).await?;
-    recorder
-        .record(
-            &txn,
-            audit_event::member_removed(actor, organization_id, user_id),
-        )
-        .await?;
+    if user_role::delete(&txn, actor, &membership).await? {
+        recorder
+            .record(
+                &txn,
+                audit_event::member_removed(actor, organization_id, user_id),
+            )
+            .await?;
+    }
 
     txn.commit().await.map_err(EntityApiError::from)?;
 
@@ -258,8 +263,15 @@ pub async fn update_role_in_organization(
     // Setting the role a member already holds is an idempotent no-op: no update,
     // no audit row, and the same response as a real change.
     let previous_role = membership.role;
-    if previous_role != role {
+    let changed = previous_role != role;
+    if changed {
         user_role::update_role(&txn, actor, &membership, role).await?;
+    }
+
+    let mut updated_user = user::find_by_id(&txn, user_id).await?;
+    user::scope_roles_to_organization(&mut updated_user, organization_id);
+
+    if changed {
         recorder
             .record(
                 &txn,
@@ -273,9 +285,6 @@ pub async fn update_role_in_organization(
             )
             .await?;
     }
-
-    let mut updated_user = user::find_by_id(&txn, user_id).await?;
-    user::scope_roles_to_organization(&mut updated_user, organization_id);
 
     txn.commit().await.map_err(EntityApiError::from)?;
 

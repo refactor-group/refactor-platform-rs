@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 
 use super::{
+    advisory_lock::{advisory_xact_lock, fold},
     error::{EntityApiErrorKind, Error},
     organization,
 };
@@ -16,8 +17,8 @@ use entity::{
 use log::*;
 use sea_orm::{
     entity::prelude::*, sea_query::Alias, sea_query::Expr, sea_query::OnConflict, Condition,
-    DatabaseConnection, DbBackend, DbErr, ExprTrait, FromQueryResult, Iterable, JoinType,
-    QuerySelect, QueryTrait, Set, Statement, TransactionSession, TransactionTrait,
+    DatabaseConnection, DbErr, ExprTrait, FromQueryResult, Iterable, JoinType, QuerySelect,
+    QueryTrait, Set, TransactionSession, TransactionTrait,
 };
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
@@ -108,7 +109,13 @@ pub async fn create(
     }
 
     let txn = db.begin().await?;
-    lock_pair(&txn, organization_id, draft.coach_id, draft.coachee_id).await?;
+    // Creates for the same pair in an organization are decided one after the other.
+    advisory_xact_lock(
+        &txn,
+        PAIR_LOCK_NAMESPACE,
+        pair_lock_key(organization_id, draft.coach_id, draft.coachee_id),
+    )
+    .await?;
 
     let (relationship, is_new) = match settle(
         &draft,
@@ -186,30 +193,6 @@ async fn insert(
     }
 }
 
-/// Holds the pair's advisory lock until the transaction ends, so creates for the same
-/// pair in an organization are decided one after the other.
-async fn lock_pair(
-    db: &impl ConnectionTrait,
-    organization_id: Id,
-    a: Id,
-    b: Id,
-) -> Result<(), Error> {
-    // SQLite, the test tier, has no advisory locks and runs on one connection.
-    if db.get_database_backend() != DbBackend::Postgres {
-        return Ok(());
-    }
-    db.execute_raw(Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        "SELECT pg_advisory_xact_lock($1, $2)",
-        [
-            PAIR_LOCK_NAMESPACE.into(),
-            pair_lock_key(organization_id, a, b).into(),
-        ],
-    ))
-    .await?;
-    Ok(())
-}
-
 /// The first key of every pair lock. Pair locks take the two-key form, which Postgres keeps
 /// apart from the single-key session locks, and this namespace keeps them apart from any
 /// other two-key lock.
@@ -226,7 +209,7 @@ fn pair_lock_key(organization_id: Id, a: Id, b: Id) -> i32 {
             upper ^ lower
         })
         .fold(0, |key: u64, part| key.wrapping_mul(FNV_PRIME) ^ part);
-    (hash ^ (hash >> 32)) as i32
+    fold(hash)
 }
 
 /// Decides a create from the pair's existing relationships in the organization: the one to
@@ -766,8 +749,6 @@ async fn by_organization(
 
 /// Deletes every relationship `user_id` coaches or is coached in, and returns them.
 ///
-/// Deletes exactly the relationships it read, so a caller can record each one it returns.
-///
 /// # Errors
 ///
 /// A relationship that still has a coaching session fails the foreign key; see
@@ -776,15 +757,10 @@ pub async fn delete_by_user_id(
     db: &impl ConnectionTrait,
     user_id: Id,
 ) -> Result<Vec<Model>, Error> {
-    let relationships = Entity::find().filter(involving(user_id)).all(db).await?;
-    Entity::delete_many()
-        .filter(
-            coaching_relationships::Column::Id
-                .is_in(relationships.iter().map(|relationship| relationship.id)),
-        )
-        .exec(db)
-        .await?;
-    Ok(relationships)
+    Ok(Entity::delete_many()
+        .filter(involving(user_id))
+        .exec_with_returning(db)
+        .await?)
 }
 
 /// Counts the relationships `user_id` coaches or is coached in that have at least one session.
@@ -1050,7 +1026,7 @@ mod wire_tests {
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
-    use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult, Transaction};
+    use sea_orm::{DatabaseBackend, MockDatabase, Transaction};
 
     #[tokio::test]
     async fn find_by_id_returns_record_when_present() -> Result<(), Error> {
@@ -1169,24 +1145,19 @@ mod tests {
         };
         let db = MockDatabase::new(DatabaseBackend::Postgres)
             .append_query_results([[relationship.clone()]])
-            .append_exec_results([MockExecResult {
-                last_insert_id: 0,
-                rows_affected: 1,
-            }])
             .into_connection();
 
         let deleted = delete_by_user_id(&db, user_id).await?;
 
-        assert_eq!(deleted, vec![relationship.clone()]);
+        assert_eq!(deleted, vec![relationship]);
         let log = db.into_transaction_log();
-        assert_eq!(log.len(), 2, "{log:?}");
-        assert_eq!(
-            log[1],
-            Transaction::from_sql_and_values(
-                DatabaseBackend::Postgres,
-                r#"DELETE FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."id" IN ($1)"#,
-                [relationship.id.into()]
-            )
+        assert_eq!(log.len(), 1, "one statement deletes and returns: {log:?}");
+        let sql = log[0].statements()[0].sql.clone();
+        assert!(
+            sql.starts_with(
+                r#"DELETE FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2 RETURNING"#
+            ),
+            "{sql}"
         );
 
         Ok(())

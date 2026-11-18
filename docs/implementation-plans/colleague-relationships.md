@@ -335,10 +335,10 @@ per-organization advisory lock, and `verify_chain` reports `Intact` or the first
 No foreign keys: events outlive the organization and records they describe. Works across
 backend instances because they share the database. Not built on the SSE `events`
 crate: those are routing messages with no actor and only reach connected users. Actions:
-`relationship_created`, `relationship_deleted`, `relationship_kind_changed`, `member_added`,
-`member_removed`, `member_role_changed`. E-1 builds the table, `append`, `verify_chain`, the
-trait, the database recorder and an in-memory test recorder; E-2 wires the call sites,
-including phase 5's kind switch. See `docs/architecture/audit_log.md`.
+`relationship_created`, `relationship_deleted`, `member_added`, `member_removed`,
+`member_role_changed`; phase 5 adds `relationship_kind_changed` with the route that records it.
+E-1 builds the table, `append`, `verify_chain`, the trait, the database recorder and an
+in-memory test recorder; E-2 wires the call sites. See `docs/architecture/audit_log.md`.
 
 **5. Change a relationship's kind.** `PUT /organizations/{org_id}/coaching_relationships/{id}/kind`,
 body `{ kind, coach_id }` (`coach_id` required for coaching), authorized by

@@ -16,6 +16,7 @@ pub use entity::{
 pub mod action;
 pub mod actions_user;
 pub mod actor;
+mod advisory_lock;
 pub mod agreement;
 pub mod audit_event;
 pub mod coaching_relationship;

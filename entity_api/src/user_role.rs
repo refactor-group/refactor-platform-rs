@@ -237,16 +237,16 @@ pub async fn find_by_user_and_organization(
 /// Deletes by primary key. Filtering on `organization_id` would render
 /// `organization_id = NULL` for a global SuperAdmin grant, which matches nothing
 /// in Postgres, and the audit row would then claim a removal that never happened.
-/// The row is only audited if it was actually deleted.
+/// The row is only audited if it was actually deleted; returns whether it was.
 pub async fn delete(
     db: &DatabaseTransaction,
     actor: Actor,
     membership: &Model,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let deleted = Entity::delete_by_id(membership.id).exec(db).await?;
 
     if deleted.rows_affected == 0 {
-        return Ok(());
+        return Ok(false);
     }
 
     crate::user_role_change::record(
@@ -257,7 +257,8 @@ pub async fn delete(
         Some(membership.role),
         None,
     )
-    .await
+    .await?;
+    Ok(true)
 }
 
 /// Counts the distinct organizations a user belongs to, ignoring global roles.
