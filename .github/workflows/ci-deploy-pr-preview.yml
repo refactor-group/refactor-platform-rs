@@ -1270,6 +1270,7 @@ jobs:
                   OAUTH_SUCCESS_REDIRECT_URI=http://${{ secrets.RPI5_TAILSCALE_NAME }}/pr-${{ needs.build-arm64-image.outputs.pr_number }}/
                   RECALL_AI_API_KEY='${{ secrets.RECALL_AI_API_KEY || 'UNUSED' }}'
                   RECALL_AI_REGION='${{ vars.RECALL_AI_REGION || 'us-west-2' }}'
+                  RECALL_AI_BASE_URL='${{ vars.RECALL_AI_BASE_URL || '' }}'
                   RECALL_AI_WEBHOOK_SECRET='${{ secrets.RECALL_AI_WEBHOOK_SECRET || 'UNUSED' }}'
                   # Empty, not 'UNUSED': a non-empty bogus key would switch the
                   # suggestions sweep on and fail every analysis.

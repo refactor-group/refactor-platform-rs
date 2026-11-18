@@ -76,7 +76,7 @@ async fn main() {
     let (recording_bot_provider, transcription_provider) =
         match service_state.config.recall_ai_api_key() {
             Some(key) => {
-                match recall_ai::Provider::new(&key, service_state.config.recall_ai_region()) {
+                match recall_ai::Provider::new(&key, &service_state.config.recall_ai_base_url()) {
                     Ok(p) => {
                         let bot: Arc<dyn recording_bot::Provider> = Arc::new(p.clone());
                         let transcript: Arc<dyn transcription_trait::Provider> = Arc::new(p);

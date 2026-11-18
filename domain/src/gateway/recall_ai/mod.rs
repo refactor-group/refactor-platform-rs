@@ -389,8 +389,9 @@ fn bot_detail_to_info(detail: BotDetailResponse) -> recording_types::Info {
 // ---------------------------------------------------------------------------
 
 impl Provider {
-    /// Construct a provider from the system API key and region.
-    pub fn new(api_key: &str, region: &str) -> Result<Self, Error> {
+    /// Construct a provider from the system API key and the API origin, such as
+    /// `https://us-east-1.recall.ai`.
+    pub fn new(api_key: &str, origin: &str) -> Result<Self, Error> {
         let mut headers = reqwest::header::HeaderMap::new();
 
         let auth_value = format!("Token {}", api_key);
@@ -420,7 +421,7 @@ impl Provider {
             .timeout(std::time::Duration::from_secs(60))
             .build()?;
 
-        let base_url = format!("https://{}.recall.ai/api/v1", region);
+        let base_url = format!("{origin}/api/v1");
 
         Ok(Self {
             client,
@@ -945,6 +946,7 @@ mod bot_detail_tests;
 mod tests {
     use super::*;
     use meeting_ai::types::{recording as recording_types, transcription as transcription_types};
+    use service::config::Config;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -1141,6 +1143,34 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap().id, "bot-test-123");
+    }
+
+    // The region is not a hostname, so a request built from it fails locally.
+    #[tokio::test]
+    async fn create_bot_sends_to_the_configured_origin_instead_of_the_region() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/v1/bot/")
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"bot-test-123"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let config = Config::from_args([
+            "test_binary",
+            "--recall-ai-region=127.0.0.1:9",
+            &format!("--recall-ai-base-url={}", server.url()),
+        ]);
+
+        let provider =
+            Provider::new("dummy-key", &config.recall_ai_base_url()).expect("provider builds");
+        let result = provider
+            .create_bot("session-abc", "https://zoom.us/j/123", "Bot")
+            .await;
+
+        assert!(result.is_ok(), "create_bot failed: {result:?}");
+        mock.assert_async().await;
     }
 
     #[tokio::test]
