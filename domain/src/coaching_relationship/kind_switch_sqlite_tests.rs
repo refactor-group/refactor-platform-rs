@@ -4,6 +4,7 @@ use sea_orm::{ActiveModelTrait, IntoActiveModel, Set};
 
 use super::*;
 use crate::error::EntityErrorKind;
+use crate::test_utils::audit_event::MemoryRecorder;
 use crate::test_utils::sqlite::fixture::{make_colleagues, seed_session_starting_in};
 use crate::test_utils::sqlite::read_back::{
     pending_invites, relationship_row, reminders_sent, session_schedule,
@@ -39,6 +40,8 @@ async fn a_switch_already_made_under_the_lock_writes_nothing() {
         let applied = apply(
             &db,
             &Config::from_args(["test"]),
+            &MemoryRecorder::default(),
+            Actor::new(Id::new_v4()),
             &stale,
             confirmed(Kind::Colleague, None),
         )
@@ -62,6 +65,8 @@ async fn a_switch_starts_from_the_relationship_as_it_stands_under_the_lock() {
         let (before, after) = apply(
             &db,
             &Config::from_args(["test"]),
+            &MemoryRecorder::default(),
+            Actor::new(Id::new_v4()),
             &stale,
             confirmed(Kind::Coaching, Some(coachee)),
         )
@@ -97,6 +102,8 @@ async fn a_switch_suppresses_the_reminders_of_whom_it_newly_reminds_under_the_lo
         apply(
             &db,
             &Config::from_args(["test"]),
+            &MemoryRecorder::default(),
+            Actor::new(Id::new_v4()),
             &stale,
             confirmed(Kind::Colleague, None),
         )
@@ -125,6 +132,8 @@ async fn a_relationship_gone_under_the_lock_is_not_found() {
         let applied = apply(
             &db,
             &Config::from_args(["test"]),
+            &MemoryRecorder::default(),
+            Actor::new(Id::new_v4()),
             &gone,
             confirmed(Kind::Colleague, None),
         )

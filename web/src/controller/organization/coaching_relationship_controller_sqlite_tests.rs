@@ -1681,3 +1681,84 @@ async fn a_returned_relationship_is_not_recorded_again() {
     })
     .await;
 }
+
+/// KIND-46
+#[tokio::test]
+async fn a_confirmed_switch_is_recorded_with_the_seats_after_it() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let r1 = app.fixture.r1;
+        let (coach, coachee) = (
+            app.fixture.user(Caller::Coach),
+            app.fixture.user(Caller::Coachee),
+        );
+        make_colleagues(app.db(), r1).await;
+
+        let reply = admin_switches(
+            &mut app,
+            r1,
+            json!({ "kind": "coaching", "coach_id": coachee, "confirmed": true }),
+        )
+        .await;
+
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        assert_eq!(
+            verified_audit_trail(app.db(), app.fixture.o1).await,
+            vec![AuditEntry {
+                actor_user_id: Some(app.fixture.user(Caller::Admin)),
+                action: "relationship_kind_changed".into(),
+                subject_type: "coaching_relationship".into(),
+                subject_id: r1,
+                details: json!({
+                    "from": "colleague",
+                    "to": "coaching",
+                    "coach_id": coachee,
+                    "coachee_id": coach,
+                }),
+            }]
+        );
+    })
+    .await;
+}
+
+/// KIND-46
+#[tokio::test]
+async fn an_unconfirmed_refused_or_unchanged_switch_records_nothing() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, r1) = (app.fixture.o1, app.fixture.r1);
+        let (coach, member) = (
+            app.fixture.user(Caller::Coach),
+            app.fixture.user(Caller::Member),
+        );
+
+        for (caller, body, status) in [
+            (
+                Caller::Admin,
+                json!({ "kind": "colleague" }),
+                StatusCode::CONFLICT,
+            ),
+            (
+                Caller::Admin,
+                json!({ "kind": "coaching", "coach_id": member, "confirmed": true }),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (
+                Caller::Coach,
+                json!({ "kind": "colleague", "confirmed": true }),
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                Caller::Admin,
+                json!({ "kind": "coaching", "coach_id": coach, "confirmed": true }),
+                StatusCode::OK,
+            ),
+        ] {
+            let reply = switch_kind_in(&mut app, caller, o1, r1, body.clone()).await;
+            assert_eq!(reply.status, status, "{body}: {}", reply.body);
+        }
+
+        assert_eq!(verified_audit_trail(app.db(), o1).await, vec![]);
+    })
+    .await;
+}

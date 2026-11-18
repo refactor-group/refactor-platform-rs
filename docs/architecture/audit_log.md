@@ -16,6 +16,7 @@ and after; keep it to strings, integers, booleans and ids.
 |---|---|
 | `relationship_created` | `coaching_relationship` |
 | `relationship_deleted` | `coaching_relationship` |
+| `relationship_kind_changed` | `coaching_relationship` |
 | `member_added` | `user` |
 | `member_removed` | `user` |
 | `member_role_changed` | `user` |

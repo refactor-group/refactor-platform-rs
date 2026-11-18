@@ -18,11 +18,12 @@ use super::{
     Draft,
 };
 use crate::action::{find_by_coaching_relationship, CallerVisibility, FindByRelationshipParams};
+use crate::audit_event::{self, Recorder};
 use crate::coaching_relationship_kind::Kind;
 use crate::coaching_relationships::Model;
 use crate::error::{reason, DomainErrorKind, Error, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
-use crate::{coaching_sessions, users, Id};
+use crate::{coaching_sessions, users, Actor, Id};
 
 /// What an administrator asks a relationship to become.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +33,14 @@ pub struct Request {
     pub coach_id: Option<Id>,
     /// Whether the administrator has seen and accepted the switch's [`Consequences`].
     pub confirmed: bool,
+}
+
+/// Where a confirmed switch reports itself: the audit log, inside its transaction, and the
+/// participants' live connections, once it commits.
+#[derive(Clone, Copy)]
+pub struct Reporters<'a> {
+    pub recorder: &'a dyn Recorder,
+    pub event_publisher: &'a EventPublisher,
 }
 
 /// What a switch changes for the relationship's participants, sent back in a 409 until the
@@ -81,13 +90,14 @@ pub struct AssigneeActionCount {
 ///
 /// A confirmed switch updates the relationship and, in the same transaction, marks as already
 /// sent the reminders of anyone it newly reminds for sessions already inside the reminder
-/// window, so it sends no surprise reminder, and owes both participants a fresh invite for
-/// every upcoming session and series, which the pending reschedule sweep sends. Once it
-/// commits, the participants who may still read the relationship are told it changed kind.
+/// window, so it sends no surprise reminder, owes both participants a fresh invite for
+/// every upcoming session and series, which the pending reschedule sweep sends, and records
+/// the switch in the audit log with `caller` as the actor. Once it commits, the participants
+/// who may still read the relationship are told it changed kind.
 pub async fn switch_for_caller(
     db: &DatabaseConnection,
     config: &Config,
-    event_publisher: &EventPublisher,
+    reporters: Reporters<'_>,
     caller: &users::Model,
     organization_id: Id,
     relationship_id: Id,
@@ -121,8 +131,17 @@ pub async fn switch_for_caller(
                 consequences(db, &relationship, &switched).await?,
             ));
         }
-        if let Some((before, after)) = apply(db, config, &relationship, request).await? {
-            publish_kind_changed(db, event_publisher, &before, &after).await;
+        if let Some((before, after)) = apply(
+            db,
+            config,
+            reporters.recorder,
+            Actor::new(caller.id),
+            &relationship,
+            request,
+        )
+        .await?
+        {
+            publish_kind_changed(db, reporters.event_publisher, &before, &after).await;
         }
     }
 
@@ -275,12 +294,14 @@ async fn ensure_not_archived(db: &DatabaseConnection, organization_id: Id) -> Re
 
 /// Under the pair's lock, switches `relationship` as it now stands to what `request` asks,
 /// marks as sent the reminders the switch newly owes for sessions inside the reminder window,
-/// and owes both participants the invite of every upcoming session and series, in one
-/// transaction. Returns the relationship before and after, or `None` when it already was
-/// what `request` asks, writing nothing.
+/// owes both participants the invite of every upcoming session and series, and records the
+/// switch as `actor`'s, in one transaction. Returns the relationship before and after, or
+/// `None` when it already was what `request` asks, writing nothing.
 async fn apply(
     db: &DatabaseConnection,
     config: &Config,
+    recorder: &dyn Recorder,
+    actor: Actor,
     relationship: &Model,
     request: Request,
 ) -> Result<Option<(Model, Model)>, Error> {
@@ -303,6 +324,12 @@ async fn apply(
         .await?;
     let upcoming = coaching_session::find_by_relationship_after(&txn, current.id, now).await?;
     coaching_session_pending_invite::queue(&txn, &invites_of(&upcoming), &participants(&current))
+        .await?;
+    recorder
+        .record(
+            &txn,
+            audit_event::relationship_kind_changed(actor, &current, &switched),
+        )
         .await?;
     txn.commit().await.map_err(entity_api::error::Error::from)?;
     Ok(Some((current, switched)))
