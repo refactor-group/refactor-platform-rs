@@ -117,7 +117,8 @@ the calendar event was delivered when the session was scheduled, and re-sending 
 Template variables: `first_name`, `other_user_first_name`, `other_user_last_name`,
 `other_user_role` (the other participant and what they are to the recipient: `coach` in a
 coachee's reminder, `colleague` in a colleague's), `session_label` (`coaching session` for
-coaching, `session` for colleagues), `organization_name`, `session_date`,
+coaching, `session` for colleagues), `session_label_plural` (`coaching sessions` or `sessions`),
+`organization_name`, `session_date`,
 `session_time`, `session_when`, `session_duration`, `session_url`, plus `session_title` and
 `meeting_url` when the session has them (omitted rather than blanked, so the template's
 `fallback_value` fires). The template should use the `other_user_*` names; see
@@ -144,6 +145,8 @@ Both welcome variables name whoever sent the invite, who may be an admin or a co
 rather than a coach. The session, series and reminder templates name the other participant
 by `other_user_role`, which is `colleague` in a colleague relationship, and name the session
 by `session_label` (`Rules::session_label`): `coaching session`, or `session` for colleagues.
+They also carry its plural, `session_label_plural` (`Rules::session_label_plural`):
+`coaching sessions`, or `sessions` for colleagues.
 
 The `.ics` DESCRIPTION has no template. One invite goes to both participants, so it names
 the pair rather than "the other person": `Coach: {name}` for coaching, and

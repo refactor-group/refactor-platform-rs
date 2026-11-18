@@ -99,6 +99,8 @@ pub trait Rules {
     fn role(&self, seat: Seat) -> Role;
     /// What emails and calendar invites call one of its sessions, in lower case.
     fn session_label(&self) -> &'static str;
+    /// The plural of [`Rules::session_label`], for series emails.
+    fn session_label_plural(&self) -> &'static str;
     /// May schedule, reschedule, cancel, run series, set meeting links and delete any topic.
     fn can_schedule_sessions(&self, seat: Seat) -> bool;
     /// Sees every action in the relationship, not only their own and unassigned ones.
@@ -130,6 +132,10 @@ impl Rules for Coaching {
 
     fn session_label(&self) -> &'static str {
         "coaching session"
+    }
+
+    fn session_label_plural(&self) -> &'static str {
+        "coaching sessions"
     }
 
     fn can_schedule_sessions(&self, seat: Seat) -> bool {
@@ -183,6 +189,10 @@ impl Rules for Colleague {
 
     fn session_label(&self) -> &'static str {
         "session"
+    }
+
+    fn session_label_plural(&self) -> &'static str {
+        "sessions"
     }
 
     fn can_schedule_sessions(&self, _seat: Seat) -> bool {

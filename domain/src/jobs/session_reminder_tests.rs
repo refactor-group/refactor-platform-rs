@@ -785,21 +785,26 @@ async fn each_reminder_carries_its_kinds_session_label() {
     let coach = named(coach_id, "Cal", "cal@example.com");
     let coachee = named(coachee_id, "Dee", "dee@example.com");
 
-    for (kind, label) in [
+    for (kind, label, plural) in [
         (
             crate::coaching_relationship_kind::Kind::Coaching,
             "coaching session",
+            "coaching sessions",
         ),
         (
             crate::coaching_relationship_kind::Kind::Colleague,
             "session",
+            "sessions",
         ),
     ] {
         let mut server = mockito::Server::new_async().await;
         let to_coachee = server
             .mock("POST", "/emails")
             .match_body(mockito::Matcher::PartialJson(serde_json::json!({
-                "template": { "variables": { "session_label": label } },
+                "template": { "variables": {
+                    "session_label": label,
+                    "session_label_plural": plural,
+                } },
             })))
             .with_status(200)
             .with_body(r#"{"id":"sent"}"#)

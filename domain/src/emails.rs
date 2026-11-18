@@ -575,6 +575,8 @@ struct Recipient<'a> {
     other_user_role: coaching_relationship_kind::Role,
     /// How the copy refers to the session, from the relationship's kind.
     session_label: &'static str,
+    /// The plural of `session_label`, for the series copy.
+    session_label_plural: &'static str,
 }
 
 /// Template variables carried only by the reschedule sends: the discriminant the
@@ -762,6 +764,7 @@ async fn send_session_email_to_recipient(
         .add_variable("other_user_last_name", to.other_user.last_name.as_str())
         .add_variable("other_user_role", to.other_user_role.as_str())
         .add_variable("session_label", to.session_label)
+        .add_variable("session_label_plural", to.session_label_plural)
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_date", session_date.as_str())
         .add_variable("session_time", session_time.as_str())
@@ -977,6 +980,7 @@ impl<'a> Participants<'a> {
                     other_user: self.coach,
                     other_user_role: coach_role,
                     session_label: rules.session_label(),
+                    session_label_plural: rules.session_label_plural(),
                 },
             ),
             (
@@ -986,6 +990,7 @@ impl<'a> Participants<'a> {
                     other_user: self.coachee,
                     other_user_role: coachee_role,
                     session_label: rules.session_label(),
+                    session_label_plural: rules.session_label_plural(),
                 },
             ),
         ]
@@ -1525,6 +1530,7 @@ async fn send_session_reminder_email(
         other_user: other,
         other_user_role,
         session_label,
+        session_label_plural,
     } = *to;
     let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
     let session_duration =
@@ -1545,6 +1551,7 @@ async fn send_session_reminder_email(
         .add_variable("other_user_last_name", other.last_name.as_str())
         .add_variable("other_user_role", other_user_role.as_str())
         .add_variable("session_label", session_label)
+        .add_variable("session_label_plural", session_label_plural)
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_date", session_date.as_str())
         .add_variable("session_time", session_time.as_str())
@@ -1663,6 +1670,7 @@ async fn send_session_cancelled_email_to_recipient(
         .add_variable("other_user_last_name", to.other_user.last_name.as_str())
         .add_variable("other_user_role", to.other_user_role.as_str())
         .add_variable("session_label", to.session_label)
+        .add_variable("session_label_plural", to.session_label_plural)
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_date", session_date.as_str())
         .add_variable("session_time", session_time.as_str())
@@ -1829,6 +1837,7 @@ async fn send_recurring_series_email_to_recipient(
         .add_variable("other_user_last_name", to.other_user.last_name.as_str())
         .add_variable("other_user_role", to.other_user_role.as_str())
         .add_variable("session_label", to.session_label)
+        .add_variable("session_label_plural", to.session_label_plural)
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_count", sessions.len() as u64)
         .add_variable("first_session_date", first_session_date.as_str())
@@ -2856,6 +2865,7 @@ async fn send_recurring_sessions_cancelled_email_to_recipient(
         .add_variable("other_user_last_name", to.other_user.last_name.as_str())
         .add_variable("other_user_role", to.other_user_role.as_str())
         .add_variable("session_label", to.session_label)
+        .add_variable("session_label_plural", to.session_label_plural)
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_count", sessions.len() as u64)
         .add_variable("first_session_date", first_session_date.as_str())

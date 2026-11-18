@@ -1312,6 +1312,7 @@ async fn test_send_session_rescheduled_email_omits_recurrence_variables() {
             "session_date",
             "session_duration",
             "session_label",
+            "session_label_plural",
             "session_or_series",
             "session_time",
             "session_url",
@@ -3221,6 +3222,7 @@ async fn test_send_recurring_sessions_rescheduled_email_previous_when_comes_from
             "session_count",
             "session_duration",
             "session_label",
+            "session_label_plural",
             "session_or_series",
             "session_url",
             "session_when",
@@ -4558,6 +4560,7 @@ async fn test_send_recurring_series_email_to_recipient_empty_sessions_errors() {
             other_user: &other,
             other_user_role: coaching_relationship_kind::Role::Coach,
             session_label: "coaching session",
+            session_label_plural: "coaching sessions",
         },
         &[],
         &org,
@@ -4658,6 +4661,7 @@ async fn test_send_session_reminder_email_variables() {
                     "other_user_last_name": "Smith",
                     "other_user_role": "coach",
                     "session_label": "coaching session",
+                    "session_label_plural": "coaching sessions",
                     "organization_name": "Acme Corp",
                     "session_date": "Wednesday, March 4, 2026",
                     "session_time": "10:00 AM",
@@ -4684,6 +4688,7 @@ async fn test_send_session_reminder_email_variables() {
             other_user: &coach,
             other_user_role: coaching_relationship_kind::Role::Coach,
             session_label: "coaching session",
+            session_label_plural: "coaching sessions",
         },
         &session,
         &org,
@@ -4726,6 +4731,7 @@ async fn test_send_session_reminder_email_goes_only_to_the_coachee() {
             other_user: &coach,
             other_user_role: coaching_relationship_kind::Role::Coach,
             session_label: "coaching session",
+            session_label_plural: "coaching sessions",
         },
         &create_test_session(),
         &create_test_organization(),
@@ -4778,6 +4784,7 @@ async fn test_send_session_reminder_email_carries_title_and_meeting_url() {
             other_user: &coach,
             other_user_role: coaching_relationship_kind::Role::Coach,
             session_label: "coaching session",
+            session_label_plural: "coaching sessions",
         },
         &session,
         &create_test_organization(),
@@ -5026,30 +5033,38 @@ async fn each_colleagues_cancelled_email_names_the_other_a_colleague() {
 
 // ───── session label ─────
 
-/// Each kind with what its emails call a session.
-const SESSION_LABELS: [(coaching_relationship_kind::Kind, &str); 2] = [
+/// Each kind with what its emails call a session, singular and plural.
+const SESSION_LABELS: [(coaching_relationship_kind::Kind, &str, &str); 2] = [
     (
         coaching_relationship_kind::Kind::Coaching,
         "coaching session",
+        "coaching sessions",
     ),
-    (coaching_relationship_kind::Kind::Colleague, "session"),
+    (
+        coaching_relationship_kind::Kind::Colleague,
+        "session",
+        "sessions",
+    ),
 ];
 
-/// One Resend mock per kind in [`SESSION_LABELS`], each expecting both copies to carry its label.
+/// One Resend mock per kind in [`SESSION_LABELS`], each expecting both copies to carry its labels.
 async fn session_label_mocks(server: &mut ServerGuard) -> [mockito::Mock; 2] {
-    let [(_, coaching), (_, colleague)] = SESSION_LABELS;
+    let [(_, coaching, coaching_plural), (_, colleague, colleague_plural)] = SESSION_LABELS;
     [
-        session_label_mock(server, coaching).await,
-        session_label_mock(server, colleague).await,
+        session_label_mock(server, coaching, coaching_plural).await,
+        session_label_mock(server, colleague, colleague_plural).await,
     ]
 }
 
-/// A Resend mock expecting both copies of one send to carry `label`.
-async fn session_label_mock(server: &mut ServerGuard, label: &str) -> mockito::Mock {
+/// A Resend mock expecting both copies of one send to carry `label` and `plural`.
+async fn session_label_mock(server: &mut ServerGuard, label: &str, plural: &str) -> mockito::Mock {
     server
         .mock("POST", "/emails")
         .match_body(mockito::Matcher::PartialJson(serde_json::json!({
-            "template": { "variables": { "session_label": label } }
+            "template": { "variables": {
+                "session_label": label,
+                "session_label_plural": plural,
+            } }
         })))
         .with_status(200)
         .with_body(r#"{"id":"email_test"}"#)
@@ -5067,7 +5082,7 @@ async fn scheduled_emails_carry_the_kinds_session_label() {
     let mocks = session_label_mocks(&mut server).await;
     let (alex, jane) = colleagues();
 
-    for (kind, _) in SESSION_LABELS {
+    for (kind, _, _) in SESSION_LABELS {
         send_session_scheduled_email(
             &mock_description_loaders(),
             &config,
@@ -5101,7 +5116,7 @@ async fn rescheduled_emails_carry_the_kinds_session_label() {
     let (alex, jane) = colleagues();
     let session = create_test_session();
 
-    for (kind, _) in SESSION_LABELS {
+    for (kind, _, _) in SESSION_LABELS {
         send_session_rescheduled_email(
             &mock_description_loaders(),
             &config,
@@ -5134,7 +5149,7 @@ async fn cancelled_emails_carry_the_kinds_session_label() {
     let mocks = session_label_mocks(&mut server).await;
     let (alex, jane) = colleagues();
 
-    for (kind, _) in SESSION_LABELS {
+    for (kind, _, _) in SESSION_LABELS {
         send_session_cancelled_email(
             &config,
             &Audience {
@@ -5167,7 +5182,7 @@ async fn series_scheduled_emails_carry_the_kinds_session_label() {
     let mocks = session_label_mocks(&mut server).await;
     let (alex, jane) = colleagues();
 
-    for (kind, _) in SESSION_LABELS {
+    for (kind, _, _) in SESSION_LABELS {
         send_recurring_sessions_scheduled_email(
             &MockDatabase::new(DatabaseBackend::Postgres)
                 .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
@@ -5204,7 +5219,7 @@ async fn series_rescheduled_emails_carry_the_kinds_session_label() {
     let (alex, jane) = colleagues();
     let series = create_test_series();
 
-    for (kind, _) in SESSION_LABELS {
+    for (kind, _, _) in SESSION_LABELS {
         send_recurring_sessions_rescheduled_email(
             &MockDatabase::new(DatabaseBackend::Postgres)
                 .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
@@ -5243,7 +5258,7 @@ async fn series_cancelled_emails_carry_the_kinds_session_label() {
     let mocks = session_label_mocks(&mut server).await;
     let (alex, jane) = colleagues();
 
-    for (kind, _) in SESSION_LABELS {
+    for (kind, _, _) in SESSION_LABELS {
         send_recurring_sessions_cancelled_email(
             &config,
             &create_test_series(),

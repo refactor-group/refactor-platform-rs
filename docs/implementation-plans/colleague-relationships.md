@@ -289,6 +289,9 @@ the 409's consequences before re-sending with `confirmed: true`) is posted at th
       and `session` for colleagues. It is lower case, so write the copy so it never starts a
       sentence or the subject. The variable is additive, so a template can switch any time after
       the deploy that sends it.
+    - The same seven also carry `session_label_plural`: `coaching sessions` for coaching and
+      `sessions` for colleagues. The series templates use `{{{session_label_plural}}}` for
+      "coaching sessions"; the same lower-case and additive rules apply.
     - `.ics` DESCRIPTION: no template. A colleague invite reads `Colleagues: {A} and {B}`; a
       coaching one is unchanged (`Coach: {name}`).
   - Frontend copy, in the phase 4 frontend PRs: every label picked for a coaching relationship
