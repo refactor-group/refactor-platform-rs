@@ -17,6 +17,7 @@ use domain::test_utils::sqlite::fixture::{
 };
 use domain::test_utils::sqlite::read_back::{
     pending_invites, relationship_row, relationships_between, reminders_sent, session_schedule,
+    verified_audit_trail, AuditEntry,
 };
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::users::Role;
@@ -1612,6 +1613,71 @@ async fn a_relationship_in_an_archived_organization_cannot_switch() {
             assert_eq!(relationship_row(app.db(), r1).await, before, "{body}");
             assert_eq!(pending_invites(app.db()).await, BTreeSet::new(), "{body}");
         }
+    })
+    .await;
+}
+
+/// The audit entry for ADMIN creating colleague relationship `id` with `coach_id` in the coach seat.
+fn colleagues_created(app: &TestApp, id: Id, coach_id: Id, coachee_id: Id) -> AuditEntry {
+    AuditEntry {
+        actor_user_id: Some(app.fixture.user(Caller::Admin)),
+        action: "relationship_created".into(),
+        subject_type: "coaching_relationship".into(),
+        subject_id: id,
+        details: json!({ "kind": "colleague", "coach_id": coach_id, "coachee_id": coachee_id }),
+    }
+}
+
+/// REL-23
+#[tokio::test]
+async fn a_created_relationship_is_recorded() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (a, b) = (
+            app.fixture.user(Caller::Coach),
+            app.fixture.user(Caller::Member),
+        );
+
+        let created = admin_creates(
+            &mut app,
+            json!({ "coach_id": a, "coachee_id": b, "kind": "colleague" }),
+        )
+        .await;
+
+        assert_eq!(
+            verified_audit_trail(app.db(), app.fixture.o1).await,
+            vec![colleagues_created(&app, created, a, b)]
+        );
+    })
+    .await;
+}
+
+/// REL-24
+#[tokio::test]
+async fn a_returned_relationship_is_not_recorded_again() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (a, b) = (
+            app.fixture.user(Caller::Coach),
+            app.fixture.user(Caller::Member),
+        );
+        let created = admin_creates(
+            &mut app,
+            json!({ "coach_id": a, "coachee_id": b, "kind": "colleague" }),
+        )
+        .await;
+
+        let returned = admin_creates(
+            &mut app,
+            json!({ "coach_id": b, "coachee_id": a, "kind": "colleague" }),
+        )
+        .await;
+
+        assert_eq!(returned, created);
+        assert_eq!(
+            verified_audit_trail(app.db(), app.fixture.o1).await,
+            vec![colleagues_created(&app, created, a, b)]
+        );
     })
     .await;
 }

@@ -13,6 +13,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
+use domain::audit_event::DatabaseRecorder;
 use domain::coaching_relationship::{kind_switch, CoachingRelationshipWithUserNames};
 use domain::coaching_relationship_kind::Kind;
 use domain::{
@@ -64,6 +65,7 @@ pub async fn create(
     let coaching_relationship: CoachingRelationshipWithUserNames =
         CoachingRelationshipApi::create_for_caller(
             app_state.db_conn_ref(),
+            &DatabaseRecorder,
             &authenticated_user,
             organization.id,
             CoachingRelationshipApi::Draft {

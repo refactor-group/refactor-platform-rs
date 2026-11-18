@@ -160,6 +160,10 @@ extractor cannot break one.
   `domain/src/coaching_session_goal_sqlite_tests.rs`): a conflicting insert writes nothing
   and reports `RecordNotFound`, and a bulk `exec_with_returning` yields only the rows
   actually written, or none when every row conflicts.
+- **The audit log's chain** (`domain/src/audit_event_sqlite_tests.rs`): each organization's
+  events chain separately from its first; an edited event breaks the chain at itself, and a
+  removed one at the next event, even when that event's link is rewritten; reordered keys in
+  stored `details` still verify; an event recorded in a rolled-back transaction is not stored.
 - **Coaching session image cascades**
   (`domain/src/coaching_session_image_cascade_sqlite_tests.rs`): deleting a session removes
   only its own images, and deleting a user removes the images they uploaded.

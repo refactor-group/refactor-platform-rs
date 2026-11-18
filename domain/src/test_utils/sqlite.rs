@@ -13,8 +13,8 @@ use entity::roles::Role;
 use entity::status::Status;
 use entity::transcription::TranscriptionStatus;
 use entity::{
-    actions, actions_users, agreements, coaching_relationships, coaching_session_images,
-    coaching_session_notices, coaching_session_pending_invites,
+    actions, actions_users, agreements, audit_events, coaching_relationships,
+    coaching_session_images, coaching_session_notices, coaching_session_pending_invites,
     coaching_session_pending_reschedules, coaching_session_reminders, coaching_session_series,
     coaching_session_topics, coaching_session_views, coaching_sessions, coaching_sessions_goals,
     cost_pricing_config, goals, magic_link_tokens, meeting_recording, oauth_connections,
@@ -79,6 +79,7 @@ pub async fn database() -> DatabaseConnection {
         .register(actions::Entity)
         .register(actions_users::Entity)
         .register(agreements::Entity)
+        .register(audit_events::Entity)
         .register(coaching_relationships::Entity)
         .register(coaching_session_images::Entity)
         .register(coaching_session_notices::Entity)

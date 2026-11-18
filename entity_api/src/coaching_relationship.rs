@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 
 use super::{
+    advisory_lock::{advisory_xact_lock, fold},
     error::{EntityApiErrorKind, Error},
     organization,
 };
@@ -16,9 +17,8 @@ use entity::{
 use log::*;
 use sea_orm::{
     entity::prelude::*, sea_query::Alias, sea_query::Expr, sea_query::OnConflict,
-    ActiveValue::Unchanged, Condition, DatabaseConnection, DbBackend, DbErr, ExprTrait,
-    FromQueryResult, Iterable, JoinType, QuerySelect, QueryTrait, Set, Statement,
-    TransactionSession, TransactionTrait,
+    ActiveValue::Unchanged, Condition, DatabaseConnection, DbErr, ExprTrait, FromQueryResult,
+    Iterable, JoinType, QuerySelect, QueryTrait, Set, TransactionSession, TransactionTrait,
 };
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
@@ -32,6 +32,14 @@ pub struct Draft {
     pub coach_id: Id,
     pub coachee_id: Id,
     pub kind: Kind,
+}
+
+/// A relationship [`create`] settled on, and whether this call inserted it.
+#[derive(Debug, Clone)]
+pub struct Settled {
+    pub relationship: CoachingRelationshipWithUserNames,
+    /// False when the pair's existing relationship was returned instead.
+    pub is_new: bool,
 }
 
 /// Creates the drafted relationship in an organization.
@@ -48,7 +56,7 @@ pub async fn create(
     db: &(impl ConnectionTrait + TransactionTrait),
     organization_id: Id,
     draft: Draft,
-) -> Result<CoachingRelationshipWithUserNames, Error> {
+) -> Result<Settled, Error> {
     debug!("New Coaching Relationship to be inserted: {draft:?}");
 
     if draft.coach_id == draft.coachee_id {
@@ -103,7 +111,7 @@ pub async fn create(
     let txn = db.begin().await?;
     lock_pair(&txn, organization_id, draft.coach_id, draft.coachee_id).await?;
 
-    let relationship = match settle(
+    let (relationship, is_new) = match settle(
         &draft,
         find_between(&txn, organization_id, draft.coach_id, draft.coachee_id).await?,
     )? {
@@ -112,14 +120,17 @@ pub async fn create(
                 "Coaching relationship {} already exists for coach {}, coachee {} in organization {organization_id}; returning it",
                 existing.id, existing.coach_id, existing.coachee_id
             );
-            existing
+            (existing, false)
         }
         None => insert(&txn, organization_id, draft, &coach, &coachee).await?,
     };
 
     txn.commit().await?;
     let (seated_coach, seated_coachee) = in_stored_seats(&relationship, &coach, &coachee);
-    Ok(with_user_names(&relationship, seated_coach, seated_coachee))
+    Ok(Settled {
+        relationship: with_user_names(&relationship, seated_coach, seated_coachee),
+        is_new,
+    })
 }
 
 /// The two users in the seats `relationship` stores them in, which for a returned colleague
@@ -136,14 +147,15 @@ fn in_stored_seats<'a>(
     }
 }
 
-/// Inserts the drafted relationship, or returns the one a concurrent request inserted first.
+/// Inserts the drafted relationship, or returns the one a concurrent request inserted first;
+/// the flag says whether this call inserted it.
 async fn insert(
     db: &impl ConnectionTrait,
     organization_id: Id,
     draft: Draft,
     coach: &users::Model,
     coachee: &users::Model,
-) -> Result<Model, Error> {
+) -> Result<(Model, bool), Error> {
     let now = Utc::now();
     let slug = slugify!(format!("{} {}", coach.first_name, coachee.first_name).as_str());
 
@@ -159,7 +171,7 @@ async fn insert(
     };
 
     match insert_unless_exists(db, coaching_relationship_active_model).await? {
-        Some(inserted) => Ok(inserted),
+        Some(inserted) => Ok((inserted, true)),
         None => {
             let winner = settle(
                 &draft,
@@ -170,33 +182,25 @@ async fn insert(
                 "Coaching relationship for coach {}, coachee {} in organization {organization_id} was created by a concurrent request; returning that one ({})",
                 winner.coach_id, winner.coachee_id, winner.id
             );
-            Ok(winner)
+            Ok((winner, false))
         }
     }
 }
 
-/// Holds the pair's advisory lock until the transaction ends, so creates for the same
-/// pair in an organization are decided one after the other.
+/// Holds the pair's advisory lock until the transaction ends, so creates and switches for
+/// the same pair in an organization are decided one after the other.
 async fn lock_pair(
     db: &impl ConnectionTrait,
     organization_id: Id,
     a: Id,
     b: Id,
 ) -> Result<(), Error> {
-    // SQLite, the test tier, has no advisory locks and runs on one connection.
-    if db.get_database_backend() != DbBackend::Postgres {
-        return Ok(());
-    }
-    db.execute_raw(Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        "SELECT pg_advisory_xact_lock($1, $2)",
-        [
-            PAIR_LOCK_NAMESPACE.into(),
-            pair_lock_key(organization_id, a, b).into(),
-        ],
-    ))
-    .await?;
-    Ok(())
+    advisory_xact_lock(
+        db,
+        PAIR_LOCK_NAMESPACE,
+        pair_lock_key(organization_id, a, b),
+    )
+    .await
 }
 
 /// The first key of every pair lock. Pair locks take the two-key form, which Postgres keeps
@@ -215,7 +219,7 @@ fn pair_lock_key(organization_id: Id, a: Id, b: Id) -> i32 {
             upper ^ lower
         })
         .fold(0, |key: u64, part| key.wrapping_mul(FNV_PRIME) ^ part);
-    (hash ^ (hash >> 32)) as i32
+    fold(hash)
 }
 
 /// Decides a create from the pair's existing relationships in the organization: the one to
@@ -804,18 +808,20 @@ async fn by_organization(
     query.filter(coaching_relationships::Column::OrganizationId.in_subquery(organization_subquery))
 }
 
-/// Deletes every relationship `user_id` coaches or is coached in.
+/// Deletes every relationship `user_id` coaches or is coached in, and returns them.
 ///
 /// # Errors
 ///
 /// A relationship that still has a coaching session fails the foreign key; see
 /// [`Error::is_foreign_key_violation`].
-pub async fn delete_by_user_id(db: &impl ConnectionTrait, user_id: Id) -> Result<(), Error> {
-    Entity::delete_many()
+pub async fn delete_by_user_id(
+    db: &impl ConnectionTrait,
+    user_id: Id,
+) -> Result<Vec<Model>, Error> {
+    Ok(Entity::delete_many()
         .filter(involving(user_id))
-        .exec(db)
-        .await?;
-    Ok(())
+        .exec_with_returning(db)
+        .await?)
 }
 
 /// Counts the relationships `user_id` coaches or is coached in that have at least one session.
@@ -1167,19 +1173,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_by_user_id_deletes_all_records_associated_with_user() -> Result<(), Error> {
-        let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-
+    async fn delete_by_user_id_deletes_and_returns_every_relationship_of_the_user(
+    ) -> Result<(), Error> {
         let user_id = Id::new_v4();
-        let _ = delete_by_user_id(&db, user_id).await;
+        let now = Utc::now();
+        let relationship = Model {
+            id: Id::new_v4(),
+            organization_id: Id::new_v4(),
+            coach_id: user_id,
+            coachee_id: Id::new_v4(),
+            kind: Kind::Coaching,
+            slug: "coach-coachee".to_owned(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        };
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([[relationship.clone()]])
+            .into_connection();
 
-        assert_eq!(
-            db.into_transaction_log(),
-            [Transaction::from_sql_and_values(
-                DatabaseBackend::Postgres,
-                r#"DELETE FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2"#,
-                [user_id.into(), user_id.into()]
-            )]
+        let deleted = delete_by_user_id(&db, user_id).await?;
+
+        assert_eq!(deleted, vec![relationship]);
+        let log = db.into_transaction_log();
+        assert_eq!(log.len(), 1, "one statement deletes and returns: {log:?}");
+        let sql = log[0].statements()[0].sql.clone();
+        assert!(
+            sql.starts_with(
+                r#"DELETE FROM "refactor_platform"."coaching_relationships" WHERE "coaching_relationships"."coach_id" = $1 OR "coaching_relationships"."coachee_id" = $2 RETURNING"#
+            ),
+            "{sql}"
         );
 
         Ok(())

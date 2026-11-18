@@ -139,7 +139,8 @@ async fn reuses_an_existing_relationship_instead_of_erroring() -> Result<(), Err
             kind: Kind::Coaching,
         },
     )
-    .await?;
+    .await?
+    .relationship;
 
     assert_eq!(reused.id, existing.id);
     assert_eq!(reused.coach_id, coach.id);
@@ -201,7 +202,8 @@ async fn does_not_reuse_a_reversed_pair() -> Result<(), Error> {
             kind: Kind::Coaching,
         },
     )
-    .await?;
+    .await?
+    .relationship;
 
     assert_ne!(created.id, reversed.id);
     assert_eq!(created.id, inserted.id);
