@@ -98,6 +98,22 @@ jobs:
     name: Build & Test
     runs-on: ubuntu-24.04
 
+    # For the migration check below.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: refactor
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: refactor
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U refactor"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -134,6 +150,25 @@ jobs:
       # without a live Postgres.
       - name: Run docs-collab-server tests
         run: cargo test -p docs-collab-server
+
+      # Applies main's migrations, then this change's in the one transaction a
+      # deploy uses, so a migration that writes an enum value added earlier in
+      # the same change fails here instead of in production.
+      - name: Apply pending migrations as a deploy would
+        env:
+          DATABASE_URL: postgres://refactor:password@localhost:5432/refactor
+          DATABASE_SCHEMA: refactor_platform
+        run: |
+          git fetch --quiet --depth 1 origin main
+          names() { grep -oE 'm[0-9]{8}_[0-9]{6}_[a-z0-9_]+::Migration'; }
+          total=$(names < migration/src/lib.rs | wc -l)
+          first_new=$(names < migration/src/lib.rs \
+            | grep -nvxFf <(git show FETCH_HEAD:migration/src/lib.rs | names) | head -1 | cut -d: -f1)
+          on_main=$(( first_new ? first_new - 1 : total ))
+          echo "Migrations already on main: $on_main of $total"
+          psql "$DATABASE_URL" -qc "CREATE SCHEMA IF NOT EXISTS $DATABASE_SCHEMA"
+          target/debug/migration up -n "$on_main"
+          target/debug/migration up
 
   # === DOCKER BUILD & PUSH JOB ===
   # One leg per image, in parallel with each other and with lint and test.

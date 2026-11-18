@@ -120,3 +120,14 @@ stay, and the rollback set keeps only `rust-app`. Fix forward, or run
 
 **C5. A rollback set with no entries.** **Expect:** `rollback_do.yml` exits 1 with
 "the rollback set has no entries" and starts nothing.
+
+**C6. A deploy adds an enum value and a later migration writes it.** **Expect:** the
+migrator fails with "unsafe use of new value" followed by "Nothing was applied ...
+`migrationctl up -n <count>`", then the C1 result. After "Recovering from a stuck
+deploy" in `docs/cicd/README.md`, `migrationctl status` shows the counted migrations
+applied, and the next deploy succeeds.
+
+To rehearse it locally: on a scratch database (section 2), apply the history before
+`m20251007_093603_add_user_roles_table_and_super_admin` with `up -n <its position - 1>`,
+then run `up`. **Pass:** the hint above, and `seaql_migrations` keeps its row count.
+Then `up -n 1` and `up` apply everything.

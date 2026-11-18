@@ -261,6 +261,21 @@ This prevents "must be owner of type" errors in subsequent migrations.
 - PostgreSQL (appears to be DigitalOcean managed service)
 - SSL/TLS connection with certificate verification
 
+### Recovering from a stuck deploy
+
+A deploy applies all pending migrations in one transaction. If one pending migration adds an enum value (`ALTER TYPE ... ADD VALUE`) and a later one writes it, Postgres refuses ("unsafe use of new value"), nothing is applied, the previous backend comes back, and every deploy fails the same way. Apply the migrations through the one that adds the value first, on the host:
+
+```bash
+cd /home/deploy
+# The failed deploy put the running image back on the tag; fetch the new one again.
+docker compose pull migrator
+# Lists the pending migrations in order; count them through the one that adds the value.
+docker compose run --rm --no-deps -T --name migration-recovery migrator migrationctl status </dev/null
+docker compose run --rm --no-deps -T --name migration-recovery migrator migrationctl up -n <count> </dev/null
+```
+
+Then run Deploy to Production again. The previous backend keeps running against what `up -n` applies, which is safe for an added enum value. If an earlier migration in that count drops or renames something the running backend reads, run `docker stop rust-app` first and deploy straight after.
+
 **Systemd Commands:**
 ```bash
 # View status
