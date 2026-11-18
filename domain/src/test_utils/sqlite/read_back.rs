@@ -1,6 +1,6 @@
 //! Reads of the rows a request may change, for asserting what it left in the database.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{NaiveDateTime, NaiveTime};
 use entity::meeting_recording::MeetingRecordingStatus;
@@ -9,12 +9,26 @@ use entity::status::Status;
 use entity::topic_status::Status as TopicStatus;
 use entity::transcript_suggestion::Status as SuggestionStatus;
 use entity::{
-    actions, actions_users, agreements, coaching_relationships, coaching_session_images,
+    actions, actions_users, agreements, audit_events, coaching_relationships,
+    coaching_session_images, coaching_session_pending_invites, coaching_session_reminders,
     coaching_session_series, coaching_session_topics, coaching_session_views, coaching_sessions,
     coaching_sessions_goals, goals, meeting_recording, oauth_connections, organizations,
     transcript_analysis, transcript_segment, transcript_suggestion, user_roles, users, Id,
 };
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
+use serde_json::Value;
+
+use crate::audit_event::{verify_chain, ChainCheck};
+
+/// One stored audit event, without its organization, time and hashes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuditEntry {
+    pub actor_user_id: Option<Id>,
+    pub action: String,
+    pub subject_type: String,
+    pub subject_id: Id,
+    pub details: Value,
+}
 
 /// Whether `user_id` holds any role in `organization_id`.
 pub async fn holds_role(db: &DatabaseConnection, user_id: Id, organization_id: Id) -> bool {
@@ -223,6 +237,47 @@ pub async fn relationships_between(
         .all(db)
         .await
         .expect("the relationships read")
+}
+
+/// The relationship row, or `None` once it is deleted.
+pub async fn relationship_row(
+    db: &DatabaseConnection,
+    relationship_id: Id,
+) -> Option<coaching_relationships::Model> {
+    coaching_relationships::Entity::find_by_id(relationship_id)
+        .one(db)
+        .await
+        .expect("the relationship reads")
+}
+
+/// The start each user's reminder for the session is recorded as sent for, by user.
+pub async fn reminders_sent(
+    db: &DatabaseConnection,
+    session_id: Id,
+) -> BTreeMap<Id, NaiveDateTime> {
+    coaching_session_reminders::Entity::find()
+        .filter(coaching_session_reminders::Column::CoachingSessionId.eq(session_id))
+        .all(db)
+        .await
+        .expect("the reminders read")
+        .into_iter()
+        .map(|reminder| (reminder.user_id, reminder.sent_for_start))
+        .collect()
+}
+
+/// Every owed invite, as (the session or series it is for, the participant owed it).
+pub async fn pending_invites(db: &DatabaseConnection) -> BTreeSet<(Id, Id)> {
+    coaching_session_pending_invites::Entity::find()
+        .all(db)
+        .await
+        .expect("the owed invites read")
+        .into_iter()
+        .filter_map(|row| {
+            row.coaching_session_id
+                .or(row.coaching_session_series_id)
+                .map(|target| (target, row.user_id))
+        })
+        .collect()
 }
 
 /// The id of the user with `email`, if there is one.
@@ -440,5 +495,34 @@ pub async fn connected_users(db: &DatabaseConnection) -> BTreeSet<Id> {
         .expect("the connections read")
         .into_iter()
         .map(|connection| connection.user_id)
+        .collect()
+}
+
+/// The organization's audit events in chain order. Panics unless its chain verifies.
+pub async fn verified_audit_trail(db: &DatabaseConnection, organization_id: Id) -> Vec<AuditEntry> {
+    let events = audit_events::Entity::find()
+        .filter(audit_events::Column::OrganizationId.eq(organization_id))
+        .order_by_asc(audit_events::Column::OccurredAt)
+        .order_by_asc(audit_events::Column::Id)
+        .all(db)
+        .await
+        .expect("the audit events read");
+    assert_eq!(
+        verify_chain(db, organization_id)
+            .await
+            .expect("the chain reads"),
+        ChainCheck::Intact {
+            count: events.len() as u64
+        }
+    );
+    events
+        .into_iter()
+        .map(|event| AuditEntry {
+            actor_user_id: event.actor_user_id,
+            action: event.action,
+            subject_type: event.subject_type,
+            subject_id: event.subject_id,
+            details: event.details,
+        })
         .collect()
 }

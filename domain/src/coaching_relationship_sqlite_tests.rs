@@ -163,11 +163,13 @@ async fn create_returns_the_existing_relationship_of_the_same_kind() {
         let (db, o, [coach, coachee, _]) = three_members().await;
         let first = create(&db, o, draft(coach, coachee, Kind::Coaching))
             .await
-            .expect("the relationship is created");
+            .expect("the relationship is created")
+            .relationship;
 
         let again = create(&db, o, draft(coach, coachee, Kind::Coaching))
             .await
-            .expect("the existing relationship is returned");
+            .expect("the existing relationship is returned")
+            .relationship;
 
         assert_eq!(again.id, first.id);
         assert_eq!(relationships_between(&db, coach, coachee).await.len(), 1);
@@ -187,11 +189,13 @@ async fn a_returned_colleague_relationship_names_each_seat_by_its_own_user() {
         }
         let first = create(&db, o, draft(a, b, Kind::Colleague))
             .await
-            .expect("the relationship is created");
+            .expect("the relationship is created")
+            .relationship;
 
         let again = create(&db, o, draft(b, a, Kind::Colleague))
             .await
-            .expect("the existing relationship is returned");
+            .expect("the existing relationship is returned")
+            .relationship;
 
         assert_eq!(again.id, first.id);
         assert_eq!((again.coach_id, again.coachee_id), (a, b));
@@ -208,6 +212,33 @@ async fn a_returned_colleague_relationship_names_each_seat_by_its_own_user() {
                 again.coachee_last_name.as_str()
             ),
             ("Grace", "Hopper")
+        );
+    })
+    .await
+}
+
+/// KIND-45
+#[tokio::test]
+async fn a_returned_colleague_relationship_carries_each_seats_own_email() {
+    within_time_limit(async {
+        let (db, o, _) = three_members().await;
+        let (a, b) = (Id::new_v4(), Id::new_v4());
+        for id in [a, b] {
+            seed_user_as(&db, id, format!("{id}@example.com"), ("Sam", "Lee"), None).await;
+            seed_membership(&db, id, o).await;
+        }
+        create(&db, o, draft(a, b, Kind::Colleague))
+            .await
+            .expect("the relationship is created");
+
+        let again = create(&db, o, draft(b, a, Kind::Colleague))
+            .await
+            .expect("the existing relationship is returned")
+            .relationship;
+
+        assert_eq!(
+            (again.coach_email, again.coachee_email),
+            (format!("{a}@example.com"), format!("{b}@example.com"))
         );
     })
     .await

@@ -107,6 +107,7 @@ use utoipa_rapidoc::RapiDoc;
             organization::coaching_relationship_controller::index,
             organization::coaching_relationship_controller::read,
             organization::coaching_relationship_controller::goal_progress,
+            organization::coaching_relationship_controller::switch_kind,
             organization::coaching_relationship::actions_controller::read,
             organization::coaching_relationship::actions_controller::index,
             organization::user_controller::index,
@@ -169,6 +170,7 @@ use utoipa_rapidoc::RapiDoc;
                 crate::params::agreement::SortField,
                 crate::params::coaching_relationship::CreateParams,
                 crate::params::coaching_relationship::InviteeRelationshipParams,
+                crate::params::coaching_relationship::KindParams,
                 crate::params::coaching_relationship::goal_progress::SortField,
                 crate::params::coaching_session::SortField,
                 crate::params::coaching_session::goal::LinkParams,
@@ -194,6 +196,9 @@ use utoipa_rapidoc::RapiDoc;
                 domain::coaching_relationship::CoachingRelationshipWithUserNames,
                 domain::coaching_relationship::Membership,
                 domain::coaching_relationship::WithMembership,
+                domain::coaching_relationship::kind_switch::Consequences,
+                domain::coaching_relationship::kind_switch::ActionsBecomingVisible,
+                domain::coaching_relationship::kind_switch::AssigneeActionCount,
                 domain::coaching_relationships::Model,
                 domain::coaching_relationships::Viewer,
                 domain::coaching_session::CountByMonth,
@@ -463,6 +468,12 @@ fn organization_coaching_relationship_routes(app_state: AppState) -> Router {
         .route(
             "/organizations/:organization_id/coaching_relationships/:relationship_id/goal_progress",
             get(organization::coaching_relationship_controller::goal_progress),
+        )
+        // PUT /organizations/:organization_id/coaching_relationships/:relationship_id/kind
+        // Authorized by the OrganizationAdminAccess extractor, not a route layer.
+        .route(
+            "/organizations/:organization_id/coaching_relationships/:relationship_id/kind",
+            put(organization::coaching_relationship_controller::switch_kind),
         )
         // GET /organizations/:organization_id/coaching_relationships/actions
         // Batch endpoint — returns actions across all coaching relationships

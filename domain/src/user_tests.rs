@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_utils::audit_event::MemoryRecorder;
 use crate::working_hours::{Field, Invalid};
 use crate::Actor;
 use crate::{coaching_relationships, organizations, user_roles, IntoUpdateMap, UpdateMap};
@@ -142,6 +143,7 @@ async fn create_in_organization_without_a_coach_commits_the_user_and_role_only()
 
     let created = create_in_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(actor_user_id),
         organization_id,
         new_user.clone(),
@@ -182,6 +184,7 @@ async fn create_in_organization_audits_the_default_role_inside_the_transaction()
 
     create_in_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(actor_user_id),
         organization_id,
         new_user.clone(),
@@ -252,6 +255,7 @@ async fn create_in_organization_rolls_back_when_the_relationship_insert_fails() 
 
     create_in_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(actor_user_id),
         organization_id,
         new_user,
@@ -314,6 +318,7 @@ async fn create_in_organization_commits_the_user_and_the_relationship_together()
 
     create_in_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(actor_user_id),
         organization_id,
         new_user,

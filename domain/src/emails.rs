@@ -566,13 +566,17 @@ pub(crate) struct Audience<'a> {
 }
 
 /// One addressee of a per-recipient send, plus the other party as that recipient sees them.
-/// These three always travel together and are meaningless apart: `other_user_role` labels
+/// These always travel together and are meaningless apart: `other_user_role` labels
 /// `other_user`, not the recipient.
 struct Recipient<'a> {
     user: &'a users::Model,
     other_user: &'a users::Model,
     /// How the copy refers to the other party.
     other_user_role: coaching_relationship_kind::Role,
+    /// How the copy refers to the session, from the relationship's kind.
+    session_label: &'static str,
+    /// The plural of `session_label`, for the series copy.
+    session_label_plural: &'static str,
 }
 
 /// Template variables carried only by the reschedule sends: the discriminant the
@@ -588,12 +592,6 @@ struct RescheduleVars {
 const TOKEN_PLACEHOLDER: &str = "{token}";
 const SESSION_ID_PLACEHOLDER: &str = "{session_id}";
 const ORGANIZATION_ID_PLACEHOLDER: &str = "{organization_id}";
-
-/// `.ics` DESCRIPTION for a cancellation. A cancellation only needs to identify the
-/// event, so no topics, goals, or actions are loaded.
-const SESSION_CANCELLED_DESCRIPTION: &str = "This coaching session has been cancelled.";
-const SERIES_CANCELLED_DESCRIPTION: &str =
-    "This recurring coaching session series has been cancelled.";
 
 /// The `From:` address used for every transactional email sent through this module.
 /// Kept on the `mail.` subdomain so production DMARC/SPF/DKIM records for the
@@ -765,6 +763,8 @@ async fn send_session_email_to_recipient(
         .add_variable("other_user_first_name", to.other_user.first_name.as_str())
         .add_variable("other_user_last_name", to.other_user.last_name.as_str())
         .add_variable("other_user_role", to.other_user_role.as_str())
+        .add_variable("session_label", to.session_label)
+        .add_variable("session_label_plural", to.session_label_plural)
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_date", session_date.as_str())
         .add_variable("session_time", session_time.as_str())
@@ -913,6 +913,19 @@ impl Delivered {
         .collect()
     }
 
+    /// What this send did for `user_id`, by the seat they hold in `relationship`; `None` when
+    /// they hold none.
+    pub fn to(
+        &self,
+        relationship: &coaching_relationships::Model,
+        user_id: Id,
+    ) -> Option<Delivery> {
+        relationship.seat(user_id).map(|seat| match seat {
+            Seat::CoachId => self.coach,
+            Seat::CoacheeId => self.coachee,
+        })
+    }
+
     /// The participants this send skipped for no longer being members.
     fn skipped(&self, participants: &Participants<'_>) -> Vec<Id> {
         [
@@ -966,6 +979,8 @@ impl<'a> Participants<'a> {
                     user: self.coachee,
                     other_user: self.coach,
                     other_user_role: coach_role,
+                    session_label: rules.session_label(),
+                    session_label_plural: rules.session_label_plural(),
                 },
             ),
             (
@@ -974,9 +989,28 @@ impl<'a> Participants<'a> {
                     user: self.coach,
                     other_user: self.coachee,
                     other_user_role: coachee_role,
+                    session_label: rules.session_label(),
+                    session_label_plural: rules.session_label_plural(),
                 },
             ),
         ]
+    }
+
+    /// `.ics` DESCRIPTION for a cancelled session. It only identifies the event, so no topics,
+    /// goals, or actions are loaded.
+    fn session_cancelled_description(&self) -> String {
+        format!(
+            "This {} has been cancelled.",
+            self.kind.rules().session_label()
+        )
+    }
+
+    /// `.ics` DESCRIPTION for a cancelled series.
+    fn series_cancelled_description(&self) -> String {
+        format!(
+            "This recurring {} series has been cancelled.",
+            self.kind.rules().session_label()
+        )
     }
 }
 
@@ -1495,6 +1529,8 @@ async fn send_session_reminder_email(
         user: recipient,
         other_user: other,
         other_user_role,
+        session_label,
+        session_label_plural,
     } = *to;
     let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
     let session_duration =
@@ -1514,6 +1550,8 @@ async fn send_session_reminder_email(
         .add_variable("other_user_first_name", other.first_name.as_str())
         .add_variable("other_user_last_name", other.last_name.as_str())
         .add_variable("other_user_role", other_user_role.as_str())
+        .add_variable("session_label", session_label)
+        .add_variable("session_label_plural", session_label_plural)
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_date", session_date.as_str())
         .add_variable("session_time", session_time.as_str())
@@ -1631,6 +1669,8 @@ async fn send_session_cancelled_email_to_recipient(
         .add_variable("other_user_first_name", to.other_user.first_name.as_str())
         .add_variable("other_user_last_name", to.other_user.last_name.as_str())
         .add_variable("other_user_role", to.other_user_role.as_str())
+        .add_variable("session_label", to.session_label)
+        .add_variable("session_label_plural", to.session_label_plural)
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_date", session_date.as_str())
         .add_variable("session_time", session_time.as_str())
@@ -1667,7 +1707,7 @@ async fn send_session_cancelled_email(
     // A session inside a series is addressed as an override of its occurrence.
     let ics_body = build_session_ics(
         session,
-        SESSION_CANCELLED_DESCRIPTION.to_string(),
+        participants.session_cancelled_description(),
         |series_id, description| {
             build_occurrence_cancel_ics(
                 coach,
@@ -1796,6 +1836,8 @@ async fn send_recurring_series_email_to_recipient(
         .add_variable("other_user_first_name", to.other_user.first_name.as_str())
         .add_variable("other_user_last_name", to.other_user.last_name.as_str())
         .add_variable("other_user_role", to.other_user_role.as_str())
+        .add_variable("session_label", to.session_label)
+        .add_variable("session_label_plural", to.session_label_plural)
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_count", sessions.len() as u64)
         .add_variable("first_session_date", first_session_date.as_str())
@@ -2623,7 +2665,7 @@ fn build_orphan_cancels(
                 participants.coach,
                 participants.coachee,
                 session,
-                SESSION_CANCELLED_DESCRIPTION.to_string(),
+                participants.session_cancelled_description(),
                 dtstamp,
                 orphan_cancel_sequence(session),
                 anchor_tz(participants.schedule_owner(session)),
@@ -2710,7 +2752,7 @@ fn build_stale_override_cancels(
                 &outranking,
                 stale.series.id,
                 rule.zone(),
-                SESSION_CANCELLED_DESCRIPTION.to_string(),
+                participants.session_cancelled_description(),
                 dtstamp,
             )
             .inspect_err(|e| {
@@ -2822,6 +2864,8 @@ async fn send_recurring_sessions_cancelled_email_to_recipient(
         .add_variable("other_user_first_name", to.other_user.first_name.as_str())
         .add_variable("other_user_last_name", to.other_user.last_name.as_str())
         .add_variable("other_user_role", to.other_user_role.as_str())
+        .add_variable("session_label", to.session_label)
+        .add_variable("session_label_plural", to.session_label_plural)
         .add_variable("organization_name", organization.name.as_str())
         .add_variable("session_count", sessions.len() as u64)
         .add_variable("first_session_date", first_session_date.as_str())
@@ -2869,7 +2913,7 @@ async fn send_recurring_sessions_cancelled_email(
             coachee,
             first,
             series,
-            SERIES_CANCELLED_DESCRIPTION.to_string(),
+            participants.series_cancelled_description(),
             dtstamp,
         )?,
         // `sessions` is the set the delete removed, so any legacy member's standalone

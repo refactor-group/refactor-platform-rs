@@ -116,7 +116,9 @@ the calendar event was delivered when the session was scheduled, and re-sending 
 
 Template variables: `first_name`, `other_user_first_name`, `other_user_last_name`,
 `other_user_role` (the other participant and what they are to the recipient: `coach` in a
-coachee's reminder, `colleague` in a colleague's), `organization_name`, `session_date`,
+coachee's reminder, `colleague` in a colleague's), `session_label` (`coaching session` for
+coaching, `session` for colleagues), `session_label_plural` (`coaching sessions` or `sessions`),
+`organization_name`, `session_date`,
 `session_time`, `session_when`, `session_duration`, `session_url`, plus `session_title` and
 `meeting_url` when the session has them (omitted rather than blanked, so the template's
 `fallback_value` fires). The template should use the `other_user_*` names; see
@@ -141,7 +143,10 @@ same values, for one release:
 
 Both welcome variables name whoever sent the invite, who may be an admin or a colleague
 rather than a coach. The session, series and reminder templates name the other participant
-by `other_user_role`, which is `colleague` in a colleague relationship.
+by `other_user_role`, which is `colleague` in a colleague relationship, and name the session
+by `session_label` (`Rules::session_label`): `coaching session`, or `session` for colleagues.
+They also carry its plural, `session_label_plural` (`Rules::session_label_plural`):
+`coaching sessions`, or `sessions` for colleagues.
 
 The `.ics` DESCRIPTION has no template. One invite goes to both participants, so it names
 the pair rather than "the other person": `Coach: {name}` for coaching, and
@@ -178,6 +183,24 @@ edits, cancellations, and resends. Once one of those reaches the coachee, the pe
 reschedule is settled against the schedule that was sent, under the session's row lock:
 it is dropped if the session still matches, otherwise the newer change stays pending,
 now from what was sent.
+
+### Invites re-sent after a relationship changes kind
+
+A confirmed kind switch (or reversal) owes both participants a fresh invite for every upcoming
+session and series of the relationship, so calendar text such as the `.ics` participant line
+follows the new kind. The switch's transaction writes one `coaching_session_pending_invites`
+row per invite (a series member's is its series', any other session's its own) and
+participant; a second switch before the sweep owes nothing more (one row per target and
+user). A switch landing while the sweep is sending a row releases that row's claim, so the
+earlier send's completion leaves it owed and the newer text goes out too. The pending
+reschedule sweep sends each row to that participant alone, through the same resend as
+`POST .../resend_invite` (same `UID`, higher `SEQUENCE`), and deletes it once delivered. It
+claims at most 10 rows a tick, and a failed send hands the rest of the tick's rows back
+uncharged, so a large switch drains over several ticks rather than bursting Resend. A
+participant who has left the organization, a session that has passed, and a series with
+nothing left to attend are owed nothing; a failed read is retried, not taken for any of
+those. A failed send is retried up to three times. Without `RESEND_API_KEY`, or without the
+row's own template (session or recurring sessions scheduled), the row is dropped unsent.
 
 ## Timezone Handling
 

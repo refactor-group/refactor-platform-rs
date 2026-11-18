@@ -921,12 +921,60 @@ pub(crate) async fn resend_invite(
     series_id: Id,
 ) -> Result<(), Error> {
     let series = coaching_session_series::find_by_id(db, series_id).await?;
-    let rows = entity_api::coaching_session::find_by_series_id(db, series_id).await?;
     let now = chrono::Utc::now().naive_utc();
-    let mut upcoming: Vec<coaching_sessions::Model> =
-        rows.iter().filter(|s| s.date > now).cloned().collect();
-    upcoming.sort_by_key(|s| s.date);
+    ensure_resendable(&upcoming_members(db, series_id, now).await?)?;
 
+    let relationship =
+        coaching_relationship::find_by_id(db, series.coaching_relationship_id).await?;
+    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
+    ensure_required_participants_are_members(&relationship, &member_ids)?;
+
+    let (upcoming, delivered) =
+        send_invite_again(db, config, &series, &relationship, &member_ids, now).await?;
+    upcoming.iter().try_for_each(|session| {
+        coaching_session::ensure_others_told(
+            &delivered,
+            &relationship,
+            session.scheduled_by_user_id,
+        )
+    })?;
+    stream::iter(&upcoming)
+        .for_each(|session| coaching_session::record_announced(db, session))
+        .await;
+    Ok(())
+}
+
+/// Resend series `series_id`'s invite to `user_id` alone, under a bumped SEQUENCE. `None` when
+/// none is owed: nothing is left to attend, or the series predates resendable invites. A
+/// participant no longer in the organization is sent nothing.
+pub(crate) async fn resend_invite_to(
+    db: &DatabaseConnection,
+    config: &Config,
+    series_id: Id,
+    user_id: Id,
+) -> Result<Option<emails::Delivery>, Error> {
+    let series = coaching_session_series::find_by_id(db, series_id).await?;
+    let now = chrono::Utc::now().naive_utc();
+    // A failed read is not a refusal: it errs, so the owed invite is retried.
+    if ensure_resendable(&upcoming_members(db, series_id, now).await?).is_err() {
+        return Ok(None);
+    }
+    let relationship =
+        coaching_relationship::find_by_id(db, series.coaching_relationship_id).await?;
+    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
+    if !member_ids.contains(&user_id) {
+        return Ok(Some(emails::Delivery::NoLongerAMember));
+    }
+
+    let (_, delivered) =
+        send_invite_again(db, config, &series, &relationship, &[user_id], now).await?;
+    Ok(delivered.to(&relationship, user_id))
+}
+
+/// Refuses a series with nothing left to attend, or with an upcoming member that predates
+/// `ical_recurrence_id` (such a series was never published as one, so a snapshot would not
+/// line up with what calendars hold).
+fn ensure_resendable(upcoming: &[coaching_sessions::Model]) -> Result<(), Error> {
     if upcoming.is_empty() {
         return Err(Error::conflict_because(
             reason::NO_UPCOMING_SESSIONS,
@@ -941,12 +989,34 @@ pub(crate) async fn resend_invite(
             serde_json::json!({}),
         ));
     }
+    Ok(())
+}
 
-    let relationship =
-        coaching_relationship::find_by_id(db, series.coaching_relationship_id).await?;
-    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
-    ensure_required_participants_are_members(&relationship, &member_ids)?;
+/// The series' sessions starting after `now`.
+async fn upcoming_members(
+    db: &DatabaseConnection,
+    series_id: Id,
+    now: NaiveDateTime,
+) -> Result<Vec<coaching_sessions::Model>, Error> {
+    Ok(
+        entity_api::coaching_session::find_by_series_id(db, series_id)
+            .await?
+            .into_iter()
+            .filter(|s| s.date > now)
+            .collect(),
+    )
+}
 
+/// Bumps the series' SEQUENCE and sends its invite to those of `member_ids` who take part;
+/// returns the sessions after `now` it listed, earliest first.
+async fn send_invite_again(
+    db: &DatabaseConnection,
+    config: &Config,
+    series: &Model,
+    relationship: &coaching_relationships::Model,
+    member_ids: &[Id],
+    now: NaiveDateTime,
+) -> Result<(Vec<coaching_sessions::Model>, emails::Delivered), Error> {
     // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
     // Members are raised with the series because Google drops an override whose SEQUENCE
     // trails its master.
@@ -963,31 +1033,21 @@ pub(crate) async fn resend_invite(
     let mut upcoming: Vec<coaching_sessions::Model> =
         rows.iter().filter(|s| s.date > now).cloned().collect();
     upcoming.sort_by_key(|s| s.date);
-    let parties = emails::InviteParties::load(db, &relationship).await?;
+    let parties = emails::InviteParties::load(db, relationship).await?;
     let delivered = emails::send_series_invite_resend(
         db,
         config,
         &bumped,
         &emails::Audience {
             participants: &parties.participants(),
-            member_ids: &member_ids,
+            member_ids,
         },
         &upcoming,
         &rows,
         &parties.organization,
     )
     .await?;
-    upcoming.iter().try_for_each(|session| {
-        coaching_session::ensure_others_told(
-            &delivered,
-            &relationship,
-            session.scheduled_by_user_id,
-        )
-    })?;
-    stream::iter(&upcoming)
-        .for_each(|session| coaching_session::record_announced(db, session))
-        .await;
-    Ok(())
+    Ok((upcoming, delivered))
 }
 
 async fn cleanup_orphaned_docs(
@@ -2870,5 +2930,21 @@ mod tests {
             .count();
         assert_eq!(clears, sessions.len(), "one clear per upcoming session");
         Ok(())
+    }
+
+    /// An owed invite whose series cannot be read errs, so the sweep retries it rather than
+    /// dropping it as not owed.
+    #[tokio::test]
+    async fn a_failed_read_of_the_series_sessions_keeps_an_owed_invite() {
+        let (series, _, _) = following_fixture(2);
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![series.clone()]])
+            .append_query_errors([sea_orm::DbErr::Custom("connection lost".to_owned())])
+            .into_connection();
+
+        let resent =
+            resend_invite_to(&db, &Config::from_args(["test"]), series.id, Id::new_v4()).await;
+
+        assert!(resent.is_err(), "{resent:?}");
     }
 }

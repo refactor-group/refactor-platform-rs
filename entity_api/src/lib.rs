@@ -3,8 +3,9 @@ use password_auth::generate_hash;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 
 pub use entity::{
-    actions, actions_users, agreements, coachees, coaches, coaching_relationship_kind,
-    coaching_relationships, coaching_session_images, coaching_session_notices,
+    actions, actions_users, agreements, audit_events, coachees, coaches,
+    coaching_relationship_kind, coaching_relationships, coaching_session_images,
+    coaching_session_notices, coaching_session_pending_invites,
     coaching_session_pending_reschedules, coaching_session_topics, coaching_session_views,
     coaching_sessions, coaching_sessions_goals, cost_metric, cost_unit, duration, goals, jwts,
     magic_link_tokens, meeting_provider, oauth_connections, organizations, password_reset_attempts,
@@ -16,13 +17,16 @@ pub use entity::{
 pub mod action;
 pub mod actions_user;
 pub mod actor;
+mod advisory_lock;
 pub mod agreement;
+pub mod audit_event;
 pub mod coaching_relationship;
 pub mod coaching_session;
 pub mod coaching_session_display_title;
 pub mod coaching_session_goal;
 pub mod coaching_session_image;
 pub mod coaching_session_notice;
+pub mod coaching_session_pending_invite;
 pub mod coaching_session_pending_reschedule;
 pub mod coaching_session_series;
 pub mod coaching_session_topic;

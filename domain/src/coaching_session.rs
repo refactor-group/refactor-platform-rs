@@ -701,6 +701,47 @@ pub(crate) async fn resend_invite(
     id: Id,
 ) -> Result<(), Error> {
     let session = find_by_id(db, id).await?;
+    ensure_own_invite_upcoming(&session)?;
+
+    let relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
+    ensure_required_participants_are_members(&relationship, &member_ids)?;
+
+    let (bumped, delivered) =
+        send_invite_again(db, config, &session, &relationship, &member_ids).await?;
+    ensure_others_told(&delivered, &relationship, bumped.scheduled_by_user_id)?;
+    record_announced(db, &bumped).await;
+    Ok(())
+}
+
+/// Resend session `id`'s own invite to `user_id` alone, under a bumped SEQUENCE. `None` when
+/// none is owed: the session has passed or its invite is its series'. A participant no longer
+/// in the organization is sent nothing.
+pub(crate) async fn resend_invite_to(
+    db: &DatabaseConnection,
+    config: &Config,
+    id: Id,
+    user_id: Id,
+) -> Result<Option<emails::Delivery>, Error> {
+    let session = find_by_id(db, id).await?;
+    if ensure_own_invite_upcoming(&session).is_err() {
+        return Ok(None);
+    }
+    let relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
+    if !member_ids.contains(&user_id) {
+        return Ok(Some(emails::Delivery::NoLongerAMember));
+    }
+
+    let (_, delivered) = send_invite_again(db, config, &session, &relationship, &[user_id]).await?;
+    Ok(delivered.to(&relationship, user_id))
+}
+
+/// Refuses a session that has passed, or whose invite is its series'. A legacy member never
+/// had a series invite, so it has its own.
+fn ensure_own_invite_upcoming(session: &Model) -> Result<(), Error> {
     if session.date <= chrono::Utc::now().naive_utc() {
         return Err(Error::conflict_because(
             reason::NO_UPCOMING_SESSIONS,
@@ -715,29 +756,32 @@ pub(crate) async fn resend_invite(
             serde_json::json!({}),
         ));
     }
+    Ok(())
+}
 
-    let relationship =
-        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
-    ensure_required_participants_are_members(&relationship, &member_ids)?;
-
+/// Bumps the session's SEQUENCE and sends its invite to those of `member_ids` who take part.
+async fn send_invite_again(
+    db: &DatabaseConnection,
+    config: &Config,
+    session: &Model,
+    relationship: &coaching_relationships::Model,
+    member_ids: &[Id],
+) -> Result<(Model, emails::Delivered), Error> {
     // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
-    let bumped = coaching_session::increment_ical_sequence(db, id).await?;
-    let parties = emails::InviteParties::load(db, &relationship).await?;
+    let bumped = coaching_session::increment_ical_sequence(db, session.id).await?;
+    let parties = emails::InviteParties::load(db, relationship).await?;
     let delivered = emails::send_session_invite_resend(
         db,
         config,
         &emails::Audience {
             participants: &parties.participants(),
-            member_ids: &member_ids,
+            member_ids,
         },
         &bumped,
         &parties.organization,
     )
     .await?;
-    ensure_others_told(&delivered, &relationship, bumped.scheduled_by_user_id)?;
-    record_announced(db, &bumped).await;
-    Ok(())
+    Ok((bumped, delivered))
 }
 
 /// A resend of a session scheduled by `scheduler_id` is only done once everyone but its

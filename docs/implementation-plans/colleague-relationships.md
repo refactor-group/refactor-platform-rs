@@ -284,6 +284,14 @@ the 409's consequences before re-sending with `confirmed: true`) is posted at th
     - Session and series scheduled, rescheduled and cancelled (the six `SESSION_*` and
       `RECURRING_SESSIONS_*` templates): no variable changes; check each sentence using
       `other_user_role` reads naturally as "your colleague".
+    - All seven session templates (the six above and the session reminder): replace
+      "coaching session" with `{{{session_label}}}`, which is `coaching session` for coaching
+      and `session` for colleagues. It is lower case, so write the copy so it never starts a
+      sentence or the subject. The variable is additive, so a template can switch any time after
+      the deploy that sends it.
+    - The same seven also carry `session_label_plural`: `coaching sessions` for coaching and
+      `sessions` for colleagues. The series templates use `{{{session_label_plural}}}` for
+      "coaching sessions"; the same lower-case and additive rules apply.
     - `.ics` DESCRIPTION: no template. A colleague invite reads `Colleagues: {A} and {B}`; a
       coaching one is unchanged (`Coach: {name}`).
   - Frontend copy, in the phase 4 frontend PRs: every label picked for a coaching relationship
@@ -323,16 +331,22 @@ prompt (assignees and due-date timezone no longer assume a coach), the paid eval
 new `baseline.json` in which coaching results do not regress. Colleague suggestion due dates use
 each assignee's own timezone; unassigned ones use the scheduler's.
 
-**E. Start an event log.** The beginning of a real event log, printing to stdout for now. An
-`AuditEvent` (actor, action from a typed enum, subject, organization, time, small details
-object) and a `Recorder` trait with `record(event)`, called by domain code after a successful
-write and never failing the request. Today's recorder writes one JSON line per event to stdout,
-independent of log level, ids only (no names or emails), with a
-fixed marker so the lines can be filtered from regular logs. Until a durable recorder exists the
-record lasts only as long as production container logs; verify that retention first. It lives on `AppState` beside the SSE publisher, so a durable
-recorder later is a swap, not a caller rewrite. Not built on the SSE `events` crate: those are
-routing messages with no actor and only reach connected users. Scope: the trait, the stdout
-recorder, an in-memory test recorder, and phase 5's kind-switch event.
+**E. Start an event log.** A durable, append-only audit log in the same Postgres database:
+the `audit_events` table (organization, actor or null for the system, action, subject type and
+id, small `details` object, time). Domain code records an event through a `Recorder` trait,
+`record(txn, event)`, inside the transaction that makes the change, so an event exists exactly
+when its change committed and a failed record rolls the change back. Ids only (no names or
+emails). Append-only: a trigger refuses `UPDATE`, `DELETE` and `TRUNCATE`, since the app role
+owns the table and grants alone would not hold. Hash-chained per organization: each event stores
+the previous event's hash and its own SHA-256 over a canonical encoding, under a
+per-organization advisory lock, and `verify_chain` reports `Intact` or the first broken event.
+No foreign keys: events outlive the organization and records they describe. Works across
+backend instances because they share the database. Not built on the SSE `events`
+crate: those are routing messages with no actor and only reach connected users. Actions:
+`relationship_created`, `relationship_deleted`, `member_added`, `member_removed`,
+`member_role_changed`; phase 5 adds `relationship_kind_changed` with the route that records it.
+E-1 builds the table, `append`, `verify_chain`, the trait, the database recorder and an
+in-memory test recorder; E-2 wires the call sites. See `docs/architecture/audit_log.md`.
 
 **5. Change a relationship's kind.** `PUT /organizations/{org_id}/coaching_relationships/{id}/kind`,
 body `{ kind, coach_id }` (`coach_id` required for coaching), authorized by
@@ -406,7 +420,8 @@ other person as a colleague, never a coach.
 - Suggested actions: on for colleague sessions from phase 4b.
 - Email wording: a role-word variable in the existing Resend templates, no new env vars.
 - Transcript download: a `colleague` speaker role value.
-- Kind switches are recorded through a new event log (phase E), stdout for now.
+- Kind switches are recorded through the phase E audit log: a durable, append-only table written
+  in the same transaction, hash-chained per organization.
 - Same pair: no coaching plus colleague for one pair in one org.
 - Columns keep `coach_id`/`coachee_id` until the separate rename.
 

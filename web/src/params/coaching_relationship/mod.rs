@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use utoipa::ToSchema;
 
-use domain::coaching_relationship::InviteeRelationship;
+use domain::coaching_relationship::{kind_switch, InviteeRelationship};
 use domain::{
     coaching_relationship_kind::{Kind, Role},
     Id,
@@ -44,6 +44,32 @@ impl From<InviteeRelationshipParams> for InviteeRelationship {
             with_user_id: params.with_user_id,
             kind: params.kind,
             role: params.role,
+        }
+    }
+}
+
+/// Request body for `PUT /organizations/{organization_id}/coaching_relationships/{relationship_id}/kind`.
+#[derive(Debug, Deserialize, ToSchema)]
+#[schema(as = params::coaching_relationship::KindParams)]
+pub(crate) struct KindParams {
+    /// What the relationship becomes.
+    pub(crate) kind: Kind,
+    /// Which participant becomes the coach: required for `coaching`, refused for `colleague`.
+    /// Naming the current coachee reverses a coaching relationship.
+    pub(crate) coach_id: Option<Id>,
+    /// `true` once the caller has shown the switch's consequences and the administrator
+    /// accepted them. Omitted or `false`, nothing changes and the response is a 409 listing
+    /// them.
+    #[serde(default)]
+    pub(crate) confirmed: bool,
+}
+
+impl From<KindParams> for kind_switch::Request {
+    fn from(params: KindParams) -> Self {
+        Self {
+            kind: params.kind,
+            coach_id: params.coach_id,
+            confirmed: params.confirmed,
         }
     }
 }

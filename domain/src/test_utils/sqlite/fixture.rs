@@ -244,6 +244,16 @@ pub async fn seed_content_free_session(db: &DatabaseConnection, relationship_id:
     .await
 }
 
+/// A session of `relationship_id` starting `after` from now, with no actions or agreements.
+/// Seed it per test so list rows never see it.
+pub async fn seed_session_starting_in(
+    db: &DatabaseConnection,
+    relationship_id: Id,
+    after: TimeDelta,
+) -> Id {
+    seed_session(db, relationship_id, None, whole_seconds(Utc::now() + after)).await
+}
+
 /// A relationship in `organization_id` with one session holding an action assigned to the
 /// coach, one to the coachee and one to nobody. Seed it per test so list rows never see it.
 pub async fn seed_relationship_with_actions(

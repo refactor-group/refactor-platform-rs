@@ -16,7 +16,7 @@ use entity::{
 use log::debug;
 use sea_orm::{
     entity::prelude::*,
-    sea_query::{Expr, Func, IntoCondition, Query, SelectStatement, UnionType},
+    sea_query::{Expr, Func, IntoCondition, OnConflict, Query, SelectStatement, UnionType},
     ActiveValue::Unchanged,
     ConnectionTrait, DatabaseBackend, DatabaseConnection, ExprTrait, FromQueryResult, Iterable,
     JoinType, Order, QueryOrder, QuerySelect, QueryTrait, Select, Set, Statement, TryIntoModel,
@@ -618,6 +618,78 @@ pub async fn release_reminder_claim(
         .await?;
 
     Ok(())
+}
+
+/// Marks the reminders of `user_ids` for the relationship's sessions starting in `(from, to]`
+/// as already sent, the row a claim leaves, so the sweep sends none of them.
+///
+/// Holds each session's current start, so a later reschedule re-arms the reminder as usual.
+pub async fn mark_reminders_sent(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+    user_ids: &[Id],
+    (from, to): (NaiveDateTime, NaiveDateTime),
+) -> Result<(), Error> {
+    if user_ids.is_empty() {
+        return Ok(());
+    }
+    let sessions = Entity::find()
+        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
+        .filter(Column::Date.gt(from))
+        .filter(Column::Date.lte(to))
+        .all(db)
+        .await?;
+    let now: DateTimeWithTimeZone = chrono::Utc::now().into();
+    let rows: Vec<coaching_session_reminders::ActiveModel> = sessions
+        .iter()
+        .flat_map(|session| {
+            user_ids
+                .iter()
+                .map(move |&user_id| coaching_session_reminders::ActiveModel {
+                    id: Set(Id::new_v4()),
+                    user_id: Set(user_id),
+                    coaching_session_id: Set(session.id),
+                    sent_for_start: Set(session.date),
+                    claim_id: Set(Id::new_v4()),
+                    created_at: Set(now),
+                    updated_at: Set(now),
+                })
+        })
+        .collect();
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    coaching_session_reminders::Entity::insert_many(rows)
+        .on_conflict(
+            OnConflict::columns([
+                coaching_session_reminders::Column::CoachingSessionId,
+                coaching_session_reminders::Column::UserId,
+            ])
+            .update_columns([
+                coaching_session_reminders::Column::SentForStart,
+                coaching_session_reminders::Column::ClaimId,
+                coaching_session_reminders::Column::UpdatedAt,
+            ])
+            .to_owned(),
+        )
+        .exec_without_returning(db)
+        .await?;
+
+    Ok(())
+}
+
+/// The relationship's sessions starting after `after`.
+pub async fn find_by_relationship_after(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+    after: NaiveDateTime,
+) -> Result<Vec<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
+        .filter(Column::Date.gt(after))
+        .all(db)
+        .await?)
 }
 
 /// Most recent session in the relationship strictly before `before`. Sources
