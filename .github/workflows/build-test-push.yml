@@ -170,6 +170,38 @@ jobs:
           target/debug/migration up -n "$on_main"
           target/debug/migration up
 
+      # A failed run must apply nothing. Fails the last migration's own
+      # seaql_migrations insert, then checks the one before it was undone too,
+      # which one transaction per migration would have kept.
+      - name: Check a failed migration run applies nothing
+        env:
+          DATABASE_URL: postgres://refactor:password@localhost:5432/refactor_failed_run
+          DATABASE_SCHEMA: refactor_platform
+        run: |
+          psql postgres://refactor:password@localhost:5432/refactor -qc "CREATE DATABASE refactor_failed_run"
+          psql "$DATABASE_URL" -qc "CREATE SCHEMA $DATABASE_SCHEMA"
+          names=$(grep -oE 'm[0-9]{8}_[0-9]{6}_[a-z0-9_]+::Migration' migration/src/lib.rs | sed 's/::Migration//')
+          total=$(wc -l <<< "$names")
+          last=$(tail -1 <<< "$names")
+          target/debug/migration up -n $((total - 2))
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q <<SQL
+          CREATE FUNCTION $DATABASE_SCHEMA.fail_last() RETURNS trigger LANGUAGE plpgsql AS \$\$
+          BEGIN
+            IF NEW.version = '$last' THEN RAISE EXCEPTION 'planted failure'; END IF;
+            RETURN NEW;
+          END \$\$;
+          CREATE TRIGGER fail_last BEFORE INSERT ON $DATABASE_SCHEMA.seaql_migrations
+            FOR EACH ROW EXECUTE FUNCTION $DATABASE_SCHEMA.fail_last();
+          SQL
+          if target/debug/migration up; then
+            echo "::error::the planted failure did not fail the run"; exit 1
+          fi
+          applied=$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM $DATABASE_SCHEMA.seaql_migrations")
+          if [ "$applied" -ne $((total - 2)) ]; then
+            echo "::error::a failed run kept $((applied - total + 2)) of its migrations"; exit 1
+          fi
+          echo "A failed run applied nothing ($applied of $total migrations)"
+
   # === DOCKER BUILD & PUSH JOB ===
   # One leg per image, in parallel with each other and with lint and test.
   # Each pushes only the :<sha> tag; the promote job moves :latest once

@@ -26,6 +26,13 @@ jobs:
     environment: production
 
     steps:
+      # Helpers the rollback script shares with deploy_to_do.yml, at the dispatched ref.
+      - name: Check Out Host Helpers
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/lib
+          fetch-depth: 1
+
       - name: Set up Tailscale
         uses: tailscale/github-action@v3
         with:
@@ -59,7 +66,7 @@ jobs:
           echo "${{ secrets.DO_HOST_KEY }}" >> ~/.ssh/known_hosts
           ssh-keyscan -T 5 -H ${{ secrets.DO_TAILSCALE_NAME }} >> ~/.ssh/known_hosts 2>/dev/null || true
 
-          ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'bash -s' << 'ROLLBACK_SCRIPT_EOF'
+          { cat scripts/lib/production_host.sh; cat << 'ROLLBACK_SCRIPT_EOF'
             set -euo pipefail
             cd /home/deploy
 
@@ -89,12 +96,12 @@ jobs:
               IMAGE[$svc]=$image
             done < <(grep -v '^#' "$MANIFEST")
             [ ${#SERVICES[@]} -gt 0 ] || { echo "ERROR: the rollback set has no entries; nothing to roll back to."; exit 1; }
+            CHECK_COLLAB=false
+            [[ " ${SERVICES[*]} " != *" docs-collab "* ]] || CHECK_COLLAB=true
 
             if [[ " ${SERVICES[*]} " == *" rust-app "* ]]; then
               echo "INFO: Checking the previous backend knows every applied migration..."
-              # </dev/null: stdin is the rest of this script, which `compose run` would consume.
-              if ! BACKEND_IMAGE_NAME=refactor-rollback/rust-app:previous \
-                docker compose run --rm --no-deps -T --name "migration-gate-$$" migrator migrationctl status </dev/null; then
+              if ! migrations_known_by refactor-rollback/rust-app:previous; then
                 if [ "$FORCE" = "true" ]; then
                   echo "WARNING: the database has migrations the previous backend does not know; rolling back anyway (force)."
                 else
@@ -104,21 +111,6 @@ jobs:
               fi
             fi
 
-            # Print what each container runs: its tag, the git commit it was built
-            # from (the image's org.opencontainers.image.revision label), image ID,
-            # and registry digest.
-            print_images() {
-              local name tag image_id revision digest
-              for name in "$@"; do
-                read -r tag image_id < <(docker inspect -f '{{.Config.Image}} {{.Image}}' "$name" 2>/dev/null) \
-                  || { echo "INFO: $name is not running"; continue; }
-                revision=$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$name" 2>/dev/null || true)
-                [ -n "$revision" ] && [ "$revision" != "<no value>" ] || revision=unknown
-                digest=$(docker image inspect -f '{{index .RepoDigests 0}}' "$image_id" 2>/dev/null || true)
-                echo "INFO: $name runs $tag commit=$revision image=$image_id digest=${digest#*@}"
-              done
-            }
-
             echo "INFO: ⏪ Rolling back ${SERVICES[*]}..."
             for svc in "${SERVICES[@]}"; do
               # Retag the deployed tag so a reboot keeps the rolled-back image.
@@ -127,33 +119,8 @@ jobs:
             docker compose up -d --no-deps "${SERVICES[@]}"
             print_images "${SERVICES[@]}"
 
-            # Static nginx upstreams resolve container IPs only at config load.
-            for attempt in $(seq 1 10); do
-              if docker exec nginx-reverse-proxy nginx -t >/dev/null 2>&1 \
-                && docker exec nginx-reverse-proxy nginx -s reload; then
-                break
-              fi
-              [ "$attempt" -lt 10 ] || { echo "ERROR: nginx reload failed"; exit 1; }
-              sleep 2
-            done
-
-            check_url() {
-              curl -fsS -o /dev/null --max-time 5 --resolve "$SITE_HOST:443:127.0.0.1" "https://$SITE_HOST$1"
-            }
-            for path in /api/health /; do
-              for attempt in $(seq 1 45); do
-                check_url "$path" >/dev/null 2>&1 && break
-                [ "$attempt" -lt 45 ] || { echo "ERROR: $path is not healthy after rolling back"; exit 1; }
-                sleep 2
-              done
-            done
-            if [[ " ${SERVICES[*]} " == *" docs-collab "* ]]; then
-              for attempt in $(seq 1 45); do
-                [ "$(docker inspect -f '{{.State.Health.Status}}' docs-collab 2>/dev/null)" = "healthy" ] && break
-                [ "$attempt" -lt 45 ] || { echo "ERROR: docs-collab is not healthy after rolling back"; exit 1; }
-                sleep 2
-              done
-            fi
+            reload_nginx || { echo "ERROR: nginx reload failed"; exit 1; }
+            healthy || { echo "ERROR: unhealthy after rolling back"; exit 1; }
 
             # One step back only: the set is used up.
             rm -f "$MANIFEST"
@@ -164,3 +131,4 @@ jobs:
             docker ps -a
             echo "INFO: ✅ Rolled back ${SERVICES[*]}."
           ROLLBACK_SCRIPT_EOF
+          } | ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'bash -s'

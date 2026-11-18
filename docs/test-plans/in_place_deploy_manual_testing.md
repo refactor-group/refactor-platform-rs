@@ -131,3 +131,12 @@ To rehearse it locally: on a scratch database (section 2), apply the history bef
 `m20251007_093603_add_user_roles_table_and_super_admin` with `up -n <its position - 1>`,
 then run `up`. **Pass:** the hint above, and `seaql_migrations` keeps its row count.
 Then `up -n 1` and `up` apply everything.
+
+**C7. A compose change alone breaks a container.** For example, a bad backend
+`command` with no new image. **Expect:** `Changed images: none` but `Replaced
+containers:` naming it, its last 100 log lines, then "restoring ..." with the
+previous files; the container runs its previous settings and health passes.
+
+**C8. The rollback set cannot be recorded** (for example, a full disk). **Expect:**
+"could not record the rollback set"; the deploy still replaces the containers and
+checks health. `rollback_do.yml` keeps the set from before, if any.

@@ -31,6 +31,13 @@ jobs:
     environment: production # Use the production environment settings
 
     steps:
+      # Helpers the deploy script shares with rollback_do.yml, at the dispatched ref.
+      - name: Check Out Host Helpers
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/lib
+          fetch-depth: 1
+
       # Step 1: Setup Tailscale on the GitHub Actions runner
       - name: Set up Tailscale # Connect to the Tailscale network
         uses: tailscale/github-action@v3 # Official Tailscale GitHub Action
@@ -328,7 +335,7 @@ jobs:
 
           # SSH and deploy
           echo "Starting main deployment script..."
-          ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'bash -s' << 'DEPLOY_SCRIPT_EOF'
+          { cat scripts/lib/production_host.sh; cat << 'DEPLOY_SCRIPT_EOF'
             set -euo pipefail
 
             # Verify SSH execution is working correctly
@@ -344,6 +351,7 @@ jobs:
             REF='${{ github.ref_name }}'
             RAW="https://raw.githubusercontent.com/refactor-group/refactor-platform-rs/refs/heads/$REF"
             DEPLOY_DOCS_COLLAB='${{ inputs.deploy_docs_collab }}'
+            CHECK_COLLAB=$DEPLOY_DOCS_COLLAB
             SITE_HOST=$(echo '${{ vars.FRONTEND_BASE_URL }}' | sed -E 's#^https?://##; s#/.*$##')
             ROLLBACK_DIR=/home/deploy/rollback
 
@@ -431,21 +439,6 @@ jobs:
             }
             trap on_exit EXIT
 
-            # Print what each container runs: its tag, the git commit it was built
-            # from (the image's org.opencontainers.image.revision label), image ID,
-            # and registry digest.
-            print_images() {
-              local name tag image_id revision digest
-              for name in "$@"; do
-                read -r tag image_id < <(docker inspect -f '{{.Config.Image}} {{.Image}}' "$name" 2>/dev/null) \
-                  || { echo "INFO: $name is not running"; continue; }
-                revision=$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$name" 2>/dev/null || true)
-                [ -n "$revision" ] && [ "$revision" != "<no value>" ] || revision=unknown
-                digest=$(docker image inspect -f '{{index .RepoDigests 0}}' "$image_id" 2>/dev/null || true)
-                echo "INFO: $name runs $tag commit=$revision image=$image_id digest=${digest#*@}"
-              done
-            }
-
             fetch() {
               for attempt in 1 2 3; do
                 if curl -fsSL --retry 2 "$RAW/$1" -o "$2" && [ -s "$2" ]; then
@@ -458,57 +451,6 @@ jobs:
               return 1
             }
 
-            reload_nginx() {
-              for attempt in $(seq 1 10); do
-                if docker exec nginx-reverse-proxy nginx -t >/dev/null 2>&1 \
-                  && docker exec nginx-reverse-proxy nginx -s reload; then
-                  echo "INFO: nginx reloaded"
-                  return 0
-                fi
-                sleep 2
-              done
-              docker exec nginx-reverse-proxy nginx -t || true
-              return 1
-            }
-
-            check_url() {
-              curl -fsS -o /dev/null --max-time 5 --resolve "$SITE_HOST:443:127.0.0.1" "https://$SITE_HOST$1"
-            }
-
-            collab_healthy() {
-              [ "$(docker inspect -f '{{.State.Health.Status}}' docs-collab 2>/dev/null)" = "healthy" ]
-            }
-
-            wait_for() {
-              for _ in $(seq 1 45); do
-                if "$@" >/dev/null 2>&1; then
-                  return 0
-                fi
-                sleep 2
-              done
-              return 1
-            }
-
-            healthy() {
-              wait_for check_url /api/health || { echo "ERROR: backend is not healthy"; return 1; }
-              wait_for check_url / || { echo "ERROR: frontend is not healthy"; return 1; }
-              if [ "$DEPLOY_DOCS_COLLAB" = "true" ]; then
-                wait_for collab_healthy || { echo "ERROR: docs-collab is not healthy"; return 1; }
-              fi
-              echo "INFO: ✅ backend, frontend$([ "$DEPLOY_DOCS_COLLAB" = "true" ] && echo ", docs-collab") healthy"
-            }
-
-            # Exits 0 only when the given backend image knows every applied migration.
-            migrations_known_by() {
-              docker tag "$1" refactor-rollback/gate:candidate
-              local status=0
-              # </dev/null: stdin is the rest of this script, which `compose run` would consume.
-              BACKEND_IMAGE_NAME=refactor-rollback/gate:candidate \
-                docker compose run --rm --no-deps -T --name "migration-gate-$$" migrator migrationctl status </dev/null || status=$?
-              docker rmi refactor-rollback/gate:candidate >/dev/null || true
-              return $status
-            }
-
             # Record what this deploy replaces, so rollback_do.yml can restore it. A
             # deploy that replaces no existing container keeps the current set.
             write_rollback_set() {
@@ -519,23 +461,28 @@ jobs:
                 fi
               done
               [ ${#entries[@]} -gt 0 ] || return 0
-              mkdir -p "$ROLLBACK_DIR"
-              # Kept until this deploy is healthy, in case it rolls itself back.
-              rm -f "$ROLLBACK_DIR/manifest.before"
-              if [ -f "$ROLLBACK_DIR/manifest" ]; then
-                cp "$ROLLBACK_DIR/manifest" "$ROLLBACK_DIR/manifest.before"
-              fi
-              docker images --filter 'reference=refactor-rollback/*:previous' --format '{{.Repository}}:{{.Tag}}' \
-                | xargs -r docker rmi >/dev/null 2>&1 || true
+              mkdir -p "$ROLLBACK_DIR" || return 1
               {
                 echo "# deployed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ) ref=$REF"
                 echo "# service image previous_id previous_digest"
                 for svc in "${entries[@]}"; do
-                  docker tag "${OLD[$svc]}" "refactor-rollback/$svc:previous"
                   digest=$(docker image inspect -f '{{index .RepoDigests 0}}' "${OLD[$svc]}" 2>/dev/null || true)
                   echo "$svc ${IMAGE[$svc]} ${OLD[$svc]} ${digest:--}"
                 done
-              } > "$ROLLBACK_DIR/manifest"
+              } > "$ROLLBACK_DIR/manifest.new" || { rm -f "$ROLLBACK_DIR/manifest.new"; return 1; }
+              # Kept until this deploy is healthy, in case it rolls itself back.
+              rm -f "$ROLLBACK_DIR/manifest.before"
+              if [ -f "$ROLLBACK_DIR/manifest" ]; then
+                cp "$ROLLBACK_DIR/manifest" "$ROLLBACK_DIR/manifest.before" || return 1
+              fi
+              mv "$ROLLBACK_DIR/manifest.new" "$ROLLBACK_DIR/manifest" || return 1
+              # A missing tag is fine: rollback_do.yml pulls the recorded digest.
+              docker images --filter 'reference=refactor-rollback/*:previous' --format '{{.Repository}}:{{.Tag}}' \
+                | xargs -r docker rmi >/dev/null 2>&1
+              for svc in "${entries[@]}"; do
+                docker tag "${OLD[$svc]}" "refactor-rollback/$svc:previous" \
+                  || echo "WARNING: could not tag refactor-rollback/$svc:previous"
+              done
               echo "INFO: Rollback set:"
               cat "$ROLLBACK_DIR/manifest"
             }
@@ -637,13 +584,29 @@ jobs:
 
             echo "INFO: 🚀 Replacing changed containers..."
             # From here on, failures go through the health check's rollback below
-            # instead of the exit trap: containers may already be new.
+            # instead of the exit trap: containers may already be new. Every
+            # failure is handled where it happens, so set -e would only cut the
+            # rollback short.
             SWITCHED=true
-            write_rollback_set
+            set +e
+            write_rollback_set || echo "WARNING: could not record the rollback set; rollback_do.yml cannot undo this deploy."
+            # Container IDs show which services compose replaced, for an image or a
+            # settings change alike.
+            declare -A CONTAINER
+            for svc in "${SERVICES[@]}" nginx; do
+              CONTAINER[$svc]=$(docker compose ps -aq "$svc" 2>/dev/null)
+            done
             UP_OK=true
             # --no-deps keeps compose from running the migrator again.
             docker compose up -d --no-deps --remove-orphans "${SERVICES[@]}" nginx \
               || { echo "ERROR: replacing containers failed"; UP_OK=false; }
+            REPLACED=()
+            for svc in "${SERVICES[@]}" nginx; do
+              if [ "$(docker compose ps -aq "$svc" 2>/dev/null)" != "${CONTAINER[$svc]}" ]; then
+                REPLACED+=("$svc")
+              fi
+            done
+            echo "INFO: Replaced containers: ${REPLACED[*]:-none}"
             print_images "${SERVICES[@]}"
 
             # Static nginx upstreams resolve container IPs only at config load.
@@ -654,15 +617,15 @@ jobs:
             if $UP_OK && $RELOAD_OK && healthy; then
               rm -f "$ROLLBACK_DIR/manifest.before"
               echo "INFO: 🧹 Removing dangling images..."
-              docker image prune -f
+              docker image prune -f || echo "WARNING: could not remove dangling images"
               docker ps -a
               echo "INFO: 🎉 Deployment complete."
               exit 0
             fi
 
-            for svc in "${CHANGED[@]}"; do
+            for svc in "${REPLACED[@]}"; do
               echo "=== $svc logs (last 100 lines) ==="
-              docker logs --tail 100 "$svc" 2>&1 || true
+              docker compose logs --no-color --tail 100 "$svc" 2>&1
             done
 
             ROLLBACK_SERVICES=()
@@ -689,16 +652,25 @@ jobs:
               echo "WARNING: ⏪ restoring the previous compose and nginx files..."
               install_files "$BACKUP"
             fi
+            for svc in "${ROLLBACK_SERVICES[@]}"; do
+              docker tag "${OLD[$svc]}" "${IMAGE[$svc]}" || echo "ERROR: could not retag ${IMAGE[$svc]}"
+            done
+            # Compose recreates whatever differs from the restored files and tags,
+            # so a container replaced only for a settings change comes back too.
+            RESTORE=(nginx)
+            for svc in "${SERVICES[@]}"; do
+              if ! $KEEP_BACKEND || [ "$svc" != rust-app ]; then
+                RESTORE+=("$svc")
+              fi
+            done
+            echo "WARNING: ⏪ restoring ${RESTORE[*]} (previous images: ${ROLLBACK_SERVICES[*]:-none})..."
+            docker compose up -d --no-deps "${RESTORE[@]}" || echo "ERROR: rolling back containers failed"
+            print_images "${SERVICES[@]}"
             if [ ${#ROLLBACK_SERVICES[@]} -gt 0 ]; then
-              echo "WARNING: ⏪ rolling back ${ROLLBACK_SERVICES[*]}..."
-              for svc in "${ROLLBACK_SERVICES[@]}"; do
-                docker tag "${OLD[$svc]}" "${IMAGE[$svc]}"
-              done
-              docker compose up -d --no-deps "${ROLLBACK_SERVICES[@]}" || echo "ERROR: rolling back containers failed"
-              print_images "${ROLLBACK_SERVICES[@]}"
               forget_rolled_back "${ROLLBACK_SERVICES[@]}"
             fi
             reload_nginx || echo "ERROR: nginx reload failed after rolling back"
             healthy || echo "ERROR: still unhealthy after rolling back."
             exit 1
           DEPLOY_SCRIPT_EOF
+          } | ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -i ~/.ssh/id_ed25519 ${{ secrets.DO_USERNAME }}@${{ secrets.DO_TAILSCALE_NAME }} 'bash -s'
