@@ -481,6 +481,38 @@ pub(crate) fn select_membership<Q: QuerySelect>(query: Q) -> Q {
         )
 }
 
+/// Joins a relationship select to its coach and coachee and selects their names and emails.
+fn select_with_user_names(
+    query: Select<coaching_relationships::Entity>,
+) -> Select<coaching_relationships::Entity> {
+    query
+        .join_as(
+            JoinType::Join,
+            coaches::Relation::CoachingRelationships.def().rev(),
+            Alias::new("coaches"),
+        )
+        .join_as(
+            JoinType::Join,
+            coachees::Relation::CoachingRelationships.def().rev(),
+            Alias::new("coachees"),
+        )
+        .select_only()
+        .column(coaching_relationships::Column::Id)
+        .column(coaching_relationships::Column::OrganizationId)
+        .column(coaching_relationships::Column::CoachId)
+        .column(coaching_relationships::Column::CoacheeId)
+        .column(coaching_relationships::Column::Kind)
+        .column(coaching_relationships::Column::Slug)
+        .column(coaching_relationships::Column::CreatedAt)
+        .column(coaching_relationships::Column::UpdatedAt)
+        .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
+        .column_as(Expr::cust("coaches.last_name"), "coach_last_name")
+        .column_as(Expr::cust("coachees.first_name"), "coachee_first_name")
+        .column_as(Expr::cust("coachees.last_name"), "coachee_last_name")
+        .column_as(Expr::cust("coaches.email"), "coach_email")
+        .column_as(Expr::cust("coachees.email"), "coachee_email")
+}
+
 /// Pairs a coaching relationship with the names and emails of its coach and coachee.
 ///
 /// Only `create` builds one, after refusing unless both hold a role in the organization.
@@ -709,37 +741,9 @@ pub async fn find_by_organization_with_user_names(
     db: &impl ConnectionTrait,
     organization_id: Id,
 ) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
-    let coaches = Alias::new("coaches");
-    let coachees = Alias::new("coachees");
-
-    let query = by_organization(coaching_relationships::Entity::find(), organization_id)
-        .await
-        .join_as(
-            JoinType::Join,
-            coaches::Relation::CoachingRelationships.def().rev(),
-            coaches.clone(),
-        )
-        .join_as(
-            JoinType::Join,
-            coachees::Relation::CoachingRelationships.def().rev(),
-            coachees.clone(),
-        )
-        .select_only()
-        .column(coaching_relationships::Column::Id)
-        .column(coaching_relationships::Column::OrganizationId)
-        .column(coaching_relationships::Column::CoachId)
-        .column(coaching_relationships::Column::CoacheeId)
-        .column(coaching_relationships::Column::Kind)
-        .column(coaching_relationships::Column::Slug)
-        .column(coaching_relationships::Column::CreatedAt)
-        .column(coaching_relationships::Column::UpdatedAt)
-        .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
-        .column_as(Expr::cust("coaches.last_name"), "coach_last_name")
-        .column_as(Expr::cust("coachees.first_name"), "coachee_first_name")
-        .column_as(Expr::cust("coachees.last_name"), "coachee_last_name")
-        .column_as(Expr::cust("coaches.email"), "coach_email")
-        .column_as(Expr::cust("coachees.email"), "coachee_email");
-    let query = select_membership(query).into_model::<CoachingRelationshipWithUserNames>();
+    let query = by_organization(coaching_relationships::Entity::find(), organization_id).await;
+    let query = select_membership(select_with_user_names(query))
+        .into_model::<CoachingRelationshipWithUserNames>();
 
     Ok(query.all(db).await?)
 }
@@ -749,42 +753,15 @@ pub async fn find_by_user_and_organization_with_user_names(
     user_id: Id,
     organization_id: Id,
 ) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
-    let coaches = Alias::new("coaches");
-    let coachees = Alias::new("coachees");
-
     let query = by_organization(coaching_relationships::Entity::find(), organization_id)
         .await
         .filter(
             Condition::any()
                 .add(coaching_relationships::Column::CoachId.eq(user_id))
                 .add(coaching_relationships::Column::CoacheeId.eq(user_id)),
-        )
-        .join_as(
-            JoinType::Join,
-            coaches::Relation::CoachingRelationships.def().rev(),
-            coaches.clone(),
-        )
-        .join_as(
-            JoinType::Join,
-            coachees::Relation::CoachingRelationships.def().rev(),
-            coachees.clone(),
-        )
-        .select_only()
-        .column(coaching_relationships::Column::Id)
-        .column(coaching_relationships::Column::OrganizationId)
-        .column(coaching_relationships::Column::CoachId)
-        .column(coaching_relationships::Column::CoacheeId)
-        .column(coaching_relationships::Column::Kind)
-        .column(coaching_relationships::Column::Slug)
-        .column(coaching_relationships::Column::CreatedAt)
-        .column(coaching_relationships::Column::UpdatedAt)
-        .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
-        .column_as(Expr::cust("coaches.last_name"), "coach_last_name")
-        .column_as(Expr::cust("coachees.first_name"), "coachee_first_name")
-        .column_as(Expr::cust("coachees.last_name"), "coachee_last_name")
-        .column_as(Expr::cust("coaches.email"), "coach_email")
-        .column_as(Expr::cust("coachees.email"), "coachee_email");
-    let query = select_membership(query).into_model::<CoachingRelationshipWithUserNames>();
+        );
+    let query = select_membership(select_with_user_names(query))
+        .into_model::<CoachingRelationshipWithUserNames>();
 
     Ok(query.all(db).await?)
 }
@@ -793,37 +770,10 @@ pub async fn get_relationship_with_user_names(
     db: &DatabaseConnection,
     relationship_id: Id,
 ) -> Result<Option<CoachingRelationshipWithUserNames>, Error> {
-    let coaches = Alias::new("coaches");
-    let coachees = Alias::new("coachees");
-
-    let query = by_coaching_relationship(coaching_relationships::Entity::find(), relationship_id)
-        .await
-        .join_as(
-            JoinType::Join,
-            coaches::Relation::CoachingRelationships.def().rev(),
-            coaches.clone(),
-        )
-        .join_as(
-            JoinType::Join,
-            coachees::Relation::CoachingRelationships.def().rev(),
-            coachees.clone(),
-        )
-        .select_only()
-        .column(coaching_relationships::Column::Id)
-        .column(coaching_relationships::Column::OrganizationId)
-        .column(coaching_relationships::Column::CoachId)
-        .column(coaching_relationships::Column::CoacheeId)
-        .column(coaching_relationships::Column::Kind)
-        .column(coaching_relationships::Column::Slug)
-        .column(coaching_relationships::Column::CreatedAt)
-        .column(coaching_relationships::Column::UpdatedAt)
-        .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
-        .column_as(Expr::cust("coaches.last_name"), "coach_last_name")
-        .column_as(Expr::cust("coachees.first_name"), "coachee_first_name")
-        .column_as(Expr::cust("coachees.last_name"), "coachee_last_name")
-        .column_as(Expr::cust("coaches.email"), "coach_email")
-        .column_as(Expr::cust("coachees.email"), "coachee_email");
-    let query = select_membership(query).into_model::<CoachingRelationshipWithUserNames>();
+    let query =
+        by_coaching_relationship(coaching_relationships::Entity::find(), relationship_id).await;
+    let query = select_membership(select_with_user_names(query))
+        .into_model::<CoachingRelationshipWithUserNames>();
 
     Ok(query.one(db).await?)
 }
@@ -917,9 +867,6 @@ pub async fn find_by_user_id_with_user_names(
     viewer: &Visibility,
     role_filter: impl RoleFilterable,
 ) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
-    let coaches = Alias::new("coaches");
-    let coachees = Alias::new("coachees");
-
     let role = if role_filter.filter_coach_only() {
         Some(coaching_relationships::Column::CoachId.eq(viewer.user_id))
     } else if role_filter.filter_coachee_only() {
@@ -930,33 +877,9 @@ pub async fn find_by_user_id_with_user_names(
 
     let query = coaching_relationships::Entity::find()
         .filter(accessible_to(viewer))
-        .apply_if(role, |q, role| q.filter(role))
-        .join_as(
-            JoinType::Join,
-            coaches::Relation::CoachingRelationships.def().rev(),
-            coaches.clone(),
-        )
-        .join_as(
-            JoinType::Join,
-            coachees::Relation::CoachingRelationships.def().rev(),
-            coachees.clone(),
-        )
-        .select_only()
-        .column(coaching_relationships::Column::Id)
-        .column(coaching_relationships::Column::OrganizationId)
-        .column(coaching_relationships::Column::CoachId)
-        .column(coaching_relationships::Column::CoacheeId)
-        .column(coaching_relationships::Column::Kind)
-        .column(coaching_relationships::Column::Slug)
-        .column(coaching_relationships::Column::CreatedAt)
-        .column(coaching_relationships::Column::UpdatedAt)
-        .column_as(Expr::cust("coaches.first_name"), "coach_first_name")
-        .column_as(Expr::cust("coaches.last_name"), "coach_last_name")
-        .column_as(Expr::cust("coachees.first_name"), "coachee_first_name")
-        .column_as(Expr::cust("coachees.last_name"), "coachee_last_name")
-        .column_as(Expr::cust("coaches.email"), "coach_email")
-        .column_as(Expr::cust("coachees.email"), "coachee_email");
-    let query = select_membership(query).into_model::<CoachingRelationshipWithUserNames>();
+        .apply_if(role, |q, role| q.filter(role));
+    let query = select_membership(select_with_user_names(query))
+        .into_model::<CoachingRelationshipWithUserNames>();
 
     Ok(query.all(db).await?)
 }
