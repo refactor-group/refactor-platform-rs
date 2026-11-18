@@ -1,9 +1,11 @@
 //! Frozen acceptance tests for attributing meeting participants to the coach and coachee.
 //! Written by the overseer before implementation; read-only during the build.
 
+use chrono::Utc;
 use meeting_ai::types::transcription::Participant;
 
 use super::*;
+use crate::coaching_relationship_kind::Kind;
 use crate::gateway::google_meet::Participant as Attendee;
 use crate::transcript_participant::MatchSource;
 use crate::Id;
@@ -67,7 +69,7 @@ fn typical_speakers() -> Vec<Participant> {
 fn evidence(attendees: Option<&[Attendee]>) -> Evidence<'_> {
     Evidence {
         recorded_session_space: true,
-        coach_account_id: Some(COACH_GOOGLE_ID),
+        anchor_account_id: Some(COACH_GOOGLE_ID),
         attendees,
     }
 }
@@ -174,7 +176,7 @@ fn a_recording_of_some_other_meeting_identifies_nobody() {
     let attendees = typical_attendees();
     let other_meeting = Evidence {
         recorded_session_space: false,
-        coach_account_id: Some(COACH_GOOGLE_ID),
+        anchor_account_id: Some(COACH_GOOGLE_ID),
         attendees: Some(&attendees),
     };
 
@@ -280,7 +282,7 @@ fn without_the_coachs_google_id_only_the_host_answers() {
     let attendees = typical_attendees();
     let no_account = Evidence {
         recorded_session_space: true,
-        coach_account_id: None,
+        anchor_account_id: None,
         attendees: Some(&attendees),
     };
 
@@ -411,4 +413,58 @@ fn no_speakers_attribute_nothing() {
     let p = people();
 
     assert!(attribute(&[], p.coach_id, p.coachee_id, &evidence(None)).is_empty());
+}
+
+fn relationship(kind: Kind) -> coaching_relationships::Model {
+    let now = Utc::now();
+    coaching_relationships::Model {
+        id: Id::new_v4(),
+        organization_id: Id::new_v4(),
+        coach_id: Id::new_v4(),
+        coachee_id: Id::new_v4(),
+        kind,
+        slug: "pair".to_string(),
+        created_at: now.into(),
+        updated_at: now.into(),
+    }
+}
+
+#[test]
+fn a_colleague_who_made_the_link_from_the_coachee_seat_is_the_anchor() {
+    let r = relationship(Kind::Colleague);
+
+    assert_eq!(
+        anchor_and_other(&r, Some(r.coachee_id)),
+        Some((r.coachee_id, r.coach_id))
+    );
+}
+
+#[test]
+fn a_colleague_session_without_a_link_maker_has_no_anchor() {
+    assert_eq!(anchor_and_other(&relationship(Kind::Colleague), None), None);
+}
+
+#[test]
+fn a_colleague_session_whose_link_maker_is_not_a_participant_has_no_anchor() {
+    assert_eq!(
+        anchor_and_other(&relationship(Kind::Colleague), Some(Id::new_v4())),
+        None
+    );
+}
+
+#[test]
+fn a_coaching_session_without_a_link_maker_anchors_on_the_coach() {
+    let r = relationship(Kind::Coaching);
+
+    assert_eq!(anchor_and_other(&r, None), Some((r.coach_id, r.coachee_id)));
+}
+
+#[test]
+fn a_coaching_session_whose_coachee_made_the_link_anchors_on_the_coachee() {
+    let r = relationship(Kind::Coaching);
+
+    assert_eq!(
+        anchor_and_other(&r, Some(r.coachee_id)),
+        Some((r.coachee_id, r.coach_id))
+    );
 }

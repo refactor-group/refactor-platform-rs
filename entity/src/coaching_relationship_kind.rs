@@ -117,6 +117,8 @@ pub trait Rules {
     /// A new meeting link may be made with the other participant's account when the schedule
     /// owner has none connected.
     fn links_with_other_account(&self) -> bool;
+    /// Whose seat anchors speaker attribution when no participant's meeting link was recorded.
+    fn unrecorded_link_maker_anchor(&self) -> Option<Seat>;
 }
 
 /// One person coaches the other.
@@ -177,6 +179,10 @@ impl Rules for Coaching {
     fn links_with_other_account(&self) -> bool {
         false
     }
+
+    fn unrecorded_link_maker_anchor(&self) -> Option<Seat> {
+        Some(Seat::CoachId)
+    }
 }
 
 /// Two equals with identical privileges.
@@ -221,6 +227,10 @@ impl Rules for Colleague {
 
     fn links_with_other_account(&self) -> bool {
         true
+    }
+
+    fn unrecorded_link_maker_anchor(&self) -> Option<Seat> {
+        None
     }
 }
 
@@ -293,6 +303,7 @@ mod tests {
         let rules = Kind::Coaching.rules();
         assert_eq!(rules.schedule_owner(), ScheduleOwner::Seat(Seat::CoachId));
         assert!(!rules.links_with_other_account());
+        assert_eq!(rules.unrecorded_link_maker_anchor(), Some(Seat::CoachId));
     }
 
     #[test]
@@ -300,6 +311,7 @@ mod tests {
         let rules = Kind::Colleague.rules();
         assert_eq!(rules.schedule_owner(), ScheduleOwner::Scheduler);
         assert!(rules.links_with_other_account());
+        assert_eq!(rules.unrecorded_link_maker_anchor(), None);
     }
 
     #[test]

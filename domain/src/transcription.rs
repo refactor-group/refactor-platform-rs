@@ -32,12 +32,13 @@ use tokio::time::timeout;
 use utoipa::ToSchema;
 
 use crate::coaching_relationship_kind;
+use crate::coaching_relationships;
 use crate::coaching_sessions;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::gateway::google_meet;
 use crate::meeting_provider::Provider as MeetingProvider;
 use crate::oauth_connection::{external_account_id, get_valid_access_token};
-use crate::transcript_attribution::{attribute, Attribution, Evidence};
+use crate::transcript_attribution::{anchor_and_other, attribute, Attribution, Evidence};
 use crate::transcript_export::{self, Labeled, LabeledSegment, Rendered, Speaker};
 use crate::transcript_suggestion_target::Target;
 use crate::users;
@@ -342,7 +343,7 @@ const EVIDENCE_TIMEOUT: Duration = Duration::from_secs(60);
 #[derive(Default)]
 struct Gathered {
     recorded_session_space: bool,
-    coach_account_id: Option<String>,
+    anchor_account_id: Option<String>,
     attendees: Option<Vec<google_meet::Participant>>,
 }
 
@@ -350,13 +351,14 @@ impl Gathered {
     fn evidence(&self) -> Evidence<'_> {
         Evidence {
             recorded_session_space: self.recorded_session_space,
-            coach_account_id: self.coach_account_id.as_deref(),
+            anchor_account_id: self.anchor_account_id.as_deref(),
             attendees: self.attendees.as_deref(),
         }
     }
 }
 
-/// Attributes the speakers to the session's coach and coachee; nobody when the people are unknown.
+/// Attributes the speakers to the session's two participants; nobody when they are unknown or
+/// the relationship's kind names no anchor.
 async fn attribute_speakers(
     db: &DatabaseConnection,
     recording_bot: Option<&dyn recording_bot::Provider>,
@@ -364,20 +366,37 @@ async fn attribute_speakers(
     transcription: &Model,
     speakers: &[transcription_types::Participant],
 ) -> Vec<Attribution> {
-    let Ok((session, coach_id, coachee_id)) =
-        session_people(db, transcription).await.inspect_err(|e| {
+    let Ok((session, relationship)) = session_relationship(db, transcription)
+        .await
+        .inspect_err(|e| {
             warn!(
-                "Attribution for transcription {}: loading the session's coach and coachee failed: {e:?}",
+                "Attribution for transcription {}: loading the session's relationship failed: {e:?}",
                 transcription.id
             )
         })
     else {
         return unattributed(speakers);
     };
+    let Some((anchor_id, other_id)) =
+        anchor_and_other(&relationship, session.meeting_url_created_by_user_id)
+    else {
+        debug!(
+            "Attribution for transcription {}: no anchor for this relationship's kind",
+            transcription.id
+        );
+        return unattributed(speakers);
+    };
 
     let gathered = timeout(
         EVIDENCE_TIMEOUT,
-        gather_evidence(db, recording_bot, config, transcription, &session, coach_id),
+        gather_evidence(
+            db,
+            recording_bot,
+            config,
+            transcription,
+            &session,
+            anchor_id,
+        ),
     )
     .await
     .unwrap_or_else(|_| {
@@ -387,18 +406,18 @@ async fn attribute_speakers(
         );
         Gathered::default()
     });
-    attribute(speakers, coach_id, coachee_id, &gathered.evidence())
+    attribute(speakers, anchor_id, other_id, &gathered.evidence())
 }
 
-/// The transcription's session with the ids of its coach and coachee.
-async fn session_people(
+/// The transcription's session with its relationship.
+async fn session_relationship(
     db: &DatabaseConnection,
     transcription: &Model,
-) -> Result<(coaching_sessions::Model, Id, Id), Error> {
+) -> Result<(coaching_sessions::Model, coaching_relationships::Model), Error> {
     let session = coaching_session_api::find_by_id(db, transcription.coaching_session_id).await?;
-    let (coach, coachee) =
-        coaching_relationship::find_coach_and_coachee(db, session.coaching_relationship_id).await?;
-    Ok((session, coach.id, coachee.id))
+    let relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    Ok((session, relationship))
 }
 
 fn unattributed(speakers: &[transcription_types::Participant]) -> Vec<Attribution> {
@@ -412,19 +431,17 @@ fn unattributed(speakers: &[transcription_types::Participant]) -> Vec<Attributio
         .collect()
 }
 
-/// Gathers what is known about the coach; every failure degrades the evidence, none is fatal.
-/// Attendees are matched against the coach's account. The attendee list itself is read with
-/// the token of whoever made the session's meeting link, or the coach's when no maker was
-/// recorded.
+/// Gathers what is known about the anchor; every failure degrades the evidence, none is fatal.
+/// Attendees are matched against the anchor's account and read with the anchor's token: the
+/// anchor made the meeting link, or is the coach when no maker was recorded.
 async fn gather_evidence(
     db: &DatabaseConnection,
     recording_bot: Option<&dyn recording_bot::Provider>,
     config: &Config,
     transcription: &Model,
     session: &coaching_sessions::Model,
-    coach_id: Id,
+    anchor_id: Id,
 ) -> Gathered {
-    let link_maker_id = session.meeting_url_created_by_user_id.unwrap_or(coach_id);
     let Some(code) = session_meet_code(session) else {
         debug!(
             "Attribution for transcription {}: not a Google Meet session",
@@ -435,24 +452,24 @@ async fn gather_evidence(
     let Some(recording) = recording_of_space(db, recording_bot, transcription, &code).await else {
         return Gathered::default();
     };
-    let coach_account_id = external_account_id(db, config, coach_id, MeetingProvider::Google)
+    let anchor_account_id = external_account_id(db, config, anchor_id, MeetingProvider::Google)
         .await
         .inspect_err(|_| {
             warn!(
-                "Attribution for transcription {}: looking up the coach's Google account failed",
+                "Attribution for transcription {}: looking up the anchor's Google account failed",
                 transcription.id
             )
         })
         .ok()
         .flatten();
 
-    let attendees = match (&coach_account_id, recording.started_at, recording.ended_at) {
+    let attendees = match (&anchor_account_id, recording.started_at, recording.ended_at) {
         (Some(_), Some(started_at), Some(ended_at)) => {
             conference_attendees(
                 db,
                 config,
                 transcription.id,
-                link_maker_id,
+                anchor_id,
                 &code,
                 (started_at.with_timezone(&Utc), ended_at.with_timezone(&Utc)),
             )
@@ -463,7 +480,7 @@ async fn gather_evidence(
 
     Gathered {
         recorded_session_space: true,
-        coach_account_id,
+        anchor_account_id,
         attendees,
     }
 }

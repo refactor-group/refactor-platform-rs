@@ -1,6 +1,5 @@
 //! Evidence gathering on completion: which outside lookups run, and who ends up attributed.
 
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -12,8 +11,7 @@ use meeting_ai::types::transcription::{
     Config as TranscriptConfig, Participant as SpeakerIn, Segment as SegmentIn, Status,
     Transcription,
 };
-use sea_orm::sea_query::Iden;
-use sea_orm::{ActiveModelTrait, DatabaseBackend, Iterable, MockDatabase, Value};
+use sea_orm::{DatabaseBackend, MockDatabase};
 
 use super::*;
 use crate::coaching_relationships;
@@ -232,21 +230,6 @@ fn recording(transcription: &Model) -> meeting_recording::Model {
     }
 }
 
-/// The single joined row `find_coach_and_coachee` reads, with each user's columns prefixed.
-fn coach_and_coachee_row(people: &People) -> BTreeMap<String, Value> {
-    [("coach_", &people.coach), ("coachee_", &people.coachee)]
-        .into_iter()
-        .flat_map(|(prefix, user)| {
-            let user = users::ActiveModel::from(user.clone());
-            users::Column::iter().filter_map(move |column| {
-                user.get(column)
-                    .into_value()
-                    .map(|value| (format!("{prefix}{}", Iden::to_string(&column)), value))
-            })
-        })
-        .collect()
-}
-
 fn speaker(provider_id: &str, name: &str, is_host: bool) -> SpeakerIn {
     SpeakerIn {
         provider_id: provider_id.to_owned(),
@@ -294,7 +277,7 @@ async fn a_zoom_session_attributes_nobody_without_asking_the_bot() {
     let transcription = transcription(&session);
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([vec![session.clone()]])
-        .append_query_results([vec![coach_and_coachee_row(&people)]])
+        .append_query_results([vec![people.relationship.clone()]])
         .append_query_results([vec![recording(&transcription)]])
         .into_connection();
     let bot = FakeBot::in_meeting(SESSION_CODE);
@@ -319,7 +302,7 @@ async fn a_bot_in_another_meeting_attributes_nobody_and_never_reaches_google() {
     let transcription = transcription(&session);
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([vec![session.clone()]])
-        .append_query_results([vec![coach_and_coachee_row(&people)]])
+        .append_query_results([vec![people.relationship.clone()]])
         .append_query_results([vec![recording(&transcription)]])
         .into_connection();
     let bot = FakeBot::in_meeting("zzz-zzzz-zzz");
@@ -348,7 +331,7 @@ async fn the_session_space_with_a_host_attributes_the_coach_and_the_coachee() {
     let transcription = transcription(&session);
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([vec![session.clone()]])
-        .append_query_results([vec![coach_and_coachee_row(&people)]])
+        .append_query_results([vec![people.relationship.clone()]])
         .append_query_results([vec![recording(&transcription)]])
         .append_query_results([Vec::<oauth_connections::Model>::new()])
         .into_connection();
@@ -398,6 +381,71 @@ fn coach_connection(people: &People) -> oauth_connections::Model {
     }
 }
 
+/// Colleagues Jim (coach seat) and Caleb (coachee seat).
+fn colleagues() -> People {
+    let mut people = people();
+    people.relationship.kind = crate::coaching_relationship_kind::Kind::Colleague;
+    people
+}
+
+/// A Google Meet session whose link `link_maker` made.
+fn session_linked_by(people: &People, link_maker: Option<Id>) -> coaching_sessions::Model {
+    coaching_sessions::Model {
+        meeting_url_created_by_user_id: link_maker,
+        ..session(people, Some(MeetingProvider::Google))
+    }
+}
+
+/// Attributes `speakers()`, where the host is `200`, the speaker named for the coachee seat.
+async fn attribute_with_host_200(
+    people: &People,
+    session: coaching_sessions::Model,
+) -> Vec<Attribution> {
+    let transcription = transcription(&session);
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([vec![session.clone()]])
+        .append_query_results([vec![people.relationship.clone()]])
+        .append_query_results([vec![recording(&transcription)]])
+        .append_query_results([Vec::<oauth_connections::Model>::new()])
+        .into_connection();
+    let bot = FakeBot::in_meeting(SESSION_CODE);
+    let speakers = vec![speaker("100", "Jim", false), speaker("200", "Caleb", true)];
+
+    attribute_speakers(
+        &db,
+        Some(&bot),
+        &Config::default(),
+        &transcription,
+        &speakers,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_colleague_session_anchors_on_the_coachee_seat_colleague_who_made_the_link() {
+    let people = colleagues();
+    let session = session_linked_by(&people, Some(people.coachee.id));
+
+    assert_eq!(
+        attributed(&attribute_with_host_200(&people, session).await),
+        vec![
+            ("100", Some(people.coach.id), Some(MatchSource::Elimination)),
+            ("200", Some(people.coachee.id), Some(MatchSource::Account)),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_colleague_session_without_a_recorded_link_maker_attributes_nobody() {
+    let people = colleagues();
+    let session = session_linked_by(&people, None);
+
+    assert_eq!(
+        attributed(&attribute_with_host_200(&people, session).await),
+        nobody()
+    );
+}
+
 /// Gathers evidence for `session` with the coach's account known and no token stored for
 /// anyone; returns the user ids the two `oauth_connections` reads were bound to, in order:
 /// the account lookup, then the token lookup.
@@ -405,7 +453,7 @@ async fn oauth_lookup_user_ids(people: &People, session: coaching_sessions::Mode
     let transcription = transcription(&session);
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([vec![session.clone()]])
-        .append_query_results([vec![coach_and_coachee_row(people)]])
+        .append_query_results([vec![people.relationship.clone()]])
         .append_query_results([vec![recording(&transcription)]])
         .append_query_results([vec![coach_connection(people)]])
         .append_query_results([Vec::<oauth_connections::Model>::new()])
@@ -433,10 +481,10 @@ async fn oauth_lookup_user_ids(people: &People, session: coaching_sessions::Mode
         .collect()
 }
 
-/// Attendees are matched against the coach's account, but read with the token of whoever
-/// made the Meet link.
+/// The link maker is the anchor: attendees are matched against their account and read with
+/// their token, even when they hold the coachee seat.
 #[tokio::test]
-async fn attribution_matches_the_coach_and_reads_attendees_as_the_link_maker() {
+async fn attribution_anchors_on_the_link_maker_for_both_lookups() {
     let people = people();
     let session = coaching_sessions::Model {
         meeting_url_created_by_user_id: Some(people.coachee.id),
@@ -445,7 +493,7 @@ async fn attribution_matches_the_coach_and_reads_attendees_as_the_link_maker() {
 
     assert_eq!(
         oauth_lookup_user_ids(&people, session).await,
-        [people.coach.id, people.coachee.id]
+        [people.coachee.id, people.coachee.id]
     );
 }
 
@@ -523,7 +571,7 @@ async fn complete_with(bot: &FakeBot) -> (Result<(), Error>, Vec<String>, People
     let db = MockDatabase::new(DatabaseBackend::Postgres)
         .append_query_results([vec![transcription.clone()]])
         .append_query_results([vec![session.clone()]])
-        .append_query_results([vec![coach_and_coachee_row(&people)]])
+        .append_query_results([vec![people.relationship.clone()]])
         .append_query_results([vec![recording(&transcription)]])
         .append_query_results([vec![stored("100"), stored("200")]])
         .append_query_results([vec![
