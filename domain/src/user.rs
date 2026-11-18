@@ -9,7 +9,8 @@ use entity_api::{
 };
 
 use crate::{
-    coaching_relationship::InviteeRelationship,
+    audit_event::{self, Recorder},
+    coaching_relationship::{create_for_invitee, InviteeRelationship},
     error::Error,
     error::{reason, DomainErrorKind, EntityErrorKind, InternalErrorKind},
     magic_link_token, magic_link_tokens, users, Actor, Id,
@@ -145,6 +146,7 @@ pub async fn update_password(
 /// creation, with nothing committed.
 pub async fn create_in_organization(
     db: &DatabaseConnection,
+    recorder: &dyn Recorder,
     actor: Actor,
     organization_id: Id,
     user_model: users::Model,
@@ -155,11 +157,16 @@ pub async fn create_in_organization(
     let txn = db.begin().await.map_err(EntityApiError::from)?;
 
     let new_user = user::create_by_organization(&txn, actor, organization_id, user_model).await?;
+    let relationship_event =
+        create_for_invitee(&txn, actor, organization_id, new_user.id, relationship).await?;
 
-    if let Some(relationship) = relationship {
-        coaching_relationship::create(&txn, organization_id, relationship.draft_for(new_user.id))
-            .await?;
-    }
+    let events = new_user
+        .roles
+        .iter()
+        .map(|granted| audit_event::member_added(actor, organization_id, new_user.id, granted.role))
+        .chain(relationship_event)
+        .collect();
+    recorder.record_all(&txn, events).await?;
 
     txn.commit().await.map_err(EntityApiError::from)?;
 
@@ -173,9 +180,12 @@ pub async fn create_in_organization(
 ///
 /// Returns the roles that were destroyed, so the caller can log them. Each is
 /// also written to the audit trail inside the transaction. A global SuperAdmin
-/// grant is among them, and that is the change most worth recording.
+/// grant is among them, and that is the change most worth recording. After the
+/// deletes, the audit log records them organization by organization: in each, every
+/// deleted relationship, then the user's removal from it.
 pub async fn delete(
     db: &DatabaseConnection,
+    recorder: &dyn Recorder,
     actor: Actor,
     user_id: Id,
 ) -> Result<Vec<user_roles::Model>, Error> {
@@ -227,7 +237,7 @@ pub async fn delete(
 
     // A session created since the count still trips the foreign key. Postgres has aborted
     // the transaction by then, so the count cannot be redone.
-    coaching_relationship::delete_by_user_id(&txn, user_id)
+    let deleted_relationships = coaching_relationship::delete_by_user_id(&txn, user_id)
         .await
         .map_err(|err| {
             if err.is_foreign_key_violation() {
@@ -238,6 +248,20 @@ pub async fn delete(
         })?;
     let destroyed_roles = user_role::delete_by_user_id(&txn, actor, user_id).await?;
     user::delete(&txn, user_id).await?;
+
+    let events = deleted_relationships
+        .iter()
+        .map(|relationship| audit_event::relationship_deleted(actor, relationship))
+        .chain(
+            destroyed_roles
+                .iter()
+                .filter_map(|role| role.organization_id)
+                .map(|organization_id| {
+                    audit_event::member_removed(actor, organization_id, user_id)
+                }),
+        )
+        .collect();
+    recorder.record_all(&txn, events).await?;
 
     txn.commit().await.map_err(|e| Error {
         source: Some(Box::new(e)),

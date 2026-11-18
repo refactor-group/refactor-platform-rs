@@ -1,5 +1,6 @@
 use super::*;
 use crate::error::{DomainErrorKind, EntityErrorKind, InternalErrorKind};
+use crate::test_utils::audit_event::MemoryRecorder;
 use crate::Actor;
 use crate::{coaching_relationships, organizations, user_roles};
 use sea_orm::{DatabaseBackend, DbErr, MockDatabase, MockExecResult};
@@ -219,6 +220,7 @@ async fn attach_to_organization_returns_the_user_scoped_to_the_target_org() -> R
 
     let attached = attach_to_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(actor_user_id),
         organization_id,
         user_id,
@@ -272,6 +274,7 @@ async fn attach_to_organization_audits_the_grant_inside_the_transaction() -> Res
 
     attach_to_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(actor_user_id),
         organization_id,
         user_id,
@@ -365,6 +368,7 @@ async fn attach_to_organization_commits_the_role_and_the_coach_together() -> Res
 
     attach_to_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(actor_user_id),
         organization_id,
         user_id,
@@ -402,6 +406,7 @@ async fn attach_to_organization_rolls_back_the_role_when_the_coach_assignment_fa
 
     attach_to_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(actor_user_id),
         organization_id,
         user_id,
@@ -438,6 +443,7 @@ async fn attach_to_organization_rejects_an_archived_organization() {
 
     let error = attach_to_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(Id::new_v4()),
         organization_id,
         Id::new_v4(),
@@ -470,6 +476,7 @@ async fn attach_to_organization_rejects_an_existing_membership() {
 
     let error = attach_to_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(Id::new_v4()),
         organization_id,
         user_id,
@@ -496,9 +503,15 @@ async fn remove_from_organization_refuses_to_remove_the_last_admin() {
         .append_query_results([[user_role_model(user_id, Some(organization_id), Role::Admin)]])
         .into_connection();
 
-    let error = remove_from_organization(&db, Actor::new(Id::new_v4()), organization_id, user_id)
-        .await
-        .expect_err("expected last-admin rejection");
+    let error = remove_from_organization(
+        &db,
+        &MemoryRecorder::default(),
+        Actor::new(Id::new_v4()),
+        organization_id,
+        user_id,
+    )
+    .await
+    .expect_err("expected last-admin rejection");
 
     assert_eq!(
         entity_error_kind(&error),
@@ -540,7 +553,14 @@ async fn remove_from_organization_succeeds_when_the_member_has_sessions() -> Res
         )]])
         .into_connection();
 
-    remove_from_organization(&db, Actor::new(actor_user_id), organization_id, user_id).await?;
+    remove_from_organization(
+        &db,
+        &MemoryRecorder::default(),
+        Actor::new(actor_user_id),
+        organization_id,
+        user_id,
+    )
+    .await?;
 
     // The coaching history is the record of work done; removal revokes access to
     // it rather than destroying it.
@@ -573,7 +593,14 @@ async fn remove_from_organization_deletes_only_the_target_org_membership() -> Re
         )]])
         .into_connection();
 
-    remove_from_organization(&db, Actor::new(actor_user_id), organization_id, user_id).await?;
+    remove_from_organization(
+        &db,
+        &MemoryRecorder::default(),
+        Actor::new(actor_user_id),
+        organization_id,
+        user_id,
+    )
+    .await?;
 
     let deletes: Vec<String> = statements(db)
         .into_iter()
@@ -585,6 +612,34 @@ async fn remove_from_organization_deletes_only_the_target_org_membership() -> Re
     assert_eq!(deletes.len(), 1, "{deletes:?}");
     assert!(deletes.iter().all(|sql| sql.contains(r#""id" = $1"#)));
     assert!(deletes.iter().any(|sql| sql.contains("user_roles")));
+
+    Ok(())
+}
+
+/// A membership already gone by the delete, such as one removed concurrently, records
+/// no removal in the audit log, as it writes no `user_role_changes` row.
+#[tokio::test]
+async fn remove_from_organization_records_nothing_when_no_row_was_deleted() -> Result<(), Error> {
+    let organization_id = Id::new_v4();
+    let user_id = Id::new_v4();
+    let recorder = MemoryRecorder::default();
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[user(user_id, vec![])]])
+        .append_query_results([[user_role_model(user_id, Some(organization_id), Role::User)]])
+        .append_exec_results([exec_result(0)])
+        .into_connection();
+
+    remove_from_organization(
+        &db,
+        &recorder,
+        Actor::new(Id::new_v4()),
+        organization_id,
+        user_id,
+    )
+    .await?;
+
+    assert_eq!(recorder.events(), vec![]);
 
     Ok(())
 }
@@ -615,8 +670,14 @@ async fn remove_from_organization_audits_the_removed_role_inside_the_transaction
         )]])
         .into_connection();
 
-    let removed =
-        remove_from_organization(&db, Actor::new(actor_user_id), organization_id, user_id).await?;
+    let removed = remove_from_organization(
+        &db,
+        &MemoryRecorder::default(),
+        Actor::new(actor_user_id),
+        organization_id,
+        user_id,
+    )
+    .await?;
     assert_eq!(removed, Role::Admin);
 
     let statements = full_statements(db);
@@ -770,9 +831,14 @@ async fn delete_refuses_a_user_who_belongs_to_multiple_organizations() {
         .append_query_results([vec![count_row(2)]])
         .into_connection();
 
-    let error = crate::user::delete(&db, Actor::new(Id::new_v4()), Id::new_v4())
-        .await
-        .expect_err("expected multi-org rejection");
+    let error = crate::user::delete(
+        &db,
+        &MemoryRecorder::default(),
+        Actor::new(Id::new_v4()),
+        Id::new_v4(),
+    )
+    .await
+    .expect_err("expected multi-org rejection");
 
     assert_eq!(
         entity_error_kind(&error),
@@ -801,9 +867,14 @@ async fn delete_refuses_when_the_user_is_an_organizations_last_admin() {
         )]])
         .into_connection();
 
-    let error = crate::user::delete(&db, Actor::new(Id::new_v4()), Id::new_v4())
-        .await
-        .expect_err("expected last-admin rejection");
+    let error = crate::user::delete(
+        &db,
+        &MemoryRecorder::default(),
+        Actor::new(Id::new_v4()),
+        Id::new_v4(),
+    )
+    .await
+    .expect_err("expected last-admin rejection");
 
     assert_eq!(
         entity_error_kind(&error),
@@ -831,6 +902,8 @@ async fn delete_still_cascades_for_a_single_organization_user() -> Result<(), Er
         .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
         // No relationship with a session.
         .append_query_results([vec![count_row(0)]])
+        // No relationship to delete.
+        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
         // The roles the delete is about to destroy, read before they are gone.
         .append_query_results([[destroyed.clone()]])
         .append_query_results([[role_change(
@@ -843,7 +916,13 @@ async fn delete_still_cascades_for_a_single_organization_user() -> Result<(), Er
         .append_exec_results([exec_result(1), exec_result(1), exec_result(1)])
         .into_connection();
 
-    let destroyed_roles = crate::user::delete(&db, Actor::new(actor_id), target_id).await?;
+    let destroyed_roles = crate::user::delete(
+        &db,
+        &MemoryRecorder::default(),
+        Actor::new(actor_id),
+        target_id,
+    )
+    .await?;
     assert_eq!(destroyed_roles.len(), 1);
 
     let sql = statements(db);
@@ -893,6 +972,7 @@ async fn delete_audits_every_destroyed_role_including_a_global_super_admin() -> 
         .append_query_results([vec![count_row(1)]])
         .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
         .append_query_results([vec![count_row(0)]])
+        .append_query_results([Vec::<BTreeMap<String, sea_orm::Value>>::new()])
         .append_query_results([[org_role.clone(), global_role.clone()]])
         .append_query_results([[role_change(
             actor_id,
@@ -911,7 +991,13 @@ async fn delete_audits_every_destroyed_role_including_a_global_super_admin() -> 
         .append_exec_results([exec_result(1), exec_result(1), exec_result(1)])
         .into_connection();
 
-    let destroyed_roles = crate::user::delete(&db, Actor::new(actor_id), target_id).await?;
+    let destroyed_roles = crate::user::delete(
+        &db,
+        &MemoryRecorder::default(),
+        Actor::new(actor_id),
+        target_id,
+    )
+    .await?;
     assert_eq!(destroyed_roles.len(), 2);
 
     let sql = statements(db);
@@ -944,9 +1030,15 @@ async fn remove_from_organization_rejects_a_non_member() {
         .append_query_results([Vec::<user_roles::Model>::new()])
         .into_connection();
 
-    let error = remove_from_organization(&db, Actor::new(Id::new_v4()), Id::new_v4(), Id::new_v4())
-        .await
-        .expect_err("expected a not-found rejection");
+    let error = remove_from_organization(
+        &db,
+        &MemoryRecorder::default(),
+        Actor::new(Id::new_v4()),
+        Id::new_v4(),
+        Id::new_v4(),
+    )
+    .await
+    .expect_err("expected a not-found rejection");
 
     assert_eq!(entity_error_kind(&error), &EntityErrorKind::NotFound);
     assert!(
@@ -964,6 +1056,7 @@ async fn attach_to_organization_rejects_a_missing_organization() {
 
     let error = attach_to_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(Id::new_v4()),
         Id::new_v4(),
         Id::new_v4(),
@@ -1041,6 +1134,7 @@ async fn update_role_in_organization_refuses_to_demote_the_last_admin() {
 
     let error = update_role_in_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(Id::new_v4()),
         organization_id,
         user_id,
@@ -1091,6 +1185,7 @@ async fn update_role_in_organization_demotes_an_admin_when_another_remains() -> 
 
     let (previous_role, updated) = update_role_in_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(actor_user_id),
         organization_id,
         user_id,
@@ -1131,6 +1226,7 @@ async fn update_role_in_organization_audits_the_transition_inside_the_transactio
 
     update_role_in_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(actor_user_id),
         organization_id,
         user_id,
@@ -1192,6 +1288,7 @@ async fn update_role_in_organization_scopes_the_returned_roles_to_the_target_org
 
     let (_previous_role, updated) = update_role_in_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(actor_user_id),
         organization_id,
         user_id,
@@ -1237,6 +1334,7 @@ async fn update_role_in_organization_writes_nothing_when_the_role_is_unchanged()
 
     let (previous_role, _) = update_role_in_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(Id::new_v4()),
         organization_id,
         user_id,
@@ -1281,6 +1379,7 @@ async fn update_role_in_organization_rejects_a_non_member() {
 
     let error = update_role_in_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(Id::new_v4()),
         organization_id,
         Id::new_v4(),
@@ -1308,6 +1407,7 @@ async fn update_role_in_organization_rejects_an_archived_organization() {
 
     let error = update_role_in_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(Id::new_v4()),
         organization_id,
         Id::new_v4(),
@@ -1349,6 +1449,7 @@ async fn update_role_in_organization_locks_the_user_row() -> Result<(), Error> {
 
     update_role_in_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(Id::new_v4()),
         organization_id,
         user_id,
@@ -1427,6 +1528,7 @@ async fn update_role_in_organization_does_not_treat_super_admin_as_a_demotion() 
 
     let error = update_role_in_organization(
         &db,
+        &MemoryRecorder::default(),
         Actor::new(Id::new_v4()),
         organization_id,
         user_id,
@@ -1479,7 +1581,14 @@ async fn remove_from_organization_locks_the_user_row_before_reading_the_membersh
         )]])
         .into_connection();
 
-    remove_from_organization(&db, Actor::new(actor_user_id), organization_id, user_id).await?;
+    remove_from_organization(
+        &db,
+        &MemoryRecorder::default(),
+        Actor::new(actor_user_id),
+        organization_id,
+        user_id,
+    )
+    .await?;
 
     let sql = statements(db);
     let lock = sql

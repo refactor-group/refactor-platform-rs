@@ -198,6 +198,8 @@ How to read the tables:
 | REL-20 | POST /organizations/O1/coaching_relationships | OUTSIDER made an `Admin` of O2 | 403, nothing written | `web/src/extractors/organization_admin_access.rs:48` | An admin of another organization is not an admin of O1 |
 | REL-21 | any relationship route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 | REL-22 | GET /users/{SUPER_ID}/coaching-relationships | SUPER, once they also coach OUTSIDER in a new O2 relationship R5 | 200, R5 | `web/src/extractors/user_self_access.rs:28`; `web/src/controller/user/coaching_relationships_controller.rs:53`; `domain/src/search.rs:76`; `entity_api/src/coaching_relationship.rs:425` | [rows] [membership] A SuperAdmin's own list is not held to the organizations they hold a role in. SUPER holds no O2 role |
+| REL-23 | POST /organizations/O1/coaching_relationships `{coach_id: COACH, coachee_id: MEMBER, kind: "colleague"}` | ADMIN | 200 (201); O1's audit trail ends with `relationship_created` by ADMIN, subject the new relationship, `details` its `kind`, `coach_id`, `coachee_id` | `domain/src/coaching_relationship.rs:137` | Audit checks below the `ORG` table |
+| REL-24 | REL-15's create of a colleague pair, then again with the two swapped | ADMIN | both 200 (201), the same relationship; O1's audit trail holds one `relationship_created` | `domain/src/coaching_relationship.rs:133` | A returned relationship is not recorded again |
 
 ### 4.2 Sessions (`SES`)
 
@@ -571,6 +573,30 @@ Organization membership changes decide `is_participant_and_member`; these rows c
 | ORG-42 | POST /organizations/O1/users with `relationship: {kind: "coaching", role: "colleague"}`, then `{kind: "colleague", role: "coach"}` | ADMIN | 422 for both, `details.reason` `role_not_in_kind`; no user, no email | `domain/src/coaching_relationship.rs` `InviteeRelationship::seated` | Refused before anything is written |
 | ORG-43 | POST /organizations/O1/users/{user}/role `{role: User, relationship: {with_user_id: COACHEE, kind: "coaching", role: "coach"}}` (a former member with no relationship) | ADMIN | 200 (201), membership plus a relationship in which the user coaches COACHEE | `domain/src/coaching_relationship.rs` `InviteeRelationship::seated`; `domain/src/user_role.rs` `attach_to_organization` | The top-level `role` is the organization role |
 | ORG-44 | POST /organizations/O1/users/{REMOVED_ID}/role `{role: User, relationship: {with_user_id: COACH, kind: "coaching", role: "coach"}}`, then the same with `kind: "colleague", role: "colleague"` | ADMIN | first: 200 (201), REMOVED now coaches COACH and R3 is kept (they coach each other); second: 409 `pair_already_related`, no role granted | `entity_api::coaching_relationship::create` | Run each on a fresh REMOVED removal; delete the new relationship afterwards |
+| ORG-45 | POST /organizations/O1/users `{..., relationship: {with_user_id: COACH, kind: "colleague"}}` | ADMIN | 200 (201); O1's audit trail ends with `member_added` (subject the new user, `details.role` `user`) then `relationship_created`, both by ADMIN | `domain/src/user.rs:164`, `:170` | |
+| ORG-46 | KIND-18 | ADMIN | 409; no audit row | `domain/src/user.rs:164` | The `member_added` recorded before the refusal rolls back with it |
+| ORG-47 | ORG-03 with `kind: "colleague"` for a former member with no relationship | ADMIN | 200 (201); `member_added` then `relationship_created`, both by ADMIN | `domain/src/user_role.rs:87`, `:92` | |
+| ORG-48 | ORG-03 for REMOVED, whose R3 is reused | ADMIN | 200 (201); only `member_added` | `domain/src/coaching_relationship.rs:133` | |
+| ORG-49 | KIND-17 | ADMIN | 409; no audit row | `domain/src/user_role.rs:87` | |
+| ORG-50 | ORG-04 | ADMIN | `member_removed` by ADMIN, subject the user, `details` `{}` | `domain/src/user_role.rs:163` | |
+| ORG-51 | ORG-24 | ADMIN | `member_role_changed`, `details` `{from: "user", to: "admin"}` | `domain/src/user_role.rs:266` | |
+| ORG-52 | ORG-06 for a member in a relationship without sessions | ADMIN | `relationship_deleted` by ADMIN per deleted relationship, in the relationship's organization, `details` its `kind`, `coach_id`, `coachee_id` | `domain/src/user.rs:260` | |
+| ORG-53 | ORG-06 | ADMIN | after any `relationship_deleted`, `member_removed` by ADMIN in each organization the user belonged to, `details` `{}` | `domain/src/user.rs:271` | The delete is refused for a member of two organizations, so there is at most one |
+| ORG-54 | Ten POST /organizations/O1/users at once, each with its own email (`seq 10 \| xargs -P 10 -I{} curl ...`) | ADMIN | all 200 (201); ten more `member_added`; the fork check below returns no rows | `entity_api/src/audit_event.rs:57` | Postgres only: SQLite has no advisory lock, so no automated test sees two appends race. Sends ten invites, so run it against the mock Resend |
+
+The audit rows' checks (each organization's `prev_hash` is its previous event's `hash`):
+
+```sql
+SELECT actor_user_id, action, subject_type, subject_id, details, prev_hash, hash
+FROM refactor_platform.audit_events WHERE organization_id = '<O1>' ORDER BY occurred_at, id;
+```
+
+Two events naming the same `prev_hash` mean two appends forked the chain (ORG-54):
+
+```sql
+SELECT prev_hash, count(*) FROM refactor_platform.audit_events
+WHERE organization_id = '<O1>' GROUP BY prev_hash HAVING count(*) > 1;
+```
 
 ### 4.14 Real-time events (`SSE`)
 
@@ -1154,3 +1180,14 @@ a frozen `domain` test, or by hand with the reason.
 | TRN-33 | `domain/src/transcription_analysis_hook_sqlite_tests.rs::completing_a_colleague_transcript_writes_no_analysis`, `domain/src/transcription_analysis_hook_sqlite_tests.rs::completing_with_a_target_writes_one_pending_analysis_with_the_segments` |
 | KIND-27 | `domain/src/coaching_relationship_sqlite_tests.rs::a_returned_colleague_relationship_names_each_seat_by_its_own_user` |
 | SER-29 | `domain/src/coaching_session_series.rs::tests::an_unchanged_following_save_from_another_zone_moves_nothing` (mock: reschedule-following takes Postgres advisory locks) |
+| REL-23 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_created_relationship_is_recorded` |
+| REL-24 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_returned_relationship_is_not_recorded_again` |
+| ORG-45 | `web/src/controller/organization/user_controller_sqlite_tests.rs::adding_a_member_records_the_membership_and_the_relationship` |
+| ORG-46 | `web/src/controller/organization/user_controller_sqlite_tests.rs::a_refused_add_records_nothing` |
+| ORG-47 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::attaching_a_member_records_the_membership_and_the_relationship` |
+| ORG-48 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::attaching_a_member_with_their_existing_relationship_records_only_the_membership` |
+| ORG-49 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::a_refused_attach_records_nothing` |
+| ORG-50 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::removing_a_member_records_it` |
+| ORG-51 | `web/src/controller/organization/user/role_controller_sqlite_tests.rs::changing_a_members_role_records_both_roles` |
+| ORG-52 | `web/src/controller/organization/user_controller_sqlite_tests.rs::deleting_a_member_records_each_relationship_it_deletes` |
+| ORG-53 | `web/src/controller/organization/user_controller_sqlite_tests.rs::deleting_a_member_records_their_removal`, `web/src/controller/organization/user_controller_sqlite_tests.rs::deleting_a_member_records_each_relationship_it_deletes` |

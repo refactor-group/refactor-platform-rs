@@ -163,11 +163,13 @@ async fn create_returns_the_existing_relationship_of_the_same_kind() {
         let (db, o, [coach, coachee, _]) = three_members().await;
         let first = create(&db, o, draft(coach, coachee, Kind::Coaching))
             .await
-            .expect("the relationship is created");
+            .expect("the relationship is created")
+            .relationship;
 
         let again = create(&db, o, draft(coach, coachee, Kind::Coaching))
             .await
-            .expect("the existing relationship is returned");
+            .expect("the existing relationship is returned")
+            .relationship;
 
         assert_eq!(again.id, first.id);
         assert_eq!(relationships_between(&db, coach, coachee).await.len(), 1);
@@ -187,11 +189,13 @@ async fn a_returned_colleague_relationship_names_each_seat_by_its_own_user() {
         }
         let first = create(&db, o, draft(a, b, Kind::Colleague))
             .await
-            .expect("the relationship is created");
+            .expect("the relationship is created")
+            .relationship;
 
         let again = create(&db, o, draft(b, a, Kind::Colleague))
             .await
-            .expect("the existing relationship is returned");
+            .expect("the existing relationship is returned")
+            .relationship;
 
         assert_eq!(again.id, first.id);
         assert_eq!((again.coach_id, again.coachee_id), (a, b));

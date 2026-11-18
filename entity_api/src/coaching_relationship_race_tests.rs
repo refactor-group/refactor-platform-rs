@@ -120,7 +120,8 @@ async fn returns_the_winner_when_a_concurrent_insert_wins_the_race() -> Result<(
             kind: Kind::Coaching,
         },
     )
-    .await?;
+    .await?
+    .relationship;
 
     assert_eq!(
         result.id, winner.id,

@@ -11,6 +11,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use domain::audit_event::DatabaseRecorder;
 use domain::users::Role;
 use domain::Actor;
 use domain::{emails as EmailsAPI, user_role as UserRoleApi, Id};
@@ -88,6 +89,7 @@ pub(crate) async fn attach_role(
 
     let user = UserRoleApi::attach_to_organization(
         app_state.db_conn_ref(),
+        &DatabaseRecorder,
         Actor::new(authenticated_user.id),
         organization.id,
         user_id,
@@ -202,6 +204,7 @@ pub(crate) async fn update_role(
 
     let (previous_role, user) = UserRoleApi::update_role_in_organization(
         app_state.db_conn_ref(),
+        &DatabaseRecorder,
         Actor::new(authenticated_user.id),
         organization.id,
         user_id,
@@ -258,6 +261,7 @@ pub(crate) async fn remove_role(
 
     let previous_role = UserRoleApi::remove_from_organization(
         app_state.db_conn_ref(),
+        &DatabaseRecorder,
         Actor::new(authenticated_user.id),
         organization.id,
         user_id,

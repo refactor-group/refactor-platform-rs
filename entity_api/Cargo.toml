@@ -15,8 +15,10 @@ axum-login = "0.16.0"
 async-trait = "0.1.83"
 base64 = "0.22"
 futures = "0.3.31"
+hex = "0.4"
 password-auth = "1.0.0"
 slugify = "0.1.0"
+sha2 = "0.10"
 utoipa = { version = "5.5.0", features = ["axum_extras", "uuid", "chrono", "config"] }
 
 [dependencies.sea-orm]

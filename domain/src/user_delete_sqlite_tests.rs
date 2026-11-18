@@ -7,6 +7,7 @@ use sea_orm::{
 };
 
 use super::delete;
+use crate::audit_event::DatabaseRecorder;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::test_utils::sqlite::{
     coach_of, database, seed_membership, seed_organization, seed_user, within_time_limit,
@@ -180,7 +181,7 @@ async fn a_coachee_with_a_session_is_refused_and_nothing_is_deleted() {
         let relationship_id = seed_relationship(&db, organization_id, coach_id, user_id).await;
         let session_id = seed_session(&db, relationship_id).await;
 
-        let refused = delete(&db, admin(), user_id)
+        let refused = delete(&db, &DatabaseRecorder, admin(), user_id)
             .await
             .expect_err("the delete is refused");
 
@@ -209,7 +210,7 @@ async fn a_coach_and_coachee_with_sessions_counts_both_relationships() {
             seed_session(&db, coached).await,
         ];
 
-        let refused = delete(&db, admin(), user_id)
+        let refused = delete(&db, &DatabaseRecorder, admin(), user_id)
             .await
             .expect_err("the delete is refused");
 
@@ -237,7 +238,7 @@ async fn a_relationship_without_sessions_is_deleted_with_its_goal() {
         let relationship_id = seed_relationship(&db, organization_id, coach_id, user_id).await;
         let goal_id = seed_goal(&db, relationship_id, coach_id).await;
 
-        let destroyed = delete(&db, admin(), user_id).await?;
+        let destroyed = delete(&db, &DatabaseRecorder, admin(), user_id).await?;
 
         assert_eq!(destroyed.len(), 1);
         assert!(!user_exists(&db, user_id).await);
@@ -256,7 +257,7 @@ async fn a_user_without_relationships_is_deleted() {
         let db = database_with_role_audit().await;
         let (user_id, _) = seed_member(&db).await;
 
-        delete(&db, admin(), user_id).await?;
+        delete(&db, &DatabaseRecorder, admin(), user_id).await?;
 
         assert!(!user_exists(&db, user_id).await);
         assert_eq!(role_count(&db, user_id).await, 0);
@@ -285,7 +286,7 @@ async fn a_session_created_after_the_check_is_refused_as_history_not_a_fault() {
         .await
         .expect("the trigger is created");
 
-        let refused = delete(&db, admin(), user_id)
+        let refused = delete(&db, &DatabaseRecorder, admin(), user_id)
             .await
             .expect_err("the delete is refused");
 
