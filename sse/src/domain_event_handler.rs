@@ -246,6 +246,23 @@ impl EventHandler for SseDomainEventHandler {
 
                 self.send_to_users(&sse_event, notify_user_ids);
             }
+
+            DomainEvent::CoachingRelationshipKindChanged {
+                coaching_relationship_id,
+                organization_id,
+                from,
+                to,
+                notify_user_ids,
+            } => {
+                let sse_event = SseEvent::CoachingRelationshipKindChanged {
+                    coaching_relationship_id: coaching_relationship_id.to_string(),
+                    organization_id: organization_id.to_string(),
+                    from: from.clone(),
+                    to: to.clone(),
+                };
+
+                self.send_to_users(&sse_event, notify_user_ids);
+            }
         }
     }
 }

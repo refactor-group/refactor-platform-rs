@@ -913,6 +913,19 @@ impl Delivered {
         .collect()
     }
 
+    /// What this send did for `user_id`, by the seat they hold in `relationship`; `None` when
+    /// they hold none.
+    pub fn to(
+        &self,
+        relationship: &coaching_relationships::Model,
+        user_id: Id,
+    ) -> Option<Delivery> {
+        relationship.seat(user_id).map(|seat| match seat {
+            Seat::CoachId => self.coach,
+            Seat::CoacheeId => self.coachee,
+        })
+    }
+
     /// The participants this send skipped for no longer being members.
     fn skipped(&self, participants: &Participants<'_>) -> Vec<Id> {
         [

@@ -129,6 +129,7 @@ pub async fn switch_kind(
     let relationship = kind_switch::switch_for_caller(
         app_state.db_conn_ref(),
         &app_state.config,
+        &app_state.event_publisher,
         &authenticated_user,
         organization.id,
         relationship_id,

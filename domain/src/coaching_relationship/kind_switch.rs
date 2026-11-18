@@ -1,11 +1,13 @@
 //! An administrator changing what a relationship is, in place, once they have confirmed what
 //! the change does to each participant.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{TimeDelta, Utc};
+use entity_api::coaching_session_pending_invite::{self, Target};
 use entity_api::{coaching_relationship, coaching_session};
-use sea_orm::{DatabaseConnection, TransactionTrait};
+use log::error;
+use sea_orm::{ActiveEnum, DatabaseConnection, TransactionTrait};
 use serde::Serialize;
 use service::config::Config;
 use utoipa::ToSchema;
@@ -18,7 +20,8 @@ use crate::action::{find_by_coaching_relationship, CallerVisibility, FindByRelat
 use crate::coaching_relationship_kind::Kind;
 use crate::coaching_relationships::Model;
 use crate::error::{reason, DomainErrorKind, Error, InternalErrorKind};
-use crate::{users, Id};
+use crate::events::{DomainEvent, EventPublisher};
+use crate::{coaching_sessions, users, Id};
 
 /// What an administrator asks a relationship to become.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,10 +80,13 @@ pub struct AssigneeActionCount {
 ///
 /// A confirmed switch updates the relationship and, in the same transaction, marks as already
 /// sent the reminders of anyone it newly reminds for sessions already inside the reminder
-/// window, so it sends no surprise reminder.
+/// window, so it sends no surprise reminder, and owes both participants a fresh invite for
+/// every upcoming session and series, which the pending reschedule sweep sends. Once it
+/// commits, the participants who may still read the relationship are told it changed kind.
 pub async fn switch_for_caller(
     db: &DatabaseConnection,
     config: &Config,
+    event_publisher: &EventPublisher,
     caller: &users::Model,
     organization_id: Id,
     relationship_id: Id,
@@ -114,6 +120,7 @@ pub async fn switch_for_caller(
             ));
         }
         apply(db, config, &relationship, &switched, target).await?;
+        publish_kind_changed(db, event_publisher, &relationship, &switched).await;
     }
 
     get_relationship_with_user_names_for_caller(db, caller, relationship.id)
@@ -249,8 +256,9 @@ fn needs_confirmation(consequences: Consequences) -> Error {
     }
 }
 
-/// Switches `relationship` to `target` and marks as sent the reminders `switched` newly owes
-/// for sessions inside the reminder window, in one transaction.
+/// Switches `relationship` to `target`, marks as sent the reminders `switched` newly owes for
+/// sessions inside the reminder window, and owes both participants the invite of every
+/// upcoming session and series, in one transaction.
 async fn apply(
     db: &DatabaseConnection,
     config: &Config,
@@ -275,6 +283,59 @@ async fn apply(
         (now, now + lead),
     )
     .await?;
+    let upcoming = coaching_session::find_by_relationship_after(&txn, relationship.id, now).await?;
+    coaching_session_pending_invite::queue(
+        &txn,
+        &invites_of(&upcoming),
+        &participants(relationship),
+    )
+    .await?;
     txn.commit().await.map_err(entity_api::error::Error::from)?;
     Ok(())
+}
+
+/// The invites that announced `sessions`: a series member's is its series', any other
+/// session's its own.
+fn invites_of(sessions: &[coaching_sessions::Model]) -> BTreeSet<Target> {
+    sessions
+        .iter()
+        .map(|session| {
+            match (
+                session.coaching_session_series_id,
+                session.ical_recurrence_id,
+            ) {
+                (Some(series_id), Some(_)) => Target::Series(series_id),
+                _ => Target::Session(session.id),
+            }
+        })
+        .collect()
+}
+
+/// Tells the participants who may still read `relationship` that it is now `switched`'s kind.
+/// Best-effort: the switch has committed, so a failed lookup is logged.
+async fn publish_kind_changed(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    relationship: &Model,
+    switched: &Model,
+) {
+    let notify_user_ids = match coaching_relationship::notify_member_ids(db, switched).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            error!(
+                "CoachingRelationshipKindChanged: failed to resolve recipients for relationship {}: {e:?}",
+                relationship.id
+            );
+            return;
+        }
+    };
+    event_publisher
+        .publish(DomainEvent::CoachingRelationshipKindChanged {
+            coaching_relationship_id: relationship.id,
+            organization_id: relationship.organization_id,
+            from: relationship.kind.to_value(),
+            to: switched.kind.to_value(),
+            notify_user_ids,
+        })
+        .await;
 }

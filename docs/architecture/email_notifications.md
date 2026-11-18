@@ -179,6 +179,20 @@ reschedule is settled against the schedule that was sent, under the session's ro
 it is dropped if the session still matches, otherwise the newer change stays pending,
 now from what was sent.
 
+### Invites re-sent after a relationship changes kind
+
+A confirmed kind switch (or reversal) owes both participants a fresh invite for every upcoming
+session and series of the relationship, so calendar text such as the `.ics` participant line
+follows the new kind. The switch's transaction writes one `coaching_session_pending_invites`
+row per invite (a series member's is its series', any other session's its own) and
+participant; a second switch before the sweep owes nothing more (`ON CONFLICT DO NOTHING` on
+the target and user). The pending reschedule sweep sends each row to that participant alone,
+through the same resend as `POST .../resend_invite` (same `UID`, higher `SEQUENCE`), and
+deletes it once delivered. A participant who has left the organization, a session that has
+passed, and a series with nothing left to attend are owed nothing. A failed send is retried
+up to three times. Without `RESEND_API_KEY` or either scheduled template the rows are dropped
+unsent.
+
 ## Timezone Handling
 
 Session dates are stored as UTC. The `format_session_date_time()` helper converts to each recipient's timezone (from `users.timezone`, an IANA string) using `chrono-tz`, falling back to UTC if invalid.

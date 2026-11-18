@@ -64,7 +64,7 @@ flowchart LR
     PR -->|"DELETE older than 30d"| DB
     SR -->|"claim due pairs\n(upsert ON CONFLICT)"| DB
     SR -->|"send via Resend"| R["Resend"]
-    PRS -->|"claim due rows\n(lease, SKIP LOCKED)"| DB
+    PRS -->|"claim due rows and owed invites\n(lease, SKIP LOCKED)"| DB
     PRS -->|"send via Resend"| R
 ```
 

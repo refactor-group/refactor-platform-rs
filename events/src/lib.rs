@@ -193,6 +193,22 @@ pub enum DomainEvent {
         /// User IDs to receive SSE notifications (coach + coachee from the relationship).
         notify_user_ids: Vec<Id>,
     },
+    /// Emitted when an administrator switches a coaching relationship's kind, or reverses who
+    /// coaches whom. Coarse: participants refetch the relationship, whose roles, visibility
+    /// and scheduling rights follow the new kind. A reversal keeps the kind, so `from == to`.
+    CoachingRelationshipKindChanged {
+        /// The relationship that changed.
+        coaching_relationship_id: Id,
+        /// The organization it belongs to.
+        organization_id: Id,
+        /// Its kind before the switch, as serialized on the wire (e.g. "coaching").
+        from: String,
+        /// Its kind after the switch, as serialized on the wire (e.g. "colleague").
+        to: String,
+        /// User IDs to receive SSE notifications: the participants who may still read the
+        /// relationship, i.e. those still in its organization.
+        notify_user_ids: Vec<Id>,
+    },
 }
 
 /// Trait for handling domain events.

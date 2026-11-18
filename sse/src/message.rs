@@ -100,6 +100,15 @@ pub enum Event {
         coaching_session_id: String,
         target: String,
     },
+
+    // Coaching relationship events (relationship-scoped, coarse: refetch on receipt)
+    #[serde(rename = "coaching_relationship_kind_changed")]
+    CoachingRelationshipKindChanged {
+        coaching_relationship_id: String,
+        organization_id: String,
+        from: String,
+        to: String,
+    },
 }
 
 impl EventType for Event {
@@ -122,6 +131,7 @@ impl EventType for Event {
             Event::CoachingSessionTitleUpdated { .. } => "coaching_session_title_updated",
             Event::TranscriptionUpdated { .. } => "transcription_updated",
             Event::TranscriptSuggestionsChanged { .. } => "transcript_suggestions_changed",
+            Event::CoachingRelationshipKindChanged { .. } => "coaching_relationship_kind_changed",
         }
     }
 }
@@ -236,5 +246,29 @@ mod tests {
             })
         );
         assert_eq!(event.event_type(), "transcript_suggestions_changed");
+    }
+
+    // Pins the coarse relationship kind-change event wire shape.
+    #[test]
+    fn coaching_relationship_kind_changed_serializes_to_expected_wire_shape() {
+        let event = Event::CoachingRelationshipKindChanged {
+            coaching_relationship_id: "rel-1".to_string(),
+            organization_id: "org-1".to_string(),
+            from: "coaching".to_string(),
+            to: "colleague".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&event).unwrap(),
+            serde_json::json!({
+                "type": "coaching_relationship_kind_changed",
+                "data": {
+                    "coaching_relationship_id": "rel-1",
+                    "organization_id": "org-1",
+                    "from": "coaching",
+                    "to": "colleague"
+                }
+            })
+        );
+        assert_eq!(event.event_type(), "coaching_relationship_kind_changed");
     }
 }

@@ -679,6 +679,19 @@ pub async fn mark_reminders_sent(
     Ok(())
 }
 
+/// The relationship's sessions starting after `after`.
+pub async fn find_by_relationship_after(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+    after: NaiveDateTime,
+) -> Result<Vec<Model>, Error> {
+    Ok(Entity::find()
+        .filter(Column::CoachingRelationshipId.eq(coaching_relationship_id))
+        .filter(Column::Date.gt(after))
+        .all(db)
+        .await?)
+}
+
 /// Most recent session in the relationship strictly before `before`. Sources
 /// topics for carry-over at the next session's hydration; `None` for the first
 /// session in a relationship.

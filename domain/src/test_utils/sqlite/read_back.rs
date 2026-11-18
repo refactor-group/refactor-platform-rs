@@ -10,10 +10,10 @@ use entity::topic_status::Status as TopicStatus;
 use entity::transcript_suggestion::Status as SuggestionStatus;
 use entity::{
     actions, actions_users, agreements, coaching_relationships, coaching_session_images,
-    coaching_session_reminders, coaching_session_series, coaching_session_topics,
-    coaching_session_views, coaching_sessions, coaching_sessions_goals, goals, meeting_recording,
-    oauth_connections, organizations, transcript_analysis, transcript_segment,
-    transcript_suggestion, user_roles, users, Id,
+    coaching_session_pending_invites, coaching_session_reminders, coaching_session_series,
+    coaching_session_topics, coaching_session_views, coaching_sessions, coaching_sessions_goals,
+    goals, meeting_recording, oauth_connections, organizations, transcript_analysis,
+    transcript_segment, transcript_suggestion, user_roles, users, Id,
 };
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 
@@ -249,6 +249,21 @@ pub async fn reminders_sent(
         .expect("the reminders read")
         .into_iter()
         .map(|reminder| (reminder.user_id, reminder.sent_for_start))
+        .collect()
+}
+
+/// Every owed invite, as (the session or series it is for, the participant owed it).
+pub async fn pending_invites(db: &DatabaseConnection) -> BTreeSet<(Id, Id)> {
+    coaching_session_pending_invites::Entity::find()
+        .all(db)
+        .await
+        .expect("the owed invites read")
+        .into_iter()
+        .filter_map(|row| {
+            row.coaching_session_id
+                .or(row.coaching_session_series_id)
+                .map(|target| (target, row.user_id))
+        })
         .collect()
 }
 

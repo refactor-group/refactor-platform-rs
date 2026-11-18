@@ -13,10 +13,10 @@ use chrono::TimeDelta;
 use domain::coaching_relationship_kind::Kind;
 use domain::test_utils::sqlite::fixture::{
     archive_organization, make_colleagues, remove_roles, seed_action_assigned_to,
-    seed_session_starting_in, set_role,
+    seed_content_free_session, seed_session_starting_in, set_role,
 };
 use domain::test_utils::sqlite::read_back::{
-    relationship_row, relationships_between, reminders_sent, session_schedule,
+    pending_invites, relationship_row, relationships_between, reminders_sent, session_schedule,
 };
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::users::Role;
@@ -24,7 +24,8 @@ use domain::Id;
 use serde_json::json;
 
 use crate::test_utils::sqlite::{
-    assert_signed_out_refused, created_id, field_ids, ids, Reply, TestApp, NON_PARTICIPANTS,
+    assert_signed_out_refused, created_id, field_ids, ids, Listener, Reply, TestApp,
+    NON_PARTICIPANTS,
 };
 
 /// The goal progress path for R1.
@@ -1288,6 +1289,236 @@ async fn a_switch_marks_the_newly_reminded_participants_imminent_reminders_sent(
             reminders_sent(app.db(), s1).await,
             BTreeMap::new(),
             "S1 is days away, outside the window"
+        );
+    })
+    .await;
+}
+
+/// The confirmed switch of R1 to colleague, answered 200.
+async fn admin_switches_r1_to_colleague(app: &mut TestApp) {
+    let r1 = app.fixture.r1;
+    let reply = admin_switches(app, r1, json!({ "kind": "colleague", "confirmed": true })).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+}
+
+/// Each of `targets` owed to both of R1's participants.
+fn owed_to_both(app: &TestApp, targets: &[Id]) -> BTreeSet<(Id, Id)> {
+    let participants = [
+        app.fixture.user(Caller::Coach),
+        app.fixture.user(Caller::Coachee),
+    ];
+    targets
+        .iter()
+        .flat_map(|&target| participants.map(|user| (target, user)))
+        .collect()
+}
+
+/// `count` copies of each caller's address, sorted as `take_emailed` returns them.
+fn mailed(callers: &[Caller], count: usize) -> Vec<String> {
+    let mut mailed: Vec<String> = callers
+        .iter()
+        .flat_map(|caller| std::iter::repeat_n(caller.email(), count))
+        .collect();
+    mailed.sort();
+    mailed
+}
+
+/// The data of each `coaching_relationship_kind_changed` event `listener` received.
+async fn kind_changes(listener: &mut Listener) -> Vec<serde_json::Value> {
+    listener
+        .received()
+        .await
+        .into_iter()
+        .filter(|(event, _)| event == "coaching_relationship_kind_changed")
+        .map(|(_, data)| data["data"].clone())
+        .collect()
+}
+
+/// KIND-38
+#[tokio::test]
+async fn a_confirmed_switch_resends_every_upcoming_invite_to_both_once() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (s1, sr1) = (app.fixture.s1, app.fixture.sr1);
+        let s4 = seed_content_free_session(app.db(), app.fixture.r1).await;
+
+        admin_switches_r1_to_colleague(&mut app).await;
+
+        assert_eq!(
+            pending_invites(app.db()).await,
+            owed_to_both(&app, &[s1, s4, sr1]),
+            "S1 and S4 their own, SR1's sessions their series'"
+        );
+        app.take_emailed();
+        app.run_pending_reschedule_sweep().await;
+        assert_eq!(
+            app.take_emailed(),
+            mailed(&[Caller::Coach, Caller::Coachee], 3),
+            "one copy of each invite to each participant"
+        );
+        assert_eq!(pending_invites(app.db()).await, BTreeSet::new());
+
+        app.run_pending_reschedule_sweep().await;
+        assert_eq!(app.take_emailed(), Vec::<String>::new(), "a second run");
+    })
+    .await;
+}
+
+/// KIND-39
+#[tokio::test]
+async fn switches_before_the_sweep_owe_each_invite_once() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (r1, s1, sr1) = (app.fixture.r1, app.fixture.s1, app.fixture.sr1);
+        let coach = app.fixture.user(Caller::Coach);
+
+        admin_switches_r1_to_colleague(&mut app).await;
+        let reply = admin_switches(
+            &mut app,
+            r1,
+            json!({ "kind": "coaching", "coach_id": coach, "confirmed": true }),
+        )
+        .await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+
+        assert_eq!(
+            pending_invites(app.db()).await,
+            owed_to_both(&app, &[s1, sr1])
+        );
+        app.take_emailed();
+        app.run_pending_reschedule_sweep().await;
+        assert_eq!(
+            app.take_emailed(),
+            mailed(&[Caller::Coach, Caller::Coachee], 2)
+        );
+    })
+    .await;
+}
+
+/// KIND-40
+#[tokio::test]
+async fn a_participant_who_left_before_the_sweep_gets_no_invite() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (coachee, o1) = (app.fixture.user(Caller::Coachee), app.fixture.o1);
+
+        admin_switches_r1_to_colleague(&mut app).await;
+        remove_roles(app.db(), coachee, o1).await;
+        app.take_emailed();
+        app.run_pending_reschedule_sweep().await;
+
+        assert_eq!(
+            app.take_emailed(),
+            mailed(&[Caller::Coach], 2),
+            "S1 and SR1 to the coach only"
+        );
+        assert_eq!(
+            pending_invites(app.db()).await,
+            BTreeSet::new(),
+            "nothing is owed to someone who left"
+        );
+    })
+    .await;
+}
+
+/// KIND-41
+#[tokio::test]
+async fn a_past_session_is_owed_no_invite() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (s1, sr1) = (app.fixture.s1, app.fixture.sr1);
+        let past = seed_session_starting_in(app.db(), app.fixture.r1, TimeDelta::days(-2)).await;
+
+        admin_switches_r1_to_colleague(&mut app).await;
+
+        let owed = pending_invites(app.db()).await;
+        assert_eq!(owed, owed_to_both(&app, &[s1, sr1]));
+        assert!(owed.iter().all(|&(target, _)| target != past));
+    })
+    .await;
+}
+
+/// KIND-42
+#[tokio::test]
+async fn an_unconfirmed_or_refused_switch_owes_nothing_and_tells_no_one() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let r1 = app.fixture.r1;
+        let member = app.fixture.user(Caller::Member);
+        let mut listeners = [
+            app.listen(Caller::Coach).await,
+            app.listen(Caller::Coachee).await,
+        ];
+
+        for (body, status) in [
+            (json!({ "kind": "colleague" }), StatusCode::CONFLICT),
+            (
+                json!({ "kind": "coaching", "coach_id": member, "confirmed": true }),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+        ] {
+            let reply = admin_switches(&mut app, r1, body.clone()).await;
+            assert_eq!(reply.status, status, "{body}: {}", reply.body);
+        }
+
+        assert_eq!(pending_invites(app.db()).await, BTreeSet::new());
+        for listener in &mut listeners {
+            assert_eq!(
+                kind_changes(listener).await,
+                Vec::<serde_json::Value>::new()
+            );
+        }
+    })
+    .await;
+}
+
+/// KIND-43
+#[tokio::test]
+async fn a_switch_tells_both_participants_once() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, r1) = (app.fixture.o1, app.fixture.r1);
+        let coachee = app.fixture.user(Caller::Coachee);
+        let change = |from: &str, to: &str| {
+            json!({
+                "coaching_relationship_id": r1,
+                "organization_id": o1,
+                "from": from,
+                "to": to,
+            })
+        };
+        let mut listeners = [
+            app.listen(Caller::Coach).await,
+            app.listen(Caller::Coachee).await,
+        ];
+        let mut member = app.listen(Caller::Member).await;
+
+        let reply = admin_switches(
+            &mut app,
+            r1,
+            json!({ "kind": "coaching", "coach_id": coachee, "confirmed": true }),
+        )
+        .await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        for listener in &mut listeners {
+            assert_eq!(
+                kind_changes(listener).await,
+                vec![change("coaching", "coaching")],
+                "a reversal keeps the kind"
+            );
+        }
+
+        admin_switches_r1_to_colleague(&mut app).await;
+        for listener in &mut listeners {
+            assert_eq!(
+                kind_changes(listener).await,
+                vec![change("coaching", "colleague")]
+            );
+        }
+        assert_eq!(
+            kind_changes(&mut member).await,
+            Vec::<serde_json::Value>::new(),
+            "not a participant"
         );
     })
     .await;

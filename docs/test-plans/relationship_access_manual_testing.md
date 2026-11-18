@@ -13,7 +13,7 @@ Phase 1 adds the `SCHED` rows (4.15): what each schedule change records, with no
 may make it. Phase 2 adds the `KIND` rows (4.16): each relationship's kind and the one participant
 role type. Phase 4 adds colleague rows, starting with creating one (KIND-04, KIND-11 to KIND-18);
 coach and coachee rows answer as before. Phase 5 adds switching a relationship's kind in place
-(KIND-28 to KIND-37).
+(KIND-28 to KIND-43).
 
 Rows marked `[membership]` change in phase M (org membership consistency), which also lands
 before the baseline. Their expected results already show the phase M rule:
@@ -715,6 +715,12 @@ lowercase.
 | KIND-35 | PUT /organizations/O1/coaching_relationships/R1/kind `{kind: "coaching", coach_id: COACH}` | ADMIN | 200, R1 as it is; psql `updated_at` unchanged | `kind_switch::switch_for_caller` | Nothing to switch, so no confirmation |
 | KIND-36 | PUT /organizations/O1/coaching_relationships/R3/kind `{kind: "colleague"}`, and with `confirmed: true` | ADMIN | each 409, `details.reason` `participant_not_a_member`, `details.user_id` REMOVED, `details.organization_id` O1; psql R3 unchanged | `domain::coaching_relationship::ensure_members` | Checked before the confirmation step. Re-add the person first |
 | KIND-37 | With a session in R1 starting within the reminder lead (default 24 hours): KIND-29, then wait for a reminder sweep tick, with a mock Resend | ADMIN | psql `coaching_session_reminders` holds a row for that session and COACH, `sent_for_start` its `date`; no row for S1; the sweep sends COACH no reminder for that session | `entity_api::coaching_session::mark_reminders_sent`, in the switch's transaction | The sweep's claim is Postgres-only SQL, so the automated test stops at the row; the send half is by hand |
+| KIND-38 | With S4 (a content-free session in R1): KIND-29, then wait for a pending reschedule sweep tick (15 s), with a mock Resend; then another tick | ADMIN | psql `coaching_session_pending_invites` holds one row per (S1, S4, SR1) and (COACH, COACHEE), none per SR1 session; the tick mails each of COACH and COACHEE three invites (S1 and S4 standalone, SR1 as a series), each `.ics` under its old `UID` with a higher `SEQUENCE` and a `Colleagues:` DESCRIPTION; the rows are gone; the second tick mails nothing | `kind_switch::apply` (queued in the switch's transaction); `domain/src/jobs/coaching_session_pending_reschedule.rs` (`Sweep::resend_invite`) | One row per invite and participant, so each is sent once per participant; a delivered row is deleted |
+| KIND-39 | KIND-29, then before the sweep ticks PUT R1 back `{kind: "coaching", coach_id: COACH, confirmed: true}`; then wait for a tick | ADMIN | psql still one row per (S1, SR1) and participant; the tick mails each participant two invites, not four | `entity_api::coaching_session_pending_invite::queue` (`ON CONFLICT DO NOTHING` on the target and user) | Each invite goes out as the relationship stands when sent |
+| KIND-40 | KIND-29, then remove COACHEE from O1 before the sweep ticks | ADMIN | the tick mails COACH only (S1 and SR1); COACHEE's rows are deleted unsent | `domain::coaching_session::resend_invite_to`, `domain::coaching_session_series::resend_invite_to` | The switch itself refuses non-members (KIND-36), so leaving afterwards is the only way here |
+| KIND-41 | With a session in R1 two days in the past: KIND-29 | ADMIN | psql no `coaching_session_pending_invites` row for the past session | `kind_switch::apply` (`find_by_relationship_after` now) | |
+| KIND-42 | With COACH's and COACHEE's `/sse` streams open: KIND-28 (no `confirmed`), then KIND-31's `coach_id: MEMBER` | ADMIN | 409, then 422; psql no `coaching_session_pending_invites` rows; neither stream receives `coaching_relationship_kind_changed` | `kind_switch::switch_for_caller` (queue and publish follow the confirmation and every check) | |
+| KIND-43 | With COACH's, COACHEE's and MEMBER's `/sse` streams open: KIND-32 confirmed, then KIND-29 | ADMIN | COACH and COACHEE each receive one `coaching_relationship_kind_changed` per switch, data `{coaching_relationship_id: R1, organization_id: O1, from: "coaching", to: "coaching"}` (a reversal), then `to: "colleague"`; MEMBER receives none | `kind_switch::publish_kind_changed` (recipients: the participants still in O1); `sse/src/domain_event_handler.rs` | Published after the switch commits |
 
 KIND-09's checks:
 
@@ -1175,3 +1181,9 @@ a frozen `domain` test, or by hand with the reason.
 | KIND-35 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::switching_to_what_the_relationship_already_is_changes_nothing` |
 | KIND-36 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_relationship_whose_participant_left_cannot_switch` |
 | KIND-37 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_switch_marks_the_newly_reminded_participants_imminent_reminders_sent`; by hand for the sweep's send: its claim is Postgres-only SQL |
+| KIND-38 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_confirmed_switch_resends_every_upcoming_invite_to_both_once`; `domain/src/jobs/coaching_session_pending_reschedule.rs::tests::from_config_resends_invites_only_with_a_key_and_both_scheduled_templates` |
+| KIND-39 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::switches_before_the_sweep_owe_each_invite_once` |
+| KIND-40 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_participant_who_left_before_the_sweep_gets_no_invite` |
+| KIND-41 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_past_session_is_owed_no_invite` |
+| KIND-42 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::an_unconfirmed_or_refused_switch_owes_nothing_and_tells_no_one` |
+| KIND-43 | `web/src/controller/organization/coaching_relationship_controller_sqlite_tests.rs::a_switch_tells_both_participants_once`; `sse/src/message.rs::tests::coaching_relationship_kind_changed_serializes_to_expected_wire_shape` |

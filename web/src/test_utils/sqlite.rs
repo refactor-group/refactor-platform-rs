@@ -20,6 +20,8 @@ use axum_login::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use domain::gateway::object_storage::{self, ObjectStore};
+use domain::jobs::coaching_session_pending_reschedule::Sweep;
+use domain::jobs::{Context as JobContext, Job};
 use domain::test_utils::sqlite::fixture::{
     remove_roles, seed_goal, seed_relationship_with_actions, IMG1_BYTES, IMG1_CONTENT_TYPE,
     PASSWORD,
@@ -367,6 +369,18 @@ impl TestApp {
         );
         emailed.sort();
         emailed
+    }
+
+    /// Runs one tick of the pending reschedule sweep, which also re-sends owed invites.
+    pub(crate) async fn run_pending_reschedule_sweep(&self) {
+        let ctx = JobContext {
+            db: self.db.clone(),
+            config: self.stand_ins.config.clone(),
+        };
+        Sweep::from_config(&ctx.config)
+            .run(&ctx)
+            .await
+            .expect("the sweep runs");
     }
 
     /// What the recording bot provider was asked since the last call, in order.
