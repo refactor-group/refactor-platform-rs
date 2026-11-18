@@ -384,6 +384,8 @@ jobs:
             BACKEND_STOPPED=false
             MIGRATED=false
             SWITCHED=false
+            # True once this deploy's own rollback set replaced the earlier one.
+            SET_WRITTEN=false
             STAGING=/home/deploy/.deploy-staging
             BACKUP=/home/deploy/.deploy-backup
             # Live files a deploy replaces; the previous copies come back when it fails.
@@ -476,6 +478,7 @@ jobs:
                 cp "$ROLLBACK_DIR/manifest" "$ROLLBACK_DIR/manifest.before" || return 1
               fi
               mv "$ROLLBACK_DIR/manifest.new" "$ROLLBACK_DIR/manifest" || return 1
+              SET_WRITTEN=true
               # A missing tag is fine: rollback_do.yml pulls the recorded digest.
               docker images --filter 'reference=refactor-rollback/*:previous' --format '{{.Repository}}:{{.Tag}}' \
                 | xargs -r docker rmi >/dev/null 2>&1
@@ -666,7 +669,9 @@ jobs:
             echo "WARNING: ⏪ restoring ${RESTORE[*]} (previous images: ${ROLLBACK_SERVICES[*]:-none})..."
             docker compose up -d --no-deps "${RESTORE[@]}" || echo "ERROR: rolling back containers failed"
             print_images "${SERVICES[@]}"
-            if [ ${#ROLLBACK_SERVICES[@]} -gt 0 ]; then
+            # An earlier deploy's set still describes valid targets; only this
+            # deploy's own set loses the services it just rolled back.
+            if $SET_WRITTEN && [ ${#ROLLBACK_SERVICES[@]} -gt 0 ]; then
               forget_rolled_back "${ROLLBACK_SERVICES[@]}"
             fi
             reload_nginx || echo "ERROR: nginx reload failed after rolling back"
