@@ -1,20 +1,31 @@
 //! Exercises the audit log's chain against a real SQL engine: what `append` stores, and what
 //! `verify_chain` finds after a stored event is edited, removed or spliced out.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use async_trait::async_trait;
 use entity::audit_events::{Action, Column, Entity, Model};
 use entity::Id;
 use entity_api::audit_event::append;
 use sea_orm::sea_query::Expr;
 use sea_orm::{
-    ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter, TransactionTrait,
+    ColumnTrait, DatabaseConnection, DatabaseTransaction, EntityTrait, PaginatorTrait, QueryFilter,
+    TransactionTrait,
 };
 use serde_json::json;
 
 use super::{verify_chain, ChainCheck, DatabaseRecorder, NewEvent, Recorder};
 
+use crate::coaching_relationship::InviteeRelationship;
+use crate::coaching_relationship_kind::Kind;
+use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::test_utils::audit_event::MemoryRecorder;
-use crate::test_utils::sqlite::{database, seed_organization, within_time_limit};
-use crate::Actor;
+use crate::test_utils::sqlite::{
+    database, mirror_migration_defaults, seed_membership, seed_organization, seed_user,
+    within_time_limit,
+};
+use crate::user::create_in_organization;
+use crate::{coaching_relationships, user_roles, users, Actor};
 
 /// A role change in `organization_id` by a fresh actor.
 fn role_change(organization_id: Id) -> NewEvent {
@@ -217,6 +228,110 @@ async fn an_event_recorded_in_a_rolled_back_transaction_is_not_stored() {
             verify_chain(&db, org).await.expect("the chain reads"),
             ChainCheck::Intact { count: 1 }
         );
+    })
+    .await;
+}
+
+/// Stores the first `stored` events it is given, then fails every later one.
+struct FailsAfter {
+    stored: usize,
+    attempts: AtomicUsize,
+}
+
+#[async_trait]
+impl Recorder for FailsAfter {
+    async fn record(&self, txn: &DatabaseTransaction, event: NewEvent) -> Result<(), Error> {
+        if self.attempts.fetch_add(1, Ordering::SeqCst) < self.stored {
+            return DatabaseRecorder.record(txn, event).await;
+        }
+        Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "the audit write fails".to_string(),
+            )),
+        })
+    }
+}
+
+/// A new account to invite, not yet stored.
+fn invitee() -> users::Model {
+    let id = Id::new_v4();
+    let now = chrono::Utc::now();
+    users::Model {
+        id,
+        email: format!("{id}@example.com"),
+        first_name: "New".to_string(),
+        last_name: "Member".to_string(),
+        display_name: None,
+        password: None,
+        github_username: None,
+        github_profile_url: None,
+        timezone: "UTC".to_string(),
+        default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+        working_hours_start: crate::working_hours::default_start(),
+        working_hours_end: crate::working_hours::default_end(),
+        created_at: now.into(),
+        updated_at: now.into(),
+        roles: vec![],
+        invite_status: None,
+    }
+}
+
+#[tokio::test]
+async fn a_failed_audit_write_undoes_the_member_and_relationship_it_records() {
+    within_time_limit(async {
+        let db = database().await;
+        mirror_migration_defaults(&db).await;
+        let org = seed_organization(&db).await;
+        let coach = seed_user(&db).await;
+        seed_membership(&db, coach, org).await;
+        let new_user = invitee();
+        let recorder = FailsAfter {
+            stored: 1,
+            attempts: AtomicUsize::new(0),
+        };
+
+        create_in_organization(
+            &db,
+            &recorder,
+            Actor::new(Id::new_v4()),
+            org,
+            new_user.clone(),
+            Some(InviteeRelationship {
+                with_user_id: coach,
+                kind: Kind::Coaching,
+                role: None,
+            }),
+        )
+        .await
+        .expect_err("the failed audit write fails the call");
+
+        // The member's event was stored before the relationship's failed.
+        assert_eq!(recorder.attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            users::Entity::find_by_id(new_user.id)
+                .one(&db)
+                .await
+                .expect("the user reads"),
+            None
+        );
+        assert_eq!(
+            user_roles::Entity::find()
+                .filter(user_roles::Column::UserId.eq(new_user.id))
+                .count(&db)
+                .await
+                .expect("the roles count"),
+            0
+        );
+        assert_eq!(
+            coaching_relationships::Entity::find()
+                .filter(coaching_relationships::Column::OrganizationId.eq(org))
+                .count(&db)
+                .await
+                .expect("the relationships count"),
+            0
+        );
+        assert_eq!(stored(&db, org).await, 0);
     })
     .await;
 }

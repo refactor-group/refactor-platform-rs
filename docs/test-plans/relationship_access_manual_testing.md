@@ -582,12 +582,20 @@ Organization membership changes decide `is_participant_and_member`; these rows c
 | ORG-51 | ORG-24 | ADMIN | `member_role_changed`, `details` `{from: "user", to: "admin"}` | `domain/src/user_role.rs:266` | |
 | ORG-52 | ORG-06 for a member in a relationship without sessions | ADMIN | `relationship_deleted` by ADMIN per deleted relationship, in the relationship's organization, `details` its `kind`, `coach_id`, `coachee_id` | `domain/src/user.rs:260` | |
 | ORG-53 | ORG-06 | ADMIN | after any `relationship_deleted`, `member_removed` by ADMIN in each organization the user belonged to, `details` `{}` | `domain/src/user.rs:271` | The delete is refused for a member of two organizations, so there is at most one |
+| ORG-54 | Ten POST /organizations/O1/users at once, each with its own email (`seq 10 \| xargs -P 10 -I{} curl ...`) | ADMIN | all 200 (201); ten more `member_added`; the fork check below returns no rows | `entity_api/src/audit_event.rs:57` | Postgres only: SQLite has no advisory lock, so no automated test sees two appends race. Sends ten invites, so run it against the mock Resend |
 
 The audit rows' checks (each organization's `prev_hash` is its previous event's `hash`):
 
 ```sql
 SELECT actor_user_id, action, subject_type, subject_id, details, prev_hash, hash
 FROM refactor_platform.audit_events WHERE organization_id = '<O1>' ORDER BY occurred_at, id;
+```
+
+Two events naming the same `prev_hash` mean two appends forked the chain (ORG-54):
+
+```sql
+SELECT prev_hash, count(*) FROM refactor_platform.audit_events
+WHERE organization_id = '<O1>' GROUP BY prev_hash HAVING count(*) > 1;
 ```
 
 ### 4.14 Real-time events (`SSE`)
