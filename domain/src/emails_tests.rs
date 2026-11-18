@@ -294,7 +294,8 @@ async fn test_send_welcome_email_success() {
                     "coach_full_name": "Sarah Coach",
                     "inviter_first_name": "Sarah",
                     "inviter_full_name": "Sarah Coach",
-                    "magic_link_url": "https://app.example.com/setup/test-magic-link-token"
+                    "magic_link_url": "https://app.example.com/setup/test-magic-link-token",
+                    "session_label": "session"
                 }
             }
         })))
@@ -305,7 +306,7 @@ async fn test_send_welcome_email_success() {
         .create_async()
         .await;
 
-    let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
+    let result = send_welcome_email(&config, &user, &inviter, &[], "test-magic-link-token").await;
     assert!(result.is_ok());
 }
 
@@ -317,7 +318,7 @@ async fn test_send_welcome_email_missing_api_key() {
     let user = create_test_user();
     let inviter = create_test_user();
 
-    let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
+    let result = send_welcome_email(&config, &user, &inviter, &[], "test-magic-link-token").await;
     assert!(result.is_err());
 
     if let Err(e) = result {
@@ -343,7 +344,7 @@ async fn test_send_welcome_email_missing_template_id() {
     let user = create_test_user();
     let inviter = create_test_user();
 
-    let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
+    let result = send_welcome_email(&config, &user, &inviter, &[], "test-magic-link-token").await;
     assert!(result.is_err());
 
     if let Err(e) = result {
@@ -371,7 +372,7 @@ async fn test_send_welcome_email_http_error() {
 
     // A 400 carries the response body, the caller's only diagnostic, and classifies as
     // Rejected: retrying sends the same request and gets the same answer.
-    let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
+    let result = send_welcome_email(&config, &user, &inviter, &[], "test-magic-link-token").await;
     let err = result.unwrap_err();
     match err.error_kind {
         DomainErrorKind::Internal(InternalErrorKind::Rejected(text)) => assert!(
@@ -407,7 +408,8 @@ async fn test_send_welcome_email_escapes_name_with_specials() {
                     "coach_full_name": "Alex Smith",
                     "inviter_first_name": "Alex",
                     "inviter_full_name": "Alex Smith",
-                    "magic_link_url": "https://app.example.com/setup/test-magic-link-token"
+                    "magic_link_url": "https://app.example.com/setup/test-magic-link-token",
+                    "session_label": "session"
                 }
             }
         })))
@@ -417,8 +419,63 @@ async fn test_send_welcome_email_escapes_name_with_specials() {
         .create_async()
         .await;
 
-    let result = send_welcome_email(&config, &user, &inviter, "test-magic-link-token").await;
+    let result = send_welcome_email(&config, &user, &inviter, &[], "test-magic-link-token").await;
     assert!(result.is_ok());
+}
+
+/// Sends a welcome email to an invitee whose relationships are of `kinds`, expecting it to carry
+/// `label`.
+async fn assert_welcome_session_label(kinds: &[coaching_relationship_kind::Kind], label: &str) {
+    let mut server = setup_test_server().await;
+    let user = create_test_user();
+    let inviter = create_test_user_with("Sarah", "Coach", "sarah.coach@example.com", "UTC");
+    let config = create_config_with_mock(&server.url());
+    let mock = server
+        .mock("POST", "/emails")
+        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            "template": { "variables": { "session_label": label } }
+        })))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    send_welcome_email(&config, &user, &inviter, kinds, "test-magic-link-token")
+        .await
+        .expect("the welcome email sends");
+    mock.assert_async().await;
+}
+
+#[tokio::test]
+async fn a_coaching_invites_welcome_email_says_coaching_session() {
+    assert_welcome_session_label(
+        &[coaching_relationship_kind::Kind::Coaching],
+        "coaching session",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_colleague_invites_welcome_email_says_session() {
+    assert_welcome_session_label(&[coaching_relationship_kind::Kind::Colleague], "session").await;
+}
+
+#[tokio::test]
+async fn a_welcome_email_with_no_relationship_says_session() {
+    assert_welcome_session_label(&[], "session").await;
+}
+
+#[tokio::test]
+async fn a_welcome_email_with_mixed_kinds_says_session() {
+    assert_welcome_session_label(
+        &[
+            coaching_relationship_kind::Kind::Coaching,
+            coaching_relationship_kind::Kind::Colleague,
+        ],
+        "session",
+    )
+    .await;
 }
 
 // ── Password Reset Email Tests ─────────────────────────────────────
