@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
-use chrono_tz::Tz;
 use entity::meeting_recording::Model as RecordingModel;
 use entity::transcript_participant::ActiveModel as ParticipantActiveModel;
 use entity::transcript_segment::{ActiveModel as SegmentActiveModel, Model as Segment};
@@ -41,7 +40,7 @@ use crate::oauth_connection::{external_account_id, get_valid_access_token};
 use crate::transcript_attribution::{anchor_and_other, attribute, Attribution, Evidence};
 use crate::transcript_export::{self, Labeled, LabeledSegment, Rendered, Speaker};
 use crate::transcript_suggestion_target::Target;
-use crate::users;
+use crate::{user, users};
 
 /// A transcription plus the speakers found in its transcript.
 ///
@@ -649,17 +648,16 @@ pub async fn export_plain_text(
     transcript_export::render_plain_text(local_session_date(session, &coach), &labeled, filter)
 }
 
-/// The session's calendar date where the coach is; the schedule is anchored on them.
+/// The session's calendar date where `person` is.
 ///
 /// `session.date` is a UTC instant, so an evening session in the Americas would
 /// otherwise be dated tomorrow.
 pub(crate) fn local_session_date(
     session: &coaching_sessions::Model,
-    coach: &users::Model,
+    person: &users::Model,
 ) -> NaiveDate {
-    let tz: Tz = coach.timezone.parse().unwrap_or(chrono_tz::UTC);
     Utc.from_utc_datetime(&session.date)
-        .with_timezone(&tz)
+        .with_timezone(&user::timezone(person))
         .date_naive()
 }
 

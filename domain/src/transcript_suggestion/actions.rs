@@ -154,7 +154,10 @@ impl Suggestible for Actions {
             .reconcile(model_date, due_phrase.as_deref())
             .and_then(|date| match at_next_session {
                 Some(next) => Some(next.start),
-                None => due_at(date, session.session_date, session.coach_timezone),
+                None => {
+                    let tz = session.due_timezone(&assignee_ids);
+                    due_at(date, session.date_in(tz), tz)
+                }
             });
 
         let duplicate_of_id = candidate
@@ -228,8 +231,8 @@ fn quote(candidate: &str, segment_text: &str) -> String {
     }
 }
 
-/// Noon on `date` in the coach's timezone, or the end of that day when it is the session's own day,
-/// so a same-day deadline ("after our call") never falls before the session.
+/// Noon on `date` in `tz`, or the end of that day when it is the session's own day there, so a
+/// same-day deadline ("after our call") never falls before the session.
 fn due_at(date: NaiveDate, session_date: NaiveDate, tz: Tz) -> Option<DateTimeWithTimeZone> {
     let time = if date == session_date {
         NaiveTime::from_hms_opt(23, 59, 0)?

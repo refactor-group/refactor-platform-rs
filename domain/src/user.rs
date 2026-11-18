@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::Weekday;
+use chrono_tz::Tz;
 use entity_api::error::{EntityApiErrorKind, Error as EntityApiError};
 use entity_api::{
     coaching_relationship, coaching_session, mutate, query,
@@ -33,6 +34,11 @@ pub const DEFAULT_WEEK_END: Weekday = Weekday::Fri;
 /// The last day of `user`'s week; the default until users can choose their own.
 pub fn week_end(_user: &users::Model) -> Weekday {
     DEFAULT_WEEK_END
+}
+
+/// `user`'s IANA timezone, or UTC when theirs does not parse.
+pub fn timezone(user: &users::Model) -> Tz {
+    user.timezone.parse().unwrap_or(chrono_tz::UTC)
 }
 
 pub async fn find_by<P>(db: &DatabaseConnection, params: P) -> Result<Vec<users::Model>, Error>

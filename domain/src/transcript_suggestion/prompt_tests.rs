@@ -5,7 +5,7 @@ use chrono::{NaiveDate, Utc, Weekday};
 use super::*;
 use crate::coaching_relationship_kind;
 use crate::transcript_export::LabeledSegment;
-use crate::transcript_suggestion::{Existing, NextSession, People, Session};
+use crate::transcript_suggestion::{Existing, NextSession, People, Session, Timezones};
 
 fn day(y: i32, m: u32, d: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, d).expect("valid date")
@@ -59,7 +59,17 @@ fn session(segments: &[LabeledSegment], next_session: Option<NaiveDate>) -> Sess
         },
         coach_name: "Jim Hodapp".to_string(),
         coachee_name: "Alex Rivera".to_string(),
-        coach_timezone: chrono_tz::America::Chicago,
+        anchor_timezone: chrono_tz::America::Chicago,
+        timezones: Timezones {
+            coach: chrono_tz::America::Chicago,
+            coachee: chrono_tz::America::Chicago,
+        },
+        due_in_assignee_zone: false,
+        start: day(2026, 10, 7)
+            .and_hms_opt(15, 0, 0)
+            .expect("valid time")
+            .and_utc()
+            .fixed_offset(),
         session_date: day(2026, 10, 7),
         next_session: next_session.map(|date| NextSession {
             date,

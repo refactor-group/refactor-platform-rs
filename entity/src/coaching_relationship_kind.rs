@@ -119,6 +119,8 @@ pub trait Rules {
     fn links_with_other_account(&self) -> bool;
     /// Whose seat anchors speaker attribution when no participant's meeting link was recorded.
     fn unrecorded_link_maker_anchor(&self) -> Option<Seat>;
+    /// A suggestion for one participant is due in that participant's zone.
+    fn due_in_assignee_zone(&self) -> bool;
 }
 
 /// One person coaches the other.
@@ -183,6 +185,10 @@ impl Rules for Coaching {
     fn unrecorded_link_maker_anchor(&self) -> Option<Seat> {
         Some(Seat::CoachId)
     }
+
+    fn due_in_assignee_zone(&self) -> bool {
+        false
+    }
 }
 
 /// Two equals with identical privileges.
@@ -231,6 +237,10 @@ impl Rules for Colleague {
 
     fn unrecorded_link_maker_anchor(&self) -> Option<Seat> {
         None
+    }
+
+    fn due_in_assignee_zone(&self) -> bool {
+        true
     }
 }
 
@@ -304,6 +314,7 @@ mod tests {
         assert_eq!(rules.schedule_owner(), ScheduleOwner::Seat(Seat::CoachId));
         assert!(!rules.links_with_other_account());
         assert_eq!(rules.unrecorded_link_maker_anchor(), Some(Seat::CoachId));
+        assert!(!rules.due_in_assignee_zone());
     }
 
     #[test]
@@ -312,6 +323,7 @@ mod tests {
         assert_eq!(rules.schedule_owner(), ScheduleOwner::Scheduler);
         assert!(rules.links_with_other_account());
         assert_eq!(rules.unrecorded_link_maker_anchor(), None);
+        assert!(rules.due_in_assignee_zone());
     }
 
     #[test]

@@ -95,13 +95,13 @@ The model's answer is untrusted. Each item is checked independently by `Actions:
 
 ### Due dates
 
-The model is asked for a date, but dates are settled by `due_date::reconcile`, which resolves the spoken `due_phrase` deterministically against the session date (in the coach's timezone) and the next session date:
+The model is asked for a date, but dates are settled by `due_date::reconcile`, which resolves the spoken `due_phrase` deterministically against the session date and the next session date, both in the schedule owner's timezone (the coach for coaching, whoever scheduled the session for colleagues):
 
-- A **recognized** phrase overrides the model's date. Recognized forms include today, tonight, EOD, tomorrow, weekday names (the first such day after the session), `next <weekday>` when it is unambiguous, end of the week and "this week" (the last day of the coach's week, Friday by default; the session details tell the model that day too), the weekend (that Sunday), end of the month, `in N days|weeks`, `N weeks from <anchor>`, `<month> <day>`, `M/D`, and "next session" or "next time" when a next session exists. Filler such as "by", "before" or "no later than" is ignored.
+- A **recognized** phrase overrides the model's date. Recognized forms include today, tonight, EOD, tomorrow, weekday names (the first such day after the session), `next <weekday>` when it is unambiguous, end of the week and "this week" (the last day of the schedule owner's week, Friday by default; the session details tell the model that day too), the weekend (that Sunday), end of the month, `in N days|weeks`, `N weeks from <anchor>`, `<month> <day>`, `M/D`, and "next session" or "next time" when a next session exists. Filler such as "by", "before" or "no later than" is ignored.
 - An **ambiguous** phrase blanks the date: "soon", "ASAP", "next week", "at some point", `next <weekday>` said earlier in the same week, and "next time" when no next session exists.
 - An **unrecognized** phrase keeps the model's date, if it is within bounds.
 
-A resolved date is stored as noon in the coach's timezone so the day holds for viewers elsewhere. Two exceptions keep a deadline from landing mid-meeting: a date on the session's own day is due at 23:59 that day, so "after our call" never falls before the session; and a phrase naming the next session is due when that session starts.
+A resolved date is stored as noon so the day holds for viewers elsewhere. Coaching deadlines use the coach's timezone. A colleague deadline for one person uses that person's timezone, and one for both or nobody uses the scheduler's. Two exceptions keep a deadline from landing mid-meeting: a date that is the session's own day in that timezone is due at 23:59 that day, so "after our call" never falls before the session; and a phrase naming the next session is due when that session starts.
 
 ## Review
 

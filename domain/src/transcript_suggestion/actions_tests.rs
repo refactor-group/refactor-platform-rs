@@ -4,9 +4,9 @@ use chrono::{NaiveDate, TimeZone, Utc, Weekday};
 use serde_json::{json, Value};
 
 use super::*;
-use crate::coaching_relationship_kind;
+use crate::coaching_relationship_kind::{self, Kind};
 use crate::transcript_export::LabeledSegment;
-use crate::transcript_suggestion::{verify_output, Existing, NextSession};
+use crate::transcript_suggestion::{verify_output, Existing, NextSession, Timezones};
 
 const S2_TEXT: &str = "Um, yeah, I'll schedule a one-on-one with my manager by Friday.";
 
@@ -63,7 +63,17 @@ fn session(segments: &[LabeledSegment]) -> Session<'_> {
         },
         coach_name: "Jim Hodapp".to_string(),
         coachee_name: "Alex Rivera".to_string(),
-        coach_timezone: chrono_tz::America::Chicago,
+        anchor_timezone: chrono_tz::America::Chicago,
+        timezones: Timezones {
+            coach: chrono_tz::America::Chicago,
+            coachee: chrono_tz::America::Chicago,
+        },
+        due_in_assignee_zone: Kind::Coaching.rules().due_in_assignee_zone(),
+        start: Utc
+            .with_ymd_and_hms(2026, 10, 7, 15, 0, 0)
+            .single()
+            .expect("valid time")
+            .fixed_offset(),
         session_date: day(2026, 10, 7),
         next_session: Some(NextSession {
             date: day(2026, 10, 21),
@@ -408,4 +418,147 @@ fn a_deadline_on_a_later_day_stays_at_noon() {
     let verified = verify(valid(), &session).expect("verified");
 
     assert_eq!(verified.proposal.action.action.due_by, Some(noon_cdt(9)));
+}
+
+/// A colleague session scheduled by A, in the coachee seat in `a_tz`, starting at `start`; B holds
+/// the coach seat in `b_tz`.
+fn colleague_session(
+    segments: &[LabeledSegment],
+    start: DateTimeWithTimeZone,
+    a_tz: Tz,
+    b_tz: Tz,
+) -> Session<'_> {
+    Session {
+        anchor_timezone: a_tz,
+        timezones: Timezones {
+            coach: b_tz,
+            coachee: a_tz,
+        },
+        due_in_assignee_zone: Kind::Colleague.rules().due_in_assignee_zone(),
+        start,
+        session_date: start.with_timezone(&a_tz).date_naive(),
+        next_session: None,
+        ..session(segments)
+    }
+}
+
+const A: Role = Role::Coachee;
+const B: Role = Role::Coach;
+
+fn local(tz: Tz, y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTimeWithTimeZone {
+    tz.with_ymd_and_hms(y, m, d, h, min, 0)
+        .single()
+        .expect("valid time")
+        .fixed_offset()
+}
+
+fn due_by(session: &Session, assignees: Vec<Role>, due_date: &str) -> Option<DateTimeWithTimeZone> {
+    let candidate = Candidate {
+        assignees,
+        due_date: Some(due_date.to_string()),
+        due_phrase: None,
+        ..valid()
+    };
+    verify(candidate, session)
+        .expect("verified")
+        .proposal
+        .action
+        .action
+        .due_by
+}
+
+fn chicago_and_tokyo(segments: &[LabeledSegment]) -> Session<'_> {
+    colleague_session(
+        segments,
+        local(chrono_tz::America::Chicago, 2026, 11, 18, 10, 0),
+        chrono_tz::America::Chicago,
+        chrono_tz::Asia::Tokyo,
+    )
+}
+
+#[test]
+fn a_colleague_suggestion_for_the_other_person_is_due_in_their_timezone() {
+    let segments = segments();
+    let session = chicago_and_tokyo(&segments);
+
+    assert_eq!(
+        due_by(&session, vec![B], "2026-11-25"),
+        Some(local(chrono_tz::Asia::Tokyo, 2026, 11, 25, 12, 0))
+    );
+}
+
+#[test]
+fn a_colleague_suggestion_for_the_scheduler_is_due_in_their_timezone() {
+    let segments = segments();
+    let session = chicago_and_tokyo(&segments);
+
+    assert_eq!(
+        due_by(&session, vec![A], "2026-11-25"),
+        Some(local(chrono_tz::America::Chicago, 2026, 11, 25, 12, 0))
+    );
+}
+
+#[test]
+fn a_colleague_suggestion_for_both_or_nobody_is_due_in_the_schedulers_timezone() {
+    let segments = segments();
+    let session = chicago_and_tokyo(&segments);
+    let scheduler_noon = Some(local(chrono_tz::America::Chicago, 2026, 11, 25, 12, 0));
+
+    assert_eq!(due_by(&session, vec![A, B], "2026-11-25"), scheduler_noon);
+    assert_eq!(due_by(&session, vec![], "2026-11-25"), scheduler_noon);
+}
+
+#[test]
+fn the_session_day_is_judged_in_the_assignees_timezone() {
+    let segments = segments();
+    let session = colleague_session(
+        &segments,
+        local(chrono_tz::America::Chicago, 2026, 11, 24, 23, 30),
+        chrono_tz::America::Chicago,
+        chrono_tz::Asia::Tokyo,
+    );
+
+    assert_eq!(
+        due_by(&session, vec![B], "2026-11-25"),
+        Some(local(chrono_tz::Asia::Tokyo, 2026, 11, 25, 23, 59))
+    );
+}
+
+#[test]
+fn a_deadline_after_both_zones_leave_summer_time_uses_each_assignees_winter_offset() {
+    let segments = segments();
+    let session = colleague_session(
+        &segments,
+        local(chrono_tz::America::New_York, 2026, 10, 29, 10, 0),
+        chrono_tz::America::New_York,
+        chrono_tz::Europe::London,
+    );
+
+    let for_b = due_by(&session, vec![B], "2026-11-02").expect("due");
+    assert_eq!(for_b, local(chrono_tz::Europe::London, 2026, 11, 2, 12, 0));
+    assert_eq!(for_b.offset().local_minus_utc(), 0);
+
+    let for_a = due_by(&session, vec![A], "2026-11-02").expect("due");
+    assert_eq!(
+        for_a,
+        local(chrono_tz::America::New_York, 2026, 11, 2, 12, 0)
+    );
+    assert_eq!(for_a.offset().local_minus_utc(), -5 * 3600);
+}
+
+#[test]
+fn a_coaching_suggestion_for_the_coachee_stays_in_the_coachs_timezone() {
+    let segments = segments();
+    let session = Session {
+        timezones: Timezones {
+            coach: chrono_tz::America::Chicago,
+            coachee: chrono_tz::Asia::Tokyo,
+        },
+        ..session(&segments)
+    };
+
+    assert_eq!(
+        due_by(&session, vec![Role::Coachee], "2026-10-09"),
+        Some(noon_cdt(9))
+    );
 }

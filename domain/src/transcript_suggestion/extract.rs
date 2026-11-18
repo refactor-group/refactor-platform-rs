@@ -8,7 +8,7 @@ use sea_orm::{ActiveEnum, ActiveValue::Set, DatabaseConnection, TransactionTrait
 
 use super::{
     create_batch, render, verify_output, ActiveModel, Existing, NextSession, People, Refs, Session,
-    Status, Suggestible, Verified,
+    Status, Suggestible, Timezones, Verified,
 };
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
@@ -82,8 +82,16 @@ async fn analyze<S: Suggestible>(
         .await?
         .ok_or_else(not_found)?;
     let session = coaching_session::find_by_id(db, transcription.coaching_session_id).await?;
+    let relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
     let (coach, coachee) =
         coaching_relationship::find_coach_and_coachee(db, session.coaching_relationship_id).await?;
+    // The schedule owner's calendar is the one the model reads.
+    let anchor = if relationship.schedule_owner_id(session.scheduled_by_user_id) == coachee.id {
+        &coachee
+    } else {
+        &coach
+    };
 
     let segments = read_segments(db, &session, transcription.id).await?;
     if segments.is_empty() {
@@ -105,7 +113,7 @@ async fn analyze<S: Suggestible>(
         coaching_session::find_next_session(db, session.coaching_relationship_id, session.date)
             .await?
             .map(|next| NextSession {
-                date: local_session_date(&next, &coach),
+                date: local_session_date(&next, anchor),
                 start: next.date.and_utc().fixed_offset(),
             });
 
@@ -117,10 +125,16 @@ async fn analyze<S: Suggestible>(
         },
         coach_name: coach.preferred_name().into_owned(),
         coachee_name: coachee.preferred_name().into_owned(),
-        coach_timezone: coach.timezone.parse().unwrap_or(chrono_tz::UTC),
-        session_date: local_session_date(&session, &coach),
+        anchor_timezone: user::timezone(anchor),
+        timezones: Timezones {
+            coach: user::timezone(&coach),
+            coachee: user::timezone(&coachee),
+        },
+        due_in_assignee_zone: relationship.kind.rules().due_in_assignee_zone(),
+        start: session.date.and_utc().fixed_offset(),
+        session_date: local_session_date(&session, anchor),
         next_session,
-        week_end: user::week_end(&coach),
+        week_end: user::week_end(anchor),
         segments: &segments,
         existing,
     };

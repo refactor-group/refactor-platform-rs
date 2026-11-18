@@ -10,7 +10,7 @@ use serde::{Deserialize, Deserializer};
 use crate::coaching_relationship_kind;
 use crate::transcript_export::LabeledSegment;
 use crate::transcript_suggestion::actions::Role;
-use crate::transcript_suggestion::{Existing, NextSession, People, Session};
+use crate::transcript_suggestion::{Existing, NextSession, People, Session, Timezones};
 use crate::Id;
 
 /// Where the fixture sets live.
@@ -20,6 +20,8 @@ pub(super) const FIXTURES: &str = concat!(
 );
 /// Next session start when the header gives no time.
 const DEFAULT_NEXT_SESSION_TIME: NaiveTime = NaiveTime::from_hms_opt(10, 0, 0).unwrap();
+/// The session's own start, local to its timezone.
+const SESSION_TIME: NaiveTime = NaiveTime::from_hms_opt(10, 0, 0).unwrap();
 
 /// A fixture set; the sets are scored and reported apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -182,7 +184,18 @@ impl Transcript {
             people: input.people,
             coach_name: self.coach_name.clone(),
             coachee_name: self.coachee_name.clone(),
-            coach_timezone: self.timezone,
+            anchor_timezone: self.timezone,
+            timezones: Timezones {
+                coach: self.timezone,
+                coachee: self.timezone,
+            },
+            due_in_assignee_zone: false,
+            start: self
+                .timezone
+                .from_local_datetime(&self.session_date.and_time(SESSION_TIME))
+                .earliest()
+                .expect("the session time exists")
+                .fixed_offset(),
             session_date: self.session_date,
             next_session: self.next_session.and_then(|(date, time)| {
                 self.timezone

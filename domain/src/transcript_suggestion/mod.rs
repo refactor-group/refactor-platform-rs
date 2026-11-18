@@ -47,23 +47,64 @@ pub struct Session<'a> {
     pub people: People,
     pub coach_name: String,
     pub coachee_name: String,
-    /// The coach's IANA timezone; due dates are anchored there.
-    pub coach_timezone: Tz,
-    /// The session's calendar date in the coach's timezone.
+    /// The schedule owner's IANA timezone; the calendar is read there.
+    pub anchor_timezone: Tz,
+    /// Each participant's IANA timezone.
+    pub timezones: Timezones,
+    /// A deadline for one participant falls in that participant's timezone.
+    pub due_in_assignee_zone: bool,
+    /// When the session starts.
+    pub start: DateTimeWithTimeZone,
+    /// The session's calendar date in the anchor timezone.
     pub session_date: NaiveDate,
     /// The next session in the relationship, if one is scheduled.
     pub next_session: Option<NextSession>,
-    /// The day the coach's week ends on; "end of the week" and "this week" mean it.
+    /// The day the schedule owner's week ends on; "end of the week" and "this week" mean it.
     pub week_end: Weekday,
     /// Ordered by (start_ms, id); refs are assigned in this order.
     pub segments: &'a [LabeledSegment],
     pub existing: Vec<Existing>,
 }
 
+impl Session<'_> {
+    /// The timezone a deadline for `assignee_ids` falls in: a lone assignee's own when the
+    /// relationship says so, otherwise the anchor timezone.
+    pub fn due_timezone(&self, assignee_ids: &[Id]) -> Tz {
+        let [only] = assignee_ids else {
+            return self.anchor_timezone;
+        };
+        self.due_in_assignee_zone
+            .then_some(*only)
+            .and_then(|id| self.timezone_of(id))
+            .unwrap_or(self.anchor_timezone)
+    }
+
+    /// The session's calendar date in `tz`.
+    pub fn date_in(&self, tz: Tz) -> NaiveDate {
+        self.start.with_timezone(&tz).date_naive()
+    }
+
+    fn timezone_of(&self, id: Id) -> Option<Tz> {
+        [
+            (self.people.coach_id, self.timezones.coach),
+            (self.people.coachee_id, self.timezones.coachee),
+        ]
+        .into_iter()
+        .find_map(|(person, tz)| (person == id).then_some(tz))
+    }
+}
+
+/// The IANA timezones of the session's coach and coachee seats.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Timezones {
+    pub coach: Tz,
+    pub coachee: Tz,
+}
+
 /// The next session in a coaching relationship.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NextSession {
-    /// Its calendar date in the coach's timezone.
+    /// Its calendar date in the anchor timezone.
     pub date: NaiveDate,
     pub start: DateTimeWithTimeZone,
 }
