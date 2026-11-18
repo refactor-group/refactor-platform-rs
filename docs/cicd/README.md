@@ -74,22 +74,24 @@ The Refactor Platform backend uses GitHub Actions for continuous integration, re
 ### 3. Production Deployment
 **File:** `.github/workflows/deploy_to_do.yml`
 **Triggers:** Manual dispatch only
-**Documentation:** [workflows/deploy-to-do.md](workflows/deploy-to-do.md)
+**Rollback:** `.github/workflows/rollback_do.yml` (manual dispatch)
+**Manual tests:** [in_place_deploy_manual_testing.md](../test-plans/in_place_deploy_manual_testing.md)
 
 **Deployment Flow:**
 1. Establish Tailscale VPN connection to DigitalOcean server
 2. Generate `.env` file from GitHub secrets/variables
-3. Download docker-compose.yaml and nginx configs
-4. Stop systemd service (`refactor-platform.service`)
-5. Pull latest Docker images from GHCR
-6. Start systemd service
-7. Verify deployment (health checks, container status)
+3. Download docker-compose.yaml and nginx configs, and validate the compose file
+4. Pull images while the current containers keep running
+5. If the backend image changed, stop only the backend and run all pending migrations in one transaction
+6. Recreate only the containers whose image or config changed, then reload nginx
+7. Verify deployment (health checks); on failure, put back the previous images and files
 
 **Key Features:**
 - ✅ Secure VPN-based deployment (Tailscale)
-- ✅ Systemd service management
+- ✅ Replaces only the containers that changed; the frontend keeps serving during a backend deploy
+- ✅ All-or-nothing migrations: a failed run applies none of them
+- ✅ Keeps the previous image set; automatic rollback on a failed deploy, and a rollback job that refuses when the database is ahead of the previous backend
 - ✅ Health checks and verification
-- ✅ Deploys both backend and frontend together
 - ⚠️ Manual trigger only (no auto-deploy)
 
 ---
@@ -385,7 +387,6 @@ sea-orm-cli migrate up -s refactor_platform
 - ⚠️ No test coverage reporting
 - ⚠️ No deployment notifications
 - ⚠️ No staging environment
-- ⚠️ No automated rollback mechanism
 - ⚠️ Manual production deployment (human error risk)
 
 **See Complete Analysis:** [gap-analysis.md](gap-analysis.md)

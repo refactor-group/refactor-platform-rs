@@ -502,8 +502,9 @@ jobs:
             migrations_known_by() {
               docker tag "$1" refactor-rollback/gate:candidate
               local status=0
+              # </dev/null: stdin is the rest of this script, which `compose run` would consume.
               BACKEND_IMAGE_NAME=refactor-rollback/gate:candidate \
-                docker compose run --rm --no-deps -T --name "migration-gate-$$" migrator migrationctl status || status=$?
+                docker compose run --rm --no-deps -T --name "migration-gate-$$" migrator migrationctl status </dev/null || status=$?
               docker rmi refactor-rollback/gate:candidate >/dev/null || true
               return $status
             }

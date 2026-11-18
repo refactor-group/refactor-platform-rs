@@ -92,8 +92,9 @@ jobs:
 
             if [[ " ${SERVICES[*]} " == *" rust-app "* ]]; then
               echo "INFO: Checking the previous backend knows every applied migration..."
+              # </dev/null: stdin is the rest of this script, which `compose run` would consume.
               if ! BACKEND_IMAGE_NAME=refactor-rollback/rust-app:previous \
-                docker compose run --rm --no-deps -T --name "migration-gate-$$" migrator migrationctl status; then
+                docker compose run --rm --no-deps -T --name "migration-gate-$$" migrator migrationctl status </dev/null; then
                 if [ "$FORCE" = "true" ]; then
                   echo "WARNING: the database has migrations the previous backend does not know; rolling back anyway (force)."
                 else
