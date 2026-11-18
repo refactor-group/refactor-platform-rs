@@ -42,6 +42,7 @@ impl ActiveModelBehavior for ActiveModel {}
 pub enum Action {
     RelationshipCreated,
     RelationshipDeleted,
+    RelationshipKindChanged,
     MemberAdded,
     MemberRemoved,
     MemberRoleChanged,
@@ -53,6 +54,7 @@ impl Action {
         match self {
             Action::RelationshipCreated => "relationship_created",
             Action::RelationshipDeleted => "relationship_deleted",
+            Action::RelationshipKindChanged => "relationship_kind_changed",
             Action::MemberAdded => "member_added",
             Action::MemberRemoved => "member_removed",
             Action::MemberRoleChanged => "member_role_changed",
@@ -62,7 +64,9 @@ impl Action {
     /// The kind of record the action changes, stored as the event's `subject_type`.
     pub fn subject_type(self) -> &'static str {
         match self {
-            Action::RelationshipCreated | Action::RelationshipDeleted => "coaching_relationship",
+            Action::RelationshipCreated
+            | Action::RelationshipDeleted
+            | Action::RelationshipKindChanged => "coaching_relationship",
             Action::MemberAdded | Action::MemberRemoved | Action::MemberRoleChanged => "user",
         }
     }

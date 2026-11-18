@@ -1,0 +1,400 @@
+//! An administrator changing what a relationship is, in place, once they have confirmed what
+//! the change does to each participant.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use chrono::{TimeDelta, Utc};
+use entity_api::coaching_session_pending_invite::{self, Target};
+use entity_api::error::EntityApiErrorKind;
+use entity_api::{coaching_relationship, coaching_session, organization};
+use log::error;
+use sea_orm::{DatabaseConnection, TransactionTrait};
+use serde::Serialize;
+use service::config::Config;
+use utoipa::ToSchema;
+
+use super::{
+    ensure_members, get_relationship_with_user_names_for_caller, CoachingRelationshipWithUserNames,
+    Draft,
+};
+use crate::action::{find_by_coaching_relationship, CallerVisibility, FindByRelationshipParams};
+use crate::audit_event::{self, Recorder};
+use crate::coaching_relationship_kind::Kind;
+use crate::coaching_relationships::Model;
+use crate::error::{reason, DomainErrorKind, Error, InternalErrorKind};
+use crate::events::{DomainEvent, EventPublisher};
+use crate::{coaching_sessions, users, Actor, Id};
+
+/// What an administrator asks a relationship to become.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Request {
+    pub kind: Kind,
+    /// Who becomes the coach, for a kind whose seats differ; `None` otherwise.
+    pub coach_id: Option<Id>,
+    /// Whether the administrator has seen and accepted the switch's [`Consequences`].
+    pub confirmed: bool,
+}
+
+/// Where a confirmed switch reports itself: the audit log, inside its transaction, and the
+/// participants' live connections, once it commits.
+#[derive(Clone, Copy)]
+pub struct Reporters<'a> {
+    pub recorder: &'a dyn Recorder,
+    pub event_publisher: &'a EventPublisher,
+}
+
+/// What a switch changes for the relationship's participants, sent back in a 409 until the
+/// administrator confirms it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, ToSchema)]
+#[schema(as = domain::coaching_relationship::kind_switch::Consequences)]
+pub struct Consequences {
+    /// Each participant who will see actions they cannot see now, with how many of them per
+    /// assignee. Empty when nobody gains sight of any.
+    pub actions_becoming_visible: Vec<ActionsBecomingVisible>,
+    /// The participants who gain the right to schedule, reschedule and cancel sessions, run
+    /// series, set meeting links and delete any topic.
+    pub scheduling_gained: Vec<Id>,
+    /// The participants who lose that right. What they already created stays.
+    pub scheduling_lost: Vec<Id>,
+}
+
+/// The actions one participant will see after the switch and cannot see now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[schema(as = domain::coaching_relationship::kind_switch::ActionsBecomingVisible)]
+pub struct ActionsBecomingVisible {
+    /// The participant who gains sight of them.
+    pub user_id: Id,
+    /// How many of them each assignee holds. An action with two assignees counts once for each.
+    pub by_assignee: Vec<AssigneeActionCount>,
+}
+
+/// How many of the actions becoming visible one assignee holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[schema(as = domain::coaching_relationship::kind_switch::AssigneeActionCount)]
+pub struct AssigneeActionCount {
+    /// The assignee.
+    pub assignee_id: Id,
+    /// How many of the actions becoming visible are assigned to them.
+    pub count: u64,
+}
+
+/// Switches relationship `relationship_id` of `organization_id` to the requested kind, and
+/// returns it as `caller` sees it.
+///
+/// Refuses, changing nothing: a relationship not in the organization (404); a `coach_id`
+/// missing, out of place, or not a participant (422); a participant no longer in the
+/// organization (409 `participant_not_a_member`); a pair whose other relationship leaves no
+/// room for the switch (409 `pair_already_related`); and, until `confirmed`, every switch
+/// (409 `kind_switch_needs_confirmation`, its details the [`Consequences`]). Asking for what
+/// the relationship already is changes nothing and succeeds.
+///
+/// A confirmed switch updates the relationship and, in the same transaction, marks as already
+/// sent the reminders of anyone it newly reminds for sessions already inside the reminder
+/// window, so it sends no surprise reminder, owes both participants a fresh invite for
+/// every upcoming session and series, which the pending reschedule sweep sends, and records
+/// the switch in the audit log with `caller` as the actor. Once it commits, the participants
+/// who may still read the relationship are told it changed kind.
+pub async fn switch_for_caller(
+    db: &DatabaseConnection,
+    config: &Config,
+    reporters: Reporters<'_>,
+    caller: &users::Model,
+    organization_id: Id,
+    relationship_id: Id,
+    request: Request,
+) -> Result<CoachingRelationshipWithUserNames, Error> {
+    let relationship =
+        coaching_relationship::find_by_id_in_organization(db, organization_id, relationship_id)
+            .await?;
+    let target = target_of(&relationship, request)?;
+
+    if target != draft_of(&relationship) {
+        ensure_not_archived(db, organization_id).await?;
+        let switched = Model {
+            coach_id: target.coach_id,
+            coachee_id: target.coachee_id,
+            kind: target.kind,
+            ..relationship.clone()
+        };
+        ensure_members(
+            db,
+            &relationship,
+            &participants(&relationship),
+            "A participant is no longer a member of this organization. Re-add them to the \
+             organization first.",
+            reason::PARTICIPANT_NOT_A_MEMBER,
+        )
+        .await?;
+        coaching_relationship::ensure_pair_allows(db, &relationship, target).await?;
+        if !request.confirmed {
+            return Err(needs_confirmation(
+                consequences(db, &relationship, &switched).await?,
+            ));
+        }
+        if let Some((before, after)) = apply(
+            db,
+            config,
+            reporters.recorder,
+            Actor::new(caller.id),
+            &relationship,
+            request,
+        )
+        .await?
+        {
+            publish_kind_changed(db, reporters.event_publisher, &before, &after).await;
+        }
+    }
+
+    get_relationship_with_user_names_for_caller(db, caller, relationship.id)
+        .await?
+        .ok_or_else(Error::not_found)
+}
+
+/// The seats and kind `request` asks of `relationship`: the chosen coach and the other
+/// participant for a kind whose seats differ, today's seats for one whose seats are equal.
+fn target_of(relationship: &Model, request: Request) -> Result<Draft, Error> {
+    let draft = |coach_id: Id, coachee_id: Id| Draft {
+        coach_id,
+        coachee_id,
+        kind: request.kind,
+    };
+    match (request.kind.seats_differ(), request.coach_id) {
+        (true, Some(coach_id)) => relationship
+            .seat(coach_id)
+            .map(|_| {
+                let other = [relationship.coach_id, relationship.coachee_id]
+                    .into_iter()
+                    .find(|&id| id != coach_id)
+                    .unwrap_or(coach_id);
+                draft(coach_id, other)
+            })
+            .ok_or_else(|| {
+                Error::invalid_because(
+                    reason::COACH_NOT_A_PARTICIPANT,
+                    "The coach must be one of the relationship's two participants.",
+                )
+            }),
+        (true, None) => Err(Error::invalid_because(
+            reason::COACH_REQUIRED,
+            "Name which participant becomes the coach.",
+        )),
+        (false, Some(_)) => Err(Error::invalid_because(
+            reason::COACH_NOT_APPLICABLE,
+            "This kind has no coach; leave out coach_id.",
+        )),
+        (false, None) => Ok(draft(relationship.coach_id, relationship.coachee_id)),
+    }
+}
+
+/// `relationship`'s seats and kind as they stand.
+fn draft_of(relationship: &Model) -> Draft {
+    Draft {
+        coach_id: relationship.coach_id,
+        coachee_id: relationship.coachee_id,
+        kind: relationship.kind,
+    }
+}
+
+/// The relationship's participants, coach seat first, each once.
+fn participants(relationship: &Model) -> Vec<Id> {
+    std::iter::once(relationship.coach_id)
+        .chain(
+            (relationship.coachee_id != relationship.coach_id).then_some(relationship.coachee_id),
+        )
+        .collect()
+}
+
+/// What switching `relationship` to `switched` changes for its participants, read from the
+/// rules of each kind.
+async fn consequences(
+    db: &DatabaseConnection,
+    relationship: &Model,
+    switched: &Model,
+) -> Result<Consequences, Error> {
+    let actions =
+        find_by_coaching_relationship(db, relationship.id, FindByRelationshipParams::default())
+            .await?;
+    let participants = participants(relationship);
+    let actions_becoming_visible = participants
+        .iter()
+        .filter_map(|&user_id| {
+            let sees = |model: &Model, assignee_ids: &[Id]| {
+                CallerVisibility::for_relationship(user_id, model)
+                    .is_some_and(|visibility| visibility.allows(assignee_ids))
+            };
+            let by_assignee: BTreeMap<Id, u64> = actions
+                .iter()
+                .filter(|action| {
+                    sees(switched, &action.assignee_ids)
+                        && !sees(relationship, &action.assignee_ids)
+                })
+                .flat_map(|action| action.assignee_ids.iter().copied())
+                .fold(BTreeMap::new(), |mut counts, assignee_id| {
+                    *counts.entry(assignee_id).or_default() += 1;
+                    counts
+                });
+            (!by_assignee.is_empty()).then(|| ActionsBecomingVisible {
+                user_id,
+                by_assignee: by_assignee
+                    .into_iter()
+                    .map(|(assignee_id, count)| AssigneeActionCount { assignee_id, count })
+                    .collect(),
+            })
+        })
+        .collect();
+    let scheduling = |before: bool| {
+        participants
+            .iter()
+            .copied()
+            .filter(|&id| {
+                relationship.can_schedule_sessions(id) == before
+                    && switched.can_schedule_sessions(id) != before
+            })
+            .collect()
+    };
+
+    Ok(Consequences {
+        actions_becoming_visible,
+        scheduling_gained: scheduling(false),
+        scheduling_lost: scheduling(true),
+    })
+}
+
+/// The 409 asking the administrator to confirm `consequences` before the switch applies.
+fn needs_confirmation(consequences: Consequences) -> Error {
+    match serde_json::to_value(consequences) {
+        Ok(details) => Error::conflict_because(
+            reason::KIND_SWITCH_NEEDS_CONFIRMATION,
+            "Switching this relationship's kind changes what its participants can see and do. \
+             Confirm to switch.",
+            details,
+        ),
+        Err(err) => Error {
+            source: Some(Box::new(err)),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "the switch's consequences did not serialize".to_string(),
+            )),
+        },
+    }
+}
+
+/// Refuses, with a 409, a switch in an archived organization, as a create is refused.
+async fn ensure_not_archived(db: &DatabaseConnection, organization_id: Id) -> Result<(), Error> {
+    organization::find_by_id(db, organization_id)
+        .await?
+        .archived_at
+        .map_or(Ok(()), |_| {
+            Err(entity_api::error::Error {
+                source: None,
+                error_kind: EntityApiErrorKind::OrganizationArchived,
+            }
+            .into())
+        })
+}
+
+/// Under the pair's lock, switches `relationship` as it now stands to what `request` asks,
+/// marks as sent the reminders the switch newly owes for sessions inside the reminder window,
+/// owes both participants the invite of every upcoming session and series, and records the
+/// switch as `actor`'s, in one transaction. Returns the relationship before and after, or
+/// `None` when it already was what `request` asks, writing nothing.
+async fn apply(
+    db: &DatabaseConnection,
+    config: &Config,
+    recorder: &dyn Recorder,
+    actor: Actor,
+    relationship: &Model,
+    request: Request,
+) -> Result<Option<(Model, Model)>, Error> {
+    // An out-of-range lead turns the sweep off, so there is nothing to suppress.
+    let lead = TimeDelta::from_std(config.session_reminder_lead()).unwrap_or_default();
+    let now = Utc::now().naive_utc();
+
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    let current = coaching_relationship::find_locked(&txn, relationship).await?;
+    let target = target_of(&current, request)?;
+    if target == draft_of(&current) {
+        return Ok(None);
+    }
+    let switched = coaching_relationship::change_kind(&txn, &current, target).await?;
+    let newly_reminded: Vec<Id> = participants(&current)
+        .into_iter()
+        .filter(|&id| !current.is_reminded(id) && switched.is_reminded(id))
+        .collect();
+    coaching_session::mark_reminders_sent(&txn, current.id, &newly_reminded, (now, now + lead))
+        .await?;
+    let upcoming = coaching_session::find_by_relationship_after(&txn, current.id, now).await?;
+    coaching_session_pending_invite::queue(&txn, &invites_of(&upcoming), &participants(&current))
+        .await?;
+    recorder
+        .record(
+            &txn,
+            audit_event::relationship_kind_changed(actor, &current, &switched),
+        )
+        .await?;
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+    Ok(Some((current, switched)))
+}
+
+/// The invites that announced `sessions`: a series member's is its series', any other
+/// session's its own.
+fn invites_of(sessions: &[coaching_sessions::Model]) -> BTreeSet<Target> {
+    sessions
+        .iter()
+        .map(|session| {
+            match (
+                session.coaching_session_series_id,
+                session.ical_recurrence_id,
+            ) {
+                (Some(series_id), Some(_)) => Target::Series(series_id),
+                _ => Target::Session(session.id),
+            }
+        })
+        .collect()
+}
+
+/// Tells the participants who may still read the relationship that it went from `before`'s
+/// kind to `after`'s. Best-effort: the switch has committed, so a failure is logged.
+async fn publish_kind_changed(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    before: &Model,
+    after: &Model,
+) {
+    let notify_user_ids = match coaching_relationship::notify_member_ids(db, after).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            error!(
+                "CoachingRelationshipKindChanged: failed to resolve recipients for relationship {}: {e:?}",
+                after.id
+            );
+            return;
+        }
+    };
+    let (Some(from), Some(to)) = (wire_name(before.kind), wire_name(after.kind)) else {
+        error!(
+            "CoachingRelationshipKindChanged: a kind of relationship {} did not serialize",
+            after.id
+        );
+        return;
+    };
+    event_publisher
+        .publish(DomainEvent::CoachingRelationshipKindChanged {
+            coaching_relationship_id: after.id,
+            organization_id: after.organization_id,
+            from,
+            to,
+            notify_user_ids,
+        })
+        .await;
+}
+
+/// `kind` as the REST API writes it.
+fn wire_name(kind: Kind) -> Option<String> {
+    serde_json::to_value(kind)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+}
+
+#[cfg(test)]
+#[path = "kind_switch_sqlite_tests.rs"]
+mod sqlite_tests;

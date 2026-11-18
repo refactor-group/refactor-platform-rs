@@ -65,6 +65,26 @@ pub fn relationship_deleted(
     relationship_event(actor, Action::RelationshipDeleted, relationship)
 }
 
+/// `actor` switched `before`'s kind to `after`'s, naming who holds each seat after the switch.
+pub fn relationship_kind_changed(
+    actor: Actor,
+    before: &coaching_relationships::Model,
+    after: &coaching_relationships::Model,
+) -> NewEvent {
+    NewEvent {
+        organization_id: after.organization_id,
+        actor: Some(actor),
+        action: Action::RelationshipKindChanged,
+        subject_id: after.id,
+        details: json!({
+            "from": before.kind.to_value(),
+            "to": after.kind.to_value(),
+            "coach_id": after.coach_id,
+            "coachee_id": after.coachee_id,
+        }),
+    }
+}
+
 /// `actor` gave `user_id` a `role` in the organization.
 pub fn member_added(actor: Actor, organization_id: Id, user_id: Id, role: Role) -> NewEvent {
     member_event(

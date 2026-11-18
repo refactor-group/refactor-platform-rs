@@ -1311,6 +1311,8 @@ async fn test_send_session_rescheduled_email_omits_recurrence_variables() {
             "previous_session_when",
             "session_date",
             "session_duration",
+            "session_label",
+            "session_label_plural",
             "session_or_series",
             "session_time",
             "session_url",
@@ -1524,7 +1526,7 @@ fn test_build_session_cancel_ics_structure() {
         &coach,
         &coachee,
         &session,
-        SESSION_CANCELLED_DESCRIPTION.to_string(),
+        "This coaching session has been cancelled.".to_string(),
         dtstamp,
         session.ical_sequence,
         anchor_tz(&coach),
@@ -1740,7 +1742,7 @@ fn test_build_occurrence_cancel_ics_addresses_the_series_uid() {
         &session,
         series_id,
         chrono_tz::America::New_York,
-        SESSION_CANCELLED_DESCRIPTION.to_string(),
+        "This coaching session has been cancelled.".to_string(),
         dtstamp,
     )
     .unwrap();
@@ -3219,6 +3221,8 @@ async fn test_send_recurring_sessions_rescheduled_email_previous_when_comes_from
             "recurrence_summary",
             "session_count",
             "session_duration",
+            "session_label",
+            "session_label_plural",
             "session_or_series",
             "session_url",
             "session_when",
@@ -3534,7 +3538,7 @@ fn test_build_series_cancel_ics_structure() {
         &coachee,
         &first,
         &series,
-        SERIES_CANCELLED_DESCRIPTION.to_string(),
+        "This recurring coaching session series has been cancelled.".to_string(),
         dtstamp,
     )
     .unwrap();
@@ -4555,6 +4559,8 @@ async fn test_send_recurring_series_email_to_recipient_empty_sessions_errors() {
             user: &recipient,
             other_user: &other,
             other_user_role: coaching_relationship_kind::Role::Coach,
+            session_label: "coaching session",
+            session_label_plural: "coaching sessions",
         },
         &[],
         &org,
@@ -4654,6 +4660,8 @@ async fn test_send_session_reminder_email_variables() {
                     "other_user_first_name": "Alex",
                     "other_user_last_name": "Smith",
                     "other_user_role": "coach",
+                    "session_label": "coaching session",
+                    "session_label_plural": "coaching sessions",
                     "organization_name": "Acme Corp",
                     "session_date": "Wednesday, March 4, 2026",
                     "session_time": "10:00 AM",
@@ -4679,6 +4687,8 @@ async fn test_send_session_reminder_email_variables() {
             user: &coachee,
             other_user: &coach,
             other_user_role: coaching_relationship_kind::Role::Coach,
+            session_label: "coaching session",
+            session_label_plural: "coaching sessions",
         },
         &session,
         &org,
@@ -4720,6 +4730,8 @@ async fn test_send_session_reminder_email_goes_only_to_the_coachee() {
             user: &coachee,
             other_user: &coach,
             other_user_role: coaching_relationship_kind::Role::Coach,
+            session_label: "coaching session",
+            session_label_plural: "coaching sessions",
         },
         &create_test_session(),
         &create_test_organization(),
@@ -4771,6 +4783,8 @@ async fn test_send_session_reminder_email_carries_title_and_meeting_url() {
             user: &coachee,
             other_user: &coach,
             other_user_role: coaching_relationship_kind::Role::Coach,
+            session_label: "coaching session",
+            session_label_plural: "coaching sessions",
         },
         &session,
         &create_test_organization(),
@@ -5015,6 +5029,361 @@ async fn each_colleagues_cancelled_email_names_the_other_a_colleague() {
 
     to_alex.assert_async().await;
     to_jane.assert_async().await;
+}
+
+// ───── session label ─────
+
+/// Each kind with what its emails call a session, singular and plural.
+const SESSION_LABELS: [(coaching_relationship_kind::Kind, &str, &str); 2] = [
+    (
+        coaching_relationship_kind::Kind::Coaching,
+        "coaching session",
+        "coaching sessions",
+    ),
+    (
+        coaching_relationship_kind::Kind::Colleague,
+        "session",
+        "sessions",
+    ),
+];
+
+/// One Resend mock per kind in [`SESSION_LABELS`], each expecting both copies to carry its labels.
+async fn session_label_mocks(server: &mut ServerGuard) -> [mockito::Mock; 2] {
+    let [(_, coaching, coaching_plural), (_, colleague, colleague_plural)] = SESSION_LABELS;
+    [
+        session_label_mock(server, coaching, coaching_plural).await,
+        session_label_mock(server, colleague, colleague_plural).await,
+    ]
+}
+
+/// A Resend mock expecting both copies of one send to carry `label` and `plural`.
+async fn session_label_mock(server: &mut ServerGuard, label: &str, plural: &str) -> mockito::Mock {
+    server
+        .mock("POST", "/emails")
+        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+            "template": { "variables": {
+                "session_label": label,
+                "session_label_plural": plural,
+            } }
+        })))
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await
+}
+
+/// KIND-47: a session scheduled email names the session by its relationship's kind.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn scheduled_emails_carry_the_kinds_session_label() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let mocks = session_label_mocks(&mut server).await;
+    let (alex, jane) = colleagues();
+
+    for (kind, _, _) in SESSION_LABELS {
+        send_session_scheduled_email(
+            &mock_description_loaders(),
+            &config,
+            &Audience {
+                participants: &Participants {
+                    coach: &alex,
+                    coachee: &jane,
+                    kind,
+                },
+                member_ids: &[alex.id, jane.id],
+            },
+            &create_test_session(),
+            &create_test_organization(),
+        )
+        .await
+        .expect("the scheduled emails send");
+    }
+
+    for mock in mocks {
+        mock.assert_async().await;
+    }
+}
+
+/// KIND-47: a session rescheduled email names the session by its relationship's kind.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn rescheduled_emails_carry_the_kinds_session_label() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let mocks = session_label_mocks(&mut server).await;
+    let (alex, jane) = colleagues();
+    let session = create_test_session();
+
+    for (kind, _, _) in SESSION_LABELS {
+        send_session_rescheduled_email(
+            &mock_description_loaders(),
+            &config,
+            &Audience {
+                participants: &Participants {
+                    coach: &alex,
+                    coachee: &jane,
+                    kind,
+                },
+                member_ids: &[alex.id, jane.id],
+            },
+            &session,
+            &create_test_organization(),
+            session.date - chrono::Duration::days(1),
+        )
+        .await
+        .expect("the rescheduled emails send");
+    }
+
+    for mock in mocks {
+        mock.assert_async().await;
+    }
+}
+
+/// KIND-47: a session cancelled email names the session by its relationship's kind.
+#[tokio::test]
+async fn cancelled_emails_carry_the_kinds_session_label() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let mocks = session_label_mocks(&mut server).await;
+    let (alex, jane) = colleagues();
+
+    for (kind, _, _) in SESSION_LABELS {
+        send_session_cancelled_email(
+            &config,
+            &Audience {
+                participants: &Participants {
+                    coach: &alex,
+                    coachee: &jane,
+                    kind,
+                },
+                member_ids: &[alex.id, jane.id],
+            },
+            &create_test_session(),
+            &create_test_organization(),
+            chrono_tz::UTC,
+        )
+        .await
+        .expect("the cancellations send");
+    }
+
+    for mock in mocks {
+        mock.assert_async().await;
+    }
+}
+
+/// KIND-47: a recurring sessions scheduled email names the session by its relationship's kind.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn series_scheduled_emails_carry_the_kinds_session_label() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let mocks = session_label_mocks(&mut server).await;
+    let (alex, jane) = colleagues();
+
+    for (kind, _, _) in SESSION_LABELS {
+        send_recurring_sessions_scheduled_email(
+            &MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+                .into_connection(),
+            &config,
+            &create_test_series(),
+            &Audience {
+                participants: &Participants {
+                    coach: &alex,
+                    coachee: &jane,
+                    kind,
+                },
+                member_ids: &[alex.id, jane.id],
+            },
+            &[create_test_session()],
+            &create_test_organization(),
+        )
+        .await
+        .expect("the series emails send");
+    }
+
+    for mock in mocks {
+        mock.assert_async().await;
+    }
+}
+
+/// KIND-47: a recurring sessions rescheduled email names the session by its relationship's kind.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn series_rescheduled_emails_carry_the_kinds_session_label() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let mocks = session_label_mocks(&mut server).await;
+    let (alex, jane) = colleagues();
+    let series = create_test_series();
+
+    for (kind, _, _) in SESSION_LABELS {
+        send_recurring_sessions_rescheduled_email(
+            &MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+                .into_connection(),
+            &config,
+            &series,
+            &series,
+            &Audience {
+                participants: &Participants {
+                    coach: &alex,
+                    coachee: &jane,
+                    kind,
+                },
+                member_ids: &[alex.id, jane.id],
+            },
+            &SeriesSessions {
+                current: &[create_test_session()],
+                replaced: &[],
+            },
+            &create_test_organization(),
+        )
+        .await
+        .expect("the series reschedule emails send");
+    }
+
+    for mock in mocks {
+        mock.assert_async().await;
+    }
+}
+
+/// KIND-47: a recurring sessions cancelled email names the session by its relationship's kind.
+#[tokio::test]
+async fn series_cancelled_emails_carry_the_kinds_session_label() {
+    let mut server = setup_test_server().await;
+    let config = create_full_config_with_mock(&server.url());
+    let mocks = session_label_mocks(&mut server).await;
+    let (alex, jane) = colleagues();
+
+    for (kind, _, _) in SESSION_LABELS {
+        send_recurring_sessions_cancelled_email(
+            &config,
+            &create_test_series(),
+            &Audience {
+                participants: &Participants {
+                    coach: &alex,
+                    coachee: &jane,
+                    kind,
+                },
+                member_ids: &[alex.id, jane.id],
+            },
+            &[create_test_session()],
+            &create_test_organization(),
+        )
+        .await
+        .expect("the series cancellations send");
+    }
+
+    for mock in mocks {
+        mock.assert_async().await;
+    }
+}
+
+/// A Resend mock taking both copies of one send and recording its `.ics` into `capture`.
+async fn capturing_mock(server: &mut ServerGuard, capture: &IcsCapture) -> mockito::Mock {
+    server
+        .mock("POST", "/emails")
+        .match_request(capture.recorder())
+        .with_status(200)
+        .with_body(r#"{"id":"email_test"}"#)
+        .expect(2)
+        .create_async()
+        .await
+}
+
+/// The DESCRIPTION line of the `.ics` `capture` holds.
+fn captured_description(capture: &IcsCapture) -> String {
+    capture
+        .vevent()
+        .lines()
+        .find(|line| line.starts_with("DESCRIPTION:"))
+        .expect("the cancellation carries a DESCRIPTION")
+        .to_string()
+}
+
+/// KIND-47: a cancelled session's `.ics` names the session by its relationship's kind.
+#[tokio::test]
+async fn a_cancelled_sessions_invite_names_the_kinds_session() {
+    let (alex, jane) = colleagues();
+    for (kind, description) in [
+        (
+            coaching_relationship_kind::Kind::Coaching,
+            "DESCRIPTION:This coaching session has been cancelled.",
+        ),
+        (
+            coaching_relationship_kind::Kind::Colleague,
+            "DESCRIPTION:This session has been cancelled.",
+        ),
+    ] {
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+        let capture = IcsCapture::default();
+        let mock = capturing_mock(&mut server, &capture).await;
+
+        send_session_cancelled_email(
+            &config,
+            &Audience {
+                participants: &Participants {
+                    coach: &alex,
+                    coachee: &jane,
+                    kind,
+                },
+                member_ids: &[alex.id, jane.id],
+            },
+            &create_test_session(),
+            &create_test_organization(),
+            chrono_tz::UTC,
+        )
+        .await
+        .expect("the cancellations send");
+
+        mock.assert_async().await;
+        assert_eq!(captured_description(&capture), description, "{kind:?}");
+    }
+}
+
+/// KIND-47: a cancelled series' `.ics` names the session by its relationship's kind.
+#[tokio::test]
+async fn a_cancelled_series_invite_names_the_kinds_session() {
+    let (alex, jane) = colleagues();
+    for (kind, description) in [
+        (
+            coaching_relationship_kind::Kind::Coaching,
+            "DESCRIPTION:This recurring coaching session series has been cancelled.",
+        ),
+        (
+            coaching_relationship_kind::Kind::Colleague,
+            "DESCRIPTION:This recurring session series has been cancelled.",
+        ),
+    ] {
+        let mut server = setup_test_server().await;
+        let config = create_full_config_with_mock(&server.url());
+        let capture = IcsCapture::default();
+        let mock = capturing_mock(&mut server, &capture).await;
+
+        send_recurring_sessions_cancelled_email(
+            &config,
+            &create_test_series(),
+            &Audience {
+                participants: &Participants {
+                    coach: &alex,
+                    coachee: &jane,
+                    kind,
+                },
+                member_ids: &[alex.id, jane.id],
+            },
+            &[create_test_session()],
+            &create_test_organization(),
+        )
+        .await
+        .expect("the series cancellations send");
+
+        mock.assert_async().await;
+        assert_eq!(captured_description(&capture), description, "{kind:?}");
+    }
 }
 
 // ───── stored series zone vs the coach's current zone ─────

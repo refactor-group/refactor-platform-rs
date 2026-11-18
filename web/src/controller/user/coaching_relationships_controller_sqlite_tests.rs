@@ -10,7 +10,7 @@ use axum::http::{Method, StatusCode};
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use serde_json::json;
 
-use crate::test_utils::sqlite::{ids, seed_super_coaching, TestApp};
+use crate::test_utils::sqlite::{assert_emails_follow_seats, ids, seed_super_coaching, TestApp};
 
 /// REL-13
 #[tokio::test]
@@ -151,6 +151,22 @@ async fn a_coachee_is_told_what_they_may_do_in_each_listed_relationship() {
                 "{relationship}"
             );
         }
+    })
+    .await;
+}
+
+/// KIND-45
+#[tokio::test]
+async fn a_users_list_carries_each_relationships_participants_emails() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let coach = app.fixture.user(Caller::Coach);
+        let path = format!("/users/{coach}/coaching-relationships");
+
+        let reply = app.send(Caller::Coach, Method::GET, &path, None).await;
+
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        assert_emails_follow_seats(&app.fixture, &reply.body["data"]);
     })
     .await;
 }

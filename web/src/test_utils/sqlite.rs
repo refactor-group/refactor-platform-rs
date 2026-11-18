@@ -20,6 +20,8 @@ use axum_login::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use domain::gateway::object_storage::{self, ObjectStore};
+use domain::jobs::coaching_session_pending_reschedule::Sweep;
+use domain::jobs::{Context as JobContext, Job};
 use domain::test_utils::sqlite::fixture::{
     remove_roles, seed_goal, seed_relationship_with_actions, IMG1_BYTES, IMG1_CONTENT_TYPE,
     PASSWORD,
@@ -318,6 +320,31 @@ fn id_at(item: &Value, field: &str) -> Id {
         .unwrap_or_else(|| panic!("an object with a valid `{field}`, got {item}"))
 }
 
+/// Asserts `relationships` is a non-empty list whose every row carries the emails of the
+/// users in its `coach_id` and `coachee_id` seats.
+pub(crate) fn assert_emails_follow_seats(fixture: &Fixture, relationships: &Value) {
+    let email_in = |row: &Value, seat: &str| {
+        let user = id_at(row, seat);
+        fixture
+            .users
+            .iter()
+            .find(|(_, id)| **id == user)
+            .map(|(caller, _)| caller.email())
+    };
+    let rows = relationships.as_array().expect("a list of relationships");
+    assert!(!rows.is_empty(), "no relationships listed");
+    for row in rows {
+        assert_eq!(
+            (row["coach_email"].as_str(), row["coachee_email"].as_str()),
+            (
+                email_in(row, "coach_id").as_deref(),
+                email_in(row, "coachee_id").as_deref()
+            ),
+            "{row}"
+        );
+    }
+}
+
 impl TestApp {
     pub(crate) async fn new() -> Self {
         let db = database().await;
@@ -367,6 +394,18 @@ impl TestApp {
         );
         emailed.sort();
         emailed
+    }
+
+    /// Runs one tick of the pending reschedule sweep, which also re-sends owed invites.
+    pub(crate) async fn run_pending_reschedule_sweep(&self) {
+        let ctx = JobContext {
+            db: self.db.clone(),
+            config: self.stand_ins.config.clone(),
+        };
+        Sweep::from_config(&ctx.config)
+            .run(&ctx)
+            .await
+            .expect("the sweep runs");
     }
 
     /// What the recording bot provider was asked since the last call, in order.

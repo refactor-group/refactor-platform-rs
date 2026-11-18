@@ -18,6 +18,8 @@ fn listed_row() -> BTreeMap<String, Value> {
         ("coach_last_name".to_string(), name("One")),
         ("coachee_first_name".to_string(), name("Coachee")),
         ("coachee_last_name".to_string(), name("Two")),
+        ("coach_email".to_string(), name("coach@example.com")),
+        ("coachee_email".to_string(), name("coachee@example.com")),
         ("created_at".to_string(), now.into()),
         ("updated_at".to_string(), now.into()),
         ("coach_is_member".to_string(), true.into()),

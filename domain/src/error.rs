@@ -142,6 +142,17 @@ impl Error {
         }
     }
 
+    /// A request for a record that does not exist, or not where the caller looked, answered
+    /// with a 404.
+    pub(crate) fn not_found() -> Self {
+        Self {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
+                EntityErrorKind::NotFound,
+            )),
+        }
+    }
+
     /// A request that cannot apply as things stand, answered with a 409 carrying
     /// machine-readable `details`.
     pub(crate) fn conflict(message: impl Into<String>, details: serde_json::Value) -> Self {
@@ -199,6 +210,10 @@ pub(crate) mod reason {
     pub(crate) const PAIR_ALREADY_RELATED: &str = "pair_already_related";
     pub(crate) const ASSIGNEE_SCOPE_NOT_APPLICABLE: &str = "assignee_scope_not_applicable";
     pub(crate) const ROLE_NOT_IN_KIND: &str = "role_not_in_kind";
+    pub(crate) const KIND_SWITCH_NEEDS_CONFIRMATION: &str = "kind_switch_needs_confirmation";
+    pub(crate) const COACH_REQUIRED: &str = "coach_required";
+    pub(crate) const COACH_NOT_APPLICABLE: &str = "coach_not_applicable";
+    pub(crate) const COACH_NOT_A_PARTICIPANT: &str = "coach_not_a_participant";
 }
 
 impl fmt::Display for Error {

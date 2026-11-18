@@ -13,6 +13,7 @@ pub mod coaching_relationship_kind;
 pub mod coaching_relationships;
 pub mod coaching_session_images;
 pub mod coaching_session_notices;
+pub mod coaching_session_pending_invites;
 pub mod coaching_session_pending_reschedules;
 pub mod coaching_session_reminders;
 pub mod coaching_session_series;

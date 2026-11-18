@@ -777,3 +777,49 @@ async fn a_coachees_reminder_names_their_coach() {
     );
     to_coachee.assert_async().await;
 }
+
+/// KIND-47: a reminder names the session by its relationship's kind.
+#[tokio::test]
+async fn each_reminder_carries_its_kinds_session_label() {
+    let (coach_id, coachee_id) = (Id::new_v4(), Id::new_v4());
+    let coach = named(coach_id, "Cal", "cal@example.com");
+    let coachee = named(coachee_id, "Dee", "dee@example.com");
+
+    for (kind, label, plural) in [
+        (
+            crate::coaching_relationship_kind::Kind::Coaching,
+            "coaching session",
+            "coaching sessions",
+        ),
+        (
+            crate::coaching_relationship_kind::Kind::Colleague,
+            "session",
+            "sessions",
+        ),
+    ] {
+        let mut server = mockito::Server::new_async().await;
+        let to_coachee = server
+            .mock("POST", "/emails")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "template": { "variables": {
+                    "session_label": label,
+                    "session_label_plural": plural,
+                } },
+            })))
+            .with_status(200)
+            .with_body(r#"{"id":"sent"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let rel = coaching_relationships::Model {
+            kind,
+            ..relationship(Id::new_v4(), coach_id, coachee_id)
+        };
+
+        assert_eq!(
+            remind(&server, &rel, (&coach, &coachee), coachee_id).await,
+            emails::ReminderOutcome::Sent
+        );
+        to_coachee.assert_async().await;
+    }
+}

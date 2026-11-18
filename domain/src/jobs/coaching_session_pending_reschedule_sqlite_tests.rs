@@ -1,6 +1,6 @@
 //! What the pending reschedule sweep sends and leaves behind, against a real SQL engine.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeDelta, Timelike, Utc};
@@ -9,12 +9,14 @@ use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, IntoActiveModel
 use serde_json::json;
 
 use super::*;
-use crate::test_utils::sqlite::fixture::make_colleagues;
+use crate::test_utils::sqlite::fixture::{make_colleagues, seed_session_starting_in};
+use crate::test_utils::sqlite::read_back::pending_invites;
 use crate::test_utils::sqlite::{
-    database, mirror_migration_defaults, organization_of, seed_coaching_session, seed_membership,
-    seed_organization, seed_user, within_time_limit,
+    database, mirror_migration_defaults, organization_of, seed_coaching_session, seed_fixture,
+    seed_membership, seed_organization, seed_user, within_time_limit, Caller, Fixture,
 };
 use crate::{coaching_relationships, coaching_session_pending_reschedules, coaching_sessions, Id};
+use entity::coaching_session_pending_invites;
 
 const TEMPLATE: &str = "session_rescheduled_tpl";
 
@@ -555,6 +557,144 @@ async fn a_colleague_change_the_other_colleague_missed_is_retried() {
 async fn a_colleague_change_that_missed_only_the_scheduler_settles() {
     within_time_limit(async {
         assert!(!sweep_colleague_change_failing_for(false).await);
+    })
+    .await;
+}
+
+/// Sends session invites, and nothing else, to Resend at `server`.
+fn inviting(server: &ServerGuard) -> Config {
+    Config::from_args([
+        "test",
+        "--resend-api-key=test_api_key",
+        "--session-scheduled-email-template-id=session_scheduled_tpl",
+        "--frontend-base-url=https://app.example.com",
+        &format!("--resend-base-url={}", server.url()),
+    ])
+}
+
+/// The seeded fixture with `count` more sessions of R1 owed to COACH and, when `both`,
+/// COACHEE.
+async fn owing(db: &DatabaseConnection, count: i64, both: bool) -> Fixture {
+    mirror_migration_defaults(db).await;
+    let fixture = seed_fixture(db).await;
+    let mut sessions = BTreeSet::new();
+    for day in 0..count {
+        let id = seed_session_starting_in(db, fixture.r1, TimeDelta::days(10 + day)).await;
+        sessions.insert(Target::Session(id));
+    }
+    let users: Vec<Id> = [Caller::Coach, Caller::Coachee]
+        .into_iter()
+        .take(if both { 2 } else { 1 })
+        .map(|caller| fixture.user(caller))
+        .collect();
+    coaching_session_pending_invite::queue(db, &sessions, &users)
+        .await
+        .expect("the invites are owed");
+    fixture
+}
+
+/// Each owed invite's failed attempts and whether a claim holds it.
+async fn owed_rows(db: &DatabaseConnection) -> Vec<(i16, bool)> {
+    let mut rows: Vec<(i16, bool)> = coaching_session_pending_invites::Entity::find()
+        .all(db)
+        .await
+        .expect("the owed invites read")
+        .into_iter()
+        .map(|row| (row.attempts, row.claim_id.is_some()))
+        .collect();
+    rows.sort();
+    rows
+}
+
+#[tokio::test]
+async fn an_invite_owed_again_while_a_send_holds_it_stays_owed() {
+    within_time_limit(async {
+        let db = database().await;
+        mirror_migration_defaults(&db).await;
+        let fixture = seed_fixture(&db).await;
+        let coach = fixture.user(Caller::Coach);
+        let s1 = BTreeSet::from([Target::Session(fixture.s1)]);
+        let claim = || {
+            coaching_session_pending_invite::claim(&db, Utc::now().naive_utc(), Id::new_v4(), 10)
+        };
+
+        coaching_session_pending_invite::queue(&db, &s1, &[coach])
+            .await
+            .expect("the invite is owed");
+        let in_flight = claim().await.expect("the sweep claims");
+        coaching_session_pending_invite::queue(&db, &s1, &[coach])
+            .await
+            .expect("the invite is owed again");
+        for row in &in_flight {
+            coaching_session_pending_invite::complete(&db, row)
+                .await
+                .expect("the earlier send completes");
+        }
+
+        assert_eq!(
+            pending_invites(&db).await,
+            BTreeSet::from([(fixture.s1, coach)])
+        );
+        assert_eq!(claim().await.expect("the sweep claims").len(), 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn many_owed_invites_drain_over_several_ticks() {
+    within_time_limit(async {
+        let mut server = Server::new_async().await;
+        let resend = server
+            .mock("POST", "/emails")
+            .with_status(200)
+            .with_body(r#"{"id":"email_1"}"#)
+            .expect(12)
+            .create_async()
+            .await;
+        let db = database().await;
+        owing(&db, 6, true).await;
+        let ctx = context(db, inviting(&server));
+        let sweep = Sweep::from_config(&ctx.config);
+
+        sweep.run(&ctx).await.expect("the tick runs");
+        assert_eq!(
+            owed_rows(&ctx.db).await.len(),
+            2,
+            "ten sent in the first tick"
+        );
+        sweep.run(&ctx).await.expect("the tick runs");
+        assert_eq!(owed_rows(&ctx.db).await, Vec::new());
+        resend.assert_async().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_failed_invite_hands_the_rest_of_the_tick_back_uncharged() {
+    within_time_limit(async {
+        let mut server = Server::new_async().await;
+        let resend = server
+            .mock("POST", "/emails")
+            .with_status(429)
+            .with_header("retry-after", "3")
+            .expect(1)
+            .create_async()
+            .await;
+        let db = database().await;
+        owing(&db, 3, false).await;
+        let ctx = context(db, inviting(&server));
+
+        Sweep::from_config(&ctx.config)
+            .run(&ctx)
+            .await
+            .expect("the tick runs");
+
+        resend.assert_async().await;
+        assert_eq!(
+            owed_rows(&ctx.db).await,
+            vec![(0, false), (0, false), (1, false)],
+            "one attempt charged, none held"
+        );
     })
     .await;
 }

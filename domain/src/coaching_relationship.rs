@@ -11,6 +11,8 @@ use entity_api::user_role::retain_organization_members;
 use entity_api::{coaching_relationships, query};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DatabaseTransaction, TransactionTrait};
 
+pub mod kind_switch;
+
 pub(crate) use entity_api::coaching_relationship::{
     create, find_by_organization_with_user_names, find_by_user_and_organization_with_user_names,
     find_by_user_id_with_user_names, get_relationship_with_user_names, notify_member_ids,
@@ -283,19 +285,37 @@ pub async fn ensure_assignees_are_members(
     relationship: &Model,
     assignee_ids: &[Id],
 ) -> Result<(), Error> {
-    if assignee_ids.is_empty() {
+    ensure_members(
+        db,
+        relationship,
+        assignee_ids,
+        "An assignee is no longer a member of this organization; re-add them to the \
+         organization first.",
+        reason::ASSIGNEE_NOT_A_MEMBER,
+    )
+    .await
+}
+
+/// A 409 carrying `reason` and `message` for the first of `user_ids`, in order, no longer in
+/// the relationship's organization.
+async fn ensure_members(
+    db: &impl ConnectionTrait,
+    relationship: &Model,
+    user_ids: &[Id],
+    message: &str,
+    reason: &str,
+) -> Result<(), Error> {
+    if user_ids.is_empty() {
         return Ok(());
     }
-    let members =
-        retain_organization_members(db, assignee_ids, relationship.organization_id).await?;
-    assignee_ids
+    let members = retain_organization_members(db, user_ids, relationship.organization_id).await?;
+    user_ids
         .iter()
         .find(|id| !members.contains(id))
         .map_or(Ok(()), |&user_id| {
             Err(not_a_member(
-                "An assignee is no longer a member of this organization; re-add them to the \
-                 organization first.",
-                reason::ASSIGNEE_NOT_A_MEMBER,
+                message,
+                reason,
                 relationship.organization_id,
                 user_id,
             ))
