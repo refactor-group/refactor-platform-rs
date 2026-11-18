@@ -98,7 +98,7 @@ pub(crate) struct Reply {
 /// its key set, and the server keeps a stray model call off the network.
 struct StandIns {
     server: ServerGuard,
-    /// Every address Resend was asked to mail, in send order.
+    /// Every address Resend was asked to mail, with its send's template variables, in send order.
     emailed: Emailed,
     config: Config,
     store: Arc<dyn ObjectStore>,
@@ -216,10 +216,10 @@ fn tiptap_document(server: &mut ServerGuard, method: &str) -> Mock {
         .with_status(200)
 }
 
-/// The recipient addresses of every email sent.
-type Emailed = Arc<Mutex<Vec<String>>>;
+/// The recipient addresses of every email sent, each with its send's template variables.
+type Emailed = Arc<Mutex<Vec<(String, Value)>>>;
 
-/// A Resend send, answered with the id Resend returns, recording its recipients.
+/// A Resend send, answered with the id Resend returns, recording its recipients and variables.
 fn resend_send(server: &mut ServerGuard, emailed: &Emailed) -> Mock {
     let emailed = emailed.clone();
     server
@@ -233,10 +233,12 @@ fn resend_send(server: &mut ServerGuard, emailed: &Emailed) -> Mock {
                 .and_then(|bytes| serde_json::from_slice(bytes).ok())
                 .unwrap_or_default();
             let to = body["to"].as_array().cloned().unwrap_or_default();
-            emailed
-                .lock()
-                .expect("the recipient log locks")
-                .extend(to.iter().filter_map(Value::as_str).map(address));
+            let variables = &body["template"]["variables"];
+            emailed.lock().expect("the recipient log locks").extend(
+                to.iter()
+                    .filter_map(Value::as_str)
+                    .map(|recipient| (address(recipient), variables.clone())),
+            );
             br#"{"id":"stand-in"}"#.to_vec()
         })
 }
@@ -385,15 +387,25 @@ impl TestApp {
 
     /// The addresses mailed since the last call, sorted.
     pub(crate) fn take_emailed(&mut self) -> Vec<String> {
-        let mut emailed = std::mem::take(
+        let mut emailed: Vec<String> = self
+            .take_emailed_variables()
+            .into_iter()
+            .map(|(address, _)| address)
+            .collect();
+        emailed.sort();
+        emailed
+    }
+
+    /// The addresses mailed since the last call, each with its send's template variables, in
+    /// send order.
+    pub(crate) fn take_emailed_variables(&mut self) -> Vec<(String, Value)> {
+        std::mem::take(
             &mut *self
                 .stand_ins
                 .emailed
                 .lock()
                 .expect("the recipient log locks"),
-        );
-        emailed.sort();
-        emailed
+        )
     }
 
     /// Runs one tick of the pending reschedule sweep, which also re-sends owed invites.
