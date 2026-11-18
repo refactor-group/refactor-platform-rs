@@ -8,7 +8,7 @@
 
 use axum::http::{Method, StatusCode};
 use domain::meeting_recording::MeetingRecordingStatus;
-use domain::test_utils::sqlite::fixture::seed_active_recording;
+use domain::test_utils::sqlite::fixture::{make_colleagues, seed_active_recording};
 use domain::test_utils::sqlite::read_back::{recording_state, session_recordings};
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
@@ -100,7 +100,7 @@ async fn either_participant_starts_a_recording_bot() {
             assert_eq!(coaching_session_id, &Some(s1.to_string()), "{caller:?}");
             assert_eq!(
                 recording_state(app.db(), recording).await,
-                Some((bot_id.clone(), MeetingRecordingStatus::Pending)),
+                Some((Some(bot_id.clone()), MeetingRecordingStatus::Pending)),
                 "{caller:?}"
             );
             assert_eq!(
@@ -109,6 +109,88 @@ async fn either_participant_starts_a_recording_bot() {
                 "{caller:?}"
             );
         }
+    })
+    .await;
+}
+
+/// TRN-19: in a colleague relationship, a start while the other colleague's bot is active is
+/// refused before any bot is sent.
+#[tokio::test]
+async fn a_colleagues_start_is_refused_while_the_others_bot_is_active() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (r1, s1) = (app.fixture.r1, app.fixture.s1);
+        make_colleagues(app.db(), r1).await;
+        seed_active_recording(app.db(), s1).await;
+        let path = format!("/coaching_sessions/{s1}/meeting_recording");
+        let before = session_recordings(app.db(), s1).await;
+
+        let reply = app
+            .send(
+                Caller::Coachee,
+                Method::POST,
+                &path,
+                Some(json!({ "meeting_url": MEETING_URL })),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
+        assert_eq!(
+            reply.body["details"]["reason"], "recording_already_active",
+            "{}",
+            reply.body
+        );
+        assert_eq!(app.take_bot_requests(), vec![]);
+        assert_eq!(session_recordings(app.db(), s1).await, before);
+    })
+    .await;
+}
+
+/// TRN-34: while one start's bot is being sent, the session reads its claim and a second
+/// start is refused; exactly one bot goes out.
+#[tokio::test]
+async fn a_start_during_dispatch_sees_the_claim_and_sends_no_second_bot() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (r1, s1) = (app.fixture.r1, app.fixture.s1);
+        make_colleagues(app.db(), r1).await;
+        let path = format!("/coaching_sessions/{s1}/meeting_recording");
+        let start = Some(json!({ "meeting_url": MEETING_URL }));
+        app.sign_in(Caller::Coach).await;
+        app.sign_in(Caller::Coachee).await;
+        let (reached, release) = app.hold_next_bot();
+
+        let (first, (during, second)) = tokio::join!(
+            app.send_signed_in(Caller::Coach, Method::POST, &path, start.clone()),
+            async {
+                reached
+                    .await
+                    .expect("the first start reaches the bot provider");
+                let during = app
+                    .send_signed_in(Caller::Coachee, Method::GET, &path, None)
+                    .await;
+                let second = app
+                    .send_signed_in(Caller::Coachee, Method::POST, &path, start.clone())
+                    .await;
+                release.send(()).expect("the first start is waiting");
+                (during, second)
+            }
+        );
+
+        assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+        let claim = created_id(&first);
+        assert_eq!(during.status, StatusCode::OK, "{}", during.body);
+        assert_eq!(during.body["data"]["id"], claim.to_string());
+        assert_eq!(during.body["data"]["status"], "pending");
+        assert!(during.body["data"]["bot_id"].is_null(), "{}", during.body);
+        assert_eq!(second.status, StatusCode::CONFLICT, "{}", second.body);
+        assert_eq!(second.body["details"]["reason"], "recording_already_active");
+        let requests = app.take_bot_requests();
+        assert!(
+            matches!(requests.as_slice(), [BotRequest::Create { .. }]),
+            "one bot sent, got {requests:?}"
+        );
+        assert_eq!(session_recordings(app.db(), s1).await.len(), 2);
     })
     .await;
 }
@@ -136,7 +218,7 @@ async fn either_participant_stops_the_recording_bot() {
             );
             assert_eq!(
                 recording_state(app.db(), created_id(&reply)).await,
-                Some((bot_id, MeetingRecordingStatus::Cancelled)),
+                Some((Some(bot_id), MeetingRecordingStatus::Cancelled)),
                 "{caller:?}"
             );
             assert_eq!(session_recordings(app.db(), s1).await, before, "{caller:?}");

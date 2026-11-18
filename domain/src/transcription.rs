@@ -509,8 +509,16 @@ async fn recording_of_space(
             None
         })?;
 
+    let Some(bot_id) = recording.bot_id.as_deref() else {
+        warn!(
+            "Attribution for transcription {}: the recording has no bot",
+            transcription.id
+        );
+        return None;
+    };
+
     let info = recording_bot
-        .get_bot_status(&recording.bot_id)
+        .get_bot_status(bot_id)
         .await
         .inspect_err(|e| {
             warn!(

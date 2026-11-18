@@ -158,6 +158,9 @@ const MIGRATION_INDEXES: &[&str] = &[
      ON coaching_session_pending_invites (coaching_session_id, user_id)",
     "CREATE UNIQUE INDEX refactor_platform.uq_coaching_session_pending_invites_series_user \
      ON coaching_session_pending_invites (coaching_session_series_id, user_id)",
+    "CREATE UNIQUE INDEX refactor_platform.idx_meeting_recordings_active_per_session \
+     ON meeting_recordings (coaching_session_id) \
+     WHERE status NOT IN ('completed', 'failed', 'cancelled')",
 ];
 
 /// Rebuilds every table with the column defaults the migrations declare
@@ -497,7 +500,7 @@ pub async fn seed_transcription(db: &DatabaseConnection, segments: usize) -> See
     meeting_recording::ActiveModel {
         id: Set(recording_id),
         coaching_session_id: Set(session_id),
-        bot_id: Set(format!("bot-{recording_id}")),
+        bot_id: Set(Some(format!("bot-{recording_id}"))),
         status: Set(MeetingRecordingStatus::Completed),
         video_url: Set(None),
         audio_url: Set(None),

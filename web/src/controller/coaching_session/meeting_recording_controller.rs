@@ -9,7 +9,6 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use domain::meeting_recording as MeetingRecordingApi;
-use domain::meeting_recording::MeetingRecordingStatus;
 use log::*;
 use serde::Deserialize;
 use service::config::ApiVersion;
@@ -64,7 +63,7 @@ pub async fn read(
     responses(
         (status = 201, description = "Recording bot created and joined meeting"),
         (status = 401, description = "Unauthorized"),
-        (status = 409, description = "An active recording already exists for this session"),
+        (status = 409, description = "An active recording already exists for this session (`details.reason` is `recording_already_active`)"),
         (status = 503, description = "Service temporarily unavailable"),
     ),
     security(("cookie_auth" = []))
@@ -82,30 +81,9 @@ pub async fn create(
         return Err(Error::Web(WebErrorKind::Input));
     }
 
-    // Prevent duplicate active bots
-    if let Some(existing) = MeetingRecordingApi::find_latest_by_coaching_session(
-        app_state.db_conn_ref(),
-        coaching_session_id,
-    )
-    .await?
-    {
-        let active = !matches!(
-            existing.status,
-            MeetingRecordingStatus::Failed
-                | MeetingRecordingStatus::Completed
-                | MeetingRecordingStatus::Cancelled
-        );
-        if active {
-            warn!(
-                "Active recording {} already exists for session {}",
-                existing.id, coaching_session_id
-            );
-            return Err(Error::Web(WebErrorKind::Conflict));
-        }
-    }
-
     let recording = MeetingRecordingApi::start(
         app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
         app_state.recording_bot_provider.as_deref(),
         coaching_session_id,
         &params.meeting_url,
@@ -165,7 +143,6 @@ mod tests {
         AuthManagerLayerBuilder,
     };
     use chrono::Utc;
-    use domain::meeting_recording::Model as RecordingModel;
     use domain::user::Backend;
     use domain::{coaching_relationships, coaching_sessions, user_roles, users, Id};
     use password_auth::generate_hash;
@@ -214,24 +191,6 @@ mod tests {
             role: users::Role::User,
             organization_id: Some(fixture_organization_id()),
             user_id,
-            created_at: now.into(),
-            updated_at: now.into(),
-        }
-    }
-
-    fn test_recording(session_id: Id, status: MeetingRecordingStatus) -> RecordingModel {
-        let now = Utc::now();
-        RecordingModel {
-            id: Id::new_v4(),
-            coaching_session_id: session_id,
-            bot_id: "bot-existing".to_string(),
-            status,
-            video_url: None,
-            audio_url: None,
-            duration_seconds: None,
-            started_at: None,
-            ended_at: None,
-            error_message: None,
             created_at: now.into(),
             updated_at: now.into(),
         }
@@ -289,71 +248,6 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .expect("login must return session cookie")
             .to_string()
-    }
-
-    #[tokio::test]
-    async fn create_returns_409_when_active_recording_exists() {
-        let user = test_user();
-        let role = test_role(user.id);
-        let session_id = Id::new_v4();
-        let relationship_id = Id::new_v4();
-        let now = Utc::now();
-
-        let session = coaching_sessions::Model {
-            id: session_id,
-            coaching_relationship_id: relationship_id,
-            coaching_session_series_id: None,
-            ical_sequence: 0,
-            ical_recurrence_id: None,
-            collab_document_name: None,
-            date: now.naive_utc(),
-            duration_minutes: domain::duration::Duration::default_minutes(),
-            title: None,
-            meeting_url: None,
-            provider: None,
-            hydrated_at: None,
-            scheduled_by_user_id: Id::nil(),
-            meeting_url_created_by_user_id: None,
-            created_at: now.into(),
-            updated_at: now.into(),
-        };
-
-        let relationship = coaching_relationships::Model {
-            id: relationship_id,
-            coach_id: Id::new_v4(),
-            coachee_id: user.id,
-            kind: domain::coaching_relationship_kind::Kind::Coaching,
-            organization_id: fixture_organization_id(),
-            slug: "test".to_string(),
-            created_at: now.into(),
-            updated_at: now.into(),
-        };
-
-        let active_recording = test_recording(session_id, MeetingRecordingStatus::Recording);
-
-        let db = Arc::new(
-            MockDatabase::new(DatabaseBackend::Postgres)
-                .append_query_results([vec![(user.clone(), role.clone())]])
-                .append_query_results([vec![(user.clone(), role.clone())]])
-                .append_query_results(vec![vec![(session, relationship)]])
-                .append_query_results(vec![vec![active_recording]])
-                .into_connection(),
-        );
-
-        let app = build_app(&db);
-        let cookie = do_login(&app, "coach@example.com", "password123").await;
-
-        let req = Request::builder()
-            .uri(format!("/coaching_sessions/{session_id}/meeting_recording"))
-            .method("POST")
-            .header("cookie", cookie)
-            .header("content-type", "application/json")
-            .header(X_VERSION, API_VERSION)
-            .body(Body::from(r#"{"meeting_url":"https://zoom.us/j/123456"}"#))
-            .unwrap();
-
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
     }
 
     #[tokio::test]

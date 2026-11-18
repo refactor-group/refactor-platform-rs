@@ -174,7 +174,7 @@ mod tests {
         RecordingModel {
             id: Id::new_v4(),
             coaching_session_id: session_id,
-            bot_id: "bot-123".to_string(),
+            bot_id: Some("bot-123".to_string()),
             status: MeetingRecordingStatus::Completed,
             video_url: None,
             audio_url: None,

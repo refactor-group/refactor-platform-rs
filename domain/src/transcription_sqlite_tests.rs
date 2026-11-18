@@ -91,7 +91,7 @@ async fn seed_transcription(db: &DatabaseConnection, coaching_session_id: Id) ->
     meeting_recording::ActiveModel {
         id: Set(recording_id),
         coaching_session_id: Set(coaching_session_id),
-        bot_id: Set(format!("bot-{recording_id}")),
+        bot_id: Set(Some(format!("bot-{recording_id}"))),
         status: Set(MeetingRecordingStatus::Completed),
         video_url: Set(None),
         audio_url: Set(None),

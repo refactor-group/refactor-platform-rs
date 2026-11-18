@@ -214,6 +214,7 @@ pub(crate) mod reason {
     pub(crate) const COACH_REQUIRED: &str = "coach_required";
     pub(crate) const COACH_NOT_APPLICABLE: &str = "coach_not_applicable";
     pub(crate) const COACH_NOT_A_PARTICIPANT: &str = "coach_not_a_participant";
+    pub(crate) const RECORDING_ALREADY_ACTIVE: &str = "recording_already_active";
 }
 
 impl fmt::Display for Error {

@@ -436,7 +436,7 @@ pub async fn session_recordings(db: &DatabaseConnection, session_id: Id) -> BTre
 pub async fn recording_state(
     db: &DatabaseConnection,
     recording_id: Id,
-) -> Option<(String, MeetingRecordingStatus)> {
+) -> Option<(Option<String>, MeetingRecordingStatus)> {
     meeting_recording::Entity::find_by_id(recording_id)
         .one(db)
         .await

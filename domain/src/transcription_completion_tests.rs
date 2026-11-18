@@ -219,7 +219,7 @@ fn recording(transcription: &Model) -> meeting_recording::Model {
     meeting_recording::Model {
         id: transcription.meeting_recording_id,
         coaching_session_id: transcription.coaching_session_id,
-        bot_id: "bot-1".to_owned(),
+        bot_id: Some("bot-1".to_owned()),
         status: MeetingRecordingStatus::Completed,
         video_url: None,
         audio_url: None,

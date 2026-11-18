@@ -42,6 +42,7 @@ use serde_json::{json, Value};
 use service::config::Config;
 use sha2::Sha256;
 use time::Duration;
+use tokio::sync::oneshot;
 use tower::ServiceExt;
 use tower_sessions::Expiry;
 
@@ -148,12 +149,19 @@ pub(crate) enum BotRequest {
     },
 }
 
+/// Pauses the next bot send until released: `reached` fires once it is waiting.
+struct Hold {
+    reached: oneshot::Sender<()>,
+    release: oneshot::Receiver<()>,
+}
+
 /// A recording bot provider that reaches no one: it numbers the bots it is asked to send and
-/// keeps every request.
+/// keeps every request. A send can be held mid-dispatch.
 #[derive(Default)]
 struct FakeBot {
     sent: AtomicUsize,
     requests: Mutex<Vec<BotRequest>>,
+    hold: Mutex<Option<Hold>>,
 }
 
 impl FakeBot {
@@ -181,6 +189,11 @@ fn bot_info(id: String, meeting_url: String) -> Info {
 impl recording_bot::Provider for FakeBot {
     async fn create_bot(&self, config: BotConfig) -> Result<Info, meeting_ai::Error> {
         let bot_id = format!("fake-bot-{}", self.sent.fetch_add(1, Ordering::SeqCst));
+        let hold = self.hold.lock().expect("the bot hold locks").take();
+        if let Some(Hold { reached, release }) = hold {
+            let _ = reached.send(());
+            let _ = release.await;
+        }
         self.record(BotRequest::Create {
             bot_id: bot_id.clone(),
             meeting_url: config.meeting_url.clone(),
@@ -420,6 +433,42 @@ impl TestApp {
         )
     }
 
+    /// Holds the next bot send mid-dispatch; returns its `reached` signal and its release.
+    pub(crate) fn hold_next_bot(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (reached, on_reached) = oneshot::channel();
+        let (release, on_release) = oneshot::channel();
+        *self.stand_ins.bot.hold.lock().expect("the bot hold locks") = Some(Hold {
+            reached,
+            release: on_release,
+        });
+        (on_reached, release)
+    }
+
+    /// Signs `caller` in, so `send_signed_in` can send as them.
+    pub(crate) async fn sign_in(&mut self, caller: Caller) {
+        self.cookie(caller).await;
+    }
+
+    /// Sends a request as `caller`, who must already be signed in. Borrows the app shared,
+    /// so several requests can be in flight at once.
+    pub(crate) async fn send_signed_in(
+        &self,
+        caller: Caller,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Reply {
+        let cookie = self
+            .cookies
+            .get(&caller)
+            .unwrap_or_else(|| panic!("{caller:?} signs in first"));
+        let body = body.map_or_else(Body::empty, |json| Body::from(json.to_string()));
+        let response = self
+            .respond(Some(cookie), method, path, &[JSON], body)
+            .await;
+        read_reply(response).await
+    }
+
     /// One request: the status and the ids `data` returned. A refusal or an empty body has
     /// none; an answered request must carry an object or a list with valid ids.
     pub(crate) async fn expect(
@@ -569,7 +618,7 @@ impl TestApp {
     }
 
     async fn respond(
-        &mut self,
+        &self,
         cookie: Option<&str>,
         method: Method,
         path: &str,

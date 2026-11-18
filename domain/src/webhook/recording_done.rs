@@ -55,20 +55,7 @@ pub async fn handle(
         return Ok(());
     }
 
-    match crate::coaching_session::find_participant_ids(&db, coaching_session_id).await {
-        Ok(user_ids) => {
-            event_publisher
-                .publish(DomainEvent::MeetingRecordingUpdated {
-                    coaching_session_id,
-                    notify_user_ids: user_ids,
-                })
-                .await;
-        }
-        Err(e) => warn!(
-            "recording_done: could not resolve participants for session {}: {:?}",
-            coaching_session_id, e
-        ),
-    }
+    recording_api::publish_updated(&db, &event_publisher, coaching_session_id).await;
 
     let recall_recording_id = recall_recording_id.to_string();
 
@@ -162,7 +149,7 @@ mod tests {
         RecordingModel {
             id: Id::new_v4(),
             coaching_session_id: session_id,
-            bot_id: "bot-rd-test".to_string(),
+            bot_id: Some("bot-rd-test".to_string()),
             status: MeetingRecordingStatus::Processing,
             video_url: None,
             audio_url: None,

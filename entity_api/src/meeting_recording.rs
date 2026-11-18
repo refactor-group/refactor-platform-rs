@@ -5,7 +5,7 @@ use log::debug;
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::{Set, Unchanged},
-    DatabaseConnection, IntoActiveModel, Order, QueryOrder, QuerySelect, TransactionError,
+    DatabaseConnection, IntoActiveModel, Order, QueryOrder, QuerySelect, SqlErr, TransactionError,
     TransactionTrait, TryIntoModel,
 };
 
@@ -40,6 +40,101 @@ pub async fn create(db: &DatabaseConnection, model: Model) -> Result<Model, Erro
     };
 
     Ok(active_model.save(db).await?.try_into_model()?)
+}
+
+/// Claims the session for one new recording: inserts a `Pending` row with no bot id yet.
+///
+/// Returns `None` when the session already has an active recording. The partial unique
+/// index on active recordings arbitrates, so of racing callers exactly one gets `Some`.
+pub async fn claim(db: &DatabaseConnection, session_id: Id) -> Result<Option<Model>, Error> {
+    let now = chrono::Utc::now();
+    ActiveModel {
+        id: Set(Id::new_v4()),
+        coaching_session_id: Set(session_id),
+        bot_id: Set(None),
+        status: Set(MeetingRecordingStatus::Pending),
+        video_url: Set(None),
+        audio_url: Set(None),
+        duration_seconds: Set(None),
+        started_at: Set(None),
+        ended_at: Set(None),
+        error_message: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .map(Some)
+    .or_else(|err| match err.sql_err() {
+        // A fresh id and a null bot id leave the active-per-session index as the only one hit.
+        Some(SqlErr::UniqueConstraintViolation(_)) => Ok(None),
+        _ => Err(err.into()),
+    })
+}
+
+/// Stores the dispatched bot's id on a claim that is still `Pending`.
+///
+/// Returns `None` when the claim ended before the bot id arrived (it was stopped or swept).
+pub async fn set_bot_id(
+    db: &DatabaseConnection,
+    id: Id,
+    bot_id: &str,
+) -> Result<Option<Model>, Error> {
+    Ok(Entity::update_many()
+        .set(bot_id_update(bot_id))
+        .filter(Column::Id.eq(id))
+        .filter(Column::Status.eq(MeetingRecordingStatus::Pending))
+        .exec_with_returning(db)
+        .await?
+        .into_iter()
+        .next())
+}
+
+/// Stores the bot id on the recording whatever its status, so an ended claim keeps a record
+/// of the bot sent for it.
+pub async fn record_bot_id(db: &DatabaseConnection, id: Id, bot_id: &str) -> Result<Model, Error> {
+    Entity::update_many()
+        .set(bot_id_update(bot_id))
+        .filter(Column::Id.eq(id))
+        .exec_with_returning(db)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or(Error {
+            source: None,
+            error_kind: EntityApiErrorKind::RecordNotFound,
+        })
+}
+
+fn bot_id_update(bot_id: &str) -> ActiveModel {
+    ActiveModel {
+        bot_id: Set(Some(bot_id.to_string())),
+        updated_at: Set(chrono::Utc::now().into()),
+        ..Default::default()
+    }
+}
+
+/// Marks `Failed` every active claim of the session still without a bot id that was made
+/// before `claimed_before`: its process died between claim and dispatch.
+pub async fn fail_abandoned_claims(
+    db: &DatabaseConnection,
+    session_id: Id,
+    claimed_before: DateTimeWithTimeZone,
+) -> Result<u64, Error> {
+    Ok(Entity::update_many()
+        .set(ActiveModel {
+            status: Set(MeetingRecordingStatus::Failed),
+            error_message: Set(Some("The recording bot was never dispatched.".to_string())),
+            updated_at: Set(chrono::Utc::now().into()),
+            ..Default::default()
+        })
+        .filter(Column::CoachingSessionId.eq(session_id))
+        .filter(Column::BotId.is_null())
+        .filter(Column::Status.is_not_in(TERMINAL_RECORDING_STATUSES.iter().cloned()))
+        .filter(Column::CreatedAt.lt(claimed_before))
+        .exec(db)
+        .await?
+        .rows_affected)
 }
 
 /// Returns the most recent recording for a coaching session (by `created_at DESC`)
@@ -233,7 +328,7 @@ mod tests {
         Model {
             id: Id::new_v4(),
             coaching_session_id: Id::new_v4(),
-            bot_id: "recall-bot-abc123".to_string(),
+            bot_id: Some("recall-bot-abc123".to_string()),
             status: MeetingRecordingStatus::Pending,
             video_url: None,
             audio_url: None,
@@ -307,7 +402,7 @@ mod tests {
             .append_query_results(vec![vec![model.clone()]])
             .into_connection();
 
-        let result = find_by_bot_id(&db, &model.bot_id).await?;
+        let result = find_by_bot_id(&db, "recall-bot-abc123").await?;
         assert!(result.is_some());
         assert_eq!(result.unwrap().bot_id, model.bot_id);
         Ok(())

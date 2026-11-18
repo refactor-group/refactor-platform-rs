@@ -383,7 +383,7 @@ pub async fn seed_active_recording(db: &DatabaseConnection, session_id: Id) -> S
     meeting_recording::ActiveModel {
         id: Set(Id::new_v4()),
         coaching_session_id: Set(session_id),
-        bot_id: Set(bot_id.clone()),
+        bot_id: Set(Some(bot_id.clone())),
         status: Set(MeetingRecordingStatus::Joining),
         video_url: Set(None),
         audio_url: Set(None),
@@ -725,7 +725,7 @@ async fn seed_completed_transcription(
     let recording = meeting_recording::ActiveModel {
         id: Set(Id::new_v4()),
         coaching_session_id: Set(session_id),
-        bot_id: Set(format!("bot-{}", Id::new_v4())),
+        bot_id: Set(Some(format!("bot-{}", Id::new_v4()))),
         status: Set(MeetingRecordingStatus::Completed),
         video_url: Set(None),
         audio_url: Set(None),
