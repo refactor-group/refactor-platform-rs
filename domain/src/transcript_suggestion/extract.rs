@@ -7,14 +7,16 @@ use meeting_ai::types::analysis::Request;
 use sea_orm::{ActiveEnum, ActiveValue::Set, DatabaseConnection, TransactionTrait};
 
 use super::{
-    create_batch, render, verify_output, ActiveModel, Existing, NextSession, People, Refs, Session,
-    Status, Suggestible, Timezones, Verified,
+    create_batch, distinct_names, render, verify_output, ActiveModel, Existing, NextSession,
+    People, Refs, Session, Status, Suggestible, Timezones, Verified,
 };
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
 use crate::transcript_analysis::{self, complete_claimed};
 use crate::transcription::{local_session_date, read_segments};
-use crate::{action, coaching_relationship, coaching_session, cost, transcription, user, Id};
+use crate::{
+    action, coaching_relationship, coaching_session, cost, transcription, user, users, Id,
+};
 
 /// Upper bound on generated tokens for one answer.
 const MAX_OUTPUT_TOKENS: u32 = 8192;
@@ -117,20 +119,29 @@ async fn analyze<S: Suggestible>(
                 start: next.date.and_utc().fixed_offset(),
             });
 
+    let rules = relationship.kind.rules();
+    let preferred = [&coach, &coachee].map(|u| u.preferred_name().into_owned());
+    let [coach_name, coachee_name] = if rules.names_people_in_prompt() {
+        distinct_names(preferred, [&coach, &coachee].map(full_name))
+    } else {
+        preferred
+    };
+
     let input = Session {
         coaching_session_id: session.id,
         people: People {
             coach_id: coach.id,
             coachee_id: coachee.id,
         },
-        coach_name: coach.preferred_name().into_owned(),
-        coachee_name: coachee.preferred_name().into_owned(),
+        coach_name,
+        coachee_name,
         anchor_timezone: user::timezone(anchor),
         timezones: Timezones {
             coach: user::timezone(&coach),
             coachee: user::timezone(&coachee),
         },
-        due_in_assignee_zone: relationship.kind.rules().due_in_assignee_zone(),
+        due_in_assignee_zone: rules.due_in_assignee_zone(),
+        names_people_in_prompt: rules.names_people_in_prompt(),
         start: session.date.and_utc().fixed_offset(),
         session_date: local_session_date(&session, anchor),
         next_session,
@@ -178,10 +189,10 @@ async fn analyze<S: Suggestible>(
 /// The model request for one session.
 pub(super) fn request<S: Suggestible>(session: &Session) -> Request {
     Request {
-        instructions: S::instructions().to_string(),
+        instructions: S::instructions(session).into_owned(),
         content: render(session),
         schema_name: S::schema_name().to_string(),
-        output_schema: S::output_schema(),
+        output_schema: S::output_schema(session),
         max_output_tokens: MAX_OUTPUT_TOKENS,
     }
 }
@@ -265,6 +276,11 @@ pub(crate) async fn notify<S: Suggestible>(
             "Suggestions for session {coaching_session_id}: loading participants failed: {e:?}"
         ),
     }
+}
+
+/// `first_name last_name`.
+fn full_name(user: &users::Model) -> String {
+    format!("{} {}", user.first_name, user.last_name)
 }
 
 fn not_found() -> Error {

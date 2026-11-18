@@ -106,6 +106,7 @@ fn suggestion_changed_events(recorder: &Recorder) -> Vec<DomainEvent> {
 struct Fixture {
     db: DatabaseConnection,
     session_id: Id,
+    coach_id: Id,
     coachee_id: Id,
     transcription: crate::transcription::Model,
     action_id: Id,
@@ -261,6 +262,7 @@ async fn fixture_with(setup: Setup) -> Fixture {
     let fixture = Fixture {
         db,
         session_id: session.id,
+        coach_id: coach.id,
         coachee_id: coachee.id,
         transcription,
         action_id: action.id,
@@ -601,6 +603,67 @@ async fn a_coaching_session_is_anchored_on_the_coach() {
 
         assert_eq!(session_date, "Session date: Tuesday 2026-11-24");
         assert_eq!(due_by, Some(noon_on_the_27th(chrono_tz::America::Chicago)));
+    })
+    .await;
+}
+
+/// The header the model reads for a `kind` session whose two people are both "Alex" to the
+/// platform: Alex Kim in the coach seat and Alex Park in the coachee seat.
+async fn people_read_by_the_model(kind: Kind) -> Vec<String> {
+    let f = fixture_with(Setup {
+        kind,
+        coach_timezone: "America/Chicago",
+        coachee_timezone: "America/Chicago",
+        scheduled_by_coachee: false,
+        date: Utc::now().naive_utc(),
+    })
+    .await;
+    for (id, last_name) in [(f.coach_id, "Kim"), (f.coachee_id, "Park")] {
+        users::ActiveModel {
+            id: Set(id),
+            first_name: Set("Alex".to_string()),
+            last_name: Set(last_name.to_string()),
+            display_name: Set(Some("Alex".to_string())),
+            ..Default::default()
+        }
+        .update(&f.db)
+        .await
+        .expect("the user is renamed");
+    }
+    let analysis = claimed_analysis(&f.db, f.transcription.id).await;
+    let model = FakeModel::answering(json!({ "suggestions": [] }));
+    let (publisher, _) = recording_publisher();
+
+    run::<Actions>(&f.db, &model, &publisher, &analysis)
+        .await
+        .expect("the run succeeds");
+
+    model.requests()[0]
+        .content
+        .lines()
+        .take_while(|line| !line.starts_with("Session date:"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[tokio::test]
+async fn colleagues_who_share_a_display_name_are_told_apart_by_their_full_names() {
+    within_time_limit(async {
+        assert_eq!(
+            people_read_by_the_model(Kind::Colleague).await,
+            ["Colleagues: Alex Kim, Alex Park"]
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_coaching_session_keeps_the_display_names() {
+    within_time_limit(async {
+        assert_eq!(
+            people_read_by_the_model(Kind::Coaching).await,
+            ["Coach: Alex", "Coachee: Alex"]
+        );
     })
     .await;
 }

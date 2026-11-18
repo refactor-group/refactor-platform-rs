@@ -63,31 +63,55 @@ pub fn render(session: &Session) -> String {
             .collect()
     };
 
-    [
-        format!("Coach: {}", session.coach_name),
-        format!("Coachee: {}", session.coachee_name),
-        format!("Session date: {}", long_date(session.session_date)),
-        format!("Next session: {next_session}"),
-        format!("Week ends on: {}", day_name(session.week_end)),
-        "Calendar (the 60 days after the session):".to_string(),
-    ]
-    .into_iter()
-    .chain(calendar(session.session_date))
-    .chain([
-        String::new(),
-        "Existing actions in this session:".to_string(),
-    ])
-    .chain(existing)
-    .chain([String::new(), "Transcript:".to_string()])
-    .chain(
-        session
-            .segments
-            .iter()
-            .enumerate()
-            .map(|(i, s)| transcript_line(i + 1, s)),
-    )
-    .collect::<Vec<_>>()
-    .join("\n")
+    let people = if session.names_people_in_prompt {
+        vec![format!(
+            "Colleagues: {}, {}",
+            session.coach_name, session.coachee_name
+        )]
+    } else {
+        vec![
+            format!("Coach: {}", session.coach_name),
+            format!("Coachee: {}", session.coachee_name),
+        ]
+    };
+
+    people
+        .into_iter()
+        .chain([
+            format!("Session date: {}", long_date(session.session_date)),
+            format!("Next session: {next_session}"),
+            format!("Week ends on: {}", day_name(session.week_end)),
+            "Calendar (the 60 days after the session):".to_string(),
+        ])
+        .chain(calendar(session.session_date))
+        .chain([
+            String::new(),
+            "Existing actions in this session:".to_string(),
+        ])
+        .chain(existing)
+        .chain([String::new(), "Transcript:".to_string()])
+        .chain(
+            session
+                .segments
+                .iter()
+                .enumerate()
+                .map(|(i, s)| transcript_line(session, i + 1, s)),
+        )
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The names a colleague prompt gives the two people, in seat order: their preferred names when
+/// those differ, else their full names when those differ, else the preferred names numbered.
+pub fn distinct_names(preferred: [String; 2], full: [String; 2]) -> [String; 2] {
+    let [coach, coachee] = preferred;
+    if coach != coachee {
+        [coach, coachee]
+    } else if full[0] != full[1] {
+        full
+    } else {
+        [format!("{coach} (1)"), format!("{coachee} (2)")]
+    }
 }
 
 /// `prefix` then a 1-based index with no leading zero.
@@ -133,12 +157,20 @@ fn existing_text(text: &str) -> String {
     collapse(text).chars().take(EXISTING_CHARS).collect()
 }
 
-fn transcript_line(index: usize, segment: &LabeledSegment) -> String {
-    let speaker = match segment.speaker_role {
-        Some(coaching_relationship_kind::Role::Coach) => "Coach",
-        Some(coaching_relationship_kind::Role::Coachee) => "Coachee",
-        // Colleagues are named by their label.
-        Some(coaching_relationship_kind::Role::Colleague) | None => segment.speaker_label.as_str(),
+fn transcript_line(session: &Session, index: usize, segment: &LabeledSegment) -> String {
+    let speaker = if session.names_people_in_prompt {
+        segment
+            .speaker_user_id
+            .and_then(|id| session.seat_name(id))
+            .unwrap_or(&segment.speaker_label)
+    } else {
+        match segment.speaker_role {
+            Some(coaching_relationship_kind::Role::Coach) => "Coach",
+            Some(coaching_relationship_kind::Role::Coachee) => "Coachee",
+            Some(coaching_relationship_kind::Role::Colleague) | None => {
+                segment.speaker_label.as_str()
+            }
+        }
     };
     let seconds = segment.start_ms.max(0) / 1000;
     let text = segment.text.lines().collect::<Vec<_>>().join(" ");

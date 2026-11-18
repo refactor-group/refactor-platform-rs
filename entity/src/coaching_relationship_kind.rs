@@ -121,6 +121,8 @@ pub trait Rules {
     fn unrecorded_link_maker_anchor(&self) -> Option<Seat>;
     /// A suggestion for one participant is due in that participant's zone.
     fn due_in_assignee_zone(&self) -> bool;
+    /// The suggestion prompt names the two people instead of calling them coach and coachee.
+    fn names_people_in_prompt(&self) -> bool;
 }
 
 /// One person coaches the other.
@@ -189,6 +191,10 @@ impl Rules for Coaching {
     fn due_in_assignee_zone(&self) -> bool {
         false
     }
+
+    fn names_people_in_prompt(&self) -> bool {
+        false
+    }
 }
 
 /// Two equals with identical privileges.
@@ -240,6 +246,10 @@ impl Rules for Colleague {
     }
 
     fn due_in_assignee_zone(&self) -> bool {
+        true
+    }
+
+    fn names_people_in_prompt(&self) -> bool {
         true
     }
 }
@@ -315,6 +325,7 @@ mod tests {
         assert!(!rules.links_with_other_account());
         assert_eq!(rules.unrecorded_link_maker_anchor(), Some(Seat::CoachId));
         assert!(!rules.due_in_assignee_zone());
+        assert!(!rules.names_people_in_prompt());
     }
 
     #[test]
@@ -324,6 +335,7 @@ mod tests {
         assert!(rules.links_with_other_account());
         assert_eq!(rules.unrecorded_link_maker_anchor(), None);
         assert!(rules.due_in_assignee_zone());
+        assert!(rules.names_people_in_prompt());
     }
 
     #[test]

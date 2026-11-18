@@ -129,9 +129,13 @@ and against `<case>.expected.json` otherwise.
 
 - `session` is the session's date in the coach's timezone. `next_session` is a date and an optional
   `HH:MM` start (default 10:00), or `none`.
-- Optional: `timezone` (IANA, default `America/Chicago`), `week_end` (default `Friday`), and one
-  `existing <label>` line per action already on the session.
-- Speakers are `Coach`, `Coachee` or any other name, which the model sees as a third person.
+- Optional: `timezone` (IANA, default `America/Chicago`), `week_end` (default `Friday`), one
+  `existing <label>` line per action already on the session, and `kind` (`coaching`, the default,
+  or `colleague`). `# kind: colleague` runs the case as a colleague session: the prompt names the
+  `coach` and `coachee` people instead of their roles, and a deadline for one person is due in
+  that person's timezone.
+- Speakers are `Coach`, `Coachee`, the `coach` or `coachee` header name (the same seat), or any
+  other name, which the model sees as a third person.
 - The label in brackets is the line's name in the expected file. The model sees lines renumbered
   `s1..sN` in order, as in production; the eval maps its answer back to these labels.
 
@@ -147,6 +151,7 @@ and against `<case>.expected.json` otherwise.
 - `segments`: the lines the suggestion may be sourced from. A suggestion said once and recapped
   later lists every line it may come from, and must still appear once.
 - `assignees`: one set, or a list of acceptable sets when the transcript genuinely allows both.
+  Write seats as `coach` and `coachee`, in a colleague case too.
 - `due_dates`: every acceptable date in the coach's timezone; `null` means no date. List several
   only for a genuinely ambiguous deadline.
 - `duplicate_of`: the `existing` label the suggestion repeats, or `null`.

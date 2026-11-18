@@ -1,5 +1,7 @@
 //! Transcript suggestions: data access, the model's input, and verification of its answer.
 
+use std::borrow::Cow;
+
 use chrono::{NaiveDate, Weekday};
 use chrono_tz::Tz;
 use log::{debug, warn};
@@ -17,7 +19,7 @@ pub use entity::transcript_suggestion::{ActiveModel, Model, Status};
 pub use entity_api::transcript_suggestion::{
     create_batch, find_by_id, find_by_session, transition,
 };
-pub use prompt::{render, Refs};
+pub use prompt::{distinct_names, render, Refs};
 
 pub mod actions;
 pub(crate) mod due_date;
@@ -53,6 +55,8 @@ pub struct Session<'a> {
     pub timezones: Timezones,
     /// A deadline for one participant falls in that participant's timezone.
     pub due_in_assignee_zone: bool,
+    /// The prompt names the two people instead of calling them coach and coachee.
+    pub names_people_in_prompt: bool,
     /// When the session starts.
     pub start: DateTimeWithTimeZone,
     /// The session's calendar date in the anchor timezone.
@@ -82,6 +86,38 @@ impl Session<'_> {
     /// The session's calendar date in `tz`.
     pub fn date_in(&self, tz: Tz) -> NaiveDate {
         self.start.with_timezone(&tz).date_naive()
+    }
+
+    /// What the model calls the coach and coachee seats, in that order: the two people's names
+    /// when the prompt names them, otherwise `coach` and `coachee`.
+    pub fn seat_names(&self) -> [&str; 2] {
+        if self.names_people_in_prompt {
+            [&self.coach_name, &self.coachee_name]
+        } else {
+            ["coach", "coachee"]
+        }
+    }
+
+    /// The id of the seat the model calls `name`.
+    pub fn seat_id(&self, name: &str) -> Option<Id> {
+        self.seats()
+            .into_iter()
+            .find_map(|(id, seat)| (seat == name).then_some(id))
+    }
+
+    /// What the model calls the seat of the person with `id`.
+    pub fn seat_name(&self, id: Id) -> Option<&str> {
+        self.seats()
+            .into_iter()
+            .find_map(|(person, seat)| (person == id).then_some(seat))
+    }
+
+    fn seats(&self) -> [(Id, &str); 2] {
+        let [coach, coachee] = self.seat_names();
+        [
+            (self.people.coach_id, coach),
+            (self.people.coachee_id, coachee),
+        ]
     }
 
     fn timezone_of(&self, id: Id) -> Option<Tz> {
@@ -127,12 +163,12 @@ pub trait Suggestible {
     /// What accept will create: the real entity's create input plus reviewer-only hints.
     type Proposal: Serialize + DeserializeOwned;
 
-    /// The system prompt: what to extract and how to write each item.
-    fn instructions() -> &'static str;
+    /// The system prompt for `session`: what to extract and how to write each item.
+    fn instructions(session: &Session) -> Cow<'static, str>;
     /// Name of the structured-output schema sent with the request.
     fn schema_name() -> &'static str;
-    /// JSON schema of the whole model answer: `{"suggestions": [Candidate, ...]}`.
-    fn output_schema() -> serde_json::Value;
+    /// JSON schema of the whole model answer for `session`: `{"suggestions": [Candidate, ...]}`.
+    fn output_schema(session: &Session) -> serde_json::Value;
     /// Model output to a stored proposal, or `None` when it fails a check.
     fn verify(
         candidate: Self::Candidate,

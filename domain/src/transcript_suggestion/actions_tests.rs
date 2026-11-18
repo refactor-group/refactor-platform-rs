@@ -69,6 +69,7 @@ fn session(segments: &[LabeledSegment]) -> Session<'_> {
             coachee: chrono_tz::America::Chicago,
         },
         due_in_assignee_zone: Kind::Coaching.rules().due_in_assignee_zone(),
+        names_people_in_prompt: Kind::Coaching.rules().names_people_in_prompt(),
         start: Utc
             .with_ymd_and_hms(2026, 10, 7, 15, 0, 0)
             .single()
@@ -91,7 +92,7 @@ fn session(segments: &[LabeledSegment]) -> Session<'_> {
 fn valid() -> Candidate {
     Candidate {
         body: "Schedule a one-on-one".to_string(),
-        assignees: vec![Role::Coachee],
+        assignees: vec!["coachee".to_string()],
         due_date: Some("2026-10-09".to_string()),
         due_phrase: Some("by Friday".to_string()),
         source_segment: "s2".to_string(),
@@ -174,7 +175,7 @@ fn assignees_are_mapped_and_deduplicated_in_order() {
     let segments = segments();
     let session = session(&segments);
     let candidate = Candidate {
-        assignees: vec![Role::Coach, Role::Coachee, Role::Coach],
+        assignees: ["coach", "coachee", "coach"].map(str::to_string).to_vec(),
         ..valid()
     };
     let verified = verify(candidate, &session).expect("verified");
@@ -333,7 +334,9 @@ fn check_rejects_outsiders_and_blank_bodies() {
 
 #[test]
 fn the_output_schema_is_strict() {
-    let schema = Actions::output_schema();
+    let segments = segments();
+    let session = session(&segments);
+    let schema = Actions::output_schema(&session);
     let items = &schema["properties"]["suggestions"]["items"];
     assert_eq!(
         items["required"],
@@ -351,7 +354,7 @@ fn the_output_schema_is_strict() {
     assert_eq!(items["additionalProperties"], json!(false));
     assert_eq!(Actions::schema_name(), "action_suggestions");
     assert_eq!(Actions::TARGET, Target::Action);
-    assert!(!Actions::instructions().is_empty());
+    assert!(!Actions::instructions(&session).is_empty());
 }
 
 #[test]
@@ -442,8 +445,8 @@ fn colleague_session(
     }
 }
 
-const A: Role = Role::Coachee;
-const B: Role = Role::Coach;
+const A: &str = "coachee";
+const B: &str = "coach";
 
 fn local(tz: Tz, y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTimeWithTimeZone {
     tz.with_ymd_and_hms(y, m, d, h, min, 0)
@@ -452,9 +455,9 @@ fn local(tz: Tz, y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTimeWithTimeZo
         .fixed_offset()
 }
 
-fn due_by(session: &Session, assignees: Vec<Role>, due_date: &str) -> Option<DateTimeWithTimeZone> {
+fn due_by(session: &Session, assignees: Vec<&str>, due_date: &str) -> Option<DateTimeWithTimeZone> {
     let candidate = Candidate {
-        assignees,
+        assignees: assignees.into_iter().map(str::to_string).collect(),
         due_date: Some(due_date.to_string()),
         due_phrase: None,
         ..valid()
@@ -558,7 +561,102 @@ fn a_coaching_suggestion_for_the_coachee_stays_in_the_coachs_timezone() {
     };
 
     assert_eq!(
-        due_by(&session, vec![Role::Coachee], "2026-10-09"),
+        due_by(&session, vec!["coachee"], "2026-10-09"),
         Some(noon_cdt(9))
+    );
+}
+
+/// A colleague session between Alice Smith in the coach seat and Bob Lee in the coachee seat.
+fn alice_and_bob(segments: &[LabeledSegment]) -> Session<'_> {
+    let rules = Kind::Colleague.rules();
+    Session {
+        coach_name: "Alice Smith".to_string(),
+        coachee_name: "Bob Lee".to_string(),
+        due_in_assignee_zone: rules.due_in_assignee_zone(),
+        names_people_in_prompt: rules.names_people_in_prompt(),
+        ..session(segments)
+    }
+}
+
+fn assignee_ids(session: &Session, assignees: &[&str]) -> Option<Vec<Id>> {
+    let candidate = Candidate {
+        assignees: assignees.iter().map(|a| a.to_string()).collect(),
+        ..valid()
+    };
+    verify(candidate, session).map(|v| v.proposal.action.assignee_ids)
+}
+
+#[test]
+fn a_coaching_session_gets_the_coaching_prompt_unchanged() {
+    let segments = segments();
+    assert_eq!(
+        Actions::instructions(&session(&segments)),
+        include_str!("actions_prompt.md")
+    );
+}
+
+#[test]
+fn each_coaching_passage_the_colleague_prompt_replaces_occurs_once() {
+    let prompt = include_str!("actions_prompt.md");
+    for (coaching, _) in COLLEAGUE_PASSAGES {
+        assert_eq!(prompt.matches(coaching).count(), 1, "{coaching}");
+    }
+}
+
+#[test]
+fn a_colleague_prompt_names_the_two_people_and_never_says_coach() {
+    let segments = segments();
+    let prompt = Actions::instructions(&alice_and_bob(&segments));
+
+    for passage in [
+        "You read the transcript of a session between two colleagues, Alice Smith and Bob Lee, and list the actions that\neither of them committed to doing after the session.",
+        "- Alice Smith or Bob Lee says they will do something after the session:",
+        "- Agreements about how the two of them work together",
+        "- Scheduling the next session or meeting, and anything about the recording or the meeting tool.",
+        "- Commitments by anyone other than Alice Smith and Bob Lee (other attendees, managers, other colleagues).",
+        "- assignees: [\"Alice Smith\"], [\"Bob Lee\"], or [\"Alice Smith\", \"Bob Lee\"] when they both committed to the same thing.",
+    ] {
+        assert!(prompt.contains(passage), "{passage}");
+    }
+    assert!(!prompt.to_lowercase().contains("coach"));
+}
+
+#[test]
+fn the_assignee_enum_names_the_people_for_colleagues_and_the_roles_for_coaching() {
+    let segments = segments();
+    let assignee_enum = |session: &Session| {
+        Actions::output_schema(session)["properties"]["suggestions"]["items"]["properties"]
+            ["assignees"]["items"]["enum"]
+            .clone()
+    };
+
+    assert_eq!(
+        assignee_enum(&alice_and_bob(&segments)),
+        json!(["Alice Smith", "Bob Lee"])
+    );
+    assert_eq!(
+        assignee_enum(&session(&segments)),
+        json!(["coach", "coachee"])
+    );
+}
+
+#[test]
+fn colleague_assignees_are_named_people_and_coaching_assignees_are_roles() {
+    let segments = segments();
+    let colleagues = alice_and_bob(&segments);
+    let (alice, bob) = (colleagues.people.coach_id, colleagues.people.coachee_id);
+
+    assert_eq!(assignee_ids(&colleagues, &["Bob Lee"]), Some(vec![bob]));
+    assert_eq!(
+        assignee_ids(&colleagues, &["Alice Smith", "Bob Lee"]),
+        Some(vec![alice, bob])
+    );
+    assert_eq!(assignee_ids(&colleagues, &["coach"]), None);
+
+    let coaching = session(&segments);
+    assert_eq!(assignee_ids(&coaching, &["Alice Smith"]), None);
+    assert_eq!(
+        assignee_ids(&coaching, &["coachee"]),
+        Some(vec![coaching.people.coachee_id])
     );
 }

@@ -198,12 +198,10 @@ async fn run_once(
                         .iter()
                         .map(|id| role_of(*id, &input))
                         .collect(),
-                    due: v
-                        .proposal
-                        .action
-                        .action
-                        .due_by
-                        .map(|due| due.with_timezone(&transcript.timezone).date_naive()),
+                    due: v.proposal.action.action.due_by.map(|due| {
+                        due.with_timezone(&session.due_timezone(&v.proposal.action.assignee_ids))
+                            .date_naive()
+                    }),
                     due_phrase: v.proposal.due_phrase,
                     duplicate_of: v
                         .duplicate_of_id

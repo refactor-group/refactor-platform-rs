@@ -7,7 +7,7 @@ use chrono::{NaiveDate, NaiveTime, TimeZone, Utc, Weekday};
 use chrono_tz::Tz;
 use serde::{Deserialize, Deserializer};
 
-use crate::coaching_relationship_kind;
+use crate::coaching_relationship_kind::{Kind, Seat};
 use crate::transcript_export::LabeledSegment;
 use crate::transcript_suggestion::actions::Role;
 use crate::transcript_suggestion::{Existing, NextSession, People, Session, Timezones};
@@ -97,6 +97,7 @@ fn assignee_sets<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Vec<R
 /// A parsed transcript file.
 #[derive(Debug)]
 pub(super) struct Transcript {
+    pub kind: Kind,
     pub session_date: NaiveDate,
     pub timezone: Tz,
     pub next_session: Option<(NaiveDate, NaiveTime)>,
@@ -114,7 +115,7 @@ pub(super) struct Line {
     /// The label written in the file, such as `s3` or `s3b`; stable across variants.
     pub label: String,
     pub start_ms: i32,
-    /// `Coach`, `Coachee`, or a third person's name.
+    /// `Coach`, `Coachee`, either one's name, or a third person's name.
     pub speaker: String,
     pub text: String,
 }
@@ -138,28 +139,20 @@ impl Transcript {
             .lines
             .iter()
             .map(|line| {
-                let role = match line.speaker.as_str() {
-                    "Coach" => Some(coaching_relationship_kind::Role::Coach),
-                    "Coachee" => Some(coaching_relationship_kind::Role::Coachee),
-                    _ => None,
-                };
-                let label = match role {
-                    Some(coaching_relationship_kind::Role::Coach) => self.coach_name.clone(),
-                    Some(coaching_relationship_kind::Role::Coachee) => self.coachee_name.clone(),
-                    Some(coaching_relationship_kind::Role::Colleague) | None => {
-                        line.speaker.clone()
-                    }
+                let speaker = line.speaker.as_str();
+                let seat = if speaker == "Coach" || speaker == self.coach_name {
+                    Some((Seat::CoachId, people.coach_id, &self.coach_name))
+                } else if speaker == "Coachee" || speaker == self.coachee_name {
+                    Some((Seat::CoacheeId, people.coachee_id, &self.coachee_name))
+                } else {
+                    None
                 };
                 LabeledSegment {
                     id: Id::new_v4(),
                     transcription_id: Id::nil(),
-                    speaker_label: label,
-                    speaker_user_id: role.and_then(|r| match r {
-                        coaching_relationship_kind::Role::Coach => Some(people.coach_id),
-                        coaching_relationship_kind::Role::Coachee => Some(people.coachee_id),
-                        coaching_relationship_kind::Role::Colleague => None,
-                    }),
-                    speaker_role: role,
+                    speaker_label: seat.map_or(&line.speaker, |(_, _, name)| name).clone(),
+                    speaker_user_id: seat.map(|(_, id, _)| id),
+                    speaker_role: seat.map(|(seat, _, _)| self.kind.rules().role(seat)),
                     text: line.text.clone(),
                     start_ms: line.start_ms,
                     end_ms: line.start_ms + 1000,
@@ -189,7 +182,8 @@ impl Transcript {
                 coach: self.timezone,
                 coachee: self.timezone,
             },
-            due_in_assignee_zone: false,
+            due_in_assignee_zone: self.kind.rules().due_in_assignee_zone(),
+            names_people_in_prompt: self.kind.rules().names_people_in_prompt(),
             start: self
                 .timezone
                 .from_local_datetime(&self.session_date.and_time(SESSION_TIME))
@@ -244,13 +238,17 @@ impl Transcript {
 /// Parses a transcript file.
 ///
 /// Header lines start with `#`: `session`, `next_session` (a date and optional `HH:MM`, or `none`),
-/// `coach`, `coachee`, and optionally `timezone`, `week_end` and `existing <label>`. Any other `#`
-/// line is a comment. Each transcript line reads `[<label> <mm:ss>] <speaker>: <text>`.
+/// `coach`, `coachee`, and optionally `timezone`, `week_end`, `existing <label>` and `kind`
+/// (`coaching`, the default, or `colleague`, which names the two people in the prompt and dates a
+/// deadline in its assignee's timezone). Any other `#` line is a comment. Each transcript line
+/// reads `[<label> <mm:ss>] <speaker>: <text>`, where a speaker of `Coach`, `Coachee` or either
+/// one's header name is that seat.
 pub(super) fn parse_transcript(source: &str) -> Result<Transcript, String> {
     let mut session_date = None;
     let mut next_session = None;
     let mut timezone = chrono_tz::America::Chicago;
     let mut week_end = Weekday::Fri;
+    let mut kind = Kind::Coaching;
     let (mut coach_name, mut coachee_name) = (None, None);
     let mut existing = Vec::new();
     let mut lines = Vec::new();
@@ -289,6 +287,10 @@ pub(super) fn parse_transcript(source: &str) -> Result<Transcript, String> {
                         .parse()
                         .map_err(|_| at(format!("unknown weekday {value:?}")))?
                 }
+                "kind" => {
+                    kind = serde_json::from_value(value.into())
+                        .map_err(|_| at(format!("unknown kind {value:?}")))?
+                }
                 "coach" => coach_name = Some(value.to_string()),
                 "coachee" => coachee_name = Some(value.to_string()),
                 key => {
@@ -303,6 +305,7 @@ pub(super) fn parse_transcript(source: &str) -> Result<Transcript, String> {
     }
 
     Ok(Transcript {
+        kind,
         session_date: session_date.ok_or("missing `# session:`")?,
         timezone,
         next_session,

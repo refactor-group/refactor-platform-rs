@@ -99,6 +99,23 @@ fn session_maps_speakers_and_labels_back() {
 }
 
 #[test]
+fn a_colleague_transcript_names_the_people_and_maps_their_names_to_seats() {
+    let t = parse_transcript(
+        "# kind: colleague\n# session: 2026-10-07\n# coach: Alice Smith\n# coachee: Bob Lee\n[s1 00:01] Bob Lee: I'll draft it.\n",
+    )
+    .expect("parses");
+    let input = t.input();
+    let session = t.session(&input);
+
+    assert!(session.names_people_in_prompt);
+    assert!(session.due_in_assignee_zone);
+    assert_eq!(
+        session.segments[0].speaker_user_id,
+        Some(session.people.coachee_id)
+    );
+}
+
+#[test]
 fn every_fixture_loads_and_names_real_lines() {
     let variants = load_all().expect("fixtures load");
     assert!(!variants.is_empty());

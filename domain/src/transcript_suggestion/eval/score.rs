@@ -30,7 +30,7 @@ pub(super) struct Got {
     /// The source line's file label.
     pub segment: String,
     pub assignees: Vec<Role>,
-    /// `due_by` as a date in the coach's timezone.
+    /// `due_by` as a date in the timezone it falls due in; see `Session::due_timezone`.
     pub due: Option<NaiveDate>,
     pub due_phrase: Option<String>,
     /// The repeated existing action's file label.

@@ -1,5 +1,7 @@
 //! Actions as a suggestion target: the model's candidate, its verification and the stored proposal.
 
+use std::borrow::Cow;
+
 use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use sea_orm::prelude::DateTimeWithTimeZone;
@@ -22,11 +24,43 @@ const MAX_BODY_CHARS: usize = 2000;
 const MAX_PHRASE_CHARS: usize = 200;
 /// Longest segment text used as a fallback quote.
 const MAX_QUOTE_CHARS: usize = 200;
+/// The coaching system prompt.
+const PROMPT: &str = include_str!("actions_prompt.md");
+/// A colleague passage, given the two people's names in seat order.
+type ColleaguePassage = fn(&str, &str) -> String;
+/// The colleague prompt's changes to the coaching prompt: each coaching passage and its colleague
+/// passage.
+pub(super) const COLLEAGUE_PASSAGES: [(&str, ColleaguePassage); 6] = [
+    (
+        "You read the transcript of a coaching session between a coach and a coachee and list the actions that the\ncoach or the coachee committed to doing after the session.",
+        |a, b| format!("You read the transcript of a session between two colleagues, {a} and {b}, and list the actions that\neither of them committed to doing after the session."),
+    ),
+    (
+        "- The coach or coachee says they will do something after the session:",
+        |a, b| format!("- {a} or {b} says they will do something after the session:"),
+    ),
+    (
+        "- Agreements about how the coach and coachee work together",
+        |_, _| "- Agreements about how the two of them work together".to_string(),
+    ),
+    (
+        "- Scheduling the next coaching session, and anything about the recording or the meeting tool.",
+        |_, _| "- Scheduling the next session or meeting, and anything about the recording or the meeting tool.".to_string(),
+    ),
+    (
+        "- Commitments by anyone other than the coach and coachee (other attendees, managers, colleagues).",
+        |a, b| format!("- Commitments by anyone other than {a} and {b} (other attendees, managers, other colleagues)."),
+    ),
+    (
+        "- assignees: [\"coachee\"], [\"coach\"], or [\"coach\", \"coachee\"] when they both committed to the same thing.",
+        |a, b| format!("- assignees: [\"{a}\"], [\"{b}\"], or [\"{a}\", \"{b}\"] when they both committed to the same thing."),
+    ),
+];
 
 /// Suggested actions.
 pub struct Actions;
 
-/// Who the model says owns an action.
+/// A seat by its coaching name, as the eval's expected files write it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
@@ -38,7 +72,8 @@ pub enum Role {
 #[derive(Debug, Deserialize)]
 pub struct Candidate {
     pub body: String,
-    pub assignees: Vec<Role>,
+    /// What the model calls each owner; see [`Session::seat_names`].
+    pub assignees: Vec<String>,
     pub due_date: Option<String>,
     pub due_phrase: Option<String>,
     pub source_segment: String,
@@ -60,15 +95,25 @@ impl Suggestible for Actions {
     type Candidate = Candidate;
     type Proposal = ActionProposal;
 
-    fn instructions() -> &'static str {
-        include_str!("actions_prompt.md")
+    fn instructions(session: &Session) -> Cow<'static, str> {
+        if !session.names_people_in_prompt {
+            return Cow::Borrowed(PROMPT);
+        }
+        let [a, b] = session.seat_names();
+        Cow::Owned(
+            COLLEAGUE_PASSAGES
+                .iter()
+                .fold(PROMPT.to_string(), |prompt, (coaching, colleague)| {
+                    prompt.replacen(coaching, &colleague(a, b), 1)
+                }),
+        )
     }
 
     fn schema_name() -> &'static str {
         "action_suggestions"
     }
 
-    fn output_schema() -> serde_json::Value {
+    fn output_schema(session: &Session) -> serde_json::Value {
         json!({
             "type": "object",
             "additionalProperties": false,
@@ -92,7 +137,7 @@ impl Suggestible for Actions {
                             "body": { "type": "string" },
                             "assignees": {
                                 "type": "array",
-                                "items": { "type": "string", "enum": ["coach", "coachee"] }
+                                "items": { "type": "string", "enum": session.seat_names() }
                             },
                             "due_date": { "type": ["string", "null"] },
                             "due_phrase": { "type": ["string", "null"] },
@@ -121,10 +166,9 @@ impl Suggestible for Actions {
         let assignee_ids = candidate
             .assignees
             .iter()
-            .map(|role| match role {
-                Role::Coach => session.people.coach_id,
-                Role::Coachee => session.people.coachee_id,
-            })
+            .map(|name| session.seat_id(name))
+            .collect::<Option<Vec<_>>>()?
+            .into_iter()
             .fold(Vec::new(), |mut ids, id| {
                 if !ids.contains(&id) {
                     ids.push(id);
