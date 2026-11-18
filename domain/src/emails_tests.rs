@@ -466,6 +466,18 @@ async fn a_welcome_email_with_no_relationship_says_session() {
     assert_welcome_session_label(&[], "session").await;
 }
 
+#[tokio::test]
+async fn a_welcome_email_with_mixed_kinds_says_session() {
+    assert_welcome_session_label(
+        &[
+            coaching_relationship_kind::Kind::Coaching,
+            coaching_relationship_kind::Kind::Colleague,
+        ],
+        "session",
+    )
+    .await;
+}
+
 // ── Password Reset Email Tests ─────────────────────────────────────
 
 #[tokio::test]
