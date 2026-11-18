@@ -331,9 +331,6 @@ async fn attach_forwards_the_requested_relationship_to_the_domain_call() {
     );
 }
 
-/// The queries the PUT runs after the extractor, for a change allowed to proceed.
-/// The domain layer re-reads the organization; the extractor's own lookup is a
-/// separate statement and does not stand in for it.
 /// A stored `member_role_changed` event, as the audit append's insert returns it.
 fn audit_event_row(organization_id: Id, actor_id: Id, target_id: Id) -> audit_events::Model {
     audit_events::Model {
@@ -350,6 +347,9 @@ fn audit_event_row(organization_id: Id, actor_id: Id, target_id: Id) -> audit_ev
     }
 }
 
+/// The queries the PUT runs after the extractor, for a change allowed to proceed.
+/// The domain layer re-reads the organization; the extractor's own lookup is a
+/// separate statement and does not stand in for it.
 fn mock_update_through_domain(
     mock: MockDatabase,
     actor_id: Id,

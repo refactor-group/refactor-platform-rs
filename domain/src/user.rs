@@ -10,7 +10,7 @@ use entity_api::{
 
 use crate::{
     audit_event::{self, Recorder},
-    coaching_relationship::{creation_event, InviteeRelationship},
+    coaching_relationship::{create_for_invitee, InviteeRelationship},
     error::Error,
     error::{reason, DomainErrorKind, EntityErrorKind, InternalErrorKind},
     magic_link_token, magic_link_tokens, users, Actor, Id,
@@ -157,27 +157,14 @@ pub async fn create_in_organization(
     let txn = db.begin().await.map_err(EntityApiError::from)?;
 
     let new_user = user::create_by_organization(&txn, actor, organization_id, user_model).await?;
-    let settled = match relationship {
-        Some(relationship) => Some(
-            coaching_relationship::create(
-                &txn,
-                organization_id,
-                relationship.draft_for(new_user.id),
-            )
-            .await?,
-        ),
-        None => None,
-    };
+    let relationship_event =
+        create_for_invitee(&txn, actor, organization_id, new_user.id, relationship).await?;
 
     let events = new_user
         .roles
         .iter()
         .map(|granted| audit_event::member_added(actor, organization_id, new_user.id, granted.role))
-        .chain(
-            settled
-                .as_ref()
-                .and_then(|settled| creation_event(actor, settled)),
-        )
+        .chain(relationship_event)
         .collect();
     recorder.record_all(&txn, events).await?;
 

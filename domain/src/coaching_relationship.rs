@@ -9,7 +9,7 @@ use entity_api::error::Error as EntityApiError;
 use entity_api::query::{IntoQueryFilterMap, QuerySort};
 use entity_api::user_role::retain_organization_members;
 use entity_api::{coaching_relationships, query};
-use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
+use sea_orm::{ConnectionTrait, DatabaseConnection, DatabaseTransaction, TransactionTrait};
 
 pub(crate) use entity_api::coaching_relationship::{
     create, find_by_organization_with_user_names, find_by_user_and_organization_with_user_names,
@@ -118,9 +118,24 @@ pub async fn create_for_caller(
     Ok(settled.relationship.for_caller(caller))
 }
 
+/// Creates the invitee's relationship, if one is asked for, and returns its audit event.
+pub(crate) async fn create_for_invitee(
+    txn: &DatabaseTransaction,
+    actor: Actor,
+    organization_id: Id,
+    invitee_id: Id,
+    relationship: Option<SeatedInvitee>,
+) -> Result<Option<NewEvent>, Error> {
+    let Some(relationship) = relationship else {
+        return Ok(None);
+    };
+    let settled = create(txn, organization_id, relationship.draft_for(invitee_id)).await?;
+    Ok(creation_event(actor, &settled))
+}
+
 /// The audit event for `actor`'s create: `relationship_created` when it inserted the
 /// relationship, none when it returned the pair's existing one.
-pub(crate) fn creation_event(actor: Actor, settled: &Settled) -> Option<NewEvent> {
+fn creation_event(actor: Actor, settled: &Settled) -> Option<NewEvent> {
     settled
         .is_new
         .then(|| audit_event::relationship_created(actor, &settled.relationship.relationship()))
