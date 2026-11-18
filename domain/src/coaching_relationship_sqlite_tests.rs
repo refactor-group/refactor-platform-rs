@@ -213,6 +213,32 @@ async fn a_returned_colleague_relationship_names_each_seat_by_its_own_user() {
     .await
 }
 
+/// KIND-45
+#[tokio::test]
+async fn a_returned_colleague_relationship_carries_each_seats_own_email() {
+    within_time_limit(async {
+        let (db, o, _) = three_members().await;
+        let (a, b) = (Id::new_v4(), Id::new_v4());
+        for id in [a, b] {
+            seed_user_as(&db, id, format!("{id}@example.com"), ("Sam", "Lee"), None).await;
+            seed_membership(&db, id, o).await;
+        }
+        create(&db, o, draft(a, b, Kind::Colleague))
+            .await
+            .expect("the relationship is created");
+
+        let again = create(&db, o, draft(b, a, Kind::Colleague))
+            .await
+            .expect("the existing relationship is returned");
+
+        assert_eq!(
+            (again.coach_email, again.coachee_email),
+            (format!("{a}@example.com"), format!("{b}@example.com"))
+        );
+    })
+    .await
+}
+
 #[tokio::test]
 async fn create_refuses_a_pair_whose_relationship_is_of_another_kind() {
     within_time_limit(async {

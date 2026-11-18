@@ -320,6 +320,31 @@ fn id_at(item: &Value, field: &str) -> Id {
         .unwrap_or_else(|| panic!("an object with a valid `{field}`, got {item}"))
 }
 
+/// Asserts `relationships` is a non-empty list whose every row carries the emails of the
+/// users in its `coach_id` and `coachee_id` seats.
+pub(crate) fn assert_emails_follow_seats(fixture: &Fixture, relationships: &Value) {
+    let email_in = |row: &Value, seat: &str| {
+        let user = id_at(row, seat);
+        fixture
+            .users
+            .iter()
+            .find(|(_, id)| **id == user)
+            .map(|(caller, _)| caller.email())
+    };
+    let rows = relationships.as_array().expect("a list of relationships");
+    assert!(!rows.is_empty(), "no relationships listed");
+    for row in rows {
+        assert_eq!(
+            (row["coach_email"].as_str(), row["coachee_email"].as_str()),
+            (
+                email_in(row, "coach_id").as_deref(),
+                email_in(row, "coachee_id").as_deref()
+            ),
+            "{row}"
+        );
+    }
+}
+
 impl TestApp {
     pub(crate) async fn new() -> Self {
         let db = database().await;

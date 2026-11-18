@@ -24,8 +24,8 @@ use domain::Id;
 use serde_json::json;
 
 use crate::test_utils::sqlite::{
-    assert_signed_out_refused, created_id, field_ids, ids, Listener, Reply, TestApp,
-    NON_PARTICIPANTS,
+    assert_emails_follow_seats, assert_signed_out_refused, created_id, field_ids, ids, Listener,
+    Reply, TestApp, NON_PARTICIPANTS,
 };
 
 /// The goal progress path for R1.
@@ -243,6 +243,51 @@ async fn a_relationship_read_carries_its_kind() {
 
         assert_eq!(reply.status, StatusCode::OK);
         assert_eq!(reply.body["data"]["kind"], json!("coaching"));
+    })
+    .await;
+}
+
+/// KIND-45
+#[tokio::test]
+async fn a_relationship_read_carries_each_participants_email() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let r1 = app.fixture.r1;
+
+        let data = read_as(&mut app, Caller::Coach, r1).await;
+
+        assert_eq!(data["coach_email"], Caller::Coach.email(), "{data}");
+        assert_eq!(data["coachee_email"], Caller::Coachee.email(), "{data}");
+    })
+    .await;
+}
+
+/// KIND-45
+#[tokio::test]
+async fn an_admins_list_carries_each_relationships_participants_emails() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let path = format!("/organizations/{}/coaching_relationships", app.fixture.o1);
+
+        let reply = app.send(Caller::Admin, Method::GET, &path, None).await;
+
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        assert_emails_follow_seats(&app.fixture, &reply.body["data"]);
+    })
+    .await;
+}
+
+/// KIND-45
+#[tokio::test]
+async fn a_members_list_carries_each_relationships_participants_emails() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let path = format!("/organizations/{}/coaching_relationships", app.fixture.o1);
+
+        let reply = app.send(Caller::Coach, Method::GET, &path, None).await;
+
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        assert_emails_follow_seats(&app.fixture, &reply.body["data"]);
     })
     .await;
 }
@@ -1109,6 +1154,28 @@ async fn reversing_a_coaching_relationship_needs_confirmation_then_swaps_the_sea
             )),
             Some((Kind::Coaching, coachee, coach))
         );
+    })
+    .await;
+}
+
+/// KIND-45
+#[tokio::test]
+async fn a_confirmed_reversal_returns_each_swapped_seats_email() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (r1, coachee) = (app.fixture.r1, app.fixture.user(Caller::Coachee));
+
+        let reply = admin_switches(
+            &mut app,
+            r1,
+            json!({ "kind": "coaching", "coach_id": coachee, "confirmed": true }),
+        )
+        .await;
+
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        let data = &reply.body["data"];
+        assert_eq!(data["coach_email"], Caller::Coachee.email(), "{data}");
+        assert_eq!(data["coachee_email"], Caller::Coach.email(), "{data}");
     })
     .await;
 }
