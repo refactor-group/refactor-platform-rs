@@ -290,8 +290,6 @@ async fn test_send_welcome_email_success() {
                 "variables": {
                     "first_name": "John",
                     "last_name": "Doe",
-                    "coach_first_name": "Sarah",
-                    "coach_full_name": "Sarah Coach",
                     "inviter_first_name": "Sarah",
                     "inviter_full_name": "Sarah Coach",
                     "magic_link_url": "https://app.example.com/setup/test-magic-link-token",
@@ -404,8 +402,6 @@ async fn test_send_welcome_email_escapes_name_with_specials() {
                 "variables": {
                     "first_name": "Jane",
                     "last_name": "Doe, Jr.",
-                    "coach_first_name": "Alex",
-                    "coach_full_name": "Alex Smith",
                     "inviter_first_name": "Alex",
                     "inviter_full_name": "Alex Smith",
                     "magic_link_url": "https://app.example.com/setup/test-magic-link-token",
@@ -4712,8 +4708,6 @@ async fn test_send_session_reminder_email_variables() {
                 "id": "session_reminder_template_001",
                 "variables": {
                     "first_name": "Jane",
-                    "coach_first_name": "Alex",
-                    "coach_full_name": "Alex Smith",
                     "other_user_first_name": "Alex",
                     "other_user_last_name": "Smith",
                     "other_user_role": "coach",

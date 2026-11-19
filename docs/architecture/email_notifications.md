@@ -131,10 +131,9 @@ scheduled, rather than a job that logs a config error every few minutes.
 
 Resend templates live outside this repository, so a variable is renamed in three releases:
 the backend sends the new name beside the old one, the template switches to the new name,
-and a later release stops sending the old one. These old names are still sent, with the
-same values, for one release:
+and a later release stops sending the old one. These old names are no longer sent:
 
-| Template | Old variable, still sent | Use instead |
+| Template | Old variable, no longer sent | Use instead |
 |---|---|---|
 | Welcome | `coach_first_name` | `inviter_first_name` |
 | Welcome | `coach_full_name` | `inviter_full_name` |
