@@ -114,6 +114,13 @@ impl ConnectionRegistry {
         }
     }
 
+    /// Drop every connection's sender, which ends each stream so its HTTP response
+    /// completes. Clients reconnect on their own.
+    pub fn close_all(&self) {
+        self.connections.clear();
+        self.user_index.clear();
+    }
+
     /// Broadcast message to all connections - O(n) (unavoidable, but explicit)
     pub fn broadcast(&self, event: &Event) {
         for entry in self.connections.iter() {
@@ -131,5 +138,29 @@ impl ConnectionRegistry {
 impl Default for ConnectionRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc::{self, error::TryRecvError};
+
+    use super::*;
+
+    #[test]
+    fn close_all_ends_every_stream() {
+        let registry = ConnectionRegistry::new();
+        let (first, mut first_rx) = mpsc::unbounded_channel();
+        let (second, mut second_rx) = mpsc::unbounded_channel();
+        registry.register("coach".to_string(), first);
+        registry.register("coachee".to_string(), second);
+
+        registry.close_all();
+
+        assert_eq!(first_rx.try_recv().unwrap_err(), TryRecvError::Disconnected);
+        assert_eq!(
+            second_rx.try_recv().unwrap_err(),
+            TryRecvError::Disconnected
+        );
     }
 }

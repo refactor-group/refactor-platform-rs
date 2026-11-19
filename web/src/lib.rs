@@ -11,6 +11,7 @@ use domain::jobs::{
     session_reminder, transcript_suggestions, Scheduler,
 };
 use domain::user::Backend;
+use futures::future::join_all;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use tower_sessions::ExpiredDeletion;
 use tower_sessions_sqlx_store::PostgresStore;
@@ -28,6 +29,8 @@ use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use time::Duration;
 use tokio::net::TcpListener;
+use tokio::signal::{self, unix::SignalKind};
+use tokio_util::sync::CancellationToken;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 mod controller;
@@ -106,6 +109,29 @@ async fn session_pool(config: &Config) -> Result<PgPool> {
         })
 }
 
+/// How long in-flight requests and job runs get to finish after a shutdown signal.
+/// Under Docker's 10-second stop timeout, so the process exits before it is killed.
+const DRAIN_LIMIT: StdDuration = StdDuration::from_secs(8);
+
+/// Resolves on SIGTERM, which `docker stop` sends, or on Ctrl-C.
+async fn shutdown_signal() {
+    let terminate = async {
+        match signal::unix::signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                sigterm.recv().await;
+            }
+            Err(err) => {
+                warn!("Could not listen for SIGTERM: {err}");
+                std::future::pending::<()>().await
+            }
+        }
+    };
+    tokio::select! {
+        _ = signal::ctrl_c() => info!("Ctrl-C received; shutting down"),
+        _ = terminate => info!("SIGTERM received; shutting down"),
+    }
+}
+
 pub async fn init_server(app_state: AppState) -> Result<()> {
     // Session layer
     let session_store = PostgresStore::new(session_pool(&app_state.config).await?)
@@ -126,9 +152,11 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
     // due from current rows; see `domain::jobs` for why that shape rather than a durable
     // queue. The session-deletion task above stays hand-rolled because it is
     // `tower_sessions`' own helper, not one of our jobs.
+    let stop = CancellationToken::new();
     let mut scheduler = Scheduler::new(
         Arc::clone(&app_state.database_connection),
         app_state.config.clone(),
+        stop.clone(),
     );
     scheduler.spawn(password_reset::Sweep::new());
     scheduler.spawn(coaching_session_pending_reschedule::Sweep::from_config(
@@ -281,7 +309,8 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
         .allow_private_network(true)
         .allow_origin(allow_origin);
 
-    axum::serve(
+    let sse_manager = Arc::clone(&app_state.sse_manager);
+    let server = axum::serve(
         listener,
         router::define_routes(app_state)
             .layer(cors_layer)
@@ -296,16 +325,41 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
             // middleware before any route handler runs. See `web::middleware::throttle`.
             .into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await
-    .unwrap();
+    .with_graceful_shutdown({
+        let stop = stop.clone();
+        async move {
+            shutdown_signal().await;
+            stop.cancel();
+            // Event streams never end on their own and would hold the server open.
+            sse_manager.close_all();
+        }
+    });
 
-    let _res = deletion_task.await.unwrap();
-    // No `let _res = …` on the job handles: each task's future returns `()`, so binding
-    // it would trigger clippy's `let_unit_value` lint.
-    for handle in job_handles {
-        handle.await.unwrap();
+    let drained = async {
+        let served = server.await;
+        stop.cancel();
+        join_all(job_handles).await;
+        served
+    };
+    let deadline = async {
+        stop.cancelled().await;
+        tokio::time::sleep(DRAIN_LIMIT).await;
+    };
+    tokio::select! {
+        served = drained => served.map_err(|err| {
+            error!("Server failed: {err}");
+            Error::Web(WebErrorKind::Other)
+        })?,
+        _ = deadline => warn!(
+            "Requests or jobs still running {}s after shutdown began; exiting anyway",
+            DRAIN_LIMIT.as_secs()
+        ),
     }
-    user_lookup_sweep_task.await.unwrap();
+
+    // Both only delete expired rows, so stopping one mid-sweep loses nothing.
+    deletion_task.abort();
+    user_lookup_sweep_task.abort();
+    info!("Server stopped");
 
     Ok(())
 }

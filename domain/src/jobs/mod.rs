@@ -38,6 +38,7 @@ use sea_orm::DatabaseConnection;
 use service::config::Config;
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
 
@@ -126,18 +127,20 @@ pub trait Job: Send + Sync + 'static {
 /// Owns the tokio tasks running the registered jobs.
 ///
 /// One task per job, so a job that blocks on a slow query or a hung HTTP call delays
-/// only itself. Tasks run until the process exits; there is no cancellation channel
-/// because there is no shutdown path that needs one — dropping the handles detaches
-/// the tasks and the runtime tears them down with the process.
+/// only itself. Once `stop` is cancelled, each task finishes the run in progress and
+/// starts no other, so a shutdown never cuts a run off between an email and the write
+/// that records it.
 pub struct Scheduler {
     context: Context,
+    stop: CancellationToken,
     handles: Vec<JoinHandle<()>>,
 }
 
 impl Scheduler {
-    pub fn new(db: Arc<DatabaseConnection>, config: Config) -> Self {
+    pub fn new(db: Arc<DatabaseConnection>, config: Config, stop: CancellationToken) -> Self {
         Self {
             context: Context { db, config },
+            stop,
             handles: Vec::new(),
         }
     }
@@ -145,6 +148,7 @@ impl Scheduler {
     /// Register a job and start ticking it.
     pub fn spawn(&mut self, job: impl Job) -> &mut Self {
         let context = self.context.clone();
+        let stop = self.stop.clone();
         let job = Arc::new(job);
         let name = job.name();
         let interval = job.interval();
@@ -165,7 +169,11 @@ impl Scheduler {
             }
 
             loop {
-                ticker.tick().await;
+                tokio::select! {
+                    biased;
+                    _ = stop.cancelled() => break,
+                    _ = ticker.tick() => {}
+                }
                 match job.run(&context).await {
                     Ok(outcome) if outcome.processed == outcome.attempted => {
                         if outcome.processed > 0 {
@@ -183,13 +191,13 @@ impl Scheduler {
                     Err(e) => warn!("[{name}] tick failed: {e:?}"),
                 }
             }
+            info!("[{name}] stopped");
         }));
 
         self
     }
 
-    /// Hand the task handles to the caller, which is expected to keep them alive for
-    /// as long as the server runs.
+    /// Hand the task handles to the caller, which awaits them after cancelling `stop`.
     pub fn into_handles(self) -> Vec<JoinHandle<()>> {
         self.handles
     }
@@ -201,6 +209,7 @@ mod tests {
 
     use sea_orm::{DatabaseBackend, MockDatabase};
     use tokio::sync::mpsc::{self, UnboundedSender};
+    use tokio::sync::Notify;
     use tokio::time::Instant;
 
     use super::*;
@@ -280,10 +289,44 @@ mod tests {
     }
 
     fn scheduler() -> Scheduler {
+        stopped_by(CancellationToken::new())
+    }
+
+    fn stopped_by(stop: CancellationToken) -> Scheduler {
         Scheduler::new(
             Arc::new(MockDatabase::new(DatabaseBackend::Postgres).into_connection()),
             Config::from_args(["test"]),
+            stop,
         )
+    }
+
+    /// Reports when its run starts and finishes, and finishes only once released.
+    struct Gated {
+        started: UnboundedSender<()>,
+        finished: UnboundedSender<()>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl Job for Gated {
+        fn name(&self) -> &'static str {
+            "gated"
+        }
+
+        fn interval(&self) -> Duration {
+            TICK
+        }
+
+        fn first_run(&self) -> FirstRun {
+            FirstRun::Immediately
+        }
+
+        async fn run(&self, _ctx: &Context) -> Result<Outcome, Error> {
+            let _ = self.started.send(());
+            self.release.notified().await;
+            let _ = self.finished.send(());
+            Ok(Outcome::IDLE)
+        }
     }
 
     fn recorder(
@@ -389,5 +432,54 @@ mod tests {
 
         first_ticks.recv().await.expect("first job never ticked");
         second_ticks.recv().await.expect("second job never ticked");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stopped_job_runs_no_more() {
+        let stop = CancellationToken::new();
+        let (job, mut ticks) = recorder(FirstRun::Immediately, 0);
+
+        let _handles = {
+            let mut scheduler = stopped_by(stop.clone());
+            scheduler.spawn(job);
+            scheduler.into_handles()
+        };
+
+        ticks.recv().await.expect("job never ticked");
+        stop.cancel();
+
+        // The task ends and drops the job, closing the channel without another tick.
+        assert_eq!(ticks.recv().await, None, "job ticked after it was stopped");
+    }
+
+    /// Stopping mid-run lets the run finish rather than cutting it off.
+    #[tokio::test(start_paused = true)]
+    async fn a_run_in_progress_finishes_after_stop() {
+        let stop = CancellationToken::new();
+        let release = Arc::new(Notify::new());
+        let (started, mut started_rx) = mpsc::unbounded_channel();
+        let (finished, mut finished_rx) = mpsc::unbounded_channel();
+
+        let handles = {
+            let mut scheduler = stopped_by(stop.clone());
+            scheduler.spawn(Gated {
+                started,
+                finished,
+                release: Arc::clone(&release),
+            });
+            scheduler.into_handles()
+        };
+
+        started_rx.recv().await.expect("job never started");
+        stop.cancel();
+        // Let the job task see the stop while its run is still waiting.
+        tokio::time::sleep(TICK / 2).await;
+        release.notify_one();
+
+        for handle in handles {
+            handle.await.expect("job task panicked");
+        }
+        assert_eq!(finished_rx.recv().await, Some(()), "the run was cut off");
+        assert_eq!(started_rx.recv().await, None, "a run started after stop");
     }
 }
