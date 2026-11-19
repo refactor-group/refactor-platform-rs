@@ -240,21 +240,33 @@ fn build_app(db: &Arc<sea_orm::DatabaseConnection>) -> Router {
         .with_state(app_state)
 }
 
-/// The single joined row `find_coach_and_coachee` reads, with each user's columns prefixed.
-fn coach_and_coachee_row(
+/// The single joined row `find_with_coach_and_coachee` reads: the relationship's columns, then
+/// each user's columns prefixed.
+fn relationship_row(
+    relationship: &coaching_relationships::Model,
     coach: &users::Model,
     coachee: &users::Model,
 ) -> std::collections::BTreeMap<String, sea_orm::Value> {
-    [("coach_", coach), ("coachee_", coachee)]
-        .into_iter()
-        .flat_map(|(prefix, user)| {
-            let user = users::ActiveModel::from(user.clone());
-            users::Column::iter().filter_map(move |column| {
-                user.get(column)
-                    .into_value()
-                    .map(|value| (format!("{prefix}{}", Iden::to_string(&column)), value))
-            })
+    let relationship = coaching_relationships::ActiveModel::from(relationship.clone());
+    coaching_relationships::Column::iter()
+        .filter_map(|column| {
+            relationship
+                .get(column)
+                .into_value()
+                .map(|value| (Iden::to_string(&column), value))
         })
+        .chain(
+            [("coach_", coach), ("coachee_", coachee)]
+                .into_iter()
+                .flat_map(|(prefix, user)| {
+                    let user = users::ActiveModel::from(user.clone());
+                    users::Column::iter().filter_map(move |column| {
+                        user.get(column)
+                            .into_value()
+                            .map(|value| (format!("{prefix}{}", Iden::to_string(&column)), value))
+                    })
+                }),
+        )
         .collect()
 }
 
@@ -372,8 +384,7 @@ async fn world_with_coachee(
         .append_query_results([vec![transcription.clone()]])
         .append_query_results([lines])
         .append_query_results([participants])
-        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
-        .append_query_results([[relationship.clone()]])
+        .append_query_results([[relationship_row(&relationship, &coach, &coachee)]])
         .into_connection();
 
     let app = build_app(&Arc::new(db));
@@ -717,8 +728,7 @@ async fn incomplete_transcription_is_409_for_text_but_200_for_json() {
         .append_query_results([vec![queued.clone()]])
         .append_query_results([Vec::<transcript_segment::Model>::new()])
         .append_query_results([Vec::<transcript_participant::Model>::new()])
-        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
-        .append_query_results([[relationship.clone()]])
+        .append_query_results([[relationship_row(&relationship, &coach, &coachee)]])
         .into_connection();
     let app = build_app(&Arc::new(db));
     let cookie = login_cookie(&app).await;
@@ -796,8 +806,7 @@ async fn segments_carry_their_labels_and_attribution_without_raw_participants() 
     let db = authorized(&coach, &role, &session, &relationship)
         .append_query_results([lines])
         .append_query_results([participants])
-        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
-        .append_query_results([[relationship.clone()]])
+        .append_query_results([[relationship_row(&relationship, &coach, &coachee)]])
         .into_connection();
     let app = build_app(&Arc::new(db));
     let cookie = login_cookie(&app).await;
@@ -859,8 +868,7 @@ async fn latest_transcription_carries_its_speakers() {
         .append_query_results([vec![latest.clone()]])
         .append_query_results([lines])
         .append_query_results([participants])
-        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
-        .append_query_results([[relationship.clone()]])
+        .append_query_results([[relationship_row(&relationship, &coach, &coachee)]])
         .into_connection();
     let app = build_app(&Arc::new(db));
     let cookie = login_cookie(&app).await;

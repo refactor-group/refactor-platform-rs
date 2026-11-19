@@ -432,11 +432,8 @@ struct ClaimedPair {
 }
 
 /// The participant column for `seat`, as the reminder claim's raw SQL names it.
-fn reminder_seat_column(seat: Seat) -> &'static str {
-    match seat {
-        Seat::CoachId => "cr.coach_id",
-        Seat::CoacheeId => "cr.coachee_id",
-    }
+fn reminder_seat_column(seat: Seat) -> String {
+    format!("cr.{}", seat.column().as_str())
 }
 
 /// Each due `(session, user, date)` for every participant [`entity::coaching_relationship_kind::Rules::is_reminded`] names.
@@ -452,7 +449,7 @@ fn due_reminder_candidates() -> String {
                 .filter(|kind| kind.rules().is_reminded(seat))
                 .map(|kind| format!("'{}'", kind.to_value()))
                 .collect::<Vec<_>>();
-            (!kinds.is_empty()).then(|| due_reminders_for(reminder_seat_column(seat), &kinds))
+            (!kinds.is_empty()).then(|| due_reminders_for(&reminder_seat_column(seat), &kinds))
         })
         .collect::<Vec<_>>()
         .join("\n               UNION\n")
@@ -1770,7 +1767,6 @@ fn assemble_enriched_session(
 
     let participants = relationship
         .as_ref()
-        .filter(|_| includes.relationship)
         .and_then(|rel| participants(rel, &related.users));
 
     let organization = relationship.as_ref().and_then(|rel| {
@@ -2181,7 +2177,7 @@ mod tests {
         let sql = claim_sql().await?;
 
         for seat in [Seat::CoachId, Seat::CoacheeId] {
-            let listed = candidate_for(&sql, reminder_seat_column(seat))
+            let listed = candidate_for(&sql, &reminder_seat_column(seat))
                 .map(kinds_of)
                 .unwrap_or_default();
             for kind in Kind::iter() {

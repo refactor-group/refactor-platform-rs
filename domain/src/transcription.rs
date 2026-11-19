@@ -30,6 +30,7 @@ use service::config::Config;
 use tokio::time::timeout;
 use utoipa::ToSchema;
 
+use crate::coaching_relationship::schedule_owner;
 use crate::coaching_relationship_kind;
 use crate::coaching_relationships;
 use crate::coaching_sessions;
@@ -619,14 +620,6 @@ pub async fn find_for_session(
         })
 }
 
-/// The coach and coachee of the session's coaching relationship, in that order.
-async fn load_participants(
-    db: &DatabaseConnection,
-    session: &coaching_sessions::Model,
-) -> Result<(users::Model, users::Model), Error> {
-    Ok(coaching_relationship::find_coach_and_coachee(db, session.coaching_relationship_id).await?)
-}
-
 /// Renders the session's transcript as plain text, optionally limited to given roles.
 ///
 /// Refuses a transcription that has not completed, since its segments are still partial.
@@ -747,9 +740,9 @@ async fn label(
     segments: &[Segment],
 ) -> Result<(Labeled, coaching_relationships::Model, users::Model), Error> {
     let participants = participant_api::find_by_transcription(db, transcription_id).await?;
-    let (coach, coachee) = load_participants(db, session).await?;
-    let relationship =
-        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    let (relationship, coach, coachee) =
+        coaching_relationship::find_with_coach_and_coachee(db, session.coaching_relationship_id)
+            .await?;
     let labeled = transcript_export::label_transcript(
         &participants,
         segments,
@@ -757,12 +750,13 @@ async fn label(
         &coach,
         &coachee,
     );
-    let owner_id = relationship.schedule_owner_id(session.scheduled_by_user_id);
-    let owner = if coachee.id == owner_id {
-        coachee
-    } else {
-        coach
-    };
+    let owner = schedule_owner(
+        relationship.kind,
+        &coach,
+        &coachee,
+        session.scheduled_by_user_id,
+    )
+    .clone();
 
     Ok((labeled, relationship, owner))
 }

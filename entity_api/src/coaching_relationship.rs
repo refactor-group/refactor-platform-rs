@@ -95,15 +95,15 @@ pub async fn create(
             .map(|org| org.id)
             .collect::<Vec<Id>>();
 
-    // Check that the coach and coachee belong to the correct organization
+    // Both people must belong to the organization
     if !coach_organization_ids.contains(&organization_id)
         || !coachee_organization_ids.contains(&organization_id)
     {
-        error!("Coach and coachee do not belong to the correct organization, not creating requested new coaching relationship between coach: {:?} and coachee: {:?} for organization: {:?}.", draft.coach_id, draft.coachee_id, organization_id);
+        error!("A participant does not belong to the organization, not creating requested new relationship between {:?} and {:?} for organization: {:?}.", draft.coach_id, draft.coachee_id, organization_id);
         return Err(Error {
             source: None,
             error_kind: EntityApiErrorKind::ValidationError {
-                message: "Coach and coachee must belong to the specified organization.".into(),
+                message: "Both people must belong to the specified organization.".into(),
                 details: None,
             },
         });
@@ -943,25 +943,16 @@ fn involving(user_id: Id) -> Condition {
         .add(coaching_relationships::Column::CoacheeId.eq(user_id))
 }
 
-/// The column a participant in `seat` occupies.
-fn seat_column(seat: Seat) -> coaching_relationships::Column {
-    match seat {
-        Seat::CoachId => coaching_relationships::Column::CoachId,
-        Seat::CoacheeId => coaching_relationships::Column::CoacheeId,
-    }
-}
-
 /// The relationships in which `user_id` holds `role`: for each kind, the seats whose rules give
 /// that role.
 fn holding_role(user_id: Id, role: Role) -> Condition {
     Kind::iter()
-        .flat_map(|kind| [Seat::CoachId, Seat::CoacheeId].map(|seat| (kind, seat)))
-        .filter(|&(kind, seat)| kind.rules().role(seat) == role)
+        .flat_map(|kind| kind.seats_holding(role).map(move |seat| (kind, seat)))
         .fold(Condition::any(), |held, (kind, seat)| {
             held.add(
                 Condition::all()
                     .add(coaching_relationships::Column::Kind.eq(kind))
-                    .add(seat_column(seat).eq(user_id)),
+                    .add(seat.column().eq(user_id)),
             )
         })
 }
@@ -1034,24 +1025,24 @@ impl CoachingRelationshipWithUserNames {
 
     /// Its two people, the coach seat first and the coachee seat second.
     pub fn participants(&self) -> [Participant; 2] {
-        let relationship = self.relationship();
+        let rules = self.kind.rules();
         [
-            Participant::new(
-                &relationship,
-                Seat::CoachId,
-                self.coach_first_name.clone(),
-                self.coach_last_name.clone(),
-                self.coach_email.clone(),
-                self.membership.coach_is_member,
-            ),
-            Participant::new(
-                &relationship,
-                Seat::CoacheeId,
-                self.coachee_first_name.clone(),
-                self.coachee_last_name.clone(),
-                self.coachee_email.clone(),
-                self.membership.coachee_is_member,
-            ),
+            Participant {
+                id: self.coach_id,
+                first_name: self.coach_first_name.clone(),
+                last_name: self.coach_last_name.clone(),
+                email: self.coach_email.clone(),
+                role: rules.role(Seat::CoachId),
+                is_member: self.membership.coach_is_member,
+            },
+            Participant {
+                id: self.coachee_id,
+                first_name: self.coachee_first_name.clone(),
+                last_name: self.coachee_last_name.clone(),
+                email: self.coachee_email.clone(),
+                role: rules.role(Seat::CoacheeId),
+                is_member: self.membership.coachee_is_member,
+            },
         ]
     }
 }
@@ -1091,17 +1082,17 @@ fn object_with_capabilities<'a>(
         .fold(ObjectBuilder::new(), |object, (name, schema)| {
             object.property(name, schema).required(name)
         });
-    [Capabilities::schema()]
-        .into_iter()
-        .filter_map(|schema| match schema {
-            RefOr::T(Schema::Object(object)) => Some(object),
-            _ => None,
-        })
-        .flat_map(|flattened| flattened.properties.into_iter())
-        .fold(object, |object, (name, schema)| {
-            object.property(&name, schema).required(&name)
-        })
-        .into()
+    if let RefOr::T(Schema::Object(flattened)) = Capabilities::schema() {
+        flattened
+            .properties
+            .into_iter()
+            .fold(object, |object, (name, schema)| {
+                object.property(&name, schema).required(&name)
+            })
+            .into()
+    } else {
+        object.into()
+    }
 }
 
 impl ToSchema for CoachingRelationshipWithUserNames {

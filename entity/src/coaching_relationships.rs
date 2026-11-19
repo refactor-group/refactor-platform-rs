@@ -186,6 +186,16 @@ impl Model {
     }
 }
 
+impl Seat {
+    /// The column a participant in this seat occupies.
+    pub fn column(self) -> Column {
+        match self {
+            Seat::CoachId => Column::CoachId,
+            Seat::CoacheeId => Column::CoacheeId,
+        }
+    }
+}
+
 /// Permission for one user to create, edit, reschedule, cancel and re-invite one relationship's
 /// sessions. Only [`SchedulingPermit::verify`] makes one, after checking the user is in the
 /// relationship, still in its organization, and in a seat whose rules let them schedule.

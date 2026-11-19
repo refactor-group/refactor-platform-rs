@@ -42,6 +42,14 @@ impl Kind {
         let rules = self.rules();
         rules.role(Seat::CoachId) != rules.role(Seat::CoacheeId)
     }
+
+    /// The seats whose rules give `role`, coach seat first.
+    pub fn seats_holding(self, role: Role) -> impl Iterator<Item = Seat> {
+        let rules = self.rules();
+        [Seat::CoachId, Seat::CoacheeId]
+            .into_iter()
+            .filter(move |&seat| rules.role(seat) == role)
+    }
 }
 
 /// Which column a participant occupies. Not stored and not serialized.
@@ -354,6 +362,28 @@ mod tests {
         assert!(!rules.host_alone_attributes());
         assert!(rules.due_in_assignee_zone());
         assert!(rules.names_people_in_prompt());
+    }
+
+    #[test]
+    fn seats_holding_lists_the_seats_each_kind_gives_a_role() {
+        for (kind, role, seats) in [
+            (Kind::Coaching, Role::Coach, vec![Seat::CoachId]),
+            (Kind::Coaching, Role::Coachee, vec![Seat::CoacheeId]),
+            (Kind::Coaching, Role::Colleague, vec![]),
+            (Kind::Colleague, Role::Coach, vec![]),
+            (Kind::Colleague, Role::Coachee, vec![]),
+            (
+                Kind::Colleague,
+                Role::Colleague,
+                vec![Seat::CoachId, Seat::CoacheeId],
+            ),
+        ] {
+            assert_eq!(
+                kind.seats_holding(role).collect::<Vec<_>>(),
+                seats,
+                "{kind:?} {role:?}"
+            );
+        }
     }
 
     #[test]

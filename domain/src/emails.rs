@@ -17,7 +17,9 @@ use crate::{
     error::{DomainErrorKind, InternalErrorKind},
     gateway::ical::{self, DescriptionParts, OpenAction},
     gateway::resend::{Client as ResendClient, SendEmailRequestBuilder},
-    goal, organization, organizations, user, users,
+    goal, organization, organizations,
+    text::capitalized,
+    user, users,
     users::Role,
     Id,
 };
@@ -954,13 +956,12 @@ impl Delivered {
 impl<'a> Participants<'a> {
     /// Whose zone anchors the invites for `session`: its schedule owner, given who scheduled it.
     pub(crate) fn schedule_owner(&self, session: &coaching_sessions::Model) -> &'a users::Model {
-        let scheduler_seat = [(self.coach, Seat::CoachId), (self.coachee, Seat::CoacheeId)]
-            .into_iter()
-            .find_map(|(user, seat)| (user.id == session.scheduled_by_user_id).then_some(seat));
-        match self.kind.rules().schedule_owner().seat(scheduler_seat) {
-            Seat::CoachId => self.coach,
-            Seat::CoacheeId => self.coachee,
-        }
+        coaching_relationship::schedule_owner(
+            self.kind,
+            self.coach,
+            self.coachee,
+            session.scheduled_by_user_id,
+        )
     }
 
     /// Both participants, for a send that reaches them regardless of membership.
@@ -1024,15 +1025,6 @@ impl<'a> Participants<'a> {
             self.kind.rules().session_label()
         )
     }
-}
-
-/// `word` with its first letter in upper case.
-pub(crate) fn capitalized(word: &str) -> String {
-    let mut chars = word.chars();
-    chars
-        .next()
-        .map(|first| first.to_uppercase().chain(chars).collect())
-        .unwrap_or_default()
 }
 
 /// Sends each of `copies` (coachee, then coach), skipping anyone not in `member_ids`. A failed

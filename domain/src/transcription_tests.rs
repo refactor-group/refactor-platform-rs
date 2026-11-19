@@ -162,21 +162,33 @@ fn not_found() -> DomainErrorKind {
     ))
 }
 
-/// The single joined row `find_coach_and_coachee` reads, with each user's columns prefixed.
-fn coach_and_coachee_row(
+/// The single joined row `find_with_coach_and_coachee` reads: the relationship's columns, then
+/// each user's columns prefixed.
+fn relationship_row(
+    relationship: &coaching_relationships::Model,
     coach: &users::Model,
     coachee: &users::Model,
 ) -> std::collections::BTreeMap<String, sea_orm::Value> {
-    [("coach_", coach), ("coachee_", coachee)]
-        .into_iter()
-        .flat_map(|(prefix, user)| {
-            let user = users::ActiveModel::from(user.clone());
-            users::Column::iter().filter_map(move |column| {
-                user.get(column)
-                    .into_value()
-                    .map(|value| (format!("{prefix}{}", Iden::to_string(&column)), value))
-            })
+    let relationship = coaching_relationships::ActiveModel::from(relationship.clone());
+    coaching_relationships::Column::iter()
+        .filter_map(|column| {
+            relationship
+                .get(column)
+                .into_value()
+                .map(|value| (Iden::to_string(&column), value))
         })
+        .chain(
+            [("coach_", coach), ("coachee_", coachee)]
+                .into_iter()
+                .flat_map(|(prefix, user)| {
+                    let user = users::ActiveModel::from(user.clone());
+                    users::Column::iter().filter_map(move |column| {
+                        user.get(column)
+                            .into_value()
+                            .map(|value| (format!("{prefix}{}", Iden::to_string(&column)), value))
+                    })
+                }),
+        )
         .collect()
 }
 
@@ -247,8 +259,7 @@ async fn export_plain_text_renders_the_relationship_participants() {
         .append_query_results([[row.clone()]])
         .append_query_results([segments])
         .append_query_results([participants])
-        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
-        .append_query_results([[relationship.clone()]])
+        .append_query_results([[relationship_row(&relationship, &coach, &coachee)]])
         .into_connection();
 
     let rendered = export_plain_text(
@@ -288,8 +299,7 @@ async fn export_plain_text_dates_the_file_in_the_coach_timezone() {
         .append_query_results([[row.clone()]])
         .append_query_results([segments])
         .append_query_results([participants])
-        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
-        .append_query_results([[relationship.clone()]])
+        .append_query_results([[relationship_row(&relationship, &coach, &coachee)]])
         .into_connection();
 
     let rendered = export_plain_text(&db, &session, row.id, &[])
@@ -329,8 +339,7 @@ async fn export_scheduled_by_the_coachee_seat(kind: coaching_relationship_kind::
         .append_query_results([[row.clone()]])
         .append_query_results([segments])
         .append_query_results([participants])
-        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
-        .append_query_results([[relationship.clone()]])
+        .append_query_results([[relationship_row(&relationship, &coach, &coachee)]])
         .into_connection();
 
     export_plain_text(&db, &session, row.id, &[])
@@ -381,8 +390,7 @@ async fn export_plain_text_reports_an_unidentified_role() {
         .append_query_results([[row.clone()]])
         .append_query_results([segments])
         .append_query_results([participants])
-        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
-        .append_query_results([[relationship.clone()]])
+        .append_query_results([[relationship_row(&relationship, &coach, &coachee)]])
         .into_connection();
 
     let error = export_plain_text(
@@ -422,8 +430,7 @@ async fn read_with_speakers_labels_roles_in_speaking_order() {
         .append_query_results([[row.clone()]])
         .append_query_results([segments])
         .append_query_results([participants])
-        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
-        .append_query_results([[relationship.clone()]])
+        .append_query_results([[relationship_row(&relationship, &coach, &coachee)]])
         .into_connection();
 
     let result = read_with_speakers(&db, &session, row.id)
@@ -462,8 +469,7 @@ async fn read_with_speakers_is_empty_without_segments() {
         .append_query_results([[row.clone()]])
         .append_query_results([Vec::<Segment>::new()])
         .append_query_results([Vec::<Participant>::new()])
-        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
-        .append_query_results([[relationship.clone()]])
+        .append_query_results([[relationship_row(&relationship, &coach, &coachee)]])
         .into_connection();
 
     let result = read_with_speakers(&db, &session, row.id)

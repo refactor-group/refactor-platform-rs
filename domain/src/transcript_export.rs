@@ -11,8 +11,8 @@ use utoipa::ToSchema;
 
 use crate::coaching_relationship_kind;
 use crate::coaching_relationships;
-use crate::emails::capitalized;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
+use crate::text::capitalized;
 use crate::transcript_participant::Model as Participant;
 use crate::users;
 use crate::Id;

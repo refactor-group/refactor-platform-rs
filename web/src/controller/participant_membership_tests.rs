@@ -104,8 +104,9 @@ async fn m4_05_an_included_relationship_marks_a_removed_coachee() {
     );
 }
 
+/// The spec documents membership only as `participants[].is_member`, never on the relationship.
 #[test]
-fn both_schemas_document_the_membership_fields() {
+fn the_spec_documents_membership_only_on_participants() {
     let spec = serde_json::to_value(ApiDoc::openapi()).expect("the spec serializes");
     let schemas = &spec["components"]["schemas"];
     assert!(
