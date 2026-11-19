@@ -23,8 +23,8 @@ use domain::Id;
 use serde_json::{json, Value};
 
 use crate::test_utils::sqlite::{
-    assert_coachee_not_a_member, assert_removed_coach_resend_refused, assert_resend_mails_both,
-    assert_signed_out_refused, ids, ids_in, TestApp, NON_PARTICIPANTS,
+    assert_removed_coach_resend_refused, assert_removed_coachee_not_a_member,
+    assert_resend_mails_both, assert_signed_out_refused, ids, ids_in, TestApp, NON_PARTICIPANTS,
 };
 
 /// SR1's invite resend path.
@@ -97,7 +97,7 @@ async fn assert_create_refused(
             .await;
         assert_eq!(reply.status, expected, "{caller:?}");
         if expected == StatusCode::CONFLICT {
-            assert_coachee_not_a_member(app, &reply);
+            assert_removed_coachee_not_a_member(app, &reply);
         }
         assert_eq!(
             relationship_series(app.db(), relationship).await,
@@ -138,7 +138,7 @@ async fn assert_series_write_refused(
             .await;
         assert_eq!(reply.status, expected, "{caller:?}");
         if expected == StatusCode::CONFLICT {
-            assert_coachee_not_a_member(&app, &reply);
+            assert_removed_coachee_not_a_member(&app, &reply);
         }
         assert!(before.is_some(), "{caller:?}");
         assert_eq!(series_state(app.db(), series).await, before, "{caller:?}");

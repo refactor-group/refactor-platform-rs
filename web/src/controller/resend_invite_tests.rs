@@ -572,7 +572,7 @@ async fn resend_to_a_removed_coachee_is_refused() {
         assert_eq!(out.status, StatusCode::CONFLICT, "case {case}");
         assert_eq!(
             out.reason.as_deref(),
-            Some("coachee_not_a_member"),
+            Some("participant_not_a_member"),
             "case {case}"
         );
         assert_eq!(

@@ -839,16 +839,18 @@ pub(crate) async fn assert_removed_coach_resend_refused(path: impl Fn(&TestApp) 
 }
 
 /// Asserts the reply is the 409 naming REMOVED as the coachee who left O1.
-pub(crate) fn assert_coachee_not_a_member(app: &TestApp, reply: &Reply) {
+pub(crate) fn assert_removed_coachee_not_a_member(app: &TestApp, reply: &Reply) {
     let body = &reply.body;
     assert_eq!(body["error"], "conflict", "{body}");
-    assert!(
-        body["message"]
-            .as_str()
-            .is_some_and(|message| !message.is_empty()),
+    assert_eq!(
+        body["message"],
+        "Your coachee is no longer a member of this organization. Re-add them to the organization first.",
         "{body}"
     );
-    assert_eq!(body["details"]["reason"], "coachee_not_a_member", "{body}");
+    assert_eq!(
+        body["details"]["reason"], "participant_not_a_member",
+        "{body}"
+    );
     assert_eq!(
         body["details"]["user_id"],
         app.fixture.user(Caller::Removed).to_string(),

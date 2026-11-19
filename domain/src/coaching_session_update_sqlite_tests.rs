@@ -333,7 +333,7 @@ async fn moving_a_session_whose_coachee_left_the_organization_is_refused() {
                 .expect_err("a move is refused");
 
             let details = conflict_details(&refused).expect("a 409 with details");
-            assert_eq!(details["reason"], "coachee_not_a_member");
+            assert_eq!(details["reason"], "participant_not_a_member");
             assert_eq!(details["user_id"], serde_json::json!(coachee_id));
             assert_eq!(
                 details["organization_id"],

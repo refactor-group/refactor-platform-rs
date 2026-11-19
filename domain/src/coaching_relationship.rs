@@ -241,28 +241,15 @@ pub(crate) fn ensure_required_participants_are_members(
 }
 
 /// The 409 for a relationship whose participant in `seat` no longer belongs to its
-/// organization, its reason named by that participant's role.
+/// organization, its message naming that participant's role.
 pub(crate) fn participant_not_a_member(relationship: &Model, seat: Seat) -> Error {
-    let (message, reason) = match relationship.kind.rules().role(seat) {
-        Role::Coachee => (
-            "Your coachee is no longer a member of this organization. Re-add them to the \
-             organization first.",
-            reason::COACHEE_NOT_A_MEMBER,
-        ),
-        Role::Colleague => (
-            "Your colleague is no longer a member of this organization. Re-add them to the \
-             organization first.",
-            reason::PARTICIPANT_NOT_A_MEMBER,
-        ),
-        Role::Coach => (
-            "Your coach is no longer a member of this organization. Re-add them to the \
-             organization first.",
-            reason::PARTICIPANT_NOT_A_MEMBER,
-        ),
-    };
+    let message = format!(
+        "Your {} is no longer a member of this organization. Re-add them to the organization first.",
+        relationship.kind.rules().role(seat).as_str()
+    );
     not_a_member(
-        message,
-        reason,
+        &message,
+        reason::PARTICIPANT_NOT_A_MEMBER,
         relationship.organization_id,
         relationship.participant(seat),
     )
@@ -388,7 +375,7 @@ mod tests {
         else {
             panic!("expected a conflict, got {:?}", err.error_kind);
         };
-        assert_eq!(details["reason"], "coachee_not_a_member");
+        assert_eq!(details["reason"], "participant_not_a_member");
         assert_eq!(
             details["user_id"],
             serde_json::json!(relationship.coachee_id)

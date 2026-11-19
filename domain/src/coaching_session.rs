@@ -2856,7 +2856,7 @@ mod tests {
         else {
             panic!("expected a conflict, got {err:?}");
         };
-        assert_eq!(details["reason"], "coachee_not_a_member");
+        assert_eq!(details["reason"], "participant_not_a_member");
         assert_eq!(
             details["organization_id"],
             serde_json::json!(relationship.organization_id)

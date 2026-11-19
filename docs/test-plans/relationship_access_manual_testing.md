@@ -27,7 +27,7 @@ before the baseline. Their expected results already show the phase M rule:
 - Membership is checked once per request, before any write, and that result decides who is
   emailed. A participant removed while a request is in flight can still get that one email.
 - Creating, rescheduling or resending a session or series is refused (409,
-  `details.reason` `coachee_not_a_member`) when the coachee is no longer a member; assigning an
+  `details.reason` `participant_not_a_member`) when the coachee is no longer a member; assigning an
   action to someone who is no longer a member is refused (`assignee_not_a_member`); an
   assignee already on an action is not rechecked. Cancelling and deleting stay allowed.
   Rows: SES-33 to SES-36, SER-17 to SER-21, ACT-37 to ACT-39, TRN-28.
@@ -238,9 +238,9 @@ How to read the tables:
 | SES-30 | GET /users/{REMOVED_ID}/coaching_sessions | REMOVED | 200, empty list | `web/src/extractors/user_self_access.rs:28` | [membership] self list leaves out S3; was 200, S3 |
 | SES-31 | GET /users/{COACHEE_ID}/coaching_sessions/counts | COACHEE | 200, counts over S1 S2 SR1-* | `web/src/extractors/user_self_access.rs:28`; `entity_api/src/coaching_session.rs:938` | [rows] |
 | SES-32 | GET /users/{COACHEE_ID}/coaching_sessions/nearest?coaching_relationship_ids=R1,R2 | COACHEE | 200, nearest of R1 and of R2 | `web/src/extractors/user_self_access.rs:28`; `entity_api/src/coaching_session.rs:1245` | [rows] a relationship the user is not in contributes nothing |
-| SES-33 | POST /coaching_sessions `{coaching_relationship_id: R3}` | COACH | 409 `coachee_not_a_member`, nothing written, no email | `domain/src/coaching_session.rs:102` | [membership] `details: {reason, organization_id, user_id}` |
-| SES-34 | PUT /coaching_sessions/S3 changing `date` or `duration_minutes` | COACH | 409 `coachee_not_a_member`, S3 unchanged | `domain/src/coaching_session.rs:390` | [membership] Other edits succeed (SES-18) |
-| SES-35 | POST /coaching_sessions/S3/resend_invite | COACH | 409 `coachee_not_a_member`, no email | `domain/src/coaching_session.rs:592` | [membership] |
+| SES-33 | POST /coaching_sessions `{coaching_relationship_id: R3}` | COACH | 409 `participant_not_a_member`, nothing written, no email | `domain/src/coaching_session.rs:102` | [membership] `details: {reason, organization_id, user_id}` |
+| SES-34 | PUT /coaching_sessions/S3 changing `date` or `duration_minutes` | COACH | 409 `participant_not_a_member`, S3 unchanged | `domain/src/coaching_session.rs:390` | [membership] Other edits succeed (SES-18) |
+| SES-35 | POST /coaching_sessions/S3/resend_invite | COACH | 409 `participant_not_a_member`, no email | `domain/src/coaching_session.rs:592` | [membership] |
 | SES-36 | DELETE /coaching_sessions/S5 | COACH | 200 (204) | `web/src/extractors/coaching_session_access.rs:98` | [membership] Deleting stays allowed. Sends MAIL-03 to both COACH and REMOVED |
 | SES-37 | DELETE /coaching_sessions/S1 | COACH | 409 `sessions_have_content`, `details: {reason, coaching_session_id}`; S1, its content and its notes document untouched, no email | `domain/src/coaching_session.rs:525` | S1 holds AG1 and A1 to A3 |
 | SES-38 | POST /coaching_sessions `{coaching_relationship_id: R1}` | COACH after removal from O1 | 403, nothing written, no email | `web/src/controller/coaching_session_controller.rs:187`; `web/src/extractors/coaching_relationship_access.rs:140` | [tightened] Restore the role afterwards |
@@ -274,10 +274,10 @@ How to read the tables:
 | SER-14 | POST /coaching_session_series/SR1/resend_invite | COACH | 204 | `web/src/extractors/coaching_session_series_access.rs:63` | Sends MAIL-09 |
 | SER-15 | POST /coaching_session_series/SR1/resend_invite | COACHEE, non-participants | 403 | `web/src/extractors/coaching_session_series_access.rs:63` | |
 | SER-16 | POST /coaching_session_series `{coaching_relationship_id: R1}` | COACH after removal from O1 | 403 | `web/src/controller/coaching_session_series_controller.rs:61`; `web/src/extractors/coaching_relationship_access.rs:155` | [tightened] Run last, or on a disposable relationship: remove the coach from O1 first |
-| SER-17 | POST /coaching_session_series `{coaching_relationship_id: R3}` | COACH | 409 `coachee_not_a_member`, nothing written, no email | `domain/src/coaching_session_series.rs:103` | [membership] |
-| SER-18 | PUT /coaching_session_series/SR3 | COACH | 409 `coachee_not_a_member`, SR3 unchanged | `domain/src/coaching_session_series.rs:257` | [membership] |
-| SER-19 | POST /coaching_session_series/SR3/reschedule | COACH | 409 `coachee_not_a_member`, SR3 unchanged | `domain/src/coaching_session_series.rs:645` | [membership] |
-| SER-20 | POST /coaching_session_series/SR3/resend_invite | COACH | 409 `coachee_not_a_member`, no email | `domain/src/coaching_session_series.rs:913` | [membership] |
+| SER-17 | POST /coaching_session_series `{coaching_relationship_id: R3}` | COACH | 409 `participant_not_a_member`, nothing written, no email | `domain/src/coaching_session_series.rs:103` | [membership] |
+| SER-18 | PUT /coaching_session_series/SR3 | COACH | 409 `participant_not_a_member`, SR3 unchanged | `domain/src/coaching_session_series.rs:257` | [membership] |
+| SER-19 | POST /coaching_session_series/SR3/reschedule | COACH | 409 `participant_not_a_member`, SR3 unchanged | `domain/src/coaching_session_series.rs:645` | [membership] |
+| SER-20 | POST /coaching_session_series/SR3/resend_invite | COACH | 409 `participant_not_a_member`, no email | `domain/src/coaching_session_series.rs:913` | [membership] |
 | SER-21 | DELETE /coaching_session_series/SR3 | COACH | 204 | `web/src/extractors/coaching_session_series_access.rs:63` | [membership] Cancelling stays allowed. Sends MAIL-08 to both COACH and REMOVED. Run after SER-18 to SER-20 |
 | SER-22 | GET /coaching_session_series/{unknown}; POST its `/resend_invite`, `/reschedule` | COACH | 404, no email | `web/src/extractors/coaching_session_series_access.rs:110` | |
 | SER-23 | any /coaching_session_series route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
