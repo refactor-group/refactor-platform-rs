@@ -11,6 +11,7 @@ use utoipa::ToSchema;
 
 use crate::coaching_relationship_kind;
 use crate::coaching_relationships;
+use crate::emails::capitalized;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::transcript_participant::Model as Participant;
 use crate::users;
@@ -255,12 +256,14 @@ fn unique_labels(keys: &[&GroupKey], bases: &[String]) -> Vec<String> {
     labels.into_iter().flatten().collect()
 }
 
-/// Renders the labeled transcript as the downloadable plain-text file.
+/// Renders the labeled transcript as the downloadable plain-text file, titled with `kind`'s
+/// session label.
 ///
 /// Keeps segments whose role is in `filter` (every segment when it is empty) and drops blank
 /// ones; the header lists the speakers with at least one surviving line, in speaking order.
 /// Fails when a filtered role has no speaker.
 pub fn render_plain_text(
+    kind: coaching_relationship_kind::Kind,
     session_date: NaiveDate,
     labeled: &Labeled,
     filter: &[coaching_relationship_kind::Role],
@@ -293,9 +296,10 @@ pub fn render_plain_text(
         .collect::<Vec<_>>()
         .join(", ");
 
+    let title = capitalized(kind.rules().session_label());
     let date = session_date.format("%Y-%m-%d");
     let body = lines.iter().fold(
-        format!("Coaching session transcript\nDate: {date}\nSpeakers: {header_labels}\n\n"),
+        format!("{title} transcript\nDate: {date}\nSpeakers: {header_labels}\n\n"),
         |mut body, segment| {
             body.push_str(&format!(
                 "[{}] {}: {}\n",

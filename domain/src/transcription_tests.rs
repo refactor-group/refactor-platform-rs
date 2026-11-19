@@ -300,6 +300,73 @@ async fn export_plain_text_dates_the_file_in_the_coach_timezone() {
     assert!(rendered.body.contains("Date: 2026-09-21\n"));
 }
 
+/// A plain-text export of a session at 01:30 UTC on the 22nd, scheduled by the coachee seat,
+/// with the coach seat in Los Angeles (the 21st) and the coachee seat in Tokyo (the 22nd).
+async fn export_scheduled_by_the_coachee_seat(kind: coaching_relationship_kind::Kind) -> Rendered {
+    let coach = users::Model {
+        timezone: "America/Los_Angeles".to_string(),
+        ..coach()
+    };
+    let coachee = users::Model {
+        timezone: "Asia/Tokyo".to_string(),
+        ..coachee()
+    };
+    let relationship = coaching_relationships::Model {
+        kind,
+        ..relationship(coach.id, coachee.id)
+    };
+    let session = coaching_sessions::Model {
+        date: NaiveDate::from_ymd_opt(2026, 9, 22)
+            .and_then(|date| date.and_hms_opt(1, 30, 0))
+            .unwrap_or_default(),
+        scheduled_by_user_id: coachee.id,
+        ..session(relationship.id)
+    };
+    let row = transcription(session.id, TranscriptionStatus::Completed);
+    let (participants, segments) = transcript(row.id, coach.id, Some(coachee.id));
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[row.clone()]])
+        .append_query_results([segments])
+        .append_query_results([participants])
+        .append_query_results([[coach_and_coachee_row(&coach, &coachee)]])
+        .append_query_results([[relationship.clone()]])
+        .into_connection();
+
+    export_plain_text(&db, &session, row.id, &[])
+        .await
+        .expect("renders")
+}
+
+#[tokio::test]
+async fn a_coaching_export_keeps_its_title_and_the_coachs_date_whoever_scheduled() {
+    let rendered =
+        export_scheduled_by_the_coachee_seat(coaching_relationship_kind::Kind::Coaching).await;
+
+    assert!(
+        rendered
+            .body
+            .starts_with("Coaching session transcript\nDate: 2026-09-21\n"),
+        "{}",
+        rendered.body
+    );
+}
+
+#[tokio::test]
+async fn a_colleague_export_is_a_session_transcript_dated_where_its_scheduler_is() {
+    let rendered =
+        export_scheduled_by_the_coachee_seat(coaching_relationship_kind::Kind::Colleague).await;
+
+    assert!(
+        rendered
+            .body
+            .starts_with("Session transcript\nDate: 2026-09-22\n"),
+        "{}",
+        rendered.body
+    );
+    assert_eq!(rendered.filename, "transcript-2026-09-22.txt");
+}
+
 #[tokio::test]
 async fn export_plain_text_reports_an_unidentified_role() {
     let coach = coach();

@@ -84,7 +84,7 @@ pub async fn read_latest(
         ("speaker" = Option<Vec<coaching_relationship_kind::Role>>, Query, explode, description = "Limit the plain-text transcript to speakers with these roles. Repeat the parameter for each role. Omitted means every speaker. An invalid value is rejected with 400 for every representation; valid values are applied only to text/plain."),
     ),
     responses(
-        (status = 200, description = "JSON metadata with labeled speakers, or the plain-text transcript file when `Accept: text/plain`", content(
+        (status = 200, description = "JSON metadata with labeled speakers, or the plain-text transcript file when `Accept: text/plain`: titled with the relationship's session label (`Session transcript` for colleagues) and dated in the schedule owner's timezone", content(
             (domain::transcription::WithSpeakers = "application/json"),
             (String = "text/plain", example = json!("Coaching session transcript\nDate: 2026-09-21\nSpeakers: Jim Hodapp, Caleb Bourg\n\n[0:00] Jim Hodapp: Good morning.\n"))
         )),

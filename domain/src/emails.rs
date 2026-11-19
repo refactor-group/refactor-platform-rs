@@ -1029,7 +1029,7 @@ impl<'a> Participants<'a> {
 }
 
 /// `word` with its first letter in upper case.
-fn capitalized(word: &str) -> String {
+pub(crate) fn capitalized(word: &str) -> String {
     let mut chars = word.chars();
     chars
         .next()
