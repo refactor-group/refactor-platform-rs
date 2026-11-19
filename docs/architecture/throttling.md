@@ -81,6 +81,8 @@ impl ThrottlePolicy {
 | Policy | Sustained rate | Burst | Intended for |
 |---|---|---|---|
 | `AUTH_ENDPOINT` | ~10 req/min per IP | 10 | Unauthenticated credential-recovery / login flows: password-reset, magic-link, future signup/login |
+| `SEARCH_ENDPOINT` | ~1 req/sec per IP | 10 | `GET /search`, sized for search-as-you-type |
+| `HEALTH_ENDPOINT` | ~1 req/sec per IP | 5 | `GET /health/ready`, which costs a database round trip; uptime probes and deploy checks stay well under it |
 
 **When to add a new policy**: only when an endpoint genuinely needs a different rate. If you're tempted to add `LENIENT_AUTH_ENDPOINT` because the existing policy is "too strict," that's usually a sign the existing policy is mis-calibrated, not that a second one is needed. Discuss the tradeoff first; converging on a small set of named policies prevents per-route config sprawl.
 
@@ -135,6 +137,7 @@ The wiring lives in [`web::lib::init_server`](../../web/src/lib.rs); the inline 
 | Endpoint group | Policy | Layer attached |
 |---|---|---|
 | `/password-reset/*` | `AUTH_ENDPOINT` | [`web::router::password_reset_routes`](../../web/src/router.rs) |
+| `/health/ready` | `HEALTH_ENDPOINT` | [`web::router::health_routes`](../../web/src/router.rs) |
 
 Future candidates (not yet throttled — add when they ship):
 

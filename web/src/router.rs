@@ -89,6 +89,7 @@ use utoipa_rapidoc::RapiDoc;
             coaching_session::transcription_controller::read,
             coaching_session::transcription_segment_controller::index,
             health_check_controller::health_check,
+            health_check_controller::ready,
             magic_link_controller::validate,
             magic_link_controller::complete_setup,
             oauth_callback_controller::callback,
@@ -284,7 +285,7 @@ pub fn define_routes(app_state: AppState) -> Router {
         .merge(sse_routes(app_state.clone()))
         .merge(action_routes(app_state.clone()))
         .merge(agreement_routes(app_state.clone()))
-        .merge(health_routes())
+        .merge(health_routes(app_state.clone()))
         .merge(organization_routes(app_state.clone()))
         .merge(organization_coaching_relationship_routes(app_state.clone()))
         .merge(organization_user_routes(app_state.clone()))
@@ -442,8 +443,16 @@ pub fn tiptap_metrics_routes(app_state: AppState) -> Router {
         .with_state(app_state)
 }
 
-fn health_routes() -> Router {
-    Router::new().route("/health", get(health_check_controller::health_check))
+fn health_routes(app_state: AppState) -> Router {
+    // Only the readiness check touches the database, so only it is throttled.
+    Router::new()
+        .route(
+            "/health/ready",
+            get(health_check_controller::ready)
+                .layer(PerIpThrottle::new(ThrottlePolicy::HEALTH_ENDPOINT).into_layer()),
+        )
+        .route("/health", get(health_check_controller::health_check))
+        .with_state(app_state)
 }
 
 fn organization_coaching_relationship_routes(app_state: AppState) -> Router {

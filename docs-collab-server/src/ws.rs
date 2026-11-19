@@ -41,6 +41,8 @@ pub const PREAUTH_QUEUE_MAX_BYTES: usize = 256 * 1024;
 /// Distinct documents one connection may have awaiting a token at once. The
 /// provider multiplexes a small fixed set, so this only bites an abuser.
 pub const PREAUTH_QUEUE_MAX_DOCS: usize = 8;
+/// How long the readiness check waits on storage, pool queue included.
+pub const READY_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Shared, clone-cheap server state. Cloned by axum on every request via the
 /// `State<AppState>` extractor; all heavyweight fields are `Arc`-shared.
@@ -190,11 +192,28 @@ pub fn build_router(state: AppState) -> Router {
             post(rest::create_document).delete(rest::delete_document),
         )
         .route("/health", get(health_handler))
+        .route("/health/ready", get(ready_handler))
         .with_state(state)
 }
 
 async fn health_handler() -> StatusCode {
     StatusCode::OK
+}
+
+/// 200 only when storage answers within [`READY_TIMEOUT`], so a database
+/// outage or an exhausted pool shows up as 503.
+async fn ready_handler(State(state): State<AppState>) -> StatusCode {
+    match tokio::time::timeout(READY_TIMEOUT, state.storage.ping()).await {
+        Ok(Ok(())) => StatusCode::OK,
+        Ok(Err(e)) => {
+            warn!(error = %e, "readiness check could not reach storage");
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        Err(_) => {
+            warn!("readiness check timed out waiting for storage");
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+    }
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
