@@ -18,7 +18,7 @@ use log::*;
     params(
         ApiVersion,
         ("user_id" = Uuid, Path, description = "User ID to retrieve coaching relationships for"),
-        ("role" = Option<String>, Query, description = "Filter by role: all, coach, or coachee (default: all)"),
+        ("role" = Option<String>, Query, description = "Lists only the relationships in which the user holds this role: all, coach, coachee or colleague (default: all). `coach` and `coachee` match coaching relationships only; `colleague` matches colleague relationships"),
     ),
     responses(
         (status = 200, description = "Successfully retrieved coaching relationships for user", body = [domain::coaching_relationship::CoachingRelationshipWithUserNames]),
@@ -44,11 +44,10 @@ pub async fn index(
 
     let params = params.with_user_id(user_id);
 
-    // Web layer's RoleFilter implements RoleFilterable trait, so pass directly
     let relationships = CoachingRelationshipApi::find_by_user_id_with_user_names_for_caller(
         app_state.db_conn_ref(),
         &user,
-        params.role,
+        params.role.role(),
     )
     .await?;
 

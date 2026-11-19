@@ -943,38 +943,41 @@ fn involving(user_id: Id) -> Condition {
         .add(coaching_relationships::Column::CoacheeId.eq(user_id))
 }
 
-/// Trait for filtering coaching relationships by user's role.
-///
-/// Implement this trait in the web layer to define role-based filtering
-/// while keeping the entity_api layer decoupled from web-specific types.
-pub trait RoleFilterable {
-    /// Returns true if only relationships where the user is a coach should be returned.
-    fn filter_coach_only(&self) -> bool;
-    /// Returns true if only relationships where the user is a coachee should be returned.
-    fn filter_coachee_only(&self) -> bool;
+/// The column a participant in `seat` occupies.
+fn seat_column(seat: Seat) -> coaching_relationships::Column {
+    match seat {
+        Seat::CoachId => coaching_relationships::Column::CoachId,
+        Seat::CoacheeId => coaching_relationships::Column::CoacheeId,
+    }
+}
+
+/// The relationships in which `user_id` holds `role`: for each kind, the seats whose rules give
+/// that role.
+fn holding_role(user_id: Id, role: Role) -> Condition {
+    Kind::iter()
+        .flat_map(|kind| [Seat::CoachId, Seat::CoacheeId].map(|seat| (kind, seat)))
+        .filter(|&(kind, seat)| kind.rules().role(seat) == role)
+        .fold(Condition::any(), |held, (kind, seat)| {
+            held.add(
+                Condition::all()
+                    .add(coaching_relationships::Column::Kind.eq(kind))
+                    .add(seat_column(seat).eq(user_id)),
+            )
+        })
 }
 
 /// Finds coaching relationships for a user with optional role filtering.
 ///
 /// Returns relationships with user names for display purposes: those `viewer` may access
-/// (see [`accessible_to`]), narrowed to those they coach or are coached in when
-/// `role_filter` asks.
+/// (see [`accessible_to`]), narrowed to those in which they hold `role` when one is given.
 pub async fn find_by_user_id_with_user_names(
     db: &DatabaseConnection,
     viewer: &Visibility,
-    role_filter: impl RoleFilterable,
+    role: Option<Role>,
 ) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
-    let role = if role_filter.filter_coach_only() {
-        Some(coaching_relationships::Column::CoachId.eq(viewer.user_id))
-    } else if role_filter.filter_coachee_only() {
-        Some(coaching_relationships::Column::CoacheeId.eq(viewer.user_id))
-    } else {
-        None
-    };
-
     let query = coaching_relationships::Entity::find()
         .filter(accessible_to(viewer))
-        .apply_if(role, |q, role| q.filter(role));
+        .apply_if(role, |q, role| q.filter(holding_role(viewer.user_id, role)));
     let query = select_membership(select_with_user_names(query))
         .into_model::<CoachingRelationshipWithUserNames>();
 

@@ -12,7 +12,7 @@ use entity_api::coaching_relationship::{create, insert_unless_exists, Draft};
 use entity_api::error::EntityApiErrorKind;
 use sea_orm::{ActiveModelTrait, ConnectionTrait, DatabaseConnection, EntityTrait, Set};
 
-use super::{find_by_user_id_with_user_names, is_coach_of, RoleFilterable};
+use super::{find_by_user_id_with_user_names, is_coach_of};
 
 use crate::test_utils::sqlite::read_back::relationships_between;
 use crate::test_utils::sqlite::{
@@ -363,22 +363,9 @@ async fn the_coachees_own_coachee_is_not_their_coach() {
     .await
 }
 
-/// Every relationship, as coach or coachee.
-struct AnyRole;
-
-impl RoleFilterable for AnyRole {
-    fn filter_coach_only(&self) -> bool {
-        false
-    }
-
-    fn filter_coachee_only(&self) -> bool {
-        false
-    }
-}
-
 /// The ids of the relationships `viewer` lists as their own.
 async fn own_relationship_ids(db: &DatabaseConnection, viewer: &Visibility) -> BTreeSet<Id> {
-    find_by_user_id_with_user_names(db, viewer, AnyRole)
+    find_by_user_id_with_user_names(db, viewer, None)
         .await
         .expect("the relationships are read")
         .into_iter()

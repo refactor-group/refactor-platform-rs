@@ -1,30 +1,28 @@
-use domain::{coaching_relationship::RoleFilterable, Id};
+use domain::{coaching_relationship_kind::Role, Id};
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
-/// Filter for coaching relationships by user's role.
-#[derive(Debug, Clone, Default, Deserialize, ToSchema)]
+/// Which of the user's relationships to list, by the role they hold in each.
+#[derive(Debug, Clone, Copy, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
 #[schema(example = "all")]
 pub(crate) enum RoleFilter {
-    /// Return all relationships where user is coach or coachee (default)
-    #[serde(rename = "all")]
     #[default]
     All,
-    /// Return only relationships where user is the coach
-    #[serde(rename = "coach")]
     Coach,
-    /// Return only relationships where user is the coachee
-    #[serde(rename = "coachee")]
     Coachee,
+    Colleague,
 }
 
-impl RoleFilterable for RoleFilter {
-    fn filter_coach_only(&self) -> bool {
-        matches!(self, RoleFilter::Coach)
-    }
-
-    fn filter_coachee_only(&self) -> bool {
-        matches!(self, RoleFilter::Coachee)
+impl RoleFilter {
+    /// The role asked for, or `None` for every relationship.
+    pub(crate) fn role(self) -> Option<Role> {
+        match self {
+            RoleFilter::All => None,
+            RoleFilter::Coach => Some(Role::Coach),
+            RoleFilter::Coachee => Some(Role::Coachee),
+            RoleFilter::Colleague => Some(Role::Colleague),
+        }
     }
 }
 
@@ -34,7 +32,7 @@ pub(crate) struct IndexParams {
     /// User ID from URL path (not a query parameter)
     #[serde(skip)]
     pub(crate) user_id: Id,
-    /// Filter by role: all, coach, or coachee (default: all)
+    /// The role the user holds in each listed relationship (default: all)
     #[serde(default)]
     pub(crate) role: RoleFilter,
 }

@@ -21,7 +21,7 @@ pub(crate) use entity_api::coaching_relationship::{
 pub use entity_api::coaching_relationship::{
     find_by_coach_and_organization, find_by_id, find_by_user, find_by_user_and_organization,
     find_coach_and_coachee, is_coach_of, Capabilities, CoachingRelationshipWithUserNames, Draft,
-    Membership, Participant, RoleFilterable, WithMembership,
+    Membership, Participant, WithMembership,
 };
 
 /// The relationship to create for a person joining an organization: with whom, what kind,
@@ -155,15 +155,15 @@ pub async fn get_relationship_with_user_names_for_caller(
         .map(|relationship| relationship.for_caller(caller)))
 }
 
-/// The relationships `caller` is in, narrowed by `role_filter`, with their participants'
-/// names, each as `caller` sees it.
+/// The relationships `caller` is in, narrowed to those in which they hold `role` when one is
+/// given, with their participants' names, each as `caller` sees it.
 pub async fn find_by_user_id_with_user_names_for_caller(
     db: &DatabaseConnection,
     caller: &users::Model,
-    role_filter: impl RoleFilterable,
+    role: Option<Role>,
 ) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
     Ok(
-        find_by_user_id_with_user_names(db, &visibility_for(caller), role_filter)
+        find_by_user_id_with_user_names(db, &visibility_for(caller), role)
             .await?
             .into_iter()
             .map(|relationship| relationship.for_caller(caller))
