@@ -1,15 +1,16 @@
 //! Decides which transcript speakers are the session's two participants, never guessing.
 //!
-//! One participant is the anchor: whoever made the session's meeting link, or the seat the
-//! relationship's kind falls back on when no participant's link was recorded. The anchor is
-//! identified by the meeting host and by the platform's attendee list; when both answer they
-//! must agree. The other participant is then found by elimination among the other speakers.
+//! One participant is the anchor, chosen by the relationship's kind: the coach in a coaching
+//! session, the meeting-link maker in a colleague session. The anchor is identified by the
+//! meeting host and by the platform's attendee list; when both answer they must agree, and the
+//! kind decides whether the host alone is enough. The other participant is then found by
+//! elimination among the other speakers.
 
 use std::collections::BTreeSet;
 
 use meeting_ai::types::transcription::Participant;
 
-use crate::coaching_relationship_kind::Seat;
+use crate::coaching_relationship_kind::{Kind, Seat};
 use crate::coaching_relationships;
 use crate::gateway::google_meet;
 use crate::transcript_participant::MatchSource;
@@ -44,15 +45,16 @@ enum Key<'a> {
 /// Speaker positions in the input slice.
 type Indexes = BTreeSet<usize>;
 
-/// The anchor and the other participant, in that order: the meeting-link maker when they are a
-/// participant, else the seat the kind falls back on; `None` when the kind has no fallback.
+/// The anchor and the other participant, in that order, as the kind chooses from the
+/// meeting-link maker's seat; `None` when it chooses nobody.
 pub(crate) fn anchor_and_other(
     relationship: &coaching_relationships::Model,
     link_maker: Option<Id>,
 ) -> Option<(Id, Id)> {
-    let anchor = link_maker
-        .and_then(|id| relationship.seat(id))
-        .or_else(|| relationship.kind.rules().unrecorded_link_maker_anchor())?;
+    let anchor = relationship
+        .kind
+        .rules()
+        .attribution_anchor(link_maker.and_then(|id| relationship.seat(id)))?;
     let other = match anchor {
         Seat::CoachId => Seat::CoacheeId,
         Seat::CoacheeId => Seat::CoachId,
@@ -68,11 +70,12 @@ pub(crate) fn attribute(
     speakers: &[Participant],
     anchor_id: Id,
     other_id: Id,
+    kind: Kind,
     evidence: &Evidence,
 ) -> Vec<Attribution> {
     let anchor = evidence
         .recorded_session_space
-        .then(|| anchor_answer(speakers, evidence))
+        .then(|| anchor_answer(speakers, kind, evidence))
         .flatten()
         .unwrap_or_default();
     let other = other_by_elimination(speakers, &anchor);
@@ -97,11 +100,13 @@ pub(crate) fn attribute(
         .collect()
 }
 
-/// Combines the two answers: both must agree when present, otherwise whichever exists.
-fn anchor_answer(speakers: &[Participant], evidence: &Evidence) -> Option<Indexes> {
+/// Combines the two answers: both must agree when present; the account answer alone suffices,
+/// the host answer alone only when the kind allows it.
+fn anchor_answer(speakers: &[Participant], kind: Kind, evidence: &Evidence) -> Option<Indexes> {
     match (host_answer(speakers), google_answer(speakers, evidence)) {
         (Some(host), Some(google)) => (host == google).then_some(host),
-        (host, google) => host.or(google),
+        (Some(host), None) => kind.rules().host_alone_attributes().then_some(host),
+        (None, google) => google,
     }
 }
 

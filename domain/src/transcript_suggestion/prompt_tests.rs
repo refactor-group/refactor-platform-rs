@@ -3,7 +3,7 @@
 use chrono::{NaiveDate, Utc, Weekday};
 
 use super::*;
-use crate::coaching_relationship_kind;
+use crate::coaching_relationship_kind::{self, Kind};
 use crate::transcript_export::LabeledSegment;
 use crate::transcript_suggestion::{Existing, NextSession, People, Session, Timezones};
 
@@ -64,8 +64,7 @@ fn session(segments: &[LabeledSegment], next_session: Option<NaiveDate>) -> Sess
             coach: chrono_tz::America::Chicago,
             coachee: chrono_tz::America::Chicago,
         },
-        due_in_assignee_zone: false,
-        names_people_in_prompt: false,
+        kind: Kind::Coaching,
         start: day(2026, 10, 7)
             .and_hms_opt(15, 0, 0)
             .expect("valid time")
@@ -214,7 +213,7 @@ fn a_colleague_render_names_both_people_and_labels_their_lines_with_those_names(
         },
         coach_name: "Alice Smith".to_string(),
         coachee_name: "Bob Lee".to_string(),
-        names_people_in_prompt: true,
+        kind: Kind::Colleague,
         ..session(&segments, None)
     };
 

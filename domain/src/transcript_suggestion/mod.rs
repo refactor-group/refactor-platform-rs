@@ -9,6 +9,7 @@ use sea_orm::prelude::DateTimeWithTimeZone;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+use crate::coaching_relationship_kind::Kind;
 use crate::error::{DomainErrorKind, Error};
 use crate::transcript_export::LabeledSegment;
 use crate::Id;
@@ -53,10 +54,8 @@ pub struct Session<'a> {
     pub anchor_timezone: Tz,
     /// Each participant's IANA timezone.
     pub timezones: Timezones,
-    /// A deadline for one participant falls in that participant's timezone.
-    pub due_in_assignee_zone: bool,
-    /// The prompt names the two people instead of calling them coach and coachee.
-    pub names_people_in_prompt: bool,
+    /// The relationship's kind, whose rules decide deadline zones and how the prompt names people.
+    pub kind: Kind,
     /// When the session starts.
     pub start: DateTimeWithTimeZone,
     /// The session's calendar date in the anchor timezone.
@@ -77,7 +76,9 @@ impl Session<'_> {
         let [only] = assignee_ids else {
             return self.anchor_timezone;
         };
-        self.due_in_assignee_zone
+        self.kind
+            .rules()
+            .due_in_assignee_zone()
             .then_some(*only)
             .and_then(|id| self.timezone_of(id))
             .unwrap_or(self.anchor_timezone)
@@ -91,7 +92,7 @@ impl Session<'_> {
     /// What the model calls the coach and coachee seats, in that order: the two people's names
     /// when the prompt names them, otherwise `coach` and `coachee`.
     pub fn seat_names(&self) -> [&str; 2] {
-        if self.names_people_in_prompt {
+        if self.kind.rules().names_people_in_prompt() {
             [&self.coach_name, &self.coachee_name]
         } else {
             ["coach", "coachee"]

@@ -18,7 +18,8 @@ use log::*;
 use sea_orm::{
     entity::prelude::*, sea_query::Alias, sea_query::Expr, sea_query::OnConflict,
     ActiveValue::Unchanged, Condition, DatabaseConnection, DbErr, ExprTrait, FromQueryResult,
-    Iterable, JoinType, QuerySelect, QueryTrait, Set, TransactionSession, TransactionTrait,
+    Iterable, JoinType, QueryResult, QuerySelect, QueryTrait, Set, TransactionSession,
+    TransactionTrait,
 };
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
@@ -581,7 +582,29 @@ pub async fn find_coach_and_coachee(
     db: &impl ConnectionTrait,
     relationship_id: Id,
 ) -> Result<(users::Model, users::Model), Error> {
-    let mut select = Entity::find_by_id(relationship_id).select_only();
+    let row = joined_people_row(db, Entity::find_by_id(relationship_id).select_only()).await?;
+    people(&row)
+}
+
+/// The relationship with its coach and coachee, in that order, read in one query.
+///
+/// # Errors
+///
+/// `RecordNotFound` when the relationship does not exist.
+pub async fn find_with_coach_and_coachee(
+    db: &impl ConnectionTrait,
+    relationship_id: Id,
+) -> Result<(Model, users::Model, users::Model), Error> {
+    let row = joined_people_row(db, Entity::find_by_id(relationship_id)).await?;
+    let (coach, coachee) = people(&row)?;
+    Ok((Model::from_query_result(&row, "")?, coach, coachee))
+}
+
+/// The one row of `select` joined to its coach and coachee, their columns prefixed.
+async fn joined_people_row(
+    db: &impl ConnectionTrait,
+    mut select: Select<Entity>,
+) -> Result<QueryResult, Error> {
     for (alias, prefix, relationship_column) in [
         (
             COACH_ALIAS,
@@ -609,14 +632,16 @@ pub async fn find_coach_and_coachee(
         );
     }
 
-    let row = db
-        .query_one(QueryTrait::query(&mut select))
+    db.query_one(QueryTrait::query(&mut select))
         .await?
-        .ok_or_else(not_found)?;
+        .ok_or_else(not_found)
+}
 
+/// The coach and coachee read from a row of [`joined_people_row`].
+fn people(row: &QueryResult) -> Result<(users::Model, users::Model), Error> {
     Ok((
-        users::Model::from_query_result(&row, COACH_PREFIX)?,
-        users::Model::from_query_result(&row, COACHEE_PREFIX)?,
+        users::Model::from_query_result(row, COACH_PREFIX)?,
+        users::Model::from_query_result(row, COACHEE_PREFIX)?,
     ))
 }
 

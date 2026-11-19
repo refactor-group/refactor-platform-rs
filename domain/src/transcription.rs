@@ -405,7 +405,13 @@ async fn attribute_speakers(
         );
         Gathered::default()
     });
-    attribute(speakers, anchor_id, other_id, &gathered.evidence())
+    attribute(
+        speakers,
+        anchor_id,
+        other_id,
+        relationship.kind,
+        &gathered.evidence(),
+    )
 }
 
 /// The transcription's session with its relationship.
@@ -431,8 +437,8 @@ fn unattributed(speakers: &[transcription_types::Participant]) -> Vec<Attributio
 }
 
 /// Gathers what is known about the anchor; every failure degrades the evidence, none is fatal.
-/// Attendees are matched against the anchor's account and read with the anchor's token: the
-/// anchor made the meeting link, or is the coach when no maker was recorded.
+/// Attendees are matched against the anchor's account, but read with the token of whoever made
+/// the meeting link, or the anchor's when no maker was recorded.
 async fn gather_evidence(
     db: &DatabaseConnection,
     recording_bot: Option<&dyn recording_bot::Provider>,
@@ -441,6 +447,7 @@ async fn gather_evidence(
     session: &coaching_sessions::Model,
     anchor_id: Id,
 ) -> Gathered {
+    let link_maker_id = session.meeting_url_created_by_user_id.unwrap_or(anchor_id);
     let Some(code) = session_meet_code(session) else {
         debug!(
             "Attribution for transcription {}: not a Google Meet session",
@@ -468,7 +475,7 @@ async fn gather_evidence(
                 db,
                 config,
                 transcription.id,
-                anchor_id,
+                link_maker_id,
                 &code,
                 (started_at.with_timezone(&Utc), ended_at.with_timezone(&Utc)),
             )

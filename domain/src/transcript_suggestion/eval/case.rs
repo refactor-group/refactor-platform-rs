@@ -9,7 +9,6 @@ use serde::{Deserialize, Deserializer};
 
 use crate::coaching_relationship_kind::{Kind, Seat};
 use crate::transcript_export::LabeledSegment;
-use crate::transcript_suggestion::actions::Role;
 use crate::transcript_suggestion::{Existing, NextSession, People, Session, Timezones};
 use crate::Id;
 
@@ -63,6 +62,14 @@ impl Variant {
     pub(super) fn case_id(&self) -> String {
         format!("{}/{}", self.set.dir(), self.case)
     }
+}
+
+/// A seat by its coaching name, as the eval's expected files write it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Role {
+    Coach,
+    Coachee,
 }
 
 /// One suggestion a case expects.
@@ -182,8 +189,7 @@ impl Transcript {
                 coach: self.timezone,
                 coachee: self.timezone,
             },
-            due_in_assignee_zone: self.kind.rules().due_in_assignee_zone(),
-            names_people_in_prompt: self.kind.rules().names_people_in_prompt(),
+            kind: self.kind,
             start: self
                 .timezone
                 .from_local_datetime(&self.session_date.and_time(SESSION_TIME))

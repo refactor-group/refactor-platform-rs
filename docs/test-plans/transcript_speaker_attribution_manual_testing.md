@@ -22,11 +22,12 @@ wrong person.
 | Coach is the only speaker | `account` | n/a | n/a |
 | Coachee absent, a stand-in speaks alone with the coach | `account` | stand-in labeled coachee (accepted limitation) | n/a |
 
-The table describes a coaching session with no recorded link maker, or one the coach made. In
-general the identified person is the anchor: whoever made the session's meeting link, when they
-are one of its two participants. With no recorded maker, a coaching session anchors on the coach
-and a colleague session attributes nobody. The anchor gets `account`; the other participant gets
-`elimination`.
+The table describes a coaching session, whoever made its meeting link. In general the
+identified person is the anchor: the coach in a coaching session, and in a colleague session
+whoever made its meeting link, when they are one of its two participants (with no recorded maker
+a colleague session attributes nobody). A colleague anchor is identified only through their
+connected Google account; being host alone is not enough. The anchor gets `account`; the other
+participant gets `elimination`.
 
 `account` and `elimination` are the values of `transcript_participants.match_source`.
 Profile names never decide anything: a coach who joins as "J. Hodapp" with profile
@@ -273,9 +274,13 @@ other speakers), shown by typed name.
 2. That colleague joins Meet signed in to the connected account and hosts; the coach-seat
    colleague joins under any name. Both speak.
 
-**Pass:** 1.4 shows the link maker's row `match_source = account`, attributed to the
+3. Repeat with the link maker joining signed out of Google (or with another account), still
+   hosting.
+
+**Pass:** in step 2, 1.4 shows the link maker's row `match_source = account`, attributed to the
 coachee-seat colleague, and the other row `elimination`, attributed to the coach-seat
-colleague. Both show by profile name with `role: colleague` in `meta`.
+colleague. Both show by profile name with `role: colleague` in `meta`. In step 3 every row has
+`user_id` and `match_source` null: the host alone never attributes a colleague.
 
 ## Part B: local, no meeting (person or AI agent)
 

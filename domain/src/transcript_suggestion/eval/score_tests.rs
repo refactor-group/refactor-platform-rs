@@ -2,9 +2,8 @@
 
 use chrono::NaiveDate;
 
-use super::case::{parse_transcript, Expected, Transcript};
+use super::case::{parse_transcript, Expected, Role, Transcript};
 use super::score::{has_note, score, Finding, Got};
-use crate::transcript_suggestion::actions::Role;
 
 fn transcript() -> Transcript {
     parse_transcript(

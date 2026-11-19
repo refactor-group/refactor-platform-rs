@@ -68,8 +68,7 @@ fn session(segments: &[LabeledSegment]) -> Session<'_> {
             coach: chrono_tz::America::Chicago,
             coachee: chrono_tz::America::Chicago,
         },
-        due_in_assignee_zone: Kind::Coaching.rules().due_in_assignee_zone(),
-        names_people_in_prompt: Kind::Coaching.rules().names_people_in_prompt(),
+        kind: Kind::Coaching,
         start: Utc
             .with_ymd_and_hms(2026, 10, 7, 15, 0, 0)
             .single()
@@ -437,7 +436,7 @@ fn colleague_session(
             coach: b_tz,
             coachee: a_tz,
         },
-        due_in_assignee_zone: Kind::Colleague.rules().due_in_assignee_zone(),
+        kind: Kind::Colleague,
         start,
         session_date: start.with_timezone(&a_tz).date_naive(),
         next_session: None,
@@ -445,8 +444,8 @@ fn colleague_session(
     }
 }
 
-const A: &str = "coachee";
-const B: &str = "coach";
+const A: &str = "Alex Rivera";
+const B: &str = "Jim Hodapp";
 
 fn local(tz: Tz, y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTimeWithTimeZone {
     tz.with_ymd_and_hms(y, m, d, h, min, 0)
@@ -527,6 +526,59 @@ fn the_session_day_is_judged_in_the_assignees_timezone() {
     );
 }
 
+/// Due date of a candidate for `assignees` with the spoken deadline `phrase`.
+fn due_by_phrase(
+    session: &Session,
+    assignees: Vec<&str>,
+    due_date: &str,
+    phrase: &str,
+) -> Option<DateTimeWithTimeZone> {
+    let candidate = Candidate {
+        assignees: assignees.into_iter().map(str::to_string).collect(),
+        due_date: Some(due_date.to_string()),
+        due_phrase: Some(phrase.to_string()),
+        ..valid()
+    };
+    verify(candidate, session)
+        .expect("verified")
+        .proposal
+        .action
+        .action
+        .due_by
+}
+
+#[test]
+fn a_same_day_deadline_on_the_schedulers_calendar_is_never_before_the_session() {
+    let segments = segments();
+    let session = colleague_session(
+        &segments,
+        local(chrono_tz::America::Chicago, 2026, 11, 23, 18, 0),
+        chrono_tz::America::Chicago,
+        chrono_tz::Asia::Tokyo,
+    );
+
+    assert_eq!(
+        due_by_phrase(&session, vec![B], "2026-11-23", "after our call"),
+        Some(local(chrono_tz::Asia::Tokyo, 2026, 11, 24, 23, 59))
+    );
+}
+
+#[test]
+fn a_next_day_deadline_for_an_assignee_behind_the_scheduler_is_never_before_the_session() {
+    let segments = segments();
+    let session = colleague_session(
+        &segments,
+        local(chrono_tz::Asia::Tokyo, 2026, 11, 24, 9, 0),
+        chrono_tz::Asia::Tokyo,
+        chrono_tz::America::Chicago,
+    );
+
+    let due = due_by_phrase(&session, vec![B], "2026-11-25", "tomorrow").expect("due");
+
+    assert!(due >= session.start, "{due} is before {}", session.start);
+    assert_eq!(due, local(chrono_tz::America::Chicago, 2026, 11, 25, 12, 0));
+}
+
 #[test]
 fn a_deadline_after_both_zones_leave_summer_time_uses_each_assignees_winter_offset() {
     let segments = segments();
@@ -568,12 +620,10 @@ fn a_coaching_suggestion_for_the_coachee_stays_in_the_coachs_timezone() {
 
 /// A colleague session between Alice Smith in the coach seat and Bob Lee in the coachee seat.
 fn alice_and_bob(segments: &[LabeledSegment]) -> Session<'_> {
-    let rules = Kind::Colleague.rules();
     Session {
         coach_name: "Alice Smith".to_string(),
         coachee_name: "Bob Lee".to_string(),
-        due_in_assignee_zone: rules.due_in_assignee_zone(),
-        names_people_in_prompt: rules.names_people_in_prompt(),
+        kind: Kind::Colleague,
         ..session(segments)
     }
 }

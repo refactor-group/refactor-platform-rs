@@ -117,8 +117,10 @@ pub trait Rules {
     /// A new meeting link may be made with the other participant's account when the schedule
     /// owner has none connected.
     fn links_with_other_account(&self) -> bool;
-    /// Whose seat anchors speaker attribution when no participant's meeting link was recorded.
-    fn unrecorded_link_maker_anchor(&self) -> Option<Seat>;
+    /// Whose seat anchors speaker attribution, given the seat of whoever made the meeting link.
+    fn attribution_anchor(&self, link_maker: Option<Seat>) -> Option<Seat>;
+    /// The meeting host alone, with no matching account, may identify the anchor.
+    fn host_alone_attributes(&self) -> bool;
     /// A suggestion for one participant is due in that participant's zone.
     fn due_in_assignee_zone(&self) -> bool;
     /// The suggestion prompt names the two people instead of calling them coach and coachee.
@@ -184,8 +186,12 @@ impl Rules for Coaching {
         false
     }
 
-    fn unrecorded_link_maker_anchor(&self) -> Option<Seat> {
+    fn attribution_anchor(&self, _link_maker: Option<Seat>) -> Option<Seat> {
         Some(Seat::CoachId)
+    }
+
+    fn host_alone_attributes(&self) -> bool {
+        true
     }
 
     fn due_in_assignee_zone(&self) -> bool {
@@ -241,8 +247,12 @@ impl Rules for Colleague {
         true
     }
 
-    fn unrecorded_link_maker_anchor(&self) -> Option<Seat> {
-        None
+    fn attribution_anchor(&self, link_maker: Option<Seat>) -> Option<Seat> {
+        link_maker
+    }
+
+    fn host_alone_attributes(&self) -> bool {
+        false
     }
 
     fn due_in_assignee_zone(&self) -> bool {
@@ -323,7 +333,10 @@ mod tests {
         let rules = Kind::Coaching.rules();
         assert_eq!(rules.schedule_owner(), ScheduleOwner::Seat(Seat::CoachId));
         assert!(!rules.links_with_other_account());
-        assert_eq!(rules.unrecorded_link_maker_anchor(), Some(Seat::CoachId));
+        for link_maker in [None, Some(Seat::CoachId), Some(Seat::CoacheeId)] {
+            assert_eq!(rules.attribution_anchor(link_maker), Some(Seat::CoachId));
+        }
+        assert!(rules.host_alone_attributes());
         assert!(!rules.due_in_assignee_zone());
         assert!(!rules.names_people_in_prompt());
     }
@@ -333,7 +346,12 @@ mod tests {
         let rules = Kind::Colleague.rules();
         assert_eq!(rules.schedule_owner(), ScheduleOwner::Scheduler);
         assert!(rules.links_with_other_account());
-        assert_eq!(rules.unrecorded_link_maker_anchor(), None);
+        assert_eq!(rules.attribution_anchor(None), None);
+        assert_eq!(
+            rules.attribution_anchor(Some(Seat::CoacheeId)),
+            Some(Seat::CoacheeId)
+        );
+        assert!(!rules.host_alone_attributes());
         assert!(rules.due_in_assignee_zone());
         assert!(rules.names_people_in_prompt());
     }

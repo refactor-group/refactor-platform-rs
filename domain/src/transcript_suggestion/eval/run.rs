@@ -12,11 +12,10 @@ use service::config::Config;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-use super::case::{self, Variant};
+use super::case::{self, Role, Variant};
 use super::report::{self, Outcome, Pricing, Run};
 use super::score::{self, Got};
 use crate::gateway::assembly_ai::llm_gateway;
-use crate::transcript_suggestion::actions::Role;
 use crate::transcript_suggestion::extract::request;
 use crate::transcript_suggestion::{verify_output, Actions, Refs};
 use crate::Id;

@@ -60,14 +60,6 @@ pub(super) const COLLEAGUE_PASSAGES: [(&str, ColleaguePassage); 6] = [
 /// Suggested actions.
 pub struct Actions;
 
-/// A seat by its coaching name, as the eval's expected files write it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Role {
-    Coach,
-    Coachee,
-}
-
 /// One action as the model returns it.
 #[derive(Debug, Deserialize)]
 pub struct Candidate {
@@ -96,7 +88,7 @@ impl Suggestible for Actions {
     type Proposal = ActionProposal;
 
     fn instructions(session: &Session) -> Cow<'static, str> {
-        if !session.names_people_in_prompt {
+        if !session.kind.rules().names_people_in_prompt() {
             return Cow::Borrowed(PROMPT);
         }
         let [a, b] = session.seat_names();
@@ -198,10 +190,7 @@ impl Suggestible for Actions {
             .reconcile(model_date, due_phrase.as_deref())
             .and_then(|date| match at_next_session {
                 Some(next) => Some(next.start),
-                None => {
-                    let tz = session.due_timezone(&assignee_ids);
-                    due_at(date, session.date_in(tz), tz)
-                }
+                None => due_at(date, session, session.due_timezone(&assignee_ids)),
             });
 
         let duplicate_of_id = candidate
@@ -275,17 +264,23 @@ fn quote(candidate: &str, segment_text: &str) -> String {
     }
 }
 
-/// Noon on `date` in `tz`, or the end of that day when it is the session's own day there, so a
-/// same-day deadline ("after our call") never falls before the session.
-fn due_at(date: NaiveDate, session_date: NaiveDate, tz: Tz) -> Option<DateTimeWithTimeZone> {
-    let time = if date == session_date {
-        NaiveTime::from_hms_opt(23, 59, 0)?
-    } else {
-        NaiveTime::from_hms_opt(12, 0, 0)?
+/// Noon on `date` in `tz`, or the end of the session's own day there when `date` is that day or
+/// noon would fall before the session starts.
+fn due_at(date: NaiveDate, session: &Session, tz: Tz) -> Option<DateTimeWithTimeZone> {
+    let at = |date: NaiveDate, h, m| {
+        tz.from_local_datetime(&date.and_time(NaiveTime::from_hms_opt(h, m, 0)?))
+            .earliest()
+            .map(|t| t.fixed_offset())
     };
-    tz.from_local_datetime(&date.and_time(time))
-        .earliest()
-        .map(|t| t.fixed_offset())
+    let session_date = session.date_in(tz);
+    let end_of_session_day = at(session_date, 23, 59);
+    let due = if date == session_date {
+        end_of_session_day
+    } else {
+        at(date, 12, 0)
+    };
+    due.filter(|due| *due >= session.start)
+        .or(end_of_session_day)
 }
 
 #[cfg(test)]

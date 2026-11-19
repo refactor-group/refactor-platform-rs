@@ -84,10 +84,9 @@ async fn analyze<S: Suggestible>(
         .await?
         .ok_or_else(not_found)?;
     let session = coaching_session::find_by_id(db, transcription.coaching_session_id).await?;
-    let relationship =
-        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-    let (coach, coachee) =
-        coaching_relationship::find_coach_and_coachee(db, session.coaching_relationship_id).await?;
+    let (relationship, coach, coachee) =
+        coaching_relationship::find_with_coach_and_coachee(db, session.coaching_relationship_id)
+            .await?;
     // The schedule owner's calendar is the one the model reads.
     let anchor = if relationship.schedule_owner_id(session.scheduled_by_user_id) == coachee.id {
         &coachee
@@ -119,9 +118,8 @@ async fn analyze<S: Suggestible>(
                 start: next.date.and_utc().fixed_offset(),
             });
 
-    let rules = relationship.kind.rules();
     let preferred = [&coach, &coachee].map(|u| u.preferred_name().into_owned());
-    let [coach_name, coachee_name] = if rules.names_people_in_prompt() {
+    let [coach_name, coachee_name] = if relationship.kind.rules().names_people_in_prompt() {
         distinct_names(preferred, [&coach, &coachee].map(full_name))
     } else {
         preferred
@@ -140,8 +138,7 @@ async fn analyze<S: Suggestible>(
             coach: user::timezone(&coach),
             coachee: user::timezone(&coachee),
         },
-        due_in_assignee_zone: rules.due_in_assignee_zone(),
-        names_people_in_prompt: rules.names_people_in_prompt(),
+        kind: relationship.kind,
         start: session.date.and_utc().fixed_offset(),
         session_date: local_session_date(&session, anchor),
         next_session,

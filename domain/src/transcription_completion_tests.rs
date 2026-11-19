@@ -396,10 +396,11 @@ fn session_linked_by(people: &People, link_maker: Option<Id>) -> coaching_sessio
     }
 }
 
-/// Attributes `speakers()`, where the host is `200`, the speaker named for the coachee seat.
-async fn attribute_with_host_200(
+/// Attributes `speakers` in `session` with no Google account stored for anyone.
+async fn attribute_without_accounts(
     people: &People,
     session: coaching_sessions::Model,
+    speakers: &[SpeakerIn],
 ) -> Vec<Attribution> {
     let transcription = transcription(&session);
     let db = MockDatabase::new(DatabaseBackend::Postgres)
@@ -409,29 +410,48 @@ async fn attribute_with_host_200(
         .append_query_results([Vec::<oauth_connections::Model>::new()])
         .into_connection();
     let bot = FakeBot::in_meeting(SESSION_CODE);
-    let speakers = vec![speaker("100", "Jim", false), speaker("200", "Caleb", true)];
 
     attribute_speakers(
         &db,
         Some(&bot),
         &Config::default(),
         &transcription,
-        &speakers,
+        speakers,
     )
     .await
 }
 
+/// The host is `200`, the speaker named for the coachee seat.
+fn host_200_speakers() -> Vec<SpeakerIn> {
+    vec![speaker("100", "Jim", false), speaker("200", "Caleb", true)]
+}
+
 #[tokio::test]
-async fn a_colleague_session_anchors_on_the_coachee_seat_colleague_who_made_the_link() {
+async fn a_coaching_session_whose_coachee_made_the_link_attributes_the_hosting_coach() {
+    let people = people();
+    let session = session_linked_by(&people, Some(people.coachee.id));
+
+    assert_eq!(
+        attributed(&attribute_without_accounts(&people, session, &speakers()).await),
+        vec![
+            ("100", Some(people.coach.id), Some(MatchSource::Account)),
+            (
+                "200",
+                Some(people.coachee.id),
+                Some(MatchSource::Elimination)
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_colleague_session_with_only_a_host_answer_attributes_nobody() {
     let people = colleagues();
     let session = session_linked_by(&people, Some(people.coachee.id));
 
     assert_eq!(
-        attributed(&attribute_with_host_200(&people, session).await),
-        vec![
-            ("100", Some(people.coach.id), Some(MatchSource::Elimination)),
-            ("200", Some(people.coachee.id), Some(MatchSource::Account)),
-        ]
+        attributed(&attribute_without_accounts(&people, session, &host_200_speakers()).await),
+        nobody()
     );
 }
 
@@ -441,7 +461,7 @@ async fn a_colleague_session_without_a_recorded_link_maker_attributes_nobody() {
     let session = session_linked_by(&people, None);
 
     assert_eq!(
-        attributed(&attribute_with_host_200(&people, session).await),
+        attributed(&attribute_without_accounts(&people, session, &host_200_speakers()).await),
         nobody()
     );
 }
@@ -481,15 +501,27 @@ async fn oauth_lookup_user_ids(people: &People, session: coaching_sessions::Mode
         .collect()
 }
 
-/// The link maker is the anchor: attendees are matched against their account and read with
-/// their token, even when they hold the coachee seat.
+/// Attendees are matched against the coach's account, but read with the token of whoever
+/// made the Meet link.
 #[tokio::test]
-async fn attribution_anchors_on_the_link_maker_for_both_lookups() {
+async fn attribution_matches_the_coach_and_reads_attendees_as_the_link_maker() {
     let people = people();
     let session = coaching_sessions::Model {
         meeting_url_created_by_user_id: Some(people.coachee.id),
         ..session(&people, Some(MeetingProvider::Google))
     };
+
+    assert_eq!(
+        oauth_lookup_user_ids(&people, session).await,
+        [people.coach.id, people.coachee.id]
+    );
+}
+
+/// A colleague link maker is the anchor: matched against their account and read with their token.
+#[tokio::test]
+async fn a_colleague_link_maker_is_used_for_both_lookups() {
+    let people = colleagues();
+    let session = session_linked_by(&people, Some(people.coachee.id));
 
     assert_eq!(
         oauth_lookup_user_ids(&people, session).await,

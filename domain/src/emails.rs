@@ -624,16 +624,10 @@ const UID_DOMAIN: &str = "myrefactor.com";
 /// Display name paired with `FROM_ADDRESS` on the `.ics` `ORGANIZER`.
 const FROM_DISPLAY_NAME: &str = "Refactor Coach";
 
-/// The zone every `.ics` for a session is anchored to: its schedule owner's, whose DST rules
-/// the emitted `VTIMEZONE` must follow.
-fn anchor_tz(owner: &users::Model) -> chrono_tz::Tz {
-    owner.timezone.parse().unwrap_or(chrono_tz::UTC)
-}
-
 /// The zone a series this schedule owner publishes now is written in, after the `VTIMEZONE`
 /// fallback, so expansion and the emitted `DTSTART;TZID` always agree.
 pub(crate) fn publication_zone(owner: &users::Model) -> Tz {
-    ical::emitted_zone(anchor_tz(owner))
+    ical::emitted_zone(user::timezone(owner))
 }
 
 /// The zone a series' invites are written in: the one it was published in.
@@ -655,7 +649,7 @@ async fn invite_zone(
         (Some(series_id), Some(_)) => {
             series_zone(&coaching_session_series::find_by_id(db, series_id).await?)
         }
-        _ => Ok(anchor_tz(owner)),
+        _ => Ok(user::timezone(owner)),
     }
 }
 
@@ -1148,7 +1142,7 @@ async fn send_single_session_invite_email<N: EmailNotification>(
         .collect::<Vec<OpenAction>>();
 
     let owner = participants.schedule_owner(session);
-    let anchor_tz = anchor_tz(owner);
+    let anchor_tz = user::timezone(owner);
     let description = ical::compose_description(&DescriptionParts {
         session_url: email_config.build_session_url(&session.id)?,
         title: session.title.as_deref(),
@@ -1747,7 +1741,7 @@ async fn send_session_cancelled_email(
                 description,
                 dtstamp,
                 session.ical_sequence,
-                anchor_tz(participants.schedule_owner(session)),
+                user::timezone(participants.schedule_owner(session)),
             )
         },
     )?;
@@ -2130,7 +2124,7 @@ async fn send_series_invite_email<N: EmailNotification>(
         .filter_map(|g| g.title)
         .collect::<Vec<String>>();
 
-    let anchor_tz = anchor_tz(participants.schedule_owner(first));
+    let anchor_tz = user::timezone(participants.schedule_owner(first));
     let description = ical::compose_description(&DescriptionParts {
         session_url: email_config.build_session_url(&first.id)?,
         title: None,
@@ -2688,7 +2682,7 @@ fn build_orphan_cancels(
                 participants.session_cancelled_description(),
                 dtstamp,
                 orphan_cancel_sequence(session),
-                anchor_tz(participants.schedule_owner(session)),
+                user::timezone(participants.schedule_owner(session)),
             )
             .inspect_err(|e| {
                 warn!(
@@ -2835,7 +2829,7 @@ async fn cancel_orphans_for(
             },
             &cancelled,
             organization,
-            anchor_tz(participants.schedule_owner(session)),
+            user::timezone(participants.schedule_owner(session)),
         )
         .await
         {

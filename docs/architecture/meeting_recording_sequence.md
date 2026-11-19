@@ -113,8 +113,8 @@ sequenceDiagram
         Recall-->>BE: transcript JSON [{ participant: { name, id },<br/>words: [{ text, start_timestamp: { relative },<br/>end_timestamp: { relative } }] }]
         Note over BE: Flatten words by participant, sort chronologically,<br/>coalesce (same participant + gap under 1.5s = same segment)
         BE->>Recall: GET /api/v1/bot/:bot_id/ (meeting_url.meeting_id)
-        Note over BE: Attribute speakers (never fails the transcript):<br/>anchor = the meeting-link maker when a participant, else the coach<br/>(coaching) or nobody attributed (colleague);<br/>only if the bot recorded the session's own Meet space,<br/>anchor = Recall host and/or Google attendee with the anchor's account<br/>(must agree when both answer), the other participant by elimination
-        BE->>Google: GET conferenceRecords + participants (anchor's token, when available)
+        Note over BE: Attribute speakers (never fails the transcript):<br/>anchor = the coach (coaching), or the meeting-link maker when a participant<br/>(colleague; nobody attributed without one);<br/>only if the bot recorded the session's own Meet space,<br/>anchor = Recall host and/or Google attendee with the anchor's account<br/>(must agree when both answer; a colleague needs the account answer),<br/>the other participant by elimination
+        BE->>Google: GET conferenceRecords + participants (link maker's token, else the anchor's, when available)
         BE->>DB: one transaction: INSERT transcript_participants (with user_id, match_source),<br/>INSERT transcript_segments (participant_id)
         BE->>DB: update_status → Completed, set word_count
         BE-->>FE: SSE event: transcription_updated { coaching_session_id }

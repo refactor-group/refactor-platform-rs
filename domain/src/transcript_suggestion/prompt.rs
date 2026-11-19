@@ -63,7 +63,7 @@ pub fn render(session: &Session) -> String {
             .collect()
     };
 
-    let people = if session.names_people_in_prompt {
+    let people = if session.kind.rules().names_people_in_prompt() {
         vec![format!(
             "Colleagues: {}, {}",
             session.coach_name, session.coachee_name
@@ -158,7 +158,7 @@ fn existing_text(text: &str) -> String {
 }
 
 fn transcript_line(session: &Session, index: usize, segment: &LabeledSegment) -> String {
-    let speaker = if session.names_people_in_prompt {
+    let speaker = if session.kind.rules().names_people_in_prompt() {
         segment
             .speaker_user_id
             .and_then(|id| session.seat_name(id))

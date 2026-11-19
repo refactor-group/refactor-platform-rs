@@ -4,8 +4,7 @@ use std::fmt;
 
 use chrono::NaiveDate;
 
-use super::case::{Expected, Transcript};
-use crate::transcript_suggestion::actions::Role;
+use super::case::{Expected, Role, Transcript};
 use crate::transcript_suggestion::prompt::collapse;
 
 /// Words in an action body that mean the model wrote a note or a placeholder instead of a task.

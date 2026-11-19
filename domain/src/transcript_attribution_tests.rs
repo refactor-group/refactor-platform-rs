@@ -11,6 +11,7 @@ use crate::transcript_participant::MatchSource;
 use crate::Id;
 
 const COACH_GOOGLE_ID: &str = "111111111111111111111";
+const COACHEE_GOOGLE_ID: &str = "222222222222222222222";
 
 fn speaker(provider_id: &str, name: Option<&str>, is_host: Option<bool>) -> Participant {
     Participant {
@@ -55,7 +56,7 @@ fn typical_attendees() -> Vec<Attendee> {
     vec![
         anonymous("Refactor Coach"),
         signed_in(COACH_GOOGLE_ID, "Coach Person"),
-        signed_in("222222222222222222222", "Coachee Person"),
+        signed_in(COACHEE_GOOGLE_ID, "Coachee Person"),
     ]
 }
 
@@ -91,6 +92,7 @@ fn both_answers_agreeing_identify_the_coach_and_then_the_coachee() {
         &typical_speakers(),
         p.coach_id,
         p.coachee_id,
+        Kind::Coaching,
         &evidence(Some(&attendees)),
     );
 
@@ -111,6 +113,7 @@ fn the_host_alone_identifies_the_coach_when_google_cannot_answer() {
         &typical_speakers(),
         p.coach_id,
         p.coachee_id,
+        Kind::Coaching,
         &evidence(None),
     );
 
@@ -136,6 +139,7 @@ fn google_alone_identifies_the_coach_when_there_is_no_single_host() {
         &speakers,
         p.coach_id,
         p.coachee_id,
+        Kind::Coaching,
         &evidence(Some(&attendees)),
     );
 
@@ -162,6 +166,7 @@ fn answers_that_disagree_identify_nobody() {
         &speakers,
         p.coach_id,
         p.coachee_id,
+        Kind::Coaching,
         &evidence(Some(&attendees)),
     );
 
@@ -184,6 +189,7 @@ fn a_recording_of_some_other_meeting_identifies_nobody() {
         &typical_speakers(),
         p.coach_id,
         p.coachee_id,
+        Kind::Coaching,
         &other_meeting,
     );
 
@@ -203,6 +209,7 @@ fn two_hosts_leave_the_decision_to_google() {
         &speakers,
         p.coach_id,
         p.coachee_id,
+        Kind::Coaching,
         &evidence(Some(&attendees)),
     );
 
@@ -218,7 +225,13 @@ fn two_hosts_and_no_google_answer_identify_nobody() {
         speaker("200", Some("Coach Person"), Some(true)),
     ];
 
-    let result = attribute(&speakers, p.coach_id, p.coachee_id, &evidence(None));
+    let result = attribute(
+        &speakers,
+        p.coach_id,
+        p.coachee_id,
+        Kind::Coaching,
+        &evidence(None),
+    );
 
     assert!(result.iter().all(|a| a.user_id.is_none()));
 }
@@ -240,6 +253,7 @@ fn a_coach_on_another_account_without_host_identifies_nobody() {
         &speakers,
         p.coach_id,
         p.coachee_id,
+        Kind::Coaching,
         &evidence(Some(&attendees)),
     );
 
@@ -265,6 +279,7 @@ fn a_guest_using_the_coachs_name_cannot_be_the_google_answer_but_the_host_still_
         &speakers,
         p.coach_id,
         p.coachee_id,
+        Kind::Coaching,
         &evidence(Some(&attendees)),
     );
 
@@ -286,7 +301,13 @@ fn without_the_coachs_google_id_only_the_host_answers() {
         attendees: Some(&attendees),
     };
 
-    let result = attribute(&typical_speakers(), p.coach_id, p.coachee_id, &no_account);
+    let result = attribute(
+        &typical_speakers(),
+        p.coach_id,
+        p.coachee_id,
+        Kind::Coaching,
+        &no_account,
+    );
 
     assert_eq!(result[1].user_id, Some(p.coach_id));
 }
@@ -305,6 +326,7 @@ fn a_coach_who_rejoined_is_the_coach_both_times() {
         &speakers,
         p.coach_id,
         p.coachee_id,
+        Kind::Coaching,
         &evidence(Some(&attendees)),
     );
 
@@ -327,7 +349,13 @@ fn a_coachee_who_rejoined_is_the_coachee_both_times() {
         speaker("101", Some("Coachee Person"), Some(false)),
     ];
 
-    let result = attribute(&speakers, p.coach_id, p.coachee_id, &evidence(None));
+    let result = attribute(
+        &speakers,
+        p.coach_id,
+        p.coachee_id,
+        Kind::Coaching,
+        &evidence(None),
+    );
 
     assert_eq!(result[0].user_id, Some(p.coachee_id));
     assert_eq!(result[2].user_id, Some(p.coachee_id));
@@ -342,7 +370,13 @@ fn a_third_speaker_leaves_the_coachee_unknown() {
         speaker("300", Some("A Guest"), Some(false)),
     ];
 
-    let result = attribute(&speakers, p.coach_id, p.coachee_id, &evidence(None));
+    let result = attribute(
+        &speakers,
+        p.coach_id,
+        p.coachee_id,
+        Kind::Coaching,
+        &evidence(None),
+    );
 
     assert_eq!(result[1].user_id, Some(p.coach_id));
     assert_eq!(result[0].user_id, None);
@@ -354,7 +388,13 @@ fn a_coach_speaking_alone_leaves_no_coachee() {
     let p = people();
     let speakers = vec![speaker("200", Some("Coach Person"), Some(true))];
 
-    let result = attribute(&speakers, p.coach_id, p.coachee_id, &evidence(None));
+    let result = attribute(
+        &speakers,
+        p.coach_id,
+        p.coachee_id,
+        Kind::Coaching,
+        &evidence(None),
+    );
 
     assert_eq!(
         outcome(&result),
@@ -370,7 +410,13 @@ fn without_a_coach_there_is_no_elimination() {
         speaker("200", Some("Coach Person"), Some(false)),
     ];
 
-    let result = attribute(&speakers, p.coach_id, p.coachee_id, &evidence(None));
+    let result = attribute(
+        &speakers,
+        p.coach_id,
+        p.coachee_id,
+        Kind::Coaching,
+        &evidence(None),
+    );
 
     assert!(result.iter().all(|a| a.user_id.is_none()));
 }
@@ -383,7 +429,13 @@ fn a_nameless_single_host_is_still_the_host_answer() {
         speaker("200", None, Some(true)),
     ];
 
-    let result = attribute(&speakers, p.coach_id, p.coachee_id, &evidence(None));
+    let result = attribute(
+        &speakers,
+        p.coach_id,
+        p.coachee_id,
+        Kind::Coaching,
+        &evidence(None),
+    );
 
     assert_eq!(result[1].user_id, Some(p.coach_id));
     assert_eq!(result[0].user_id, Some(p.coachee_id));
@@ -402,7 +454,13 @@ fn elimination_groups_other_speakers_by_account_before_name() {
         same_account_renamed,
     ];
 
-    let result = attribute(&speakers, p.coach_id, p.coachee_id, &evidence(None));
+    let result = attribute(
+        &speakers,
+        p.coach_id,
+        p.coachee_id,
+        Kind::Coaching,
+        &evidence(None),
+    );
 
     assert_eq!(result[0].user_id, Some(p.coachee_id));
     assert_eq!(result[2].user_id, Some(p.coachee_id));
@@ -412,7 +470,14 @@ fn elimination_groups_other_speakers_by_account_before_name() {
 fn no_speakers_attribute_nothing() {
     let p = people();
 
-    assert!(attribute(&[], p.coach_id, p.coachee_id, &evidence(None)).is_empty());
+    assert!(attribute(
+        &[],
+        p.coach_id,
+        p.coachee_id,
+        Kind::Coaching,
+        &evidence(None)
+    )
+    .is_empty());
 }
 
 fn relationship(kind: Kind) -> coaching_relationships::Model {
@@ -460,11 +525,102 @@ fn a_coaching_session_without_a_link_maker_anchors_on_the_coach() {
 }
 
 #[test]
-fn a_coaching_session_whose_coachee_made_the_link_anchors_on_the_coachee() {
+fn a_coaching_session_whose_coachee_made_the_link_anchors_on_the_coach() {
     let r = relationship(Kind::Coaching);
 
     assert_eq!(
         anchor_and_other(&r, Some(r.coachee_id)),
-        Some((r.coachee_id, r.coach_id))
+        Some((r.coach_id, r.coachee_id))
     );
+}
+
+/// Attributes `speakers` in a `kind` session whose link the coachee seat made.
+fn attribute_linked_by_coachee(
+    kind: Kind,
+    speakers: &[Participant],
+    evidence: &Evidence,
+) -> (coaching_relationships::Model, Vec<Attribution>) {
+    let r = relationship(kind);
+    let (anchor, other) = anchor_and_other(&r, Some(r.coachee_id)).expect("an anchor");
+    let result = attribute(speakers, anchor, other, kind, evidence);
+    (r, result)
+}
+
+#[test]
+fn a_coaching_session_whose_coachee_made_the_link_attributes_the_hosting_coach() {
+    let (r, result) =
+        attribute_linked_by_coachee(Kind::Coaching, &typical_speakers(), &evidence(None));
+
+    assert_eq!(
+        outcome(&result),
+        vec![
+            ("100", Some(r.coachee_id), Some(MatchSource::Elimination)),
+            ("200", Some(r.coach_id), Some(MatchSource::Account)),
+        ]
+    );
+}
+
+/// Evidence naming the coachee-seat link maker's account, with `typical_attendees()`.
+fn maker_evidence(attendees: Option<&[Attendee]>) -> Evidence<'_> {
+    Evidence {
+        anchor_account_id: Some(COACHEE_GOOGLE_ID),
+        ..evidence(attendees)
+    }
+}
+
+#[test]
+fn a_colleague_session_with_only_a_host_answer_attributes_nobody() {
+    let speakers = vec![
+        speaker("100", Some("Coach Person"), Some(false)),
+        speaker("200", Some("Coachee Person"), Some(true)),
+    ];
+
+    let (_, result) =
+        attribute_linked_by_coachee(Kind::Colleague, &speakers, &maker_evidence(None));
+
+    assert!(result
+        .iter()
+        .all(|a| a.user_id.is_none() && a.source.is_none()));
+}
+
+#[test]
+fn a_colleague_link_makers_matched_account_attributes_them_and_the_other_by_elimination() {
+    let attendees = typical_attendees();
+    let speakers = vec![
+        speaker("100", Some("Coach Person"), None),
+        speaker("200", Some("Coachee Person"), None),
+    ];
+
+    let (r, result) = attribute_linked_by_coachee(
+        Kind::Colleague,
+        &speakers,
+        &maker_evidence(Some(&attendees)),
+    );
+
+    assert_eq!(
+        outcome(&result),
+        vec![
+            ("100", Some(r.coach_id), Some(MatchSource::Elimination)),
+            ("200", Some(r.coachee_id), Some(MatchSource::Account)),
+        ]
+    );
+}
+
+#[test]
+fn a_colleague_host_who_disagrees_with_the_account_attributes_nobody() {
+    let attendees = typical_attendees();
+    let speakers = vec![
+        speaker("100", Some("Coach Person"), Some(true)),
+        speaker("200", Some("Coachee Person"), Some(false)),
+    ];
+
+    let (_, result) = attribute_linked_by_coachee(
+        Kind::Colleague,
+        &speakers,
+        &maker_evidence(Some(&attendees)),
+    );
+
+    assert!(result
+        .iter()
+        .all(|a| a.user_id.is_none() && a.source.is_none()));
 }
