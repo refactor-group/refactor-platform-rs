@@ -32,6 +32,12 @@ impl Manager {
         self.registry.unregister(connection_id);
     }
 
+    /// End every open stream, so a graceful shutdown is not held open by them.
+    pub fn close_all(&self) {
+        info!("Closing all SSE connections");
+        self.registry.close_all();
+    }
+
     /// Send a message based on its scope
     pub fn send_message(&self, message: SseMessage) {
         let event_type = message.event.event_type();
