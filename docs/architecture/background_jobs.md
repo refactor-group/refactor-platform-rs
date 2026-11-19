@@ -115,8 +115,10 @@ Four details carry most of the weight:
   `IS DISTINCT FROM cs.date` means a rescheduled session stops matching its own claim and
   falls back into scope automatically. No reschedule-path code has to clear a flag.
 
-The claim is keyed by `(session, recipient)` rather than by session alone, so a second
-recipient can be added later without migrating rows that are already claimed.
+The claim is keyed by `(session, recipient)` rather than by session alone, so each
+reminded participant has their own claim. The example shows the coachee's seat; the real
+statement has one such `SELECT` per seat the relationship's kind reminds
+(`Rules::is_reminded`), joined with `UNION`, so a colleague session reminds both people.
 
 Delivery happens *after* the claim commits, so a failed send would otherwise be lost. The
 reminder sweep therefore deletes the claim (`release_reminder_claim`) on failure, costing
@@ -154,7 +156,7 @@ drains over several ticks instead of bursting against the Resend API.
 | Job | Interval | First run | What it does |
 |---|---|---|---|
 | `password-reset-sweep` | 24h | After interval | Deletes `password_reset_attempts` rows older than 30 days. Retention outlives the 24-hour daily-cap window; the rest is forensics. |
-| `session-reminder` | `SESSION_REMINDER_POLL_MINUTES` (default 15) | Immediately | Emails each coachee ahead of an upcoming session. Not scheduled at all when `SESSION_REMINDER_EMAIL_TEMPLATE_ID` is unset. |
+| `session-reminder` | `SESSION_REMINDER_POLL_MINUTES` (default 15) | Immediately | Emails each participant the relationship's kind reminds (a coaching relationship's coachee, both colleagues) ahead of an upcoming session. Not scheduled at all when `SESSION_REMINDER_EMAIL_TEMPLATE_ID` is unset. |
 | `coaching-session-pending-reschedule` | 15s | Immediately | Emails a single session's net reschedule once it settles (`SESSION_RESCHEDULE_SETTLE_SECONDS`, default 60, capped by `SESSION_RESCHEDULE_SETTLE_MAX_SECONDS`, default 300). Always scheduled: without Resend or `SESSION_RESCHEDULED_EMAIL_TEMPLATE_ID` it drops due rows unsent, since a pending row suppresses the session's reminder. |
 
 The session-store expiry task in `web::init_server` stays hand-rolled: it is
