@@ -89,7 +89,7 @@ async fn analyze<S: Suggestible>(
             .await?;
     // The schedule owner's calendar is the one the model reads.
     let anchor = coaching_relationship::schedule_owner(
-        relationship.kind,
+        &relationship,
         &coach,
         &coachee,
         session.scheduled_by_user_id,

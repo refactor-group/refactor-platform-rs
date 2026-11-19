@@ -751,7 +751,7 @@ async fn label(
         &coachee,
     );
     let owner = schedule_owner(
-        relationship.kind,
+        &relationship,
         &coach,
         &coachee,
         session.scheduled_by_user_id,

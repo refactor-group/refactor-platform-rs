@@ -226,18 +226,15 @@ pub async fn find_by_organization_for_user_with_user_names(
         .collect())
 }
 
-/// Whichever of `coach` and `coachee` owns the schedule of a session scheduled by
-/// `scheduler_id`, under the rules of `kind`.
+/// Whichever of `coach` and `coachee` owns the schedule of a session in `relationship`
+/// scheduled by `scheduler_id`.
 pub(crate) fn schedule_owner<'a>(
-    kind: Kind,
+    relationship: &Model,
     coach: &'a users::Model,
     coachee: &'a users::Model,
     scheduler_id: Id,
 ) -> &'a users::Model {
-    let scheduler_seat = [(coach, Seat::CoachId), (coachee, Seat::CoacheeId)]
-        .into_iter()
-        .find_map(|(user, seat)| (user.id == scheduler_id).then_some(seat));
-    match kind.rules().schedule_owner().seat(scheduler_seat) {
+    match relationship.schedule_owner_seat(scheduler_id) {
         Seat::CoachId => coach,
         Seat::CoacheeId => coachee,
     }
