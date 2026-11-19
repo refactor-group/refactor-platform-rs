@@ -309,7 +309,7 @@ How to read the tables:
 
 | ID | Method and route | Caller | Expected | Enforced at (file:line) | Notes |
 |---|---|---|---|---|---|
-| ACT-01 | GET /organizations/O1/coaching_relationships/actions | COACH | 200, `coachee_actions`: R1 [A1 A2 A3], R3 [A6 A7] | `web/src/extractors/organization_member_access.rs:86`; `entity_api/src/action.rs:615` | [rows] keyed by relationship id |
+| ACT-01 | GET /organizations/O1/coaching_relationships/actions | COACH | 200, `actions_by_relationship`: R1 [A1 A2 A3], R3 [A6 A7]; no `coachee_actions` | `web/src/extractors/organization_member_access.rs:86`; `entity_api/src/action.rs:615` | [rows] keyed by relationship id |
 | ACT-02 | GET /organizations/O1/coaching_relationships/actions | COACHEE | 200, R1 [A2 A3], R2 [A5]; not A1, A4 | `entity_api/src/action.rs:482`, `:475` | [rows] coachee side sees own or unassigned |
 | ACT-03 | GET /organizations/O1/coaching_relationships/actions | OTHER_COACH | 200, R2 [A4 A5] | `entity_api/src/action.rs:615` | [rows] |
 | ACT-04 | GET /organizations/O1/coaching_relationships/actions | MEMBER, ADMIN, SUPER | 200, empty object | `web/src/controller/organization/coaching_relationship/actions_controller.rs:158` | [rows] only the caller's own relationships |
@@ -909,7 +909,7 @@ a frozen `domain` test, or by hand with the reason.
 | AGR-10 | `web/src/controller/agreement_controller_sqlite_tests.rs::non_participants_cannot_change_the_agreement` |
 | AGR-11 | `web/src/controller/agreement_controller_sqlite_tests.rs::a_removed_coachee_cannot_reach_their_sessions_agreements` |
 | AGR-12 | `web/src/controller/agreement_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_agreements` |
-| ACT-01 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::a_coach_lists_actions_per_relationship` |
+| ACT-01 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::a_coach_lists_actions_per_relationship`, `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::the_batch_list_is_keyed_actions_by_relationship` |
 | ACT-02 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::a_coachee_lists_only_own_and_unassigned_actions_per_relationship` |
 | ACT-03 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::another_coach_lists_only_their_relationships_actions` |
 | ACT-04 | `web/src/controller/organization/coaching_relationship/actions_controller_sqlite_tests.rs::members_in_no_relationship_list_no_actions` |
