@@ -580,7 +580,7 @@ fn render_unfiltered_pins_the_exact_body_and_filename() {
         rendered.body,
         "Coaching session transcript\n\
          Date: 2026-09-21\n\
-         Speakers: Jim H, Caleb Bourg, Pat\n\
+         Speakers: Jim Hodapp, Caleb Bourg, Pat\n\
          \n\
          [0:00] Jim H: Good morning.\n\
          [0:04] Caleb Bourg: Morning.\n\
@@ -603,7 +603,7 @@ fn render_filtered_to_coach_keeps_only_coach_lines() {
         rendered.body,
         "Coaching session transcript\n\
          Date: 2026-09-21\n\
-         Speakers: Jim H\n\
+         Speakers: Jim Hodapp\n\
          \n\
          [0:00] Jim H: Good morning.\n\
          [1:02:15] Jim H: Wrapping up.\n"
@@ -623,7 +623,9 @@ fn render_filtered_to_both_roles_drops_guests() {
         ],
     )
     .expect("renders");
-    assert!(rendered.body.contains("Speakers: Jim H, Caleb Bourg\n"));
+    assert!(rendered
+        .body
+        .contains("Speakers: Jim Hodapp, Caleb Bourg\n"));
     assert!(!rendered.body.contains("Pat"));
     assert_eq!(
         rendered.filename,
@@ -814,8 +816,71 @@ fn render_header_lists_only_speakers_with_surviving_lines() {
     )
     .expect("renders");
 
-    assert!(rendered.body.contains("Speakers: Jim H\n"));
+    assert!(rendered.body.contains("Speakers: Jim Hodapp\n"));
     assert!(!rendered.body.contains("Pat"));
+}
+
+#[test]
+fn render_header_names_colleagues_by_full_name_and_lines_by_display_name() {
+    let first = user("Jim", "Hodapp", Some("Jim H"));
+    let second = user("Caleb", "Bourg", Some("CB"));
+    let first_p = participant(Some("typed"), None, Some((first.id, MatchSource::Account)));
+    let second_p = participant(
+        Some("typed 2"),
+        None,
+        Some((second.id, MatchSource::Account)),
+    );
+    let segments = vec![
+        spoken(Some(&first_p), "typed", "Hello.", 0),
+        spoken(Some(&second_p), "typed 2", "Hi.", 2000),
+    ];
+    let labeled = label_transcript(
+        &[first_p, second_p],
+        &segments,
+        &colleagues(&first, &second),
+        &first,
+        &second,
+    );
+
+    let rendered = render_plain_text(
+        coaching_relationship_kind::Kind::Colleague,
+        date(),
+        &labeled,
+        &[],
+    )
+    .expect("renders");
+
+    assert!(rendered
+        .body
+        .contains("Speakers: Jim Hodapp, Caleb Bourg\n"));
+    assert!(rendered.body.contains("[0:00] Jim H: Hello.\n"));
+    assert!(rendered.body.contains("[0:02] CB: Hi.\n"));
+}
+
+#[test]
+fn render_header_names_a_participant_without_names_by_email() {
+    let (coach, coachee) = (user("", " ", None), coachee());
+    let coach_p = participant(Some("typed"), None, Some((coach.id, MatchSource::Account)));
+    let segments = vec![spoken(Some(&coach_p), "typed", "Hello.", 0)];
+    let labeled = label_transcript(
+        &[coach_p],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
+
+    let rendered = render_plain_text(
+        coaching_relationship_kind::Kind::Coaching,
+        date(),
+        &labeled,
+        &[],
+    )
+    .expect("renders");
+
+    assert!(rendered
+        .body
+        .contains(&format!("Speakers: {}\n", coach.email)));
 }
 
 #[test]
@@ -945,6 +1010,7 @@ fn speaker_role_serializes_lowercase() {
 fn speaker_serializes_role_as_null_when_unattributed() {
     let json = serde_json::to_value(Speaker {
         label: "Pat".to_owned(),
+        header_name: "Pat".to_owned(),
         role: None,
     })
     .unwrap();

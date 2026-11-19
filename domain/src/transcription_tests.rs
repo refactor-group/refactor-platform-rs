@@ -272,7 +272,7 @@ async fn export_plain_text_renders_the_relationship_participants() {
     .expect("the coach-only export should render");
 
     assert_eq!(rendered.filename, "transcript-2026-09-21-jim-h.txt");
-    assert!(rendered.body.contains("Speakers: Jim H\n"));
+    assert!(rendered.body.contains("Speakers: Jim Hodapp\n"));
     assert!(rendered.body.contains("[0:00] Jim H: Good morning.\n"));
     assert!(!rendered.body.contains("J. Hodapp"));
     assert!(!rendered.body.contains("Caleb Bourg"));
@@ -501,6 +501,7 @@ async fn with_speakers_serializes_flat() {
         transcription: row,
         speakers: vec![Speaker {
             label: "Jim H".to_owned(),
+            header_name: "Jim Hodapp".to_owned(),
             role: Some(coaching_relationship_kind::Role::Coach),
         }],
     })
