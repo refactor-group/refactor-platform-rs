@@ -74,22 +74,24 @@ The Refactor Platform backend uses GitHub Actions for continuous integration, re
 ### 3. Production Deployment
 **File:** `.github/workflows/deploy_to_do.yml`
 **Triggers:** Manual dispatch only
-**Documentation:** [workflows/deploy-to-do.md](workflows/deploy-to-do.md)
+**Rollback:** `.github/workflows/rollback_do.yml` (manual dispatch)
+**Manual tests:** [in_place_deploy_manual_testing.md](../test-plans/in_place_deploy_manual_testing.md)
 
 **Deployment Flow:**
 1. Establish Tailscale VPN connection to DigitalOcean server
 2. Generate `.env` file from GitHub secrets/variables
-3. Download docker-compose.yaml and nginx configs
-4. Stop systemd service (`refactor-platform.service`)
-5. Pull latest Docker images from GHCR
-6. Start systemd service
-7. Verify deployment (health checks, container status)
+3. Download docker-compose.yaml and nginx configs, and validate the compose file
+4. Pull images while the current containers keep running
+5. If the backend image changed, stop only the backend and run all pending migrations in one transaction
+6. Recreate only the containers whose image or config changed, then reload nginx
+7. Verify deployment (health checks); on failure, put back the previous images and files
 
 **Key Features:**
 - ✅ Secure VPN-based deployment (Tailscale)
-- ✅ Systemd service management
+- ✅ Replaces only the containers that changed; the frontend keeps serving during a backend deploy
+- ✅ All-or-nothing migrations: a failed run applies none of them
+- ✅ Keeps the previous image set; automatic rollback on a failed deploy, and a rollback job that refuses when the database is ahead of the previous backend
 - ✅ Health checks and verification
-- ✅ Deploys both backend and frontend together
 - ⚠️ Manual trigger only (no auto-deploy)
 
 ---
@@ -259,6 +261,21 @@ This prevents "must be owner of type" errors in subsequent migrations.
 - PostgreSQL (appears to be DigitalOcean managed service)
 - SSL/TLS connection with certificate verification
 
+### Recovering from a stuck deploy
+
+A deploy applies all pending migrations in one transaction. If one pending migration adds an enum value (`ALTER TYPE ... ADD VALUE`) and a later one writes it, Postgres refuses ("unsafe use of new value"), nothing is applied, the previous backend comes back, and every deploy fails the same way. Apply the migrations through the one that adds the value first, on the host:
+
+```bash
+cd /home/deploy
+# The failed deploy put the running image back on the tag; fetch the new one again.
+docker compose pull migrator
+# Lists the pending migrations in order; count them through the one that adds the value.
+docker compose run --rm --no-deps -T --name migration-recovery migrator migrationctl status </dev/null
+docker compose run --rm --no-deps -T --name migration-recovery migrator migrationctl up -n <count> </dev/null
+```
+
+Then run Deploy to Production again. The previous backend keeps running against what `up -n` applies, which is safe for an added enum value. If an earlier migration in that count drops or renames something the running backend reads, run `docker stop rust-app` first and deploy straight after.
+
 **Systemd Commands:**
 ```bash
 # View status
@@ -385,7 +402,6 @@ sea-orm-cli migrate up -s refactor_platform
 - ⚠️ No test coverage reporting
 - ⚠️ No deployment notifications
 - ⚠️ No staging environment
-- ⚠️ No automated rollback mechanism
 - ⚠️ Manual production deployment (human error risk)
 
 **See Complete Analysis:** [gap-analysis.md](gap-analysis.md)

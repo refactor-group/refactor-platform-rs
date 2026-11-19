@@ -58,6 +58,10 @@ use oauth::providers::GoogleOAuthProvider;
 
 **For existing types without proper ownership:** A database superuser must manually run `ALTER TYPE refactor_platform.<type_name> OWNER TO refactor;` before migrations can modify those types.
 
+**All-or-nothing deploys:** `migrationctl up` (`migration/src/main.rs`) applies every pending migration in one transaction on an existing database, so a failed deploy applies nothing. Two consequences for migration authors:
+- A migration that adds an enum value (`ALTER TYPE ... ADD VALUE`) and a later migration that writes that value cannot ship in the same deploy; Postgres rejects using the value before commit. Ship them in separate deploys. CI's migration check catches the pair within one PR; two PRs merged between deploys reach production, fail safely, and need "Recovering from a stuck deploy" in `docs/cicd/README.md`.
+- `use_transaction(Some(false))` (needed for `CREATE INDEX CONCURRENTLY`) is refused outright.
+
 ## Project Structure
 
 ```
