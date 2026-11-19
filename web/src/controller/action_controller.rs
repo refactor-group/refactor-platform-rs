@@ -63,7 +63,7 @@ async fn validate_links(
         .all(|id| relationship.includes_user(*id));
     if !assignees_in_relationship {
         return Err(Error::validation(
-            "assignee_ids must name the coach or coachee of the action's relationship.",
+            "assignee_ids must name participants in the action's relationship.",
         ));
     }
 

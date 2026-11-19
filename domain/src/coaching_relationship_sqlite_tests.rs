@@ -245,6 +245,29 @@ async fn a_returned_colleague_relationship_carries_each_seats_own_email() {
 }
 
 #[tokio::test]
+async fn create_refuses_to_pair_a_user_with_themselves() {
+    within_time_limit(async {
+        let (db, o, [user, _, _]) = three_members().await;
+
+        for kind in [Kind::Coaching, Kind::Colleague] {
+            let error = create(&db, o, draft(user, user, kind))
+                .await
+                .expect_err("a user cannot be paired with themselves");
+
+            assert_eq!(
+                error.error_kind,
+                EntityApiErrorKind::ValidationError {
+                    message: "A user cannot be their own partner in a relationship.".into(),
+                    details: None,
+                },
+                "{kind:?}"
+            );
+        }
+    })
+    .await
+}
+
+#[tokio::test]
 async fn create_refuses_a_pair_whose_relationship_is_of_another_kind() {
     within_time_limit(async {
         let (db, o, [coach, coachee, _]) = three_members().await;

@@ -64,7 +64,7 @@ pub async fn create(
         return Err(Error {
             source: None,
             error_kind: EntityApiErrorKind::ValidationError {
-                message: "A user cannot be their own coach.".into(),
+                message: "A user cannot be their own partner in a relationship.".into(),
                 details: None,
             },
         });

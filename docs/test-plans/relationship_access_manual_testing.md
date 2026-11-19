@@ -345,7 +345,7 @@ How to read the tables:
 | ACT-33 | POST /actions `{coaching_session_id: S1}` | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, nothing written, no email | `web/src/controller/action_controller.rs:120` | [tightened] Unknown session: 404 |
 | ACT-34 | PUT /actions/A1, PUT /actions/A1/status, DELETE /actions/A1 | MEMBER, OTHER_COACH, ADMIN, SUPER, OUTSIDER | 403, A1 unchanged | `web/src/extractors/action_access.rs:46` | [tightened] |
 | ACT-35 | GET, PUT, DELETE A6; POST `{coaching_session_id: S3}` | REMOVED | 403 | `web/src/extractors/action_access.rs:46`; `web/src/controller/action_controller.rs:120` | [tightened] |
-| ACT-36 | POST /actions `{coaching_session_id: S1, assignee_ids: [MEMBER_ID]}`; PUT /actions/A3 adding MEMBER_ID | COACH | 422, nothing written, no email | `web/src/controller/action_controller.rs:63` (via `validate_links`, `:124`, `:249`) | [tightened] Assignees must be the relationship's coach or coachee |
+| ACT-36 | POST /actions `{coaching_session_id: S1, assignee_ids: [MEMBER_ID]}`; PUT /actions/A3 adding MEMBER_ID | COACH | 422, nothing written, no email; `message` `assignee_ids must name participants in the action's relationship.` | `web/src/controller/action_controller.rs:63` (via `validate_links`, `:124`, `:249`) | [tightened] Assignees must be the relationship's participants |
 | ACT-37 | POST /actions `{coaching_session_id: S3, assignee_ids: [REMOVED_ID]}` | COACH | 409 `assignee_not_a_member`, nothing written, no email | `web/src/controller/action_controller.rs:77`; `domain/src/coaching_relationship.rs:105` | [membership] `details: {reason, organization_id, user_id}` |
 | ACT-38 | PUT /actions/A6 editing the body, REMOVED still assigned | COACH | 200, A6 updated, no email | `web/src/controller/action_controller.rs:77` | [membership] Only newly added assignees are checked |
 | ACT-39 | PUT /actions/A7 adding REMOVED_ID as an assignee | COACH | 409 `assignee_not_a_member`, A7 unchanged, no email | `web/src/controller/action_controller.rs:77`; `domain/src/coaching_relationship.rs:117` | [membership] `details: {reason, organization_id, user_id}` |
@@ -946,7 +946,7 @@ a frozen `domain` test, or by hand with the reason.
 | ACT-33 | `web/src/controller/action_controller_sqlite_tests.rs::non_participants_cannot_create_an_action_in_the_session` |
 | ACT-34 | `web/src/controller/action_controller_sqlite_tests.rs::non_participants_cannot_change_the_action` |
 | ACT-35 | `web/src/controller/action_controller_sqlite_tests.rs::a_removed_coachee_cannot_reach_their_sessions_actions` |
-| ACT-36 | `web/src/controller/action_controller_sqlite_tests.rs::assignees_outside_the_relationship_are_refused` |
+| ACT-36 | `web/src/controller/action_controller_sqlite_tests.rs::assignees_outside_the_relationship_are_refused`, `web/src/controller/action_controller_sqlite_tests.rs::an_assignee_outside_the_relationship_is_told_to_name_its_participants` |
 | ACT-37 | `web/src/controller/action_controller_sqlite_tests.rs::assigning_a_coachee_who_left_is_refused` |
 | ACT-38 | `web/src/controller/action_controller_sqlite_tests.rs::a_coach_edits_an_action_still_assigned_to_a_coachee_who_left` |
 | ACT-39 | `web/src/controller/action_controller_sqlite_tests.rs::adding_a_coachee_who_left_as_an_assignee_is_refused` |
