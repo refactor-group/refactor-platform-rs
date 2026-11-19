@@ -105,7 +105,7 @@ pub async fn create(
         ("coaching_session_id" = Uuid, Path, description = "Coaching session id"),
     ),
     responses(
-        (status = 200, description = "Recording bot stopped"),
+        (status = 200, description = "Recording bot stopped, or the latest recording unchanged when it had already ended"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "No active recording found for this session"),
         (status = 503, description = "Service temporarily unavailable"),
@@ -125,6 +125,7 @@ pub async fn delete(
 
     let recording = MeetingRecordingApi::stop(
         app_state.db_conn_ref(),
+        app_state.event_publisher.as_ref(),
         app_state.recording_bot_provider.as_deref(),
         coaching_session_id,
     )

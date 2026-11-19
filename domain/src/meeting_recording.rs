@@ -26,8 +26,9 @@ const ABANDONED_CLAIM_AFTER: TimeDelta = TimeDelta::minutes(2);
 ///
 /// The claim is committed before the bot is sent, so of two concurrent starts exactly one
 /// sends a bot; the other gets a 409 with reason `recording_already_active`. A failed send
-/// marks the claim `Failed` so the session can be retried. A session in an archived
-/// organization is refused with `OrganizationArchived` before anything is written or sent.
+/// marks the claim `Failed`, so the session can be retried, and tells the participants. A
+/// session in an archived organization is refused with `OrganizationArchived` before anything
+/// is written or sent.
 pub async fn start(
     db: &DatabaseConnection,
     event_publisher: &EventPublisher,
@@ -75,6 +76,7 @@ pub async fn start(
         Ok(bot_info) => bot_info,
         Err(e) => {
             release_claim(db, claim.id, e.to_string()).await;
+            publish_updated(db, event_publisher, session_id).await;
             return Err(Error::from(e));
         }
     };
@@ -147,9 +149,11 @@ pub(crate) async fn publish_updated(
 /// Stops the active recording bot for a coaching session.
 ///
 /// Looks up the latest recording for the session, calls `stop_bot` on the provider when the
-/// recording has a bot, and updates the recording status to `Cancelled`.
+/// recording has a bot, marks it `Cancelled` and tells the session's participants. A recording
+/// that already ended is returned unchanged, with no provider call and no event.
 pub async fn stop(
     db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
     provider: Option<&dyn recording_bot::Provider>,
     session_id: Id,
 ) -> Result<Model, Error> {
@@ -161,6 +165,10 @@ pub async fn stop(
                 EntityErrorKind::NotFound,
             )),
         })?;
+
+    if recording_api::TERMINAL_RECORDING_STATUSES.contains(&recording.status) {
+        return Ok(recording);
+    }
 
     let provider = provider.ok_or_else(|| {
         warn!("Recording bot provider not configured");
@@ -176,7 +184,7 @@ pub async fn stop(
         info!("Removed bot {bot_id} from call for session {session_id}");
     }
 
-    Ok(recording_api::update_status(
+    let stopped = recording_api::update_status(
         db,
         recording.id,
         MeetingRecordingStatus::Cancelled,
@@ -185,7 +193,10 @@ pub async fn stop(
             ..Default::default()
         },
     )
-    .await?)
+    .await?;
+
+    publish_updated(db, event_publisher, session_id).await;
+    Ok(stopped)
 }
 
 #[cfg(test)]

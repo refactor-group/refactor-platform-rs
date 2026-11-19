@@ -23,7 +23,9 @@ sequenceDiagram
         Recall-->>BE: { id: bot_id }
         BE->>DB: INSERT meeting_recordings (status: Pending, bot_id)
         DB-->>BE: recording row
+        BE-->>FE: SSE event: meeting_recording_updated { coaching_session_id }
         BE-->>FE: 201 { status: "pending", bot_id, ... }
+        Note over BE,FE: A refused bot dispatch marks the claim Failed,<br/>emits meeting_recording_updated, then returns the error
         FE->>FE: mutate SWR cache, begin polling every 5s
     end
 
@@ -54,10 +56,12 @@ sequenceDiagram
         FE->>BE: DELETE /coaching_sessions/:id/meeting_recording
         BE->>Recall: POST /api/v1/bot/:bot_id/leave_call/
         Recall-->>BE: 200 (4xx also treated as success — bot may have already left)
-        BE->>DB: update_status → Processing, set ended_at
+        BE->>DB: update_status → Cancelled, set ended_at
         DB-->>BE: recording
-        BE-->>FE: 200 { status: "processing" }
+        BE-->>FE: SSE event: meeting_recording_updated { coaching_session_id }
+        BE-->>FE: 200 { status: "cancelled" }
         FE->>FE: mutate SWR cache
+        Note over BE,FE: A latest recording already Completed, Failed or Cancelled<br/>is returned unchanged: no Recall call, no write, no SSE event
     end
 
     rect rgb(235, 220, 255)

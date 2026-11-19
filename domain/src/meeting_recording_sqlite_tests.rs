@@ -6,15 +6,16 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use chrono::Utc;
-use entity::meeting_recording;
+use entity::{coaching_relationships, meeting_recording};
 use events::EventHandler;
 use meeting_ai::types::recording::{Config as BotConfig, Filters, Info, Status as BotStatus};
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter, Set};
 use tokio::sync::oneshot;
 
 use super::*;
 use crate::test_utils::sqlite::{
-    database, mirror_migration_defaults, seed_coaching_session, within_time_limit,
+    database, mirror_migration_defaults, seed_coaching_session, seed_membership, seed_user,
+    within_time_limit,
 };
 
 const MEETING_URL: &str = "https://meet.google.com/abc-defg-hij";
@@ -127,6 +128,44 @@ async fn session_db() -> (DatabaseConnection, Id) {
     mirror_migration_defaults(&db).await;
     let (session_id, _) = seed_coaching_session(&db).await;
     (db, session_id)
+}
+
+/// A session whose coach and coachee are two members of its organization; returns the
+/// session and the two of them.
+async fn two_member_session_db() -> (DatabaseConnection, Id, [Id; 2]) {
+    let (db, session_id) = session_db().await;
+    let (_, relationship) =
+        entity_api::coaching_session::find_by_id_with_coaching_relationship(&db, session_id)
+            .await
+            .expect("the session reads");
+    let (coach, coachee) = (relationship.coach_id, seed_user(&db).await);
+    let organization_id = relationship.organization_id;
+    let mut relationship = relationship.into_active_model();
+    relationship.coachee_id = Set(coachee);
+    coaching_relationships::ActiveModel::update(relationship, &db)
+        .await
+        .expect("the coachee is set");
+    seed_membership(&db, coach, organization_id).await;
+    seed_membership(&db, coachee, organization_id).await;
+    (db, session_id, [coach, coachee])
+}
+
+/// Asserts `recorder` holds exactly one recording update, for `session_id`, to `participants`.
+fn assert_one_update_to(recorder: &Recorder, session_id: Id, participants: [Id; 2]) {
+    let events = recorder.0.lock().expect("the lock is free").clone();
+    let [DomainEvent::MeetingRecordingUpdated {
+        coaching_session_id,
+        notify_user_ids,
+    }] = events.as_slice()
+    else {
+        panic!("one recording update, got {events:?}");
+    };
+    assert_eq!(*coaching_session_id, session_id);
+    let mut notified = notify_user_ids.clone();
+    notified.sort();
+    let mut expected = participants.to_vec();
+    expected.sort();
+    assert_eq!(notified, expected);
 }
 
 /// Inserts a recording of `session_id` in `status`, made `age` ago.
@@ -365,7 +404,7 @@ async fn a_stop_during_dispatch_recalls_the_bot_once_it_is_sent() {
 
         let (started, stopped) = tokio::join!(start_with(&db, &bot, session_id), async {
             reached.await.expect("the start reaches the provider");
-            let stopped = stop(&db, Some(&bot), session_id).await;
+            let stopped = stop(&db, &EventPublisher::new(), Some(&bot), session_id).await;
             release.send(()).expect("the start is waiting");
             stopped
         });
@@ -383,4 +422,79 @@ async fn a_stop_during_dispatch_recalls_the_bot_once_it_is_sent() {
         assert_eq!(row.status, MeetingRecordingStatus::Cancelled);
     })
     .await;
+}
+
+#[tokio::test]
+async fn a_failed_dispatch_tells_both_participants() {
+    let (db, session_id, participants) = two_member_session_db().await;
+    let bot = CountingBot::default();
+    bot.fails.store(true, Ordering::SeqCst);
+    let recorder = Arc::new(Recorder::default());
+    let publisher = EventPublisher::new().with_handler(recorder.clone());
+
+    let refused = start(&db, &publisher, Some(&bot), session_id, MEETING_URL)
+        .await
+        .expect_err("the refused bot fails the start");
+
+    let claim = find_latest_by_coaching_session(&db, session_id)
+        .await
+        .expect("the recording reads")
+        .expect("the claim exists");
+    assert_eq!(claim.status, MeetingRecordingStatus::Failed, "{refused:?}");
+    assert_one_update_to(&recorder, session_id, participants);
+}
+
+#[tokio::test]
+async fn stopping_an_active_recording_cancels_it_and_tells_both_participants() {
+    let (db, session_id, participants) = two_member_session_db().await;
+    let bot_id = "bot-recording".to_string();
+    seed_recording(
+        &db,
+        session_id,
+        MeetingRecordingStatus::Recording,
+        Some(bot_id.clone()),
+        TimeDelta::zero(),
+    )
+    .await;
+    let bot = CountingBot::default();
+    let recorder = Arc::new(Recorder::default());
+    let publisher = EventPublisher::new().with_handler(recorder.clone());
+
+    let stopped = stop(&db, &publisher, Some(&bot), session_id)
+        .await
+        .expect("the stop succeeds");
+
+    assert_eq!(stopped.status, MeetingRecordingStatus::Cancelled);
+    assert_eq!(bot.stopped(), vec![bot_id]);
+    assert_one_update_to(&recorder, session_id, participants);
+}
+
+#[tokio::test]
+async fn stopping_a_completed_recording_leaves_it_alone() {
+    let (db, session_id, _) = two_member_session_db().await;
+    let completed = seed_recording(
+        &db,
+        session_id,
+        MeetingRecordingStatus::Completed,
+        Some("bot-done".to_string()),
+        TimeDelta::zero(),
+    )
+    .await;
+    let bot = CountingBot::default();
+    let recorder = Arc::new(Recorder::default());
+    let publisher = EventPublisher::new().with_handler(recorder.clone());
+
+    let answered = stop(&db, &publisher, Some(&bot), session_id)
+        .await
+        .expect("the stop answers");
+
+    assert_eq!(answered.id, completed);
+    assert_eq!(answered.status, MeetingRecordingStatus::Completed);
+    let row = find_by_id(&db, completed)
+        .await
+        .expect("the recording reads")
+        .expect("the recording exists");
+    assert_eq!(row.status, MeetingRecordingStatus::Completed);
+    assert!(bot.stopped().is_empty());
+    assert!(recorder.0.lock().expect("the lock is free").is_empty());
 }

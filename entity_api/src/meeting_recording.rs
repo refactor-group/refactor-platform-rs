@@ -9,7 +9,8 @@ use sea_orm::{
     TransactionTrait, TryIntoModel,
 };
 
-const TERMINAL_RECORDING_STATUSES: &[MeetingRecordingStatus] = &[
+/// Statuses a recording never leaves.
+pub const TERMINAL_RECORDING_STATUSES: &[MeetingRecordingStatus] = &[
     MeetingRecordingStatus::Completed,
     MeetingRecordingStatus::Failed,
     MeetingRecordingStatus::Cancelled,
