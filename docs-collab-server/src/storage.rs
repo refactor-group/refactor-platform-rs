@@ -30,6 +30,9 @@ pub trait Storage: Send + Sync + 'static {
 
     /// Remove the row for `name`; not-found is not an error.
     async fn delete(&self, name: &str) -> Result<(), StorageError>;
+
+    /// Confirm the backend answers, for the readiness check.
+    async fn ping(&self) -> Result<(), StorageError>;
 }
 
 /// In-memory storage backend for tests.
@@ -57,6 +60,10 @@ impl Storage for MemoryStorage {
 
     async fn delete(&self, name: &str) -> Result<(), StorageError> {
         self.inner.lock().remove(name);
+        Ok(())
+    }
+
+    async fn ping(&self) -> Result<(), StorageError> {
         Ok(())
     }
 }
@@ -201,6 +208,14 @@ impl Storage for PostgresStorage {
         );
         sqlx::query(AssertSqlSafe(sql))
             .bind(name)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Backend(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn ping(&self) -> Result<(), StorageError> {
+        sqlx::query("SELECT 1")
             .execute(&self.pool)
             .await
             .map_err(|e| StorageError::Backend(e.to_string()))?;
