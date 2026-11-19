@@ -107,13 +107,14 @@ Each call to `into_layer()` builds a fresh in-process governor — state is per-
 
 ## Trust assumption (critical)
 
-`SmartIpKeyExtractor` resolves the client IP from headers in this priority:
+`SmartIpKeyExtractor` (tower_governor 0.4) resolves the client IP from the first of these that holds one:
 
-1. `Forwarded` header (RFC 7239 standardized)
-2. `X-Forwarded-For` header (de facto standard, set by most reverse proxies)
-3. Peer socket address (fallback — what `tcp.accept()` returned)
+1. `X-Forwarded-For` header, first entry
+2. `X-Real-IP` header
+3. `Forwarded` header (RFC 7239)
+4. Peer socket address (fallback — what `tcp.accept()` returned)
 
-**Behind a trusted reverse proxy** (nginx in our deploys) the headers are set by infrastructure we control, so they accurately identify the client. The throttle works per-client.
+**Behind a trusted reverse proxy** (nginx in our deploys) the headers are set by infrastructure we control, so they accurately identify the client. The throttle works per-client. Our nginx is the edge (it terminates TLS, with nothing in front), so every `proxy_pass` location sets `X-Forwarded-For $remote_addr`, replacing anything the client sent. Appending with `$proxy_add_x_forwarded_for` would leave the client's own value as the first entry, which is the one the extractor reads. If a load balancer or CDN is ever put in front of nginx, use nginx's `real_ip` module with `set_real_ip_from` for that hop, so `$remote_addr` is the real client again.
 
 **Without a reverse proxy** (or with one that doesn't strip client-provided `X-Forwarded-For`), the headers are spoofable. An attacker who controls the headers can present a different IP per request and bypass the throttle entirely. **This is the failure mode to watch for** when deploying:
 
