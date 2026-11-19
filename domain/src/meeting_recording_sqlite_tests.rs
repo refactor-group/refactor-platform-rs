@@ -211,14 +211,29 @@ async fn active_recordings(db: &DatabaseConnection, session_id: Id) -> Vec<Model
 
 async fn start_with(
     db: &DatabaseConnection,
-    bot: &CountingBot,
+    bot: &Arc<CountingBot>,
     session_id: Id,
 ) -> Result<Model, Error> {
+    start_to(db, &EventPublisher::new(), bot, session_id).await
+}
+
+/// Starts a recording of `session_id`, publishing to `publisher`.
+async fn start_to(
+    db: &DatabaseConnection,
+    publisher: &EventPublisher,
+    bot: &Arc<CountingBot>,
+    session_id: Id,
+) -> Result<Model, Error> {
+    let (_, relationship) =
+        entity_api::coaching_session::find_by_id_with_coaching_relationship(db, session_id)
+            .await
+            .expect("the session reads");
     start(
         db,
-        &EventPublisher::new(),
-        Some(bot),
+        publisher,
+        Some(bot.clone()),
         session_id,
+        &relationship,
         MEETING_URL,
     )
     .await
@@ -241,7 +256,7 @@ async fn an_active_recording_refuses_a_start_before_any_bot_is_sent() {
         let (db, session_id) = session_db().await;
         let bot_id = Some(format!("bot-{}", Id::new_v4()));
         seed_recording(&db, session_id, status.clone(), bot_id, TimeDelta::zero()).await;
-        let bot = CountingBot::default();
+        let bot = Arc::new(CountingBot::default());
 
         let refused = start_with(&db, &bot, session_id)
             .await
@@ -255,7 +270,7 @@ async fn an_active_recording_refuses_a_start_before_any_bot_is_sent() {
 #[tokio::test]
 async fn the_first_start_wins_and_a_second_sends_no_bot() {
     let (db, session_id) = session_db().await;
-    let bot = CountingBot::default();
+    let bot = Arc::new(CountingBot::default());
 
     let first = start_with(&db, &bot, session_id)
         .await
@@ -275,7 +290,7 @@ async fn the_first_start_wins_and_a_second_sends_no_bot() {
 async fn a_start_racing_a_dispatching_start_is_refused_without_a_bot() {
     within_time_limit(async {
         let (db, session_id) = session_db().await;
-        let bot = CountingBot::default();
+        let bot = Arc::new(CountingBot::default());
         let (reached, release) = bot.hold_next();
 
         let (first, second) = tokio::join!(start_with(&db, &bot, session_id), async {
@@ -299,7 +314,7 @@ async fn a_start_racing_a_dispatching_start_is_refused_without_a_bot() {
 #[tokio::test]
 async fn a_failed_dispatch_frees_the_session_for_a_retry() {
     let (db, session_id) = session_db().await;
-    let bot = CountingBot::default();
+    let bot = Arc::new(CountingBot::default());
     bot.fails.store(true, Ordering::SeqCst);
 
     start_with(&db, &bot, session_id)
@@ -336,7 +351,7 @@ async fn an_abandoned_claim_does_not_block_a_start() {
         abandoned,
     )
     .await;
-    let bot = CountingBot::default();
+    let bot = Arc::new(CountingBot::default());
 
     let started = start_with(&db, &bot, session_id)
         .await
@@ -363,7 +378,7 @@ async fn a_young_claim_still_blocks_a_start() {
         young,
     )
     .await;
-    let bot = CountingBot::default();
+    let bot = Arc::new(CountingBot::default());
 
     let refused = start_with(&db, &bot, session_id)
         .await
@@ -376,11 +391,11 @@ async fn a_young_claim_still_blocks_a_start() {
 #[tokio::test]
 async fn a_started_recording_tells_the_sessions_participants() {
     let (db, session_id) = session_db().await;
-    let bot = CountingBot::default();
+    let bot = Arc::new(CountingBot::default());
     let recorder = Arc::new(Recorder::default());
     let publisher = EventPublisher::new().with_handler(recorder.clone());
 
-    start(&db, &publisher, Some(&bot), session_id, MEETING_URL)
+    start_to(&db, &publisher, &bot, session_id)
         .await
         .expect("the start succeeds");
 
@@ -399,12 +414,13 @@ async fn a_started_recording_tells_the_sessions_participants() {
 async fn a_stop_during_dispatch_recalls_the_bot_once_it_is_sent() {
     within_time_limit(async {
         let (db, session_id) = session_db().await;
-        let bot = CountingBot::default();
+        let bot = Arc::new(CountingBot::default());
         let (reached, release) = bot.hold_next();
 
         let (started, stopped) = tokio::join!(start_with(&db, &bot, session_id), async {
             reached.await.expect("the start reaches the provider");
-            let stopped = stop(&db, &EventPublisher::new(), Some(&bot), session_id).await;
+            let stopped = stop(&db, &EventPublisher::new(), Some(&*bot), session_id).await;
+            assert!(bot.stopped().is_empty(), "no bot to stop yet");
             release.send(()).expect("the start is waiting");
             stopped
         });
@@ -424,15 +440,128 @@ async fn a_stop_during_dispatch_recalls_the_bot_once_it_is_sent() {
     .await;
 }
 
+/// Starts a recording of `session_id` in its own task, as a request handler would.
+fn spawn_start(
+    db: &DatabaseConnection,
+    bot: &Arc<CountingBot>,
+    session_id: Id,
+) -> tokio::task::JoinHandle<Result<Model, Error>> {
+    let (db, bot) = (db.clone(), bot.clone());
+    tokio::spawn(async move { start_with(&db, &bot, session_id).await })
+}
+
+#[tokio::test]
+async fn a_stop_after_the_bot_id_is_stored_recalls_that_bot() {
+    within_time_limit(async {
+        let (db, session_id) = session_db().await;
+        let bot = Arc::new(CountingBot::default());
+        let (reached, release) = bot.hold_next();
+
+        let starting = spawn_start(&db, &bot, session_id);
+        reached.await.expect("the start reaches the provider");
+        release.send(()).expect("the start is waiting");
+        let started = starting
+            .await
+            .expect("the start task finishes")
+            .expect("the start succeeds");
+        let stopped = stop(&db, &EventPublisher::new(), Some(&*bot), session_id)
+            .await
+            .expect("the stop succeeds");
+
+        assert_eq!(stopped.id, started.id);
+        assert_eq!(stopped.status, MeetingRecordingStatus::Cancelled);
+        assert_eq!(bot.stopped(), vec!["counted-bot-0".to_string()]);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_start_whose_request_is_dropped_still_stores_its_bot() {
+    let (db, session_id) = session_db().await;
+    let bot = Arc::new(CountingBot::default());
+    let (reached, release) = bot.hold_next();
+
+    let starting = spawn_start(&db, &bot, session_id);
+    reached.await.expect("the start reaches the provider");
+    starting.abort();
+    let _ = starting.await;
+    let _ = release.send(());
+
+    let mut stored = None;
+    for _ in 0..200 {
+        stored = find_latest_by_coaching_session(&db, session_id)
+            .await
+            .expect("the recording reads")
+            .filter(|recording| recording.bot_id.is_some());
+        if stored.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let stored = stored.expect("the bot id is stored");
+    assert_eq!(stored.status, MeetingRecordingStatus::Pending);
+    assert_eq!(stored.bot_id.as_deref(), Some("counted-bot-0"));
+}
+
+#[tokio::test]
+async fn a_dispatch_failure_after_a_stop_leaves_the_recording_cancelled() {
+    within_time_limit(async {
+        let (db, session_id) = session_db().await;
+        let bot = Arc::new(CountingBot::default());
+        bot.fails.store(true, Ordering::SeqCst);
+        let (reached, release) = bot.hold_next();
+
+        let (started, stopped) = tokio::join!(start_with(&db, &bot, session_id), async {
+            reached.await.expect("the start reaches the provider");
+            let stopped = stop(&db, &EventPublisher::new(), Some(&*bot), session_id).await;
+            release.send(()).expect("the start is waiting");
+            stopped
+        });
+
+        started.expect_err("the refused bot fails the start");
+        let stopped = stopped.expect("the stop succeeds");
+        let row = find_by_id(&db, stopped.id)
+            .await
+            .expect("the recording reads")
+            .expect("the recording exists");
+        assert_eq!(row.status, MeetingRecordingStatus::Cancelled);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn cancelling_a_recording_that_already_ended_changes_nothing() {
+    let (db, session_id) = session_db().await;
+    let completed = seed_recording(
+        &db,
+        session_id,
+        MeetingRecordingStatus::Completed,
+        Some("bot-done".to_string()),
+        TimeDelta::zero(),
+    )
+    .await;
+
+    let cancelled = recording_api::cancel(&db, completed)
+        .await
+        .expect("the cancel answers");
+
+    assert!(cancelled.is_none(), "{cancelled:?}");
+    let row = find_by_id(&db, completed)
+        .await
+        .expect("the recording reads")
+        .expect("the recording exists");
+    assert_eq!(row.status, MeetingRecordingStatus::Completed);
+}
+
 #[tokio::test]
 async fn a_failed_dispatch_tells_both_participants() {
     let (db, session_id, participants) = two_member_session_db().await;
-    let bot = CountingBot::default();
+    let bot = Arc::new(CountingBot::default());
     bot.fails.store(true, Ordering::SeqCst);
     let recorder = Arc::new(Recorder::default());
     let publisher = EventPublisher::new().with_handler(recorder.clone());
 
-    let refused = start(&db, &publisher, Some(&bot), session_id, MEETING_URL)
+    let refused = start_to(&db, &publisher, &bot, session_id)
         .await
         .expect_err("the refused bot fails the start");
 
@@ -456,11 +585,11 @@ async fn stopping_an_active_recording_cancels_it_and_tells_both_participants() {
         TimeDelta::zero(),
     )
     .await;
-    let bot = CountingBot::default();
+    let bot = Arc::new(CountingBot::default());
     let recorder = Arc::new(Recorder::default());
     let publisher = EventPublisher::new().with_handler(recorder.clone());
 
-    let stopped = stop(&db, &publisher, Some(&bot), session_id)
+    let stopped = stop(&db, &publisher, Some(&*bot), session_id)
         .await
         .expect("the stop succeeds");
 
@@ -480,11 +609,11 @@ async fn stopping_a_completed_recording_leaves_it_alone() {
         TimeDelta::zero(),
     )
     .await;
-    let bot = CountingBot::default();
+    let bot = Arc::new(CountingBot::default());
     let recorder = Arc::new(Recorder::default());
     let publisher = EventPublisher::new().with_handler(recorder.clone());
 
-    let answered = stop(&db, &publisher, Some(&bot), session_id)
+    let answered = stop(&db, &publisher, Some(&*bot), session_id)
         .await
         .expect("the stop answers");
 

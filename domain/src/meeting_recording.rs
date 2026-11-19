@@ -9,15 +9,16 @@ pub use entity_api::meeting_recording::{
 use crate::error::{reason, DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
 use crate::organization::ensure_not_archived;
 use chrono::TimeDelta;
-use entity::Id;
+use entity::{coaching_relationships, Id};
 use entity_api::meeting_recording as recording_api;
-use entity_api::{coaching_session, organization};
+use entity_api::organization;
 use events::{DomainEvent, EventPublisher};
 use log::*;
 use meeting_ai::traits::recording_bot;
 use meeting_ai::types::recording as recording_types;
 use sea_orm::DatabaseConnection;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// How long a claim may wait for its bot id before it is taken as abandoned.
 const ABANDONED_CLAIM_AFTER: TimeDelta = TimeDelta::minutes(2);
@@ -28,12 +29,16 @@ const ABANDONED_CLAIM_AFTER: TimeDelta = TimeDelta::minutes(2);
 /// sends a bot; the other gets a 409 with reason `recording_already_active`. A failed send
 /// marks the claim `Failed`, so the session can be retried, and tells the participants. A
 /// session in an archived organization is refused with `OrganizationArchived` before anything
-/// is written or sent.
+/// is written or sent. `relationship` is the session's coaching relationship.
+///
+/// Everything after the claim runs in its own task, so a dropped request cannot leave a sent
+/// bot without its id stored.
 pub async fn start(
     db: &DatabaseConnection,
     event_publisher: &EventPublisher,
-    provider: Option<&dyn recording_bot::Provider>,
+    provider: Option<Arc<dyn recording_bot::Provider>>,
     session_id: Id,
+    relationship: &coaching_relationships::Model,
     meeting_url: &str,
 ) -> Result<Model, Error> {
     let provider = provider.ok_or_else(|| {
@@ -44,8 +49,6 @@ pub async fn start(
         }
     })?;
 
-    let (_, relationship) =
-        coaching_session::find_by_id_with_coaching_relationship(db, session_id).await?;
     ensure_not_archived(&organization::find_by_id(db, relationship.organization_id).await?)?;
 
     let abandoned_before = chrono::Utc::now() - ABANDONED_CLAIM_AFTER;
@@ -59,17 +62,43 @@ pub async fn start(
         )
     })?;
 
-    let mut provider_options = HashMap::new();
-    provider_options.insert("coaching_session_id".to_string(), session_id.to_string());
+    let (db, event_publisher, meeting_url) =
+        (db.clone(), event_publisher.clone(), meeting_url.to_string());
+    tokio::spawn(async move {
+        dispatch(&db, &event_publisher, provider.as_ref(), claim, meeting_url).await
+    })
+    .await
+    .map_err(|e| {
+        warn!("Recording dispatch task for session {session_id} failed: {e}");
+        Error {
+            source: Some(Box::new(e)),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "recording dispatch task failed".to_string(),
+            )),
+        }
+    })?
+}
 
+/// Sends the bot for `claim` and stores its id, or recalls it when the claim ended meanwhile.
+async fn dispatch(
+    db: &DatabaseConnection,
+    event_publisher: &EventPublisher,
+    provider: &dyn recording_bot::Provider,
+    claim: Model,
+    meeting_url: String,
+) -> Result<Model, Error> {
+    let session_id = claim.coaching_session_id;
     let config = recording_types::Config {
-        meeting_url: meeting_url.to_string(),
+        meeting_url,
         bot_name: "Refactor Coach".to_string(),
         webhook_url: None,
         record_video: false,
         record_audio: true,
         enable_realtime_transcription: false,
-        provider_options,
+        provider_options: HashMap::from([(
+            "coaching_session_id".to_string(),
+            session_id.to_string(),
+        )]),
     };
 
     let bot_info = match provider.create_bot(config).await {
@@ -86,33 +115,40 @@ pub async fn start(
         bot_info.id, session_id
     );
 
-    let recording = match recording_api::set_bot_id(db, claim.id, &bot_info.id).await? {
-        Some(recording) => recording,
-        None => {
-            // A stop or sweep ended the claim during dispatch; keep the record, recall the bot.
-            let recording = recording_api::record_bot_id(db, claim.id, &bot_info.id).await?;
-            stop_bot(provider, &bot_info.id).await;
-            return Ok(recording);
+    match recording_api::set_bot_id(db, claim.id, &bot_info.id).await {
+        Ok(Some(recording)) => {
+            publish_updated(db, event_publisher, session_id).await;
+            Ok(recording)
         }
-    };
-
-    publish_updated(db, event_publisher, session_id).await;
-    Ok(recording)
+        Ok(None) => {
+            // A stop or sweep ended the claim during dispatch; recall the bot, then keep its id.
+            stop_bot(provider, &bot_info.id).await;
+            Ok(recording_api::record_bot_id(db, claim.id, &bot_info.id)
+                .await
+                .unwrap_or_else(|e| {
+                    warn!(
+                        "Could not record recalled bot {} on recording {}: {e:?}",
+                        bot_info.id, claim.id
+                    );
+                    Model {
+                        bot_id: Some(bot_info.id.clone()),
+                        ..claim
+                    }
+                }))
+        }
+        Err(e) => {
+            stop_bot(provider, &bot_info.id).await;
+            release_claim(db, claim.id, e.to_string()).await;
+            publish_updated(db, event_publisher, session_id).await;
+            Err(e.into())
+        }
+    }
 }
 
-/// Marks a claim whose bot could not be sent `Failed`, freeing the session for a retry.
+/// Marks a claim whose bot could not be sent `Failed`, freeing the session for a retry. A
+/// claim that already ended, say by a stop, keeps its status.
 async fn release_claim(db: &DatabaseConnection, id: Id, error_message: String) {
-    if let Err(e) = recording_api::update_status(
-        db,
-        id,
-        MeetingRecordingStatus::Failed,
-        RecordingArtifacts {
-            error_message: Some(error_message),
-            ..Default::default()
-        },
-    )
-    .await
-    {
+    if let Err(e) = recording_api::fail_pending_claim(db, id, error_message).await {
         warn!("Could not release recording claim {id} after a failed dispatch: {e:?}");
     }
 }
@@ -148,8 +184,8 @@ pub(crate) async fn publish_updated(
 
 /// Stops the active recording bot for a coaching session.
 ///
-/// Looks up the latest recording for the session, calls `stop_bot` on the provider when the
-/// recording has a bot, marks it `Cancelled` and tells the session's participants. A recording
+/// Marks the session's latest recording `Cancelled`, then calls `stop_bot` on the provider
+/// when the cancelled recording has a bot, and tells the session's participants. A recording
 /// that already ended is returned unchanged, with no provider call and no event.
 pub async fn stop(
     db: &DatabaseConnection,
@@ -178,22 +214,18 @@ pub async fn stop(
         }
     })?;
 
+    let Some(stopped) = recording_api::cancel(db, recording.id).await? else {
+        // It ended after the read above.
+        return Ok(recording_api::find_by_id(db, recording.id)
+            .await?
+            .unwrap_or(recording));
+    };
+
     // A claim still being dispatched has no bot yet; `start` recalls it once the id arrives.
-    if let Some(bot_id) = &recording.bot_id {
+    if let Some(bot_id) = &stopped.bot_id {
         stop_bot(provider, bot_id).await;
         info!("Removed bot {bot_id} from call for session {session_id}");
     }
-
-    let stopped = recording_api::update_status(
-        db,
-        recording.id,
-        MeetingRecordingStatus::Cancelled,
-        RecordingArtifacts {
-            ended_at: Some(chrono::Utc::now().into()),
-            ..Default::default()
-        },
-    )
-    .await?;
 
     publish_updated(db, event_publisher, session_id).await;
     Ok(stopped)

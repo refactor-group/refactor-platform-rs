@@ -16,33 +16,6 @@ pub const TERMINAL_RECORDING_STATUSES: &[MeetingRecordingStatus] = &[
     MeetingRecordingStatus::Cancelled,
 ];
 
-/// Creates a new meeting recording record
-pub async fn create(db: &DatabaseConnection, model: Model) -> Result<Model, Error> {
-    debug!(
-        "Creating meeting recording for coaching_session_id: {}",
-        model.coaching_session_id
-    );
-
-    let now = chrono::Utc::now();
-
-    let active_model = ActiveModel {
-        coaching_session_id: Set(model.coaching_session_id),
-        bot_id: Set(model.bot_id),
-        status: Set(model.status),
-        video_url: Set(model.video_url),
-        audio_url: Set(model.audio_url),
-        duration_seconds: Set(model.duration_seconds),
-        started_at: Set(model.started_at),
-        ended_at: Set(model.ended_at),
-        error_message: Set(model.error_message),
-        created_at: Set(now.into()),
-        updated_at: Set(now.into()),
-        ..Default::default()
-    };
-
-    Ok(active_model.save(db).await?.try_into_model()?)
-}
-
 /// Claims the session for one new recording: inserts a `Pending` row with no bot id yet.
 ///
 /// Returns `None` when the session already has an active recording. The partial unique
@@ -105,6 +78,71 @@ pub async fn record_bot_id(db: &DatabaseConnection, id: Id, bot_id: &str) -> Res
             source: None,
             error_kind: EntityApiErrorKind::RecordNotFound,
         })
+}
+
+/// Marks a claim `Failed` with `error_message` if it is still `Pending`.
+///
+/// Returns `None` when the claim already ended, for example because it was stopped.
+pub async fn fail_pending_claim(
+    db: &DatabaseConnection,
+    id: Id,
+    error_message: String,
+) -> Result<Option<Model>, Error> {
+    Ok(Entity::update_many()
+        .set(ActiveModel {
+            status: Set(MeetingRecordingStatus::Failed),
+            error_message: Set(Some(error_message)),
+            updated_at: Set(chrono::Utc::now().into()),
+            ..Default::default()
+        })
+        .filter(Column::Id.eq(id))
+        .filter(Column::Status.eq(MeetingRecordingStatus::Pending))
+        .exec_with_returning(db)
+        .await?
+        .into_iter()
+        .next())
+}
+
+/// Marks the recording `Cancelled` and ended now, unless it already ended.
+///
+/// Returns the cancelled recording, with whatever bot id it holds at that moment, or `None`
+/// when it had already ended. The row is locked while it is read and written, so a bot id
+/// stored concurrently lands either before (and is returned) or after (and finds it ended).
+pub async fn cancel(db: &DatabaseConnection, id: Id) -> Result<Option<Model>, Error> {
+    db.transaction::<_, Option<Model>, Error>(|txn| {
+        Box::pin(async move {
+            let Some(model) = Entity::find_by_id(id)
+                .lock_exclusive()
+                .one(txn)
+                .await?
+                .filter(|m| !TERMINAL_RECORDING_STATUSES.contains(&m.status))
+            else {
+                return Ok(None);
+            };
+
+            let now: DateTimeWithTimeZone = chrono::Utc::now().into();
+            let duration_seconds = model
+                .duration_seconds
+                .or_else(|| derive_duration_seconds(model.started_at, Some(now)));
+
+            Ok(Some(
+                ActiveModel {
+                    status: Set(MeetingRecordingStatus::Cancelled),
+                    ended_at: Set(Some(now)),
+                    duration_seconds: Set(duration_seconds),
+                    updated_at: Set(now),
+                    ..model.into_active_model()
+                }
+                .update(txn)
+                .await?,
+            ))
+        })
+    })
+    .await
+    .map_err(|e| match e {
+        TransactionError::Connection(db_err) => db_err.into(),
+        TransactionError::Transaction(err) => err,
+    })
 }
 
 fn bot_id_update(bot_id: &str) -> ActiveModel {
@@ -340,23 +378,6 @@ mod tests {
             created_at: now.into(),
             updated_at: now.into(),
         }
-    }
-
-    #[tokio::test]
-    async fn create_returns_a_new_meeting_recording() -> Result<(), Error> {
-        let model = test_model();
-
-        let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results(vec![vec![model.clone()]])
-            .into_connection();
-
-        let result = create(&db, model.clone()).await?;
-
-        assert_eq!(result.coaching_session_id, model.coaching_session_id);
-        assert_eq!(result.bot_id, model.bot_id);
-        assert_eq!(result.status, MeetingRecordingStatus::Pending);
-
-        Ok(())
     }
 
     #[tokio::test]

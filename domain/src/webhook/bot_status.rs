@@ -1,5 +1,6 @@
 use crate::error::Error;
 use crate::meeting_recording::{self as recording_api, MeetingRecordingStatus, RecordingArtifacts};
+use entity_api::meeting_recording::TERMINAL_RECORDING_STATUSES;
 use events::EventPublisher;
 use log::*;
 use sea_orm::DatabaseConnection;
@@ -18,12 +19,7 @@ pub async fn handle(
         }
     };
 
-    if matches!(
-        recording.status,
-        MeetingRecordingStatus::Completed
-            | MeetingRecordingStatus::Failed
-            | MeetingRecordingStatus::Cancelled
-    ) {
+    if TERMINAL_RECORDING_STATUSES.contains(&recording.status) {
         debug!(
             "bot status: recording {} already terminal ({:?}) — skipping",
             recording.id, recording.status

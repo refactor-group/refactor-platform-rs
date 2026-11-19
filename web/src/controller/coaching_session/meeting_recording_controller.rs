@@ -1,7 +1,8 @@
 use crate::controller::ApiResponse;
 use crate::error::WebErrorKind;
 use crate::extractors::{
-    coaching_session_access::CoachingSessionAccess, compare_api_version::CompareApiVersion,
+    coaching_session_access::{CoachingSessionAccess, CoachingSessionContextAccess},
+    compare_api_version::CompareApiVersion,
 };
 use crate::{AppState, Error};
 use axum::extract::State;
@@ -70,7 +71,7 @@ pub async fn read(
 )]
 pub async fn create(
     CompareApiVersion(_v): CompareApiVersion,
-    CoachingSessionAccess(session): CoachingSessionAccess,
+    CoachingSessionContextAccess(session, relationship): CoachingSessionContextAccess,
     State(app_state): State<AppState>,
     Json(params): Json<StartRecordingParams>,
 ) -> Result<impl IntoResponse, Error> {
@@ -84,8 +85,9 @@ pub async fn create(
     let recording = MeetingRecordingApi::start(
         app_state.db_conn_ref(),
         app_state.event_publisher.as_ref(),
-        app_state.recording_bot_provider.as_deref(),
+        app_state.recording_bot_provider.clone(),
         coaching_session_id,
+        &relationship,
         &params.meeting_url,
     )
     .await?;
