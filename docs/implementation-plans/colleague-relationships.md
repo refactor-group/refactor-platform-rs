@@ -30,14 +30,18 @@ membership rules (rows marked `[membership]`), the phase 4 invite request shape 
 becomes `relationship: { with_user_id, kind }`; the ORG-01 and ORG-03 baseline tests change only
 their request bodies), the phase 4 email variables (the MAIL-12 baseline test's expected welcome
 variables gain `inviter_*`; the MAIL-10 test's call passes a `Recipient`; every old variable and
-assertion unchanged), and the phase 6 response shape change (same access, different fields).
+assertion unchanged), and the phase 6 response shape change (same access, different fields;
+the 409 reason `coachee_not_a_member` becomes `participant_not_a_member` with `details`
+unchanged; frozen tests change only key names and reasons, and the plain-text transcript's
+`Speakers:` line names participants by full name).
 
 ## Phases
 
 Each phase is its own PR; phase 1 is three (migration and backfill, then code, then cleanup).
 Order: S, 0, M, 0b, 0c, 0d, 1, 2, 3, 4, 4b, E, 5, 6. Phases S and 0 can run in parallel. Done:
 S (#476), 0 (#480), M (#481), 0b (#492), 0c (#495), 0d (#496), 1 (#499, #501,
-#505), 2 (#507), 3 (#508), 4 (#509, #510, #511, #512), E (#516), 5 (#517).
+#505), 2 (#507), 3 (#508), 4 (#509, #510, #511, #512), 4b (#520), E (#516), 5 (#517),
+6 (#526, with refactor-platform-fe#573).
 
 **S. Relationship authorization fixes.** Its own security PR, ahead of the colleague work, so
 the phase 0b baseline records the corrected behavior. Notes, agreements, actions, goals and
@@ -414,8 +418,30 @@ also stops deriving a participant's role from `coach_id === userId` and reads th
 backend computes (agreed in phase 2, when both sides unified their role types). One
 coordinated FE+BE deploy.
 
+6 as built (one PR, six handoffs; contract `Phase6RoleNeutralKeys` v2):
+- `participants`: relationship responses and session lists (`include=relationship`) carry two
+  `{id, first_name, last_name, email, role, is_member}`, coach seat first, with `role` from the
+  kind's rules. They replace the `coach_*`/`coachee_*` name, email and membership fields and the
+  session list's `coach`/`coachee` objects. No display name.
+- Batch actions: `coachee_actions` becomes `actions_by_relationship`.
+- 409 reason `participant_not_a_member` for every kind; `details` unchanged.
+- `GET /users/{id}/coaching-relationships?role=` matches kind and seat (`Kind::seats_holding`),
+  so `coach`/`coachee` match coaching relationships only, and it accepts `colleague`.
+- Plain-text transcript: a colleague transcript is titled "Session transcript" and dated in the
+  schedule owner's zone; for every kind the `Speakers:` line names participants by full name
+  while lines keep their preferred names.
+- Emails no longer send `coach_first_name`/`coach_full_name`; the Welcome and Session Reminder
+  templates use `inviter_*`/`other_user_*`.
+- Frontend: a Colleague's Actions view beside My and Coachee actions, shown by the viewer's
+  roles, using `assignee=colleague` (#512).
+- Released as one GitHub release per repo and one `deploy_to_do.yml` run, which swaps both
+  containers; `rollback_do.yml` reverts both.
+- The preview could not connect Google (#527), so the recorded colleague session is checked in
+  production after release.
+
 Deferred to its own issue after phase 5: renaming `coach_id`/`coachee_id` (about 960
-references, wire-visible), so no permission change hides in a rename diff.
+references, wire-visible), so no permission change hides in a rename diff. The users column
+`default_coaching_session_duration_minutes` is renamed with it.
 
 ## Definition of done
 
@@ -444,6 +470,10 @@ other person as a colleague, never a coach.
   in the same transaction, hash-chained per organization.
 - Same pair: no coaching plus colleague for one pair in one org.
 - Columns keep `coach_id`/`coachee_id` until the separate rename.
+- `coaching_session` stays the name for every session, colleague ones included, in code and on
+  the API; only user-facing copy says "session".
+- Phase 6 ships as one release with no dual keys; a tab left open on the old frontend recovers
+  on reload.
 
 - Kind switch: the admin confirms its consequences (actions that become visible, authority that
   moves), enforced by a 409 until confirmed; invites for future sessions and series are re-sent
