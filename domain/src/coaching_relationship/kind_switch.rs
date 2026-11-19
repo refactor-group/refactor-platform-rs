@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{TimeDelta, Utc};
 use entity_api::coaching_session_pending_invite::{self, Target};
-use entity_api::error::EntityApiErrorKind;
 use entity_api::{coaching_relationship, coaching_session, organization};
 use log::error;
 use sea_orm::{DatabaseConnection, TransactionTrait};
@@ -23,6 +22,7 @@ use crate::coaching_relationship_kind::Kind;
 use crate::coaching_relationships::Model;
 use crate::error::{reason, DomainErrorKind, Error, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
+use crate::organization::ensure_not_archived;
 use crate::{coaching_sessions, users, Actor, Id};
 
 /// What an administrator asks a relationship to become.
@@ -109,7 +109,7 @@ pub async fn switch_for_caller(
     let target = target_of(&relationship, request)?;
 
     if target != draft_of(&relationship) {
-        ensure_not_archived(db, organization_id).await?;
+        ensure_not_archived(&organization::find_by_id(db, organization_id).await?)?;
         let switched = Model {
             coach_id: target.coach_id,
             coachee_id: target.coachee_id,
@@ -276,20 +276,6 @@ fn needs_confirmation(consequences: Consequences) -> Error {
             )),
         },
     }
-}
-
-/// Refuses, with a 409, a switch in an archived organization, as a create is refused.
-async fn ensure_not_archived(db: &DatabaseConnection, organization_id: Id) -> Result<(), Error> {
-    organization::find_by_id(db, organization_id)
-        .await?
-        .archived_at
-        .map_or(Ok(()), |_| {
-            Err(entity_api::error::Error {
-                source: None,
-                error_kind: EntityApiErrorKind::OrganizationArchived,
-            }
-            .into())
-        })
 }
 
 /// Under the pair's lock, switches `relationship` as it now stands to what `request` asks,

@@ -465,6 +465,7 @@ How to read the tables:
 | TRN-32 | Transcript completion for a Google Meet session on RC whose link MEMBER made (`meeting_url_created_by_user_id` = MEMBER_ID) | operator | the attendee list is read with MEMBER's Google token and matched against COACH's Google account; with no recorded link maker, both are COACH's | `domain/src/transcription.rs` `gather_evidence` | Who is attributed is unchanged |
 | TRN-33 | Transcript completion for RC's session with suggestions configured, beside one for R1 | operator | RC's transcript gets no `transcript_analyses` row; R1's gets one `pending` (psql) | `domain/src/transcription.rs` `owed_analyses` | Nothing is queued that the sweep would never claim. Replaces TRN-30 |
 | TRN-34 | Two near-simultaneous POST /coaching_sessions/S1/meeting_recording `{meeting_url}` against Postgres, with `RECALL_AI_BASE_URL` pointed at a local mock of Recall | COACH and COACHEE at once | one 200 (201), one 409 `recording_already_active`; one `meeting_recordings` row for S1 that is not terminal (psql) and one bot-create request in the mock's log (or one `Recording bot ... created` backend log line) | `domain/src/meeting_recording.rs` `start`; the index `idx_meeting_recordings_active_per_session` | Never against Recall: local and production keys share one workspace |
+| TRN-35 | With O1 archived (ORG-33): POST /coaching_sessions/S1/meeting_recording `{meeting_url}`, with `RECALL_AI_BASE_URL` pointed at a local mock of Recall | COACH | 409, `error` `organization_archived`, no `details`; no new `meeting_recordings` row for S1 (psql) and no bot-create request in the mock's log | `domain/src/meeting_recording.rs` `start`, checked before the claim | Never against Recall. Unarchive O1 afterwards (ORG-35) |
 
 ### 4.9 Meeting links and OAuth-dependent flows (`MEET`)
 
@@ -1034,6 +1035,7 @@ a frozen `domain` test, or by hand with the reason.
 | TRN-28 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::accepting_for_a_coachee_who_left_is_refused` |
 | TRN-29 | `web/src/controller/coaching_session/transcription_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_transcripts_suggestions_recordings_or_images` |
 | TRN-34 | by hand against Postgres; the same race on SQLite in `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::a_start_during_dispatch_sees_the_claim_and_sends_no_second_bot` |
+| TRN-35 | `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::a_start_in_an_archived_organization_is_refused`, `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::a_start_succeeds_once_the_organization_is_unarchived` |
 | MEET-01 | by hand: first-read hydration takes `pg_advisory_xact_lock` and creates the link with the provider |
 | MEET-02 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::only_the_coachs_create_attaches_a_meeting_link` (a reused R1 link; a new provider link needs Google or Zoom) |
 | MEET-03 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coach_sets_the_sessions_meeting_link` |

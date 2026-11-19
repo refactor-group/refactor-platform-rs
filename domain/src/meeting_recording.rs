@@ -7,9 +7,11 @@ pub use entity_api::meeting_recording::{
 };
 
 use crate::error::{reason, DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
+use crate::organization::ensure_not_archived;
 use chrono::TimeDelta;
 use entity::Id;
 use entity_api::meeting_recording as recording_api;
+use entity_api::{coaching_session, organization};
 use events::{DomainEvent, EventPublisher};
 use log::*;
 use meeting_ai::traits::recording_bot;
@@ -24,7 +26,8 @@ const ABANDONED_CLAIM_AFTER: TimeDelta = TimeDelta::minutes(2);
 ///
 /// The claim is committed before the bot is sent, so of two concurrent starts exactly one
 /// sends a bot; the other gets a 409 with reason `recording_already_active`. A failed send
-/// marks the claim `Failed` so the session can be retried.
+/// marks the claim `Failed` so the session can be retried. A session in an archived
+/// organization is refused with `OrganizationArchived` before anything is written or sent.
 pub async fn start(
     db: &DatabaseConnection,
     event_publisher: &EventPublisher,
@@ -39,6 +42,10 @@ pub async fn start(
             error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
         }
     })?;
+
+    let (_, relationship) =
+        coaching_session::find_by_id_with_coaching_relationship(db, session_id).await?;
+    ensure_not_archived(&organization::find_by_id(db, relationship.organization_id).await?)?;
 
     let abandoned_before = chrono::Utc::now() - ABANDONED_CLAIM_AFTER;
     recording_api::fail_abandoned_claims(db, session_id, abandoned_before.into()).await?;

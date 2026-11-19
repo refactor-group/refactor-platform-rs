@@ -63,7 +63,7 @@ pub async fn read(
     responses(
         (status = 201, description = "Recording bot created and joined meeting"),
         (status = 401, description = "Unauthorized"),
-        (status = 409, description = "An active recording already exists for this session (`details.reason` is `recording_already_active`)"),
+        (status = 409, description = "An active recording already exists for this session (`details.reason` is `recording_already_active`), or the session's organization is archived (`error` is `organization_archived`, no `details`)"),
         (status = 503, description = "Service temporarily unavailable"),
     ),
     security(("cookie_auth" = []))

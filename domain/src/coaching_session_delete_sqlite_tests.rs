@@ -7,6 +7,7 @@ use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Set};
 use service::config::Config;
 
 use super::*;
+use crate::error::EntityErrorKind;
 use crate::test_utils::sqlite::{
     database, seed_action, seed_agreement, seed_coaching_session, seed_topic, within_time_limit,
 };

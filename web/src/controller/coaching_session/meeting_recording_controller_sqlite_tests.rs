@@ -8,7 +8,10 @@
 
 use axum::http::{Method, StatusCode};
 use domain::meeting_recording::MeetingRecordingStatus;
-use domain::test_utils::sqlite::fixture::{make_colleagues, seed_active_recording};
+use domain::organization;
+use domain::test_utils::sqlite::fixture::{
+    archive_organization, make_colleagues, seed_active_recording,
+};
 use domain::test_utils::sqlite::read_back::{recording_state, session_recordings};
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
@@ -191,6 +194,69 @@ async fn a_start_during_dispatch_sees_the_claim_and_sends_no_second_bot() {
             "one bot sent, got {requests:?}"
         );
         assert_eq!(session_recordings(app.db(), s1).await.len(), 2);
+    })
+    .await;
+}
+
+/// A start in an archived organization is refused before any recording is written or bot sent.
+#[tokio::test]
+async fn a_start_in_an_archived_organization_is_refused() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, s1) = (app.fixture.o1, app.fixture.s1);
+        archive_organization(app.db(), o1, app.fixture.user(Caller::Admin)).await;
+        let path = format!("/coaching_sessions/{s1}/meeting_recording");
+        let before = session_recordings(app.db(), s1).await;
+
+        let reply = app
+            .send(
+                Caller::Coach,
+                Method::POST,
+                &path,
+                Some(json!({ "meeting_url": MEETING_URL })),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
+        assert_eq!(
+            reply.body["error"], "organization_archived",
+            "{}",
+            reply.body
+        );
+        assert_eq!(app.take_bot_requests(), vec![]);
+        assert_eq!(session_recordings(app.db(), s1).await, before);
+    })
+    .await;
+}
+
+/// Once its organization is unarchived, the same session starts a recording again.
+#[tokio::test]
+async fn a_start_succeeds_once_the_organization_is_unarchived() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (o1, s1) = (app.fixture.o1, app.fixture.s1);
+        archive_organization(app.db(), o1, app.fixture.user(Caller::Admin)).await;
+        organization::unarchive(app.db(), o1)
+            .await
+            .expect("the organization is unarchived");
+        let path = format!("/coaching_sessions/{s1}/meeting_recording");
+
+        let reply = app
+            .send(
+                Caller::Coach,
+                Method::POST,
+                &path,
+                Some(json!({ "meeting_url": MEETING_URL })),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        assert_eq!(reply.body["status_code"], 201, "{}", reply.body);
+        let requests = app.take_bot_requests();
+        assert!(
+            matches!(requests.as_slice(), [BotRequest::Create { .. }]),
+            "one bot sent, got {requests:?}"
+        );
     })
     .await;
 }

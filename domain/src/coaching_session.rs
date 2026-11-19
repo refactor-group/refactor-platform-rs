@@ -13,13 +13,12 @@ use crate::coaching_session_hydration::{
 use crate::coaching_session_image;
 use crate::coaching_sessions::Model;
 use crate::emails;
-use crate::error::{
-    reason, DomainErrorKind, EntityErrorKind, Error, ExternalErrorKind, InternalErrorKind,
-};
+use crate::error::{reason, DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
 use crate::gateway::tiptap::TiptapDocument;
 use crate::meeting_provider::{MeetingProperties, Provider};
 use crate::oauth_connections;
+use crate::organization::ensure_not_archived;
 use crate::search::visibility_for;
 use crate::{users, Id};
 use chrono::{DurationRound, NaiveDateTime, TimeDelta, Utc};
@@ -136,14 +135,7 @@ pub(crate) async fn create(
         coaching_relationship::find_by_id(db, coaching_session_model.coaching_relationship_id)
             .await?;
     let organization = organization::find_by_id(db, coaching_relationship.organization_id).await?;
-    if organization.archived_at.is_some() {
-        return Err(Error {
-            source: None,
-            error_kind: DomainErrorKind::Internal(InternalErrorKind::Entity(
-                EntityErrorKind::OrganizationArchived,
-            )),
-        });
-    }
+    ensure_not_archived(&organization)?;
     let member_ids = coaching_relationship::notify_member_ids(db, &coaching_relationship).await?;
     ensure_required_participants_are_members(&coaching_relationship, &member_ids)?;
     let owner_id = coaching_relationship.schedule_owner_id(acting_user_id);
@@ -1012,6 +1004,7 @@ fn generate_document_name(
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
+    use crate::error::EntityErrorKind;
     use crate::test_utils::mock::{
         both_participants_are_members, members, membership_statements, recording_publisher,
         user_with_email, Mailbox,
