@@ -1,0 +1,9 @@
+[
+  {"segments": ["s1", "s2"], "assignees": ["coachee"], "due_dates": ["2026-12-15"], "duplicate_of": null, "note": "Bob, by first name, reviews Alice's doc before next session"},
+  {"segments": ["s3", "s4"], "assignees": [["coach"], ["coach", "coachee"]], "due_dates": ["2026-12-02"], "duplicate_of": null, "note": "Alice, by first name, pairs tomorrow; pairing may be both"},
+  {"segments": ["s9", "s10"], "assignees": ["coach", "coachee"], "due_dates": ["2026-12-03"], "duplicate_of": null, "note": "both read the report: one suggestion for both"},
+  {"segments": ["s11", "s12"], "assignees": ["coach"], "due_dates": [null], "duplicate_of": null, "note": "split spoken by Bob: 'you' is Alice, slides"},
+  {"segments": ["s11"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "split: Bob brings the live environment"},
+  {"segments": ["s12", "s13"], "assignees": ["coachee"], "due_dates": ["2026-12-31"], "duplicate_of": null, "note": "assigned by first name inside Alice's line: Bob, roadmap by end of month"},
+  {"segments": ["s12"], "assignees": ["coach"], "due_dates": ["2026-12-02"], "duplicate_of": null, "note": "Alice's own part of the same line: customer email tomorrow"}
+]

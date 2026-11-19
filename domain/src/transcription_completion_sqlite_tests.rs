@@ -95,7 +95,7 @@ async fn fixture() -> Fixture {
     meeting_recording::ActiveModel {
         id: Set(recording_id),
         coaching_session_id: Set(session.id),
-        bot_id: Set("bot-1".to_string()),
+        bot_id: Set(Some("bot-1".to_string())),
         status: Set(MeetingRecordingStatus::Completed),
         video_url: Set(None),
         audio_url: Set(None),

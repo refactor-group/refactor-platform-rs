@@ -23,7 +23,9 @@ sequenceDiagram
         Recall-->>BE: { id: bot_id }
         BE->>DB: INSERT meeting_recordings (status: Pending, bot_id)
         DB-->>BE: recording row
+        BE-->>FE: SSE event: meeting_recording_updated { coaching_session_id }
         BE-->>FE: 201 { status: "pending", bot_id, ... }
+        Note over BE,FE: A refused bot dispatch marks the claim Failed,<br/>emits meeting_recording_updated, then returns the error
         FE->>FE: mutate SWR cache, begin polling every 5s
     end
 
@@ -54,10 +56,12 @@ sequenceDiagram
         FE->>BE: DELETE /coaching_sessions/:id/meeting_recording
         BE->>Recall: POST /api/v1/bot/:bot_id/leave_call/
         Recall-->>BE: 200 (4xx also treated as success — bot may have already left)
-        BE->>DB: update_status → Processing, set ended_at
+        BE->>DB: update_status → Cancelled, set ended_at
         DB-->>BE: recording
-        BE-->>FE: 200 { status: "processing" }
+        BE-->>FE: SSE event: meeting_recording_updated { coaching_session_id }
+        BE-->>FE: 200 { status: "cancelled" }
         FE->>FE: mutate SWR cache
+        Note over BE,FE: A latest recording already Completed, Failed or Cancelled<br/>is returned unchanged: no Recall call, no write, no SSE event
     end
 
     rect rgb(235, 220, 255)
@@ -109,8 +113,8 @@ sequenceDiagram
         Recall-->>BE: transcript JSON [{ participant: { name, id },<br/>words: [{ text, start_timestamp: { relative },<br/>end_timestamp: { relative } }] }]
         Note over BE: Flatten words by participant, sort chronologically,<br/>coalesce (same participant + gap under 1.5s = same segment)
         BE->>Recall: GET /api/v1/bot/:bot_id/ (meeting_url.meeting_id)
-        Note over BE: Attribute speakers (never fails the transcript):<br/>only if the bot recorded the session's own Meet space,<br/>coach = Recall host and/or Google attendee with the coach's account<br/>(must agree when both answer), coachee by elimination
-        BE->>Google: GET conferenceRecords + participants (coach's token, when available)
+        Note over BE: Attribute speakers (never fails the transcript):<br/>anchor = the coach (coaching), or the meeting-link maker when a participant<br/>(colleague; nobody attributed without one);<br/>only if the bot recorded the session's own Meet space,<br/>anchor = Recall host and/or Google attendee with the anchor's account<br/>(must agree when both answer; a colleague needs the account answer),<br/>the other participant by elimination
+        BE->>Google: GET conferenceRecords + participants (link maker's token, else the anchor's, when available)
         BE->>DB: one transaction: INSERT transcript_participants (with user_id, match_source),<br/>INSERT transcript_segments (participant_id)
         BE->>DB: update_status → Completed, set word_count
         BE-->>FE: SSE event: transcription_updated { coaching_session_id }

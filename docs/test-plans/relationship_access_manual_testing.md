@@ -449,7 +449,7 @@ How to read the tables:
 | TRN-16 | POST .../SG1/dismiss, .../SG1/restore | COACHEE | 403 | `domain/src/transcript_suggestion/review.rs:206` | SG2: 204 |
 | TRN-17 | POST .../SG1/dismiss, .../SG1/restore | non-participants | 404 | `web/src/extractors/transcript_suggestion_access.rs:45`, `:55`, `:58` | SG1 under another session, or an unknown suggestion: 404 |
 | TRN-18 | GET /coaching_sessions/S1/meeting_recording | COACH, COACHEE | 200, latest recording or null | `web/src/extractors/coaching_session_access.rs:193` | |
-| TRN-19 | POST /coaching_sessions/S1/meeting_recording `{meeting_url}` | COACH, COACHEE | 200 (201), recording | `web/src/extractors/coaching_session_access.rs:193` | Either participant starts a bot; 409 if one is active |
+| TRN-19 | POST /coaching_sessions/S1/meeting_recording `{meeting_url}` | COACH, COACHEE | 200 (201), recording | `web/src/extractors/coaching_session_access.rs:193` | Either participant starts a bot. The first start wins; a concurrent second start is a 409 (`details.reason` `recording_already_active`) and creates no bot |
 | TRN-20 | DELETE /coaching_sessions/S1/meeting_recording | COACH, COACHEE | 200 | `web/src/extractors/coaching_session_access.rs:193` | |
 | TRN-21 | GET, POST, DELETE /coaching_sessions/S1/meeting_recording | non-participants | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
 | TRN-22 | GET, POST, DELETE /coaching_sessions/S3/meeting_recording | REMOVED | 403 | `web/src/extractors/coaching_session_access.rs:193` | |
@@ -461,9 +461,11 @@ How to read the tables:
 | TRN-28 | POST /coaching_sessions/S3/transcript_suggestions/SG3/accept | COACH | 409 `assignee_not_a_member`, no action written, no email | `domain/src/transcript_suggestion/review.rs:339` | [membership] |
 | TRN-29 | any transcription, suggestion, recording or image route | not signed in | 401 | `web/src/middleware/auth.rs:25`; `web/src/extractors/authenticated_user.rs:28` | |
 | TRN-30 | Replaced by TRN-33: a colleague transcript is never given an analysis, so the sweep has none to skip | | | | |
-| TRN-31 | GET, POST /coaching_sessions/{RC session}/transcript_suggestions/scan, RC the KIND-04 colleague relationship, its session with a completed transcript | COACH, MEMBER | GET 200 `status: unavailable`; POST 422, no analysis written | `domain/src/transcript_suggestion/review.rs:515` | The status the route already gives when nothing can be scanned |
+| TRN-31 | GET, POST /coaching_sessions/{RC session}/transcript_suggestions/scan, RC the KIND-04 colleague relationship, its session with a completed transcript | COACH, MEMBER | GET 200 `status: none`; POST 202 `status: pending`, one pending analysis written | `domain/src/transcript_suggestion/review.rs:515` | Colleague sessions are scanned like coaching ones |
 | TRN-32 | Transcript completion for a Google Meet session on RC whose link MEMBER made (`meeting_url_created_by_user_id` = MEMBER_ID) | operator | the attendee list is read with MEMBER's Google token and matched against COACH's Google account; with no recorded link maker, both are COACH's | `domain/src/transcription.rs` `gather_evidence` | Who is attributed is unchanged |
 | TRN-33 | Transcript completion for RC's session with suggestions configured, beside one for R1 | operator | RC's transcript gets no `transcript_analyses` row; R1's gets one `pending` (psql) | `domain/src/transcription.rs` `owed_analyses` | Nothing is queued that the sweep would never claim. Replaces TRN-30 |
+| TRN-34 | Two near-simultaneous POST /coaching_sessions/S1/meeting_recording `{meeting_url}` against Postgres, with `RECALL_AI_BASE_URL` pointed at a local mock of Recall | COACH and COACHEE at once | one 200 (201), one 409 `recording_already_active`; one `meeting_recordings` row for S1 that is not terminal (psql) and one bot-create request in the mock's log (or one `Recording bot ... created` backend log line) | `domain/src/meeting_recording.rs` `start`; the index `idx_meeting_recordings_active_per_session` | Never against Recall: local and production keys share one workspace |
+| TRN-35 | With O1 archived (ORG-33): POST /coaching_sessions/S1/meeting_recording `{meeting_url}`, with `RECALL_AI_BASE_URL` pointed at a local mock of Recall | COACH | 409, `error` `organization_archived`, no `details`; no new `meeting_recordings` row for S1 (psql) and no bot-create request in the mock's log | `domain/src/meeting_recording.rs` `start`, checked before the claim | Never against Recall. Unarchive O1 afterwards (ORG-35) |
 
 ### 4.9 Meeting links and OAuth-dependent flows (`MEET`)
 
@@ -723,7 +725,7 @@ lowercase.
 | KIND-17 | POST /organizations/O1/users/{REMOVED}/role `{role: User, relationship: {with_user_id: COACH, kind: "colleague"}}` while COACH coaches REMOVED (R3) | ADMIN | 409, `details.reason` `pair_already_related`, `details.relationship_id` R3; REMOVED holds no O1 role; no new relationship; no MAIL-13 | `domain::user_role::attach_to_organization` (one transaction) | Remove REMOVED's O1 role first (ORG-04) |
 | KIND-18 | POST /organizations/O1/users `{..., relationship: {with_user_id: OUTSIDER, kind: "colleague"}}` (OUTSIDER is not in O1), with a mock Resend | ADMIN | 409; no user with that email; no relationship; no welcome email | `domain::user::create_in_organization` (one transaction) | A new user has no relationship yet, so this route cannot hit `pair_already_related`; any refused relationship takes the same path |
 | KIND-19 | GET /organizations/O1/coaching_relationships/R1 (REL-08) | COACH, COACHEE | 200; COACH: `"viewer": {"role": "coach", "can_schedule_sessions": true, "sees_all_actions": true}`; COACHEE: `{"role": "coachee", "can_schedule_sessions": false, "sees_all_actions": false}`; both `"suggests_actions": true` | `entity::coaching_relationships::viewer_of` (`Model::role`, `SchedulingPermit::verify`, `Model::sees_all_actions`); `entity_api::coaching_relationship::Capabilities` | Display only: no access check reads these fields |
-| KIND-20 | GET /organizations/O1/coaching_relationships/RC, RC a colleague relationship | each colleague | 200; `"viewer": {"role": "colleague", "can_schedule_sessions": true, "sees_all_actions": true}`; `"suggests_actions": false` | same | |
+| KIND-20 | GET /organizations/O1/coaching_relationships/RC, RC a colleague relationship | each colleague | 200; `"viewer": {"role": "colleague", "can_schedule_sessions": true, "sees_all_actions": true}`; `"suggests_actions": true` | same | |
 | KIND-21 | GET /organizations/O1/coaching_relationships (REL-05) | ADMIN | 200; every relationship has `"viewer": null` | `viewer_of` is `None` for a caller in neither seat | Also SUPER on REL-06 |
 | KIND-22 | A participant no longer in the organization | COACH after ORG-04 | `can_schedule_sessions: false` while `sees_all_actions` keeps its seat's answer | `SchedulingPermit::verify` checks membership | By unit test only: no read returns a relationship to a participant who left, unless a SuperAdmin, who keeps scheduling |
 | KIND-23 | GET /users/{COACH_ID}/coaching_sessions?include=relationship (SES-27), and `/users/{COACH_ID}/coaching_sessions/nearest?...&include=relationship` | COACH | each session's `relationship` has COACH's `viewer`, `suggests_actions` and `scheduling_blocked_by` | `entity_api::coaching_session::EnrichedSession::for_caller` | |
@@ -1021,7 +1023,7 @@ a frozen `domain` test, or by hand with the reason.
 | TRN-16 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::a_coachee_cannot_dismiss_or_restore_a_coach_only_suggestion` |
 | TRN-17 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::non_participants_cannot_dismiss_or_restore_a_suggestion` |
 | TRN-18 | `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::participants_read_the_latest_recording` |
-| TRN-19 | `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::either_participant_starts_a_recording_bot` (a stand-in bot provider; Recall itself is not called) |
+| TRN-19 | `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::either_participant_starts_a_recording_bot` (a stand-in bot provider; Recall itself is not called); the colleague 409 in `::a_colleagues_start_is_refused_while_the_others_bot_is_active` |
 | TRN-20 | `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::either_participant_stops_the_recording_bot` (a stand-in bot provider; Recall itself is not called) |
 | TRN-21 | `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::non_participants_cannot_reach_the_sessions_recording` |
 | TRN-22 | `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::a_removed_coachee_cannot_reach_their_sessions_recording` |
@@ -1032,6 +1034,8 @@ a frozen `domain` test, or by hand with the reason.
 | TRN-27 | `web/src/controller/coaching_session/image_controller_sqlite_tests.rs::non_participants_cannot_read_delete_or_restore_a_note_image` |
 | TRN-28 | `web/src/controller/coaching_session/transcript_suggestion_controller_sqlite_tests.rs::accepting_for_a_coachee_who_left_is_refused` |
 | TRN-29 | `web/src/controller/coaching_session/transcription_controller_sqlite_tests.rs::signed_out_callers_cannot_reach_transcripts_suggestions_recordings_or_images` |
+| TRN-34 | by hand against Postgres; the same race on SQLite in `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::a_start_during_dispatch_sees_the_claim_and_sends_no_second_bot` |
+| TRN-35 | `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::a_start_in_an_archived_organization_is_refused`, `web/src/controller/coaching_session/meeting_recording_controller_sqlite_tests.rs::a_start_succeeds_once_the_organization_is_unarchived` |
 | MEET-01 | by hand: first-read hydration takes `pg_advisory_xact_lock` and creates the link with the provider |
 | MEET-02 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::only_the_coachs_create_attaches_a_meeting_link` (a reused R1 link; a new provider link needs Google or Zoom) |
 | MEET-03 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_coach_sets_the_sessions_meeting_link` |
@@ -1158,7 +1162,7 @@ a frozen `domain` test, or by hand with the reason.
 | SES-46 | `web/src/controller/coaching_session_controller_sqlite_tests.rs::a_colleague_cannot_schedule_with_a_colleague_who_left` |
 | SER-24 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_series_with_a_colleague_who_left_is_refused` |
 | TRN-30 | replaced by TRN-33 |
-| TRN-31 | `domain/src/transcript_suggestion/review_sqlite_tests.rs::a_colleague_session_cannot_be_scanned` |
+| TRN-31 | `domain/src/transcript_suggestion/review_sqlite_tests.rs::a_colleague_session_can_be_scanned` |
 | SER-25 | `domain/src/coaching_session_series_sqlite_tests.rs::a_colleague_series_follows_the_zone_of_the_colleague_who_created_it` |
 | SER-26 | `domain/src/coaching_session_series_sqlite_tests.rs::a_rescheduled_colleague_series_follows_the_zone_of_the_colleague_who_moved_it`, `domain/src/coaching_session_series_sqlite_tests.rs::a_rescheduled_coaching_series_keeps_the_coachs_zone`; by hand for reschedule-following: it takes Postgres advisory locks |
 | SCHED-17 | `domain/src/coaching_session_sqlite_tests.rs::a_colleague_session_takes_the_schedulers_default_duration` |

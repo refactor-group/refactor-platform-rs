@@ -4,7 +4,8 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, FixedOffset, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono_tz::Tz;
 use entity::meeting_recording::{self, MeetingRecordingStatus};
 use entity::transcription::TranscriptionStatus;
 use entity::{actions, coaching_relationships, coaching_sessions, transcript_analysis, users};
@@ -18,6 +19,7 @@ use sea_orm::{
 use serde_json::json;
 
 use super::*;
+use crate::coaching_relationship_kind::Kind;
 use crate::events::EventHandler;
 use crate::status::Status as ActionStatus;
 use crate::test_utils::sqlite::{database, seed_organization, within_time_limit};
@@ -104,12 +106,13 @@ fn suggestion_changed_events(recorder: &Recorder) -> Vec<DomainEvent> {
 struct Fixture {
     db: DatabaseConnection,
     session_id: Id,
+    coach_id: Id,
     coachee_id: Id,
     transcription: crate::transcription::Model,
     action_id: Id,
 }
 
-async fn seed_user_named(db: &DatabaseConnection, name: &str) -> users::Model {
+async fn seed_user_in(db: &DatabaseConnection, name: &str, timezone: &str) -> users::Model {
     let id = Id::new_v4();
     let now = Utc::now();
     users::ActiveModel {
@@ -121,7 +124,7 @@ async fn seed_user_named(db: &DatabaseConnection, name: &str) -> users::Model {
         password: Set(None),
         github_username: Set(None),
         github_profile_url: Set(None),
-        timezone: Set("America/Chicago".to_string()),
+        timezone: Set(timezone.to_string()),
         default_coaching_session_duration_minutes: Set(60),
         working_hours_start: Set(crate::working_hours::default_start()),
         working_hours_end: Set(crate::working_hours::default_end()),
@@ -133,11 +136,31 @@ async fn seed_user_named(db: &DatabaseConnection, name: &str) -> users::Model {
     .expect("the user is seeded")
 }
 
+/// The relationship's kind, each seat's timezone, and who scheduled the session for when.
+struct Setup {
+    kind: Kind,
+    coach_timezone: &'static str,
+    coachee_timezone: &'static str,
+    scheduled_by_coachee: bool,
+    date: NaiveDateTime,
+}
+
 /// A coach and coachee, their session with one action, and a transcription still processing.
 async fn fixture() -> Fixture {
+    fixture_with(Setup {
+        kind: Kind::Coaching,
+        coach_timezone: "America/Chicago",
+        coachee_timezone: "America/Chicago",
+        scheduled_by_coachee: false,
+        date: Utc::now().naive_utc(),
+    })
+    .await
+}
+
+async fn fixture_with(setup: Setup) -> Fixture {
     let db = database().await;
-    let coach = seed_user_named(&db, COACH_NAME).await;
-    let coachee = seed_user_named(&db, "Casey Coachee").await;
+    let coach = seed_user_in(&db, COACH_NAME, setup.coach_timezone).await;
+    let coachee = seed_user_in(&db, "Casey Coachee", setup.coachee_timezone).await;
     let now = Utc::now();
 
     let relationship_id = Id::new_v4();
@@ -146,7 +169,7 @@ async fn fixture() -> Fixture {
         organization_id: Set(seed_organization(&db).await),
         coach_id: Set(coach.id),
         coachee_id: Set(coachee.id),
-        kind: Set(crate::coaching_relationship_kind::Kind::Coaching),
+        kind: Set(setup.kind),
         slug: Set(format!("relationship-{relationship_id}")),
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
@@ -162,7 +185,7 @@ async fn fixture() -> Fixture {
         ical_sequence: Set(0),
         ical_recurrence_id: Set(None),
         collab_document_name: Set(None),
-        date: Set(now.naive_utc()),
+        date: Set(setup.date),
         duration_minutes: Set(60),
         title: Set(None),
         meeting_url: Set(None),
@@ -170,7 +193,11 @@ async fn fixture() -> Fixture {
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
         hydrated_at: Set(None),
-        scheduled_by_user_id: Set(coach.id),
+        scheduled_by_user_id: Set(if setup.scheduled_by_coachee {
+            coachee.id
+        } else {
+            coach.id
+        }),
         meeting_url_created_by_user_id: Set(None),
     }
     .insert(&db)
@@ -197,7 +224,7 @@ async fn fixture() -> Fixture {
     meeting_recording::ActiveModel {
         id: Set(recording_id),
         coaching_session_id: Set(session.id),
-        bot_id: Set("bot-1".to_string()),
+        bot_id: Set(Some("bot-1".to_string())),
         status: Set(MeetingRecordingStatus::Completed),
         video_url: Set(None),
         audio_url: Set(None),
@@ -235,6 +262,7 @@ async fn fixture() -> Fixture {
     let fixture = Fixture {
         db,
         session_id: session.id,
+        coach_id: coach.id,
         coachee_id: coachee.id,
         transcription,
         action_id: action.id,
@@ -505,6 +533,137 @@ async fn every_completed_run_announces_once_with_or_without_suggestions() {
 
         assert_eq!(outcome, Outcome::Stored(0));
         assert_eq!(suggestion_changed_events(&recorder).len(), 1);
+    })
+    .await;
+}
+
+/// The session's date and the zone of a deadline for nobody, read from one run.
+async fn anchors_of_a_run(kind: Kind) -> (String, Option<DateTime<FixedOffset>>) {
+    let f = fixture_with(Setup {
+        kind,
+        coach_timezone: "America/Chicago",
+        coachee_timezone: "Asia/Tokyo",
+        scheduled_by_coachee: true,
+        // 2026-11-24 23:30 in Chicago, already 2026-11-25 in Tokyo.
+        date: NaiveDate::from_ymd_opt(2026, 11, 25)
+            .and_then(|d| d.and_hms_opt(5, 30, 0))
+            .expect("valid time"),
+    })
+    .await;
+    let analysis = claimed_analysis(&f.db, f.transcription.id).await;
+    let model = FakeModel::answering(json!({ "suggestions": [{
+        "body": "Send the org chart",
+        "assignees": [],
+        "due_date": "2026-11-27",
+        "due_phrase": null,
+        "source_segment": "s2",
+        "quote": "send you the org chart",
+        "duplicate_of": null,
+    }]}));
+    let (publisher, _) = recording_publisher();
+
+    run::<Actions>(&f.db, &model, &publisher, &analysis)
+        .await
+        .expect("the run succeeds");
+
+    let content = model.requests()[0].content.clone();
+    let session_date = content
+        .lines()
+        .find(|line| line.starts_with("Session date:"))
+        .expect("the session date is rendered")
+        .to_string();
+    let proposal: ActionProposal =
+        serde_json::from_value(stored_suggestions(&f.db).await[0].proposal.clone())
+            .expect("the proposal deserializes");
+    (session_date, proposal.action.action.due_by)
+}
+
+fn noon_on_the_27th(tz: Tz) -> DateTime<FixedOffset> {
+    tz.with_ymd_and_hms(2026, 11, 27, 12, 0, 0)
+        .single()
+        .expect("valid time")
+        .fixed_offset()
+}
+
+#[tokio::test]
+async fn a_colleague_session_is_anchored_on_whoever_scheduled_it() {
+    within_time_limit(async {
+        let (session_date, due_by) = anchors_of_a_run(Kind::Colleague).await;
+
+        assert_eq!(session_date, "Session date: Wednesday 2026-11-25");
+        assert_eq!(due_by, Some(noon_on_the_27th(chrono_tz::Asia::Tokyo)));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_coaching_session_is_anchored_on_the_coach() {
+    within_time_limit(async {
+        let (session_date, due_by) = anchors_of_a_run(Kind::Coaching).await;
+
+        assert_eq!(session_date, "Session date: Tuesday 2026-11-24");
+        assert_eq!(due_by, Some(noon_on_the_27th(chrono_tz::America::Chicago)));
+    })
+    .await;
+}
+
+/// The header the model reads for a `kind` session whose two people are both "Alex" to the
+/// platform: Alex Kim in the coach seat and Alex Park in the coachee seat.
+async fn people_read_by_the_model(kind: Kind) -> Vec<String> {
+    let f = fixture_with(Setup {
+        kind,
+        coach_timezone: "America/Chicago",
+        coachee_timezone: "America/Chicago",
+        scheduled_by_coachee: false,
+        date: Utc::now().naive_utc(),
+    })
+    .await;
+    for (id, last_name) in [(f.coach_id, "Kim"), (f.coachee_id, "Park")] {
+        users::ActiveModel {
+            id: Set(id),
+            first_name: Set("Alex".to_string()),
+            last_name: Set(last_name.to_string()),
+            display_name: Set(Some("Alex".to_string())),
+            ..Default::default()
+        }
+        .update(&f.db)
+        .await
+        .expect("the user is renamed");
+    }
+    let analysis = claimed_analysis(&f.db, f.transcription.id).await;
+    let model = FakeModel::answering(json!({ "suggestions": [] }));
+    let (publisher, _) = recording_publisher();
+
+    run::<Actions>(&f.db, &model, &publisher, &analysis)
+        .await
+        .expect("the run succeeds");
+
+    model.requests()[0]
+        .content
+        .lines()
+        .take_while(|line| !line.starts_with("Session date:"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[tokio::test]
+async fn colleagues_who_share_a_display_name_are_told_apart_by_their_full_names() {
+    within_time_limit(async {
+        assert_eq!(
+            people_read_by_the_model(Kind::Colleague).await,
+            ["Colleagues: Alex Kim, Alex Park"]
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_coaching_session_keeps_the_display_names() {
+    within_time_limit(async {
+        assert_eq!(
+            people_read_by_the_model(Kind::Coaching).await,
+            ["Coach: Alex", "Coachee: Alex"]
+        );
     })
     .await;
 }

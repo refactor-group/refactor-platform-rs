@@ -71,6 +71,7 @@ mod m20261114_000005_drop_notice_given_at_from_coaching_sessions;
 mod m20261115_000000_add_kind_to_coaching_relationships;
 mod m20261117_000000_create_audit_events;
 mod m20261117_000001_create_coaching_session_pending_invites;
+mod m20261118_000001_meeting_recordings_bot_id_nullable;
 
 pub struct Migrator;
 
@@ -151,6 +152,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261115_000000_add_kind_to_coaching_relationships::Migration),
             Box::new(m20261117_000000_create_audit_events::Migration),
             Box::new(m20261117_000001_create_coaching_session_pending_invites::Migration),
+            Box::new(m20261118_000001_meeting_recordings_bot_id_nullable::Migration),
         ]
     }
 }

@@ -1,0 +1,13 @@
+# C3 no speaker was attributed, so every line carries the meeting's display name; the model maps them to the two people, worded as a script.
+# session: Tuesday 2026-12-01
+# next_session: Tuesday 2026-12-15 10:00
+# kind: colleague
+# coach: Alice Smith
+# coachee: Bob Lee
+[s1 00:05] Alice S: Bob, can you send the vendor shortlist by Friday?
+[s2 00:11] Bob (he/him): Yep, I'll send it.
+[s3 00:17] Bob (he/him): I'll also set up the staging account tomorrow.
+[s4 00:24] Alice S: Great. I'll book the demo with the vendor.
+[s5 00:31] Priya Patel: And I'll send the contract over today.
+[s6 00:38] Bob's iPhone: Sorry, I dropped for a second. I'll write up the security questions for the demo.
+[s7 00:46] Alice S: Perfect.

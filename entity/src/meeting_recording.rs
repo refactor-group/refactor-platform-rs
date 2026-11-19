@@ -52,7 +52,8 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Id,
     pub coaching_session_id: Id,
-    pub bot_id: String,
+    /// Null while the recording bot is being dispatched.
+    pub bot_id: Option<String>,
     pub status: MeetingRecordingStatus,
     /// Internal only — pre-signed video download URL from Recall.ai. Never sent to clients.
     #[serde(skip_serializing)]

@@ -1,0 +1,20 @@
+# C1 colleagues address each other by first name, with requests both ways, one declined, one shared and one split, reworded.
+# session: Tuesday 2026-12-01
+# next_session: Tuesday 2026-12-15 10:00
+# kind: colleague
+# coach: Alice Smith
+# coachee: Bob Lee
+[s1 00:05] Alice Smith: Bob, would you mind reading through my architecture doc before we meet again?
+[s2 00:13] Bob Lee: Of course, will do.
+[s3 00:19] Bob Lee: Alice, could you pair with me on those flaky tests tomorrow?
+[s4 00:26] Alice Smith: Sure thing.
+[s5 00:33] Alice Smith: And could you pick up on-call next month?
+[s6 00:40] Bob Lee: Honestly I don't have room for that right now.
+[s7 00:46] Alice Smith: Fair enough. Splitting that PR in two might help, just a thought.
+[s8 00:52] Bob Lee: Maybe, we'll see.
+[s9 00:58] Alice Smith: How about we each read through the incident report by Thursday?
+[s10 01:05] Bob Lee: Works for me.
+[s11 01:10] Bob Lee: On the demo, slides are yours and the live environment is mine.
+[s12 01:18] Alice Smith: Sounds good. Roadmap update is on you, Bob, by end of month; the customer email is on me, going out tomorrow.
+[s13 01:30] Bob Lee: Yep. Two weeks from now, same slot?
+[s14 01:35] Alice Smith: Works. Let's make blockers the first thing we cover every time.

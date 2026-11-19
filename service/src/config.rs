@@ -128,6 +128,7 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "zoom_api_url",
     "recall_ai_api_key",
     "recall_ai_region",
+    "recall_ai_base_url",
     "recall_ai_webhook_secret",
     "assembly_ai_api_key",
     "assembly_ai_llm_model",
@@ -507,6 +508,11 @@ pub struct Config {
     #[arg(long, env, default_value = "us-east-1")]
     recall_ai_region: String,
 
+    /// Recall.ai API origin, such as `http://localhost:4600`.
+    /// Override for local testing; unset or empty uses the region's URL.
+    #[arg(long, env)]
+    recall_ai_base_url: Option<String>,
+
     /// Recall.ai webhook signing secret (Svix `whsec_...` format)
     #[arg(long, env)]
     recall_ai_webhook_secret: Option<String>,
@@ -799,6 +805,7 @@ impl Config {
         );
         self.debug_field("tiptap_app_id", &self.tiptap_app_id);
         self.debug_field("resend_base_url", &self.resend_base_url);
+        self.debug_field("recall_ai_base_url", &self.recall_ai_base_url);
         self.debug_field("welcome_email_template_id", &self.welcome_email_template_id);
         self.debug_field(
             "session_scheduled_email_template_id",
@@ -1182,6 +1189,15 @@ impl Config {
         &self.recall_ai_region
     }
 
+    /// Returns the Recall.ai API origin.
+    /// Falls back to the region's URL if the configured value is unset or empty.
+    pub fn recall_ai_base_url(&self) -> String {
+        self.recall_ai_base_url
+            .clone()
+            .filter(|url| !url.is_empty())
+            .unwrap_or_else(|| format!("https://{}.recall.ai", self.recall_ai_region))
+    }
+
     pub fn recall_ai_webhook_secret(&self) -> Option<String> {
         self.recall_ai_webhook_secret.clone()
     }
@@ -1392,6 +1408,28 @@ mod tests {
         assert_eq!(
             Config::from_args(["test_binary"]).assembly_ai_api_key(),
             None
+        );
+    }
+
+    #[test]
+    fn recall_ai_base_url_unset_or_empty_is_the_region_url_and_a_set_value_is_kept() {
+        let base_url = |args: &[&str]| {
+            Config::from_args(
+                ["test_binary", "--recall-ai-region=eu-central-1"]
+                    .iter()
+                    .chain(args),
+            )
+            .recall_ai_base_url()
+        };
+
+        assert_eq!(base_url(&[]), "https://eu-central-1.recall.ai");
+        assert_eq!(
+            base_url(&["--recall-ai-base-url="]),
+            "https://eu-central-1.recall.ai"
+        );
+        assert_eq!(
+            base_url(&["--recall-ai-base-url=http://localhost:4600"]),
+            "http://localhost:4600"
         );
     }
 

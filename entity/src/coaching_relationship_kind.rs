@@ -117,6 +117,14 @@ pub trait Rules {
     /// A new meeting link may be made with the other participant's account when the schedule
     /// owner has none connected.
     fn links_with_other_account(&self) -> bool;
+    /// Whose seat anchors speaker attribution, given the seat of whoever made the meeting link.
+    fn attribution_anchor(&self, link_maker: Option<Seat>) -> Option<Seat>;
+    /// The meeting host alone, with no matching account, may identify the anchor.
+    fn host_alone_attributes(&self) -> bool;
+    /// A suggestion for one participant is due in that participant's zone.
+    fn due_in_assignee_zone(&self) -> bool;
+    /// The suggestion prompt names the two people instead of calling them coach and coachee.
+    fn names_people_in_prompt(&self) -> bool;
 }
 
 /// One person coaches the other.
@@ -177,6 +185,22 @@ impl Rules for Coaching {
     fn links_with_other_account(&self) -> bool {
         false
     }
+
+    fn attribution_anchor(&self, _link_maker: Option<Seat>) -> Option<Seat> {
+        Some(Seat::CoachId)
+    }
+
+    fn host_alone_attributes(&self) -> bool {
+        true
+    }
+
+    fn due_in_assignee_zone(&self) -> bool {
+        false
+    }
+
+    fn names_people_in_prompt(&self) -> bool {
+        false
+    }
 }
 
 /// Two equals with identical privileges.
@@ -212,7 +236,7 @@ impl Rules for Colleague {
     }
 
     fn suggests_actions(&self) -> bool {
-        false
+        true
     }
 
     fn schedule_owner(&self) -> ScheduleOwner {
@@ -220,6 +244,22 @@ impl Rules for Colleague {
     }
 
     fn links_with_other_account(&self) -> bool {
+        true
+    }
+
+    fn attribution_anchor(&self, link_maker: Option<Seat>) -> Option<Seat> {
+        link_maker
+    }
+
+    fn host_alone_attributes(&self) -> bool {
+        false
+    }
+
+    fn due_in_assignee_zone(&self) -> bool {
+        true
+    }
+
+    fn names_people_in_prompt(&self) -> bool {
         true
     }
 }
@@ -269,13 +309,13 @@ mod tests {
     }
 
     #[test]
-    fn colleague_reminds_and_requires_membership_of_both_seats_and_suggests_nothing() {
+    fn colleague_reminds_and_requires_membership_of_both_seats_and_suggests_actions() {
         let rules = Kind::Colleague.rules();
         for seat in [Seat::CoachId, Seat::CoacheeId] {
             assert!(rules.is_reminded(seat), "{seat:?}");
             assert!(rules.must_be_member_to_schedule(seat), "{seat:?}");
         }
-        assert!(!rules.suggests_actions());
+        assert!(rules.suggests_actions());
     }
 
     #[test]
@@ -293,6 +333,12 @@ mod tests {
         let rules = Kind::Coaching.rules();
         assert_eq!(rules.schedule_owner(), ScheduleOwner::Seat(Seat::CoachId));
         assert!(!rules.links_with_other_account());
+        for link_maker in [None, Some(Seat::CoachId), Some(Seat::CoacheeId)] {
+            assert_eq!(rules.attribution_anchor(link_maker), Some(Seat::CoachId));
+        }
+        assert!(rules.host_alone_attributes());
+        assert!(!rules.due_in_assignee_zone());
+        assert!(!rules.names_people_in_prompt());
     }
 
     #[test]
@@ -300,6 +346,14 @@ mod tests {
         let rules = Kind::Colleague.rules();
         assert_eq!(rules.schedule_owner(), ScheduleOwner::Scheduler);
         assert!(rules.links_with_other_account());
+        assert_eq!(rules.attribution_anchor(None), None);
+        assert_eq!(
+            rules.attribution_anchor(Some(Seat::CoacheeId)),
+            Some(Seat::CoacheeId)
+        );
+        assert!(!rules.host_alone_attributes());
+        assert!(rules.due_in_assignee_zone());
+        assert!(rules.names_people_in_prompt());
     }
 
     #[test]

@@ -188,7 +188,7 @@ async fn fixture_in(db: DatabaseConnection) -> Fixture {
     meeting_recording::ActiveModel {
         id: Set(recording_id),
         coaching_session_id: Set(session.id),
-        bot_id: Set(format!("bot-{recording_id}")),
+        bot_id: Set(Some(format!("bot-{recording_id}"))),
         status: Set(MeetingRecordingStatus::Completed),
         video_url: Set(None),
         audio_url: Set(None),
@@ -1590,10 +1590,9 @@ async fn a_session_without_a_completed_transcript_or_a_key_cannot_be_scanned() {
     .await;
 }
 
-/// TRN-31: a colleague session's completed transcript is not scannable: the scan reads
-/// `unavailable` and starting one is refused, as when nothing can be scanned.
+/// TRN-31: a colleague session's completed transcript is scannable like a coaching one.
 #[tokio::test]
-async fn a_colleague_session_cannot_be_scanned() {
+async fn a_colleague_session_can_be_scanned() {
     within_time_limit(async {
         let f = fixture().await;
         delete_analysis(&f).await;
@@ -1602,15 +1601,15 @@ async fn a_colleague_session_cannot_be_scanned() {
 
         assert_eq!(
             scan_status(&f.db, &scanning(), &f.session).await.unwrap(),
-            ScanStatus::Unavailable
+            ScanStatus::None
         );
-        let error = start_scan(&f.db, &publisher, &scanning(), &f.session)
+        let status = start_scan(&f.db, &publisher, &scanning(), &f.session)
             .await
-            .expect_err("a colleague session suggests nothing");
-        assert!(is_validation(&error));
+            .expect("the scan starts");
 
-        assert!(analyses(&f).await.is_empty());
-        assert_eq!(recorder.suggestion_changes(), 0);
+        assert_eq!(status, ScanStatus::Pending);
+        assert_eq!(analyses(&f).await.len(), 1);
+        assert_eq!(recorder.suggestion_changes(), 1);
     })
     .await;
 }

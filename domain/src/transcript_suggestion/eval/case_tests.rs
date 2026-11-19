@@ -6,7 +6,7 @@ use chrono::{NaiveDate, NaiveTime, Weekday};
 
 use super::case::{load_all, parse_transcript, Set, Variant};
 use super::report::read_baseline;
-use crate::coaching_relationship_kind;
+use crate::coaching_relationship_kind::{self, Kind};
 
 const SOURCE: &str = "\
 # A comment line.
@@ -96,6 +96,22 @@ fn session_maps_speakers_and_labels_back() {
     );
     assert_eq!(t.segment_label(&input, session.segments[1].id), Some("s1b"));
     assert_eq!(t.existing_label(&input, session.existing[0].id), Some("a1"));
+}
+
+#[test]
+fn a_colleague_transcript_names_the_people_and_maps_their_names_to_seats() {
+    let t = parse_transcript(
+        "# kind: colleague\n# session: 2026-10-07\n# coach: Alice Smith\n# coachee: Bob Lee\n[s1 00:01] Bob Lee: I'll draft it.\n",
+    )
+    .expect("parses");
+    let input = t.input();
+    let session = t.session(&input);
+
+    assert_eq!(session.kind, Kind::Colleague);
+    assert_eq!(
+        session.segments[0].speaker_user_id,
+        Some(session.people.coachee_id)
+    );
 }
 
 #[test]

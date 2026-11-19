@@ -197,6 +197,7 @@ NGROK_DOMAIN=<your-reserved-ngrok-domain>
 RECALL_AI_API_KEY=<key from your own Recall development workspace>
 RECALL_AI_REGION=us-west-2
 RECALL_AI_WEBHOOK_SECRET=whsec_<your workspace signing secret>
+# RECALL_AI_BASE_URL=http://localhost:4600   # local testing only: send Recall calls to a mock origin; unset uses the region URL
 
 # ==============================
 #   Suggested Actions (AssemblyAI LLM Gateway)

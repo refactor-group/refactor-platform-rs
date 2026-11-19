@@ -15,7 +15,8 @@ pub mod kind_switch;
 
 pub(crate) use entity_api::coaching_relationship::{
     create, find_by_organization_with_user_names, find_by_user_and_organization_with_user_names,
-    find_by_user_id_with_user_names, get_relationship_with_user_names, notify_member_ids,
+    find_by_user_id_with_user_names, find_with_coach_and_coachee, get_relationship_with_user_names,
+    notify_member_ids,
 };
 pub use entity_api::coaching_relationship::{
     find_by_coach_and_organization, find_by_id, find_by_user, find_by_user_and_organization,

@@ -4,9 +4,9 @@ use chrono::{NaiveDate, TimeZone, Utc, Weekday};
 use serde_json::{json, Value};
 
 use super::*;
-use crate::coaching_relationship_kind;
+use crate::coaching_relationship_kind::{self, Kind};
 use crate::transcript_export::LabeledSegment;
-use crate::transcript_suggestion::{verify_output, Existing, NextSession};
+use crate::transcript_suggestion::{verify_output, Existing, NextSession, Timezones};
 
 const S2_TEXT: &str = "Um, yeah, I'll schedule a one-on-one with my manager by Friday.";
 
@@ -63,7 +63,17 @@ fn session(segments: &[LabeledSegment]) -> Session<'_> {
         },
         coach_name: "Jim Hodapp".to_string(),
         coachee_name: "Alex Rivera".to_string(),
-        coach_timezone: chrono_tz::America::Chicago,
+        anchor_timezone: chrono_tz::America::Chicago,
+        timezones: Timezones {
+            coach: chrono_tz::America::Chicago,
+            coachee: chrono_tz::America::Chicago,
+        },
+        kind: Kind::Coaching,
+        start: Utc
+            .with_ymd_and_hms(2026, 10, 7, 15, 0, 0)
+            .single()
+            .expect("valid time")
+            .fixed_offset(),
         session_date: day(2026, 10, 7),
         next_session: Some(NextSession {
             date: day(2026, 10, 21),
@@ -81,7 +91,7 @@ fn session(segments: &[LabeledSegment]) -> Session<'_> {
 fn valid() -> Candidate {
     Candidate {
         body: "Schedule a one-on-one".to_string(),
-        assignees: vec![Role::Coachee],
+        assignees: vec!["coachee".to_string()],
         due_date: Some("2026-10-09".to_string()),
         due_phrase: Some("by Friday".to_string()),
         source_segment: "s2".to_string(),
@@ -164,7 +174,7 @@ fn assignees_are_mapped_and_deduplicated_in_order() {
     let segments = segments();
     let session = session(&segments);
     let candidate = Candidate {
-        assignees: vec![Role::Coach, Role::Coachee, Role::Coach],
+        assignees: ["coach", "coachee", "coach"].map(str::to_string).to_vec(),
         ..valid()
     };
     let verified = verify(candidate, &session).expect("verified");
@@ -323,7 +333,9 @@ fn check_rejects_outsiders_and_blank_bodies() {
 
 #[test]
 fn the_output_schema_is_strict() {
-    let schema = Actions::output_schema();
+    let segments = segments();
+    let session = session(&segments);
+    let schema = Actions::output_schema(&session);
     let items = &schema["properties"]["suggestions"]["items"];
     assert_eq!(
         items["required"],
@@ -341,7 +353,7 @@ fn the_output_schema_is_strict() {
     assert_eq!(items["additionalProperties"], json!(false));
     assert_eq!(Actions::schema_name(), "action_suggestions");
     assert_eq!(Actions::TARGET, Target::Action);
-    assert!(!Actions::instructions().is_empty());
+    assert!(!Actions::instructions(&session).is_empty());
 }
 
 #[test]
@@ -408,4 +420,293 @@ fn a_deadline_on_a_later_day_stays_at_noon() {
     let verified = verify(valid(), &session).expect("verified");
 
     assert_eq!(verified.proposal.action.action.due_by, Some(noon_cdt(9)));
+}
+
+/// A colleague session scheduled by A, in the coachee seat in `a_tz`, starting at `start`; B holds
+/// the coach seat in `b_tz`.
+fn colleague_session(
+    segments: &[LabeledSegment],
+    start: DateTimeWithTimeZone,
+    a_tz: Tz,
+    b_tz: Tz,
+) -> Session<'_> {
+    Session {
+        anchor_timezone: a_tz,
+        timezones: Timezones {
+            coach: b_tz,
+            coachee: a_tz,
+        },
+        kind: Kind::Colleague,
+        start,
+        session_date: start.with_timezone(&a_tz).date_naive(),
+        next_session: None,
+        ..session(segments)
+    }
+}
+
+const A: &str = "Alex Rivera";
+const B: &str = "Jim Hodapp";
+
+fn local(tz: Tz, y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTimeWithTimeZone {
+    tz.with_ymd_and_hms(y, m, d, h, min, 0)
+        .single()
+        .expect("valid time")
+        .fixed_offset()
+}
+
+fn due_by(session: &Session, assignees: Vec<&str>, due_date: &str) -> Option<DateTimeWithTimeZone> {
+    let candidate = Candidate {
+        assignees: assignees.into_iter().map(str::to_string).collect(),
+        due_date: Some(due_date.to_string()),
+        due_phrase: None,
+        ..valid()
+    };
+    verify(candidate, session)
+        .expect("verified")
+        .proposal
+        .action
+        .action
+        .due_by
+}
+
+fn chicago_and_tokyo(segments: &[LabeledSegment]) -> Session<'_> {
+    colleague_session(
+        segments,
+        local(chrono_tz::America::Chicago, 2026, 11, 18, 10, 0),
+        chrono_tz::America::Chicago,
+        chrono_tz::Asia::Tokyo,
+    )
+}
+
+#[test]
+fn a_colleague_suggestion_for_the_other_person_is_due_in_their_timezone() {
+    let segments = segments();
+    let session = chicago_and_tokyo(&segments);
+
+    assert_eq!(
+        due_by(&session, vec![B], "2026-11-25"),
+        Some(local(chrono_tz::Asia::Tokyo, 2026, 11, 25, 12, 0))
+    );
+}
+
+#[test]
+fn a_colleague_suggestion_for_the_scheduler_is_due_in_their_timezone() {
+    let segments = segments();
+    let session = chicago_and_tokyo(&segments);
+
+    assert_eq!(
+        due_by(&session, vec![A], "2026-11-25"),
+        Some(local(chrono_tz::America::Chicago, 2026, 11, 25, 12, 0))
+    );
+}
+
+#[test]
+fn a_colleague_suggestion_for_both_or_nobody_is_due_in_the_schedulers_timezone() {
+    let segments = segments();
+    let session = chicago_and_tokyo(&segments);
+    let scheduler_noon = Some(local(chrono_tz::America::Chicago, 2026, 11, 25, 12, 0));
+
+    assert_eq!(due_by(&session, vec![A, B], "2026-11-25"), scheduler_noon);
+    assert_eq!(due_by(&session, vec![], "2026-11-25"), scheduler_noon);
+}
+
+#[test]
+fn the_session_day_is_judged_in_the_assignees_timezone() {
+    let segments = segments();
+    let session = colleague_session(
+        &segments,
+        local(chrono_tz::America::Chicago, 2026, 11, 24, 23, 30),
+        chrono_tz::America::Chicago,
+        chrono_tz::Asia::Tokyo,
+    );
+
+    assert_eq!(
+        due_by(&session, vec![B], "2026-11-25"),
+        Some(local(chrono_tz::Asia::Tokyo, 2026, 11, 25, 23, 59))
+    );
+}
+
+/// Due date of a candidate for `assignees` with the spoken deadline `phrase`.
+fn due_by_phrase(
+    session: &Session,
+    assignees: Vec<&str>,
+    due_date: &str,
+    phrase: &str,
+) -> Option<DateTimeWithTimeZone> {
+    let candidate = Candidate {
+        assignees: assignees.into_iter().map(str::to_string).collect(),
+        due_date: Some(due_date.to_string()),
+        due_phrase: Some(phrase.to_string()),
+        ..valid()
+    };
+    verify(candidate, session)
+        .expect("verified")
+        .proposal
+        .action
+        .action
+        .due_by
+}
+
+#[test]
+fn a_same_day_deadline_on_the_schedulers_calendar_is_never_before_the_session() {
+    let segments = segments();
+    let session = colleague_session(
+        &segments,
+        local(chrono_tz::America::Chicago, 2026, 11, 23, 18, 0),
+        chrono_tz::America::Chicago,
+        chrono_tz::Asia::Tokyo,
+    );
+
+    assert_eq!(
+        due_by_phrase(&session, vec![B], "2026-11-23", "after our call"),
+        Some(local(chrono_tz::Asia::Tokyo, 2026, 11, 24, 23, 59))
+    );
+}
+
+#[test]
+fn a_next_day_deadline_for_an_assignee_behind_the_scheduler_is_never_before_the_session() {
+    let segments = segments();
+    let session = colleague_session(
+        &segments,
+        local(chrono_tz::Asia::Tokyo, 2026, 11, 24, 9, 0),
+        chrono_tz::Asia::Tokyo,
+        chrono_tz::America::Chicago,
+    );
+
+    let due = due_by_phrase(&session, vec![B], "2026-11-25", "tomorrow").expect("due");
+
+    assert!(due >= session.start, "{due} is before {}", session.start);
+    assert_eq!(due, local(chrono_tz::America::Chicago, 2026, 11, 25, 12, 0));
+}
+
+#[test]
+fn a_deadline_after_both_zones_leave_summer_time_uses_each_assignees_winter_offset() {
+    let segments = segments();
+    let session = colleague_session(
+        &segments,
+        local(chrono_tz::America::New_York, 2026, 10, 29, 10, 0),
+        chrono_tz::America::New_York,
+        chrono_tz::Europe::London,
+    );
+
+    let for_b = due_by(&session, vec![B], "2026-11-02").expect("due");
+    assert_eq!(for_b, local(chrono_tz::Europe::London, 2026, 11, 2, 12, 0));
+    assert_eq!(for_b.offset().local_minus_utc(), 0);
+
+    let for_a = due_by(&session, vec![A], "2026-11-02").expect("due");
+    assert_eq!(
+        for_a,
+        local(chrono_tz::America::New_York, 2026, 11, 2, 12, 0)
+    );
+    assert_eq!(for_a.offset().local_minus_utc(), -5 * 3600);
+}
+
+#[test]
+fn a_coaching_suggestion_for_the_coachee_stays_in_the_coachs_timezone() {
+    let segments = segments();
+    let session = Session {
+        timezones: Timezones {
+            coach: chrono_tz::America::Chicago,
+            coachee: chrono_tz::Asia::Tokyo,
+        },
+        ..session(&segments)
+    };
+
+    assert_eq!(
+        due_by(&session, vec!["coachee"], "2026-10-09"),
+        Some(noon_cdt(9))
+    );
+}
+
+/// A colleague session between Alice Smith in the coach seat and Bob Lee in the coachee seat.
+fn alice_and_bob(segments: &[LabeledSegment]) -> Session<'_> {
+    Session {
+        coach_name: "Alice Smith".to_string(),
+        coachee_name: "Bob Lee".to_string(),
+        kind: Kind::Colleague,
+        ..session(segments)
+    }
+}
+
+fn assignee_ids(session: &Session, assignees: &[&str]) -> Option<Vec<Id>> {
+    let candidate = Candidate {
+        assignees: assignees.iter().map(|a| a.to_string()).collect(),
+        ..valid()
+    };
+    verify(candidate, session).map(|v| v.proposal.action.assignee_ids)
+}
+
+#[test]
+fn a_coaching_session_gets_the_coaching_prompt_unchanged() {
+    let segments = segments();
+    assert_eq!(
+        Actions::instructions(&session(&segments)),
+        include_str!("actions_prompt.md")
+    );
+}
+
+#[test]
+fn each_coaching_passage_the_colleague_prompt_replaces_occurs_once() {
+    let prompt = include_str!("actions_prompt.md");
+    for (coaching, _) in COLLEAGUE_PASSAGES {
+        assert_eq!(prompt.matches(coaching).count(), 1, "{coaching}");
+    }
+}
+
+#[test]
+fn a_colleague_prompt_names_the_two_people_and_never_says_coach() {
+    let segments = segments();
+    let prompt = Actions::instructions(&alice_and_bob(&segments));
+
+    for passage in [
+        "You read the transcript of a session between two colleagues, Alice Smith and Bob Lee, and list the actions that\neither of them committed to doing after the session.",
+        "- Alice Smith or Bob Lee says they will do something after the session:",
+        "- Agreements about how the two of them work together",
+        "- Scheduling the next session or meeting, and anything about the recording or the meeting tool.",
+        "- Commitments by anyone other than Alice Smith and Bob Lee (other attendees, managers, other colleagues).",
+        "- assignees: [\"Alice Smith\"], [\"Bob Lee\"], or [\"Alice Smith\", \"Bob Lee\"] when they both committed to the same thing.",
+    ] {
+        assert!(prompt.contains(passage), "{passage}");
+    }
+    assert!(!prompt.to_lowercase().contains("coach"));
+}
+
+#[test]
+fn the_assignee_enum_names_the_people_for_colleagues_and_the_roles_for_coaching() {
+    let segments = segments();
+    let assignee_enum = |session: &Session| {
+        Actions::output_schema(session)["properties"]["suggestions"]["items"]["properties"]
+            ["assignees"]["items"]["enum"]
+            .clone()
+    };
+
+    assert_eq!(
+        assignee_enum(&alice_and_bob(&segments)),
+        json!(["Alice Smith", "Bob Lee"])
+    );
+    assert_eq!(
+        assignee_enum(&session(&segments)),
+        json!(["coach", "coachee"])
+    );
+}
+
+#[test]
+fn colleague_assignees_are_named_people_and_coaching_assignees_are_roles() {
+    let segments = segments();
+    let colleagues = alice_and_bob(&segments);
+    let (alice, bob) = (colleagues.people.coach_id, colleagues.people.coachee_id);
+
+    assert_eq!(assignee_ids(&colleagues, &["Bob Lee"]), Some(vec![bob]));
+    assert_eq!(
+        assignee_ids(&colleagues, &["Alice Smith", "Bob Lee"]),
+        Some(vec![alice, bob])
+    );
+    assert_eq!(assignee_ids(&colleagues, &["coach"]), None);
+
+    let coaching = session(&segments);
+    assert_eq!(assignee_ids(&coaching, &["Alice Smith"]), None);
+    assert_eq!(
+        assignee_ids(&coaching, &["coachee"]),
+        Some(vec![coaching.people.coachee_id])
+    );
 }

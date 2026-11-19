@@ -1,0 +1,20 @@
+# C1 colleagues address each other by first name, with requests both ways, one declined, one shared and one split, worded as a script.
+# session: Tuesday 2026-12-01
+# next_session: Tuesday 2026-12-15 10:00
+# kind: colleague
+# coach: Alice Smith
+# coachee: Bob Lee
+[s1 00:05] Alice Smith: Bob, could you review my architecture doc before our next session?
+[s2 00:12] Bob Lee: Sure, I can do that.
+[s3 00:18] Bob Lee: Alice, any chance you could pair with me on the flaky tests tomorrow?
+[s4 00:24] Alice Smith: Yes, happy to.
+[s5 00:31] Alice Smith: Would you also take over the on-call rotation next month?
+[s6 00:38] Bob Lee: I can't take that on right now, sorry.
+[s7 00:43] Alice Smith: No problem. You could try splitting that PR in two, by the way.
+[s8 00:49] Bob Lee: Maybe. We'll see.
+[s9 00:55] Alice Smith: Let's both read the incident report by Thursday.
+[s10 01:01] Bob Lee: Agreed.
+[s11 01:06] Bob Lee: For the demo, you bring the slides and I'll bring the live environment.
+[s12 01:14] Alice Smith: Deal. And the roadmap update, Bob, that's yours by end of month, and the customer email is mine, I'll send it tomorrow.
+[s13 01:26] Bob Lee: Yep. Same time in two weeks?
+[s14 01:30] Alice Smith: Works. And let's always start with blockers from now on.

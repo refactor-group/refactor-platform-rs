@@ -37,7 +37,7 @@ assertion unchanged), and the phase 6 response shape change (same access, differ
 Each phase is its own PR; phase 1 is three (migration and backfill, then code, then cleanup).
 Order: S, 0, M, 0b, 0c, 0d, 1, 2, 3, 4, 4b, E, 5, 6. Phases S and 0 can run in parallel. Done:
 S (#476), 0 (#480), M (#481), 0b (#492), 0c (#495), 0d (#496), 1 (#499, #501,
-#505), 2 (#507), 3 (#508).
+#505), 2 (#507), 3 (#508), 4 (#509, #510, #511, #512), E (#516), 5 (#517).
 
 **S. Relationship authorization fixes.** Its own security PR, ahead of the colleague work, so
 the phase 0b baseline records the corrected behavior. Notes, agreements, actions, goals and
@@ -330,6 +330,26 @@ relationship's kind (phase 2); each line's `speaker_user_id` tells the two apart
 prompt (assignees and due-date timezone no longer assume a coach), the paid eval run, and a
 new `baseline.json` in which coaching results do not regress. Colleague suggestion due dates use
 each assignee's own timezone; unassigned ones use the scheduler's.
+
+4b as built (one PR, seven handoffs):
+- One bot per session: a start claims a `meeting_recordings` row (nullable `bot_id`, unique
+  active row per session) before dispatching; a second start gets 409
+  `recording_already_active`. A claim abandoned for two minutes is failed by the next start. A
+  failed dispatch, a start and a stop each send `meeting_recording_updated` to both participants;
+  a stop leaves a recording that already ended unchanged.
+- An archived organization refuses a recording start (409 `organization_archived`), through the
+  one domain archive check that session create, role changes and the kind switch also use.
+- Attribution anchors on the meeting-link creator for both kinds; with no recorded creator,
+  coaching anchors on the coach and colleague speakers stay unattributed (rule
+  `unrecorded_link_maker_anchor`).
+- Due dates: rule `due_in_assignee_zone`; the calendar the model reads is the schedule owner's.
+- Prompt: rule `names_people_in_prompt`. Coaching gets `actions_prompt.md` unchanged; colleague
+  gets six passages rewritten to name the two people (`COLLEAGUE_PASSAGES`), a
+  `Colleagues: A, B` header, name-labelled lines and the two names as the assignee enum. Equal
+  preferred names fall back to full names, then to numbered names.
+- Eval: `# kind: colleague` fixtures c01-names, c02-outsiders (a third person sharing a first
+  name) and c03-display-names (unattributed speakers), all 3/3; coaching baseline unchanged (a
+  full run's f09-quirks.rec1 1/3 rechecked at 9/10 as variance).
 
 **E. Start an event log.** A durable, append-only audit log in the same Postgres database:
 the `audit_events` table (organization, actor or null for the system, action, subject type and

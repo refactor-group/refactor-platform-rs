@@ -1,22 +1,27 @@
-//! Decides which transcript speakers are the session's coach and coachee, never guessing.
+//! Decides which transcript speakers are the session's two participants, never guessing.
 //!
-//! The coach is identified by the meeting host and by the platform's attendee list; when both
-//! answer they must agree. The coachee is then found by elimination among the other speakers.
+//! One participant is the anchor, chosen by the relationship's kind: the coach in a coaching
+//! session, the meeting-link maker in a colleague session. The anchor is identified by the
+//! meeting host and by the platform's attendee list; when both answer they must agree, and the
+//! kind decides whether the host alone is enough. The other participant is then found by
+//! elimination among the other speakers.
 
 use std::collections::BTreeSet;
 
 use meeting_ai::types::transcription::Participant;
 
+use crate::coaching_relationship_kind::{Kind, Seat};
+use crate::coaching_relationships;
 use crate::gateway::google_meet;
 use crate::transcript_participant::MatchSource;
 use crate::Id;
 
-/// What is known about who the coach is, gathered when a transcript completes.
+/// What is known about who the anchor is, gathered when a transcript completes.
 pub(crate) struct Evidence<'a> {
     /// The bot recorded the session's own meeting space; without it nothing is attributed.
     pub recorded_session_space: bool,
-    /// The coach's account id on the meeting platform (a bare Google id, not `users/...`).
-    pub coach_account_id: Option<&'a str>,
+    /// The anchor's account id on the meeting platform (a bare Google id, not `users/...`).
+    pub anchor_account_id: Option<&'a str>,
     /// The platform's attendee list for the recorded conference, when it could be fetched.
     pub attendees: Option<&'a [google_meet::Participant]>,
 }
@@ -40,28 +45,49 @@ enum Key<'a> {
 /// Speaker positions in the input slice.
 type Indexes = BTreeSet<usize>;
 
-/// Attributes each speaker to the coach, the coachee, or nobody.
+/// The anchor and the other participant, in that order, as the kind chooses from the
+/// meeting-link maker's seat; `None` when it chooses nobody.
+pub(crate) fn anchor_and_other(
+    relationship: &coaching_relationships::Model,
+    link_maker: Option<Id>,
+) -> Option<(Id, Id)> {
+    let anchor = relationship
+        .kind
+        .rules()
+        .attribution_anchor(link_maker.and_then(|id| relationship.seat(id)))?;
+    let other = match anchor {
+        Seat::CoachId => Seat::CoacheeId,
+        Seat::CoacheeId => Seat::CoachId,
+    };
+    Some((
+        relationship.participant(anchor),
+        relationship.participant(other),
+    ))
+}
+
+/// Attributes each speaker to the anchor, the other participant, or nobody.
 pub(crate) fn attribute(
     speakers: &[Participant],
-    coach_id: Id,
-    coachee_id: Id,
+    anchor_id: Id,
+    other_id: Id,
+    kind: Kind,
     evidence: &Evidence,
 ) -> Vec<Attribution> {
-    let coach = evidence
+    let anchor = evidence
         .recorded_session_space
-        .then(|| coach_answer(speakers, evidence))
+        .then(|| anchor_answer(speakers, kind, evidence))
         .flatten()
         .unwrap_or_default();
-    let coachee = coachee_by_elimination(speakers, &coach);
+    let other = other_by_elimination(speakers, &anchor);
 
     speakers
         .iter()
         .enumerate()
         .map(|(i, speaker)| {
-            let matched = if coach.contains(&i) {
-                Some((coach_id, MatchSource::Account))
-            } else if coachee.contains(&i) {
-                Some((coachee_id, MatchSource::Elimination))
+            let matched = if anchor.contains(&i) {
+                Some((anchor_id, MatchSource::Account))
+            } else if other.contains(&i) {
+                Some((other_id, MatchSource::Elimination))
             } else {
                 None
             };
@@ -74,11 +100,13 @@ pub(crate) fn attribute(
         .collect()
 }
 
-/// Combines the two answers: both must agree when present, otherwise whichever exists.
-fn coach_answer(speakers: &[Participant], evidence: &Evidence) -> Option<Indexes> {
+/// Combines the two answers: both must agree when present; the account answer alone suffices,
+/// the host answer alone only when the kind allows it.
+fn anchor_answer(speakers: &[Participant], kind: Kind, evidence: &Evidence) -> Option<Indexes> {
     match (host_answer(speakers), google_answer(speakers, evidence)) {
         (Some(host), Some(google)) => (host == google).then_some(host),
-        (host, google) => host.or(google),
+        (Some(host), None) => kind.rules().host_alone_attributes().then_some(host),
+        (None, google) => google,
     }
 }
 
@@ -89,20 +117,20 @@ fn host_answer(speakers: &[Participant]) -> Option<Indexes> {
     (people.len() == 1).then_some(hosts)
 }
 
-/// Speakers whose name matches the coach's signed-in attendee, when that name is unambiguous.
+/// Speakers whose name matches the anchor's signed-in attendee, when that name is unambiguous.
 fn google_answer(speakers: &[Participant], evidence: &Evidence) -> Option<Indexes> {
-    let account_id = evidence.coach_account_id?;
+    let account_id = evidence.anchor_account_id?;
     let attendees = evidence.attendees?;
-    let coach_user = format!("users/{account_id}");
+    let anchor_user = format!("users/{account_id}");
 
-    let coach_attendees: Vec<&google_meet::Participant> = attendees
+    let anchor_attendees: Vec<&google_meet::Participant> = attendees
         .iter()
-        .filter(|a| a.user.as_deref() == Some(coach_user.as_str()))
+        .filter(|a| a.user.as_deref() == Some(anchor_user.as_str()))
         .collect();
-    let [coach_attendee] = coach_attendees[..] else {
+    let [anchor_attendee] = anchor_attendees[..] else {
         return None;
     };
-    let name = non_blank(coach_attendee.display_name.as_deref())?;
+    let name = non_blank(anchor_attendee.display_name.as_deref())?;
 
     let name_is_unique = attendees
         .iter()
@@ -114,12 +142,14 @@ fn google_answer(speakers: &[Participant], evidence: &Evidence) -> Option<Indexe
     (name_is_unique && !matched.is_empty()).then_some(matched)
 }
 
-/// Every non-coach speaker, when they are all one person; empty without a coach.
-fn coachee_by_elimination(speakers: &[Participant], coach: &Indexes) -> Indexes {
-    if coach.is_empty() {
+/// Every non-anchor speaker, when they are all one person; empty without an anchor.
+fn other_by_elimination(speakers: &[Participant], anchor: &Indexes) -> Indexes {
+    if anchor.is_empty() {
         return Indexes::new();
     }
-    let others: Indexes = (0..speakers.len()).filter(|i| !coach.contains(i)).collect();
+    let others: Indexes = (0..speakers.len())
+        .filter(|i| !anchor.contains(i))
+        .collect();
     let people: BTreeSet<Key> = others
         .iter()
         .map(|&i| elimination_key(&speakers[i]))

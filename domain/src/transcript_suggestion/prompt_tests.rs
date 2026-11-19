@@ -3,9 +3,9 @@
 use chrono::{NaiveDate, Utc, Weekday};
 
 use super::*;
-use crate::coaching_relationship_kind;
+use crate::coaching_relationship_kind::{self, Kind};
 use crate::transcript_export::LabeledSegment;
-use crate::transcript_suggestion::{Existing, NextSession, People, Session};
+use crate::transcript_suggestion::{Existing, NextSession, People, Session, Timezones};
 
 fn day(y: i32, m: u32, d: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, d).expect("valid date")
@@ -59,7 +59,17 @@ fn session(segments: &[LabeledSegment], next_session: Option<NaiveDate>) -> Sess
         },
         coach_name: "Jim Hodapp".to_string(),
         coachee_name: "Alex Rivera".to_string(),
-        coach_timezone: chrono_tz::America::Chicago,
+        anchor_timezone: chrono_tz::America::Chicago,
+        timezones: Timezones {
+            coach: chrono_tz::America::Chicago,
+            coachee: chrono_tz::America::Chicago,
+        },
+        kind: Kind::Coaching,
+        start: day(2026, 10, 7)
+            .and_hms_opt(15, 0, 0)
+            .expect("valid time")
+            .and_utc()
+            .fixed_offset(),
         session_date: day(2026, 10, 7),
         next_session: next_session.map(|date| NextSession {
             date,
@@ -171,13 +181,69 @@ fn a_colleague_line_is_named_by_its_label_like_an_unattributed_line() {
         "Let's pair on it.",
     );
     let unattributed = segment("Sam Lee", None, 5_000, "Let's pair on it.");
+    let session = session(&[], None);
 
     assert_eq!(
-        transcript_line(1, &colleague),
+        transcript_line(&session, 1, &colleague),
         "[s1 00:05] Sam Lee: Let's pair on it."
     );
     assert_eq!(
-        transcript_line(1, &colleague),
-        transcript_line(1, &unattributed)
+        transcript_line(&session, 1, &colleague),
+        transcript_line(&session, 1, &unattributed)
+    );
+}
+
+#[test]
+fn a_colleague_render_names_both_people_and_labels_their_lines_with_those_names() {
+    let mut segments = vec![
+        segment(
+            "Bob (he/him)",
+            Some(coaching_relationship_kind::Role::Colleague),
+            5_000,
+            "I'll draft it.",
+        ),
+        segment("Guest 1", None, 9_000, "Sounds good."),
+    ];
+    let bob = Id::new_v4();
+    segments[0].speaker_user_id = Some(bob);
+    let session = Session {
+        people: People {
+            coach_id: Id::new_v4(),
+            coachee_id: bob,
+        },
+        coach_name: "Alice Smith".to_string(),
+        coachee_name: "Bob Lee".to_string(),
+        kind: Kind::Colleague,
+        ..session(&segments, None)
+    };
+
+    let rendered = render(&session);
+    let lines: Vec<&str> = rendered.lines().collect();
+
+    assert!(lines.contains(&"Colleagues: Alice Smith, Bob Lee"));
+    assert!(!lines
+        .iter()
+        .any(|l| l.starts_with("Coach:") || l.starts_with("Coachee:")));
+    assert!(lines.contains(&"[s1 00:05] Bob Lee: I'll draft it."));
+    assert!(lines.contains(&"[s2 00:09] Guest 1: Sounds good."));
+}
+
+#[test]
+fn distinct_names_fall_back_to_full_names_then_to_numbers() {
+    let names = |preferred: [&str; 2], full: [&str; 2]| {
+        distinct_names(preferred.map(str::to_string), full.map(str::to_string))
+    };
+
+    assert_eq!(
+        names(["Alex", "Sam"], ["Alex Kim", "Sam Park"]),
+        ["Alex", "Sam"]
+    );
+    assert_eq!(
+        names(["Alex", "Alex"], ["Alex Kim", "Alex Park"]),
+        ["Alex Kim", "Alex Park"]
+    );
+    assert_eq!(
+        names(["Alex", "Alex"], ["Alex Kim", "Alex Kim"]),
+        ["Alex (1)", "Alex (2)"]
     );
 }

@@ -1,6 +1,6 @@
 # Transcript Suggestions Architecture
 
-When a coaching session transcript completes, the backend asks a language model which actions the coach and coachee committed to, and shows the answers as suggestions they review. Nothing becomes an Action until one of them accepts it. Only suggested Actions exist today; the design leaves room for other targets such as agreements and topics.
+When a session transcript completes, the backend asks a language model which actions the two participants (a coach and coachee, or two colleagues) committed to, and shows the answers as suggestions they review. Nothing becomes an Action until one of them accepts it. Only suggested Actions exist today; the design leaves room for other targets such as agreements and topics.
 
 The work runs as a periodic sweep (see [background_jobs.md](background_jobs.md) for why), and it is off unless `ASSEMBLY_AI_API_KEY` is set. The key is trimmed when the config loads; one that still holds characters an HTTP header cannot carry logs a warning and reads as unset, so transcript completion, the scan status and the sweep always agree on whether suggestions are on.
 
@@ -23,6 +23,8 @@ flowchart TD
 1. **Completion.** `persist_completion_with` stores the segments, marks the transcription completed, and inserts a pending analysis for each target, all in one transaction. A completed transcript therefore never lacks its analysis, and an analysis never exists for a transcript that did not complete. Transcripts that complete while no key is configured are never analyzed.
 2. **Claim.** The sweep (`domain/src/jobs/transcript_suggestions.rs`) finds up to 5 claimable analyses, oldest first, and claims each with a single conditional `UPDATE`.
 3. **Prompt.** `transcript_suggestion::prompt` renders the coach and coachee names, the session date, the next session date, a 60-day calendar, the session's existing actions (as `a1..aN`) and the transcript lines (as `s1..sN`, each with a timestamp and a coach, coachee or raw speaker label). The model refers to lines and actions by these short refs, never by id. The instructions are in `actions_prompt.md`.
+
+   When the relationship kind's `names_people_in_prompt` rule holds (colleagues), the seats are arbitrary, so the prompt names the two people instead. The header is one line, `Colleagues: <A>, <B>` (coach seat first), and a line spoken by either person is labelled with that person's name; any other line keeps its raw label. The names are the preferred names, or the full names when the preferred names match, or the preferred names numbered `(1)` and `(2)` when those match too. The system prompt is `actions_prompt.md` with six passages that mention the coach and coachee rewritten to name the two people (`COLLEAGUE_PASSAGES` in `actions.rs`); a coaching session gets the file unchanged.
 4. **Model call.** `gateway::assembly_ai::llm_gateway` posts to `{base_url}/chat/completions` with a strict `json_schema` response format, a 10 second connect timeout and a 180 second request timeout. The model defaults to `claude-sonnet-4-6`.
 5. **Verification.** See [Verification](#verification).
 6. **Store.** One transaction completes the claim (recording model and token counts) and inserts the suggestion rows. Token cost is recorded afterwards when a pricing row exists.
@@ -54,7 +56,7 @@ Two tables; see `docs/db/refactor_platform_rs.dbml`.
 `Target` (`transcript_suggestion_target`, currently only `action`) names the kind of suggestion. The `Suggestible` trait is what a new kind implements:
 
 - `TARGET`, the `Candidate` type the model returns and the `Proposal` type stored;
-- `instructions()`, `schema_name()` and `output_schema()` for the prompt and the strict answer schema;
+- `instructions(session)`, `schema_name()` and `output_schema(session)` for the prompt and the strict answer schema, which may differ by relationship kind;
 - `verify`, which turns a candidate into a stored proposal or drops it;
 - `assignees` and `check`, which the review layer uses for permission and edit validation.
 
@@ -87,7 +89,7 @@ The model's answer is untrusted. Each item is checked independently by `Actions:
 | Body empty, or longer than 2000 characters | Dropped |
 | `source_segment` is not a ref of a real transcript line | Dropped |
 | Quote is not found in the source line (ignoring case and whitespace) | Kept; the quote falls back to the line's own text, first 200 characters |
-| Assignees | `coach` and `coachee` map to the session's two people, repeats removed; an empty list is kept |
+| Assignees | Each must be one of the schema's two values: `coach` and `coachee` for coaching, the two people's names for colleagues. They map to the session's two people, repeats removed; an empty list is kept. An unknown value drops the item |
 | Due phrase empty or over 200 characters | Cleared (no phrase) |
 | Due date not a valid `YYYY-MM-DD` | Cleared |
 | Due date outside the session date through 365 days after it | Cleared |
@@ -95,13 +97,13 @@ The model's answer is untrusted. Each item is checked independently by `Actions:
 
 ### Due dates
 
-The model is asked for a date, but dates are settled by `due_date::reconcile`, which resolves the spoken `due_phrase` deterministically against the session date (in the coach's timezone) and the next session date:
+The model is asked for a date, but dates are settled by `due_date::reconcile`, which resolves the spoken `due_phrase` deterministically against the session date and the next session date, both in the schedule owner's timezone (the coach for coaching, whoever scheduled the session for colleagues):
 
-- A **recognized** phrase overrides the model's date. Recognized forms include today, tonight, EOD, tomorrow, weekday names (the first such day after the session), `next <weekday>` when it is unambiguous, end of the week and "this week" (the last day of the coach's week, Friday by default; the session details tell the model that day too), the weekend (that Sunday), end of the month, `in N days|weeks`, `N weeks from <anchor>`, `<month> <day>`, `M/D`, and "next session" or "next time" when a next session exists. Filler such as "by", "before" or "no later than" is ignored.
+- A **recognized** phrase overrides the model's date. Recognized forms include today, tonight, EOD, tomorrow, weekday names (the first such day after the session), `next <weekday>` when it is unambiguous, end of the week and "this week" (the last day of the schedule owner's week, Friday by default; the session details tell the model that day too), the weekend (that Sunday), end of the month, `in N days|weeks`, `N weeks from <anchor>`, `<month> <day>`, `M/D`, and "next session" or "next time" when a next session exists. Filler such as "by", "before" or "no later than" is ignored.
 - An **ambiguous** phrase blanks the date: "soon", "ASAP", "next week", "at some point", `next <weekday>` said earlier in the same week, and "next time" when no next session exists.
 - An **unrecognized** phrase keeps the model's date, if it is within bounds.
 
-A resolved date is stored as noon in the coach's timezone so the day holds for viewers elsewhere. Two exceptions keep a deadline from landing mid-meeting: a date on the session's own day is due at 23:59 that day, so "after our call" never falls before the session; and a phrase naming the next session is due when that session starts.
+A resolved date is stored as noon so the day holds for viewers elsewhere. Coaching deadlines use the coach's timezone. A colleague deadline for one person uses that person's timezone, and one for both or nobody uses the scheduler's. Two exceptions keep a deadline from landing mid-meeting: a date that is the session's own day in that timezone is due at 23:59 that day, so "after our call" never falls before the session; and a phrase naming the next session is due when that session starts.
 
 ## Review
 

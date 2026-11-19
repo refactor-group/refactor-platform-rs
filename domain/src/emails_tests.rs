@@ -565,7 +565,7 @@ fn invite_ics_for_participants(coach: &users::Model, coachee: &users::Model) -> 
         &session,
         "desc".into(),
         dtstamp,
-        anchor_tz(coach),
+        user::timezone(coach),
     )
     .unwrap();
     unfold(&ics)
@@ -670,7 +670,7 @@ fn invite_start_zone(participants: &Participants<'_>, scheduled_by: &users::Mode
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap(),
-        anchor_tz(participants.schedule_owner(&session)),
+        user::timezone(participants.schedule_owner(&session)),
     )
     .unwrap();
     unfold(&ics)
@@ -739,7 +739,7 @@ fn test_build_session_invite_ics_structure() {
         &session,
         "Join this session: https://app/x".into(),
         dtstamp,
-        anchor_tz(&coach),
+        user::timezone(&coach),
     )
     .unwrap();
 
@@ -780,7 +780,7 @@ fn test_build_session_invite_ics_bumped_sequence() {
         &session,
         "Join this session: https://app/x".into(),
         dtstamp,
-        anchor_tz(&coach),
+        user::timezone(&coach),
     )
     .unwrap();
 
@@ -1586,7 +1586,7 @@ fn test_build_session_cancel_ics_structure() {
         "This coaching session has been cancelled.".to_string(),
         dtstamp,
         session.ical_sequence,
-        anchor_tz(&coach),
+        user::timezone(&coach),
     )
     .unwrap();
 
@@ -1682,7 +1682,7 @@ async fn test_send_session_cancelled_email() {
         },
         &session,
         &org,
-        anchor_tz(&coach),
+        user::timezone(&coach),
     )
     .await;
     assert!(result.is_ok());
@@ -1755,7 +1755,7 @@ async fn test_send_session_cancelled_email_omits_when_variables() {
         },
         &session,
         &org,
-        anchor_tz(&coach),
+        user::timezone(&coach),
     )
     .await;
     assert!(result.is_ok());
@@ -1876,7 +1876,7 @@ fn test_standalone_session_ics_carries_no_recurrence_id() {
         &session,
         "desc".into(),
         dtstamp,
-        anchor_tz(&coach),
+        user::timezone(&coach),
     )
     .unwrap();
     assert!(invite.contains(&format!("UID:{}@myrefactor.com", session.id)));
@@ -1889,7 +1889,7 @@ fn test_standalone_session_ics_carries_no_recurrence_id() {
         "desc".into(),
         dtstamp,
         session.ical_sequence,
-        anchor_tz(&coach),
+        user::timezone(&coach),
     )
     .unwrap();
     assert!(cancel.contains(&format!("UID:{}@myrefactor.com", session.id)));
@@ -1936,7 +1936,7 @@ async fn test_cancelling_a_legacy_series_member_addresses_it_by_its_own_uid() {
         },
         &session,
         &org,
-        anchor_tz(&coach),
+        user::timezone(&coach),
     )
     .await;
     assert!(result.is_ok());
@@ -2188,7 +2188,7 @@ async fn test_send_occurrence_cancelled_email_uses_session_template() {
         },
         &session,
         &org,
-        anchor_tz(&coach),
+        user::timezone(&coach),
     )
     .await;
     assert!(result.is_ok());

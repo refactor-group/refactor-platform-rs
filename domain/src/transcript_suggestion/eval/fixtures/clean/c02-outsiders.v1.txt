@@ -1,0 +1,13 @@
+# C2 a third person in the meeting shares Bob's first name; commitments by anyone outside the pair are left out, worded as a script.
+# session: Tuesday 2026-12-01
+# next_session: Tuesday 2026-12-15 10:00
+# kind: colleague
+# coach: Alice Smith
+# coachee: Bob Lee
+[s1 00:05] Alice Smith: Thanks for sitting in, Bob. Two Bobs today, bear with us.
+[s2 00:11] Bob Park: Happy to. I'll send you both the budget numbers on Monday.
+[s3 00:19] Bob Lee: Great. Once those arrive I'll draft the hiring plan.
+[s4 00:27] Alice Smith: Priya said she'll have the vendor quotes by Friday, and my manager is going to approve the headcount request this week.
+[s5 00:38] Alice Smith: Bob, can you also loop legal in on the contract?
+[s6 00:43] Bob Park: That one's mine, I'll do it today.
+[s7 00:48] Bob Lee: And I'll ask Priya to include last quarter's numbers too.

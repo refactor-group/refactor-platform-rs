@@ -13,6 +13,7 @@ use utoipa::ToSchema;
 use crate::audit_event::{self, Recorder};
 use crate::coaching_relationship::{create_for_invitee, InviteeRelationship};
 use crate::error::Error;
+use crate::organization::ensure_not_archived;
 use crate::user::Role;
 use crate::{user_roles, users, Actor, Id};
 
@@ -56,13 +57,7 @@ pub async fn attach_to_organization(
     let txn = db.begin().await.map_err(EntityApiError::from)?;
 
     let organization = organization::find_by_id(&txn, organization_id).await?;
-    if organization.archived_at.is_some() {
-        return Err(EntityApiError {
-            source: None,
-            error_kind: EntityApiErrorKind::OrganizationArchived,
-        }
-        .into());
-    }
+    ensure_not_archived(&organization)?;
 
     // Held for the rest of the transaction so a concurrent account deletion
     // cannot read this user's memberships before the new row lands and then
@@ -215,13 +210,7 @@ pub async fn update_role_in_organization(
     let txn = db.begin().await.map_err(EntityApiError::from)?;
 
     let organization = organization::find_by_id(&txn, organization_id).await?;
-    if organization.archived_at.is_some() {
-        return Err(EntityApiError {
-            source: None,
-            error_kind: EntityApiErrorKind::OrganizationArchived,
-        }
-        .into());
-    }
+    ensure_not_archived(&organization)?;
 
     // Taken before the membership read and before the admin count, so this path
     // locks users then user_roles like account deletion does and cannot deadlock.

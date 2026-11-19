@@ -86,10 +86,9 @@ async fn completing_with_a_target_writes_one_pending_analysis_with_the_segments(
     .await
 }
 
-/// A colleague session's relationship suggests no actions, so its transcript is owed no
-/// analysis and none is queued for the sweep to skip.
+/// A colleague session suggests actions, so its transcript is owed an analysis like a coaching one.
 #[tokio::test]
-async fn completing_a_colleague_transcript_writes_no_analysis() -> Result<(), Error> {
+async fn completing_a_colleague_transcript_writes_one_pending_analysis() -> Result<(), Error> {
     within_time_limit(async {
         let (db, transcription) = fixture().await;
         let session =
@@ -98,7 +97,10 @@ async fn completing_a_colleague_transcript_writes_no_analysis() -> Result<(), Er
 
         persist_completion_with(&db, &transcription, &transcript(), &[], &[Target::Action]).await?;
 
-        assert!(analyses(&db, transcription.id).await.is_empty());
+        let rows = analyses(&db, transcription.id).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].target, Target::Action);
+        assert_eq!(rows[0].status, transcript_analysis::Status::Pending);
         assert_eq!(segment_count(&db, transcription.id).await, 1);
         Ok(())
     })
