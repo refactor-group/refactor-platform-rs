@@ -38,6 +38,7 @@ utoipa-rapidoc = { version = "=5.0.0", features = ["axum"] }
 async-trait = "0.1.88"
 async-stream = "0.3"
 futures = "0.3.31"
+tokio-util = "0.7"
 
 [dependencies.sea-orm]
 version = "2.0.3" # sea-orm version
