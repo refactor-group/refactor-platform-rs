@@ -65,7 +65,7 @@ pub async fn index(
 /// GET whether a coaching session's transcript was scanned for suggested Actions
 ///
 /// Reports the scan of the session's latest completed transcript: `unavailable` when
-/// suggestions are not configured, the relationship's sessions are not scanned (colleagues),
+/// suggestions are not configured, the relationship's sessions are not scanned,
 /// or no transcript completed, `none` when it was never scanned, otherwise `pending`,
 /// `processing`, `completed` or `failed`.
 #[utoipa::path(

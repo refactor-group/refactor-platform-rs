@@ -1,0 +1,6 @@
+[
+  {"segments": ["s1", "s2"], "assignees": ["coachee"], "due_dates": ["2026-12-04"], "duplicate_of": null, "note": "'Bob (he/him)' is Bob Lee: vendor shortlist by Friday"},
+  {"segments": ["s3"], "assignees": ["coachee"], "due_dates": ["2026-12-02"], "duplicate_of": null, "note": "'Bob (he/him)' is Bob Lee: staging account tomorrow"},
+  {"segments": ["s4"], "assignees": ["coach"], "due_dates": [null], "duplicate_of": null, "note": "'Alice S' is Alice Smith: book the demo"},
+  {"segments": ["s6"], "assignees": ["coachee"], "due_dates": [null], "duplicate_of": null, "note": "'Bob's iPhone' is Bob Lee rejoining from a phone: security questions"}
+]

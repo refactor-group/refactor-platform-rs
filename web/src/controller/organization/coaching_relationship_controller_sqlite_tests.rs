@@ -849,7 +849,8 @@ async fn a_coaching_relationship_tells_each_participant_what_they_may_do() {
 
 /// KIND-20
 #[tokio::test]
-async fn a_colleague_relationship_tells_each_colleague_they_may_do_everything() {
+async fn a_colleague_relationship_tells_each_colleague_they_may_do_everything_and_suggests_actions()
+{
     within_time_limit(async {
         let mut app = TestApp::new().await;
         let r1 = app.fixture.r1;
@@ -862,7 +863,7 @@ async fn a_colleague_relationship_tells_each_colleague_they_may_do_everything() 
                 json!({ "role": "colleague", "can_schedule_sessions": true, "sees_all_actions": true }),
                 "{caller:?}"
             );
-            assert_eq!(data["suggests_actions"], false, "{caller:?}");
+            assert_eq!(data["suggests_actions"], true, "{caller:?}");
         }
     })
     .await;

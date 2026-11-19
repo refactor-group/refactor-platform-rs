@@ -230,7 +230,7 @@ impl Rules for Colleague {
     }
 
     fn suggests_actions(&self) -> bool {
-        false
+        true
     }
 
     fn schedule_owner(&self) -> ScheduleOwner {
@@ -299,13 +299,13 @@ mod tests {
     }
 
     #[test]
-    fn colleague_reminds_and_requires_membership_of_both_seats_and_suggests_nothing() {
+    fn colleague_reminds_and_requires_membership_of_both_seats_and_suggests_actions() {
         let rules = Kind::Colleague.rules();
         for seat in [Seat::CoachId, Seat::CoacheeId] {
             assert!(rules.is_reminded(seat), "{seat:?}");
             assert!(rules.must_be_member_to_schedule(seat), "{seat:?}");
         }
-        assert!(!rules.suggests_actions());
+        assert!(rules.suggests_actions());
     }
 
     #[test]
