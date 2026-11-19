@@ -39,10 +39,6 @@ check_url() {
   curl -fsS -o /dev/null --max-time 5 --resolve "$SITE_HOST:443:127.0.0.1" "https://$SITE_HOST$1"
 }
 
-collab_healthy() {
-  [ "$(docker inspect -f '{{.State.Health.Status}}' docs-collab 2>/dev/null)" = "healthy" ]
-}
-
 wait_for() {
   local _
   for _ in $(seq 1 45); do
@@ -54,11 +50,13 @@ wait_for() {
   return 1
 }
 
+# The backend and docs-collab readiness checks also confirm each can reach its
+# database.
 healthy() {
-  wait_for check_url /api/health || { echo "ERROR: backend is not healthy"; return 1; }
+  wait_for check_url /api/health/ready || { echo "ERROR: backend is not healthy"; return 1; }
   wait_for check_url / || { echo "ERROR: frontend is not healthy"; return 1; }
   if [ "$CHECK_COLLAB" = "true" ]; then
-    wait_for collab_healthy || { echo "ERROR: docs-collab is not healthy"; return 1; }
+    wait_for check_url /collab/health/ready || { echo "ERROR: docs-collab is not healthy"; return 1; }
   fi
   echo "INFO: ✅ backend, frontend$([ "$CHECK_COLLAB" = "true" ] && echo ", docs-collab") healthy"
 }

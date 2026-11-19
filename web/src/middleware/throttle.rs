@@ -80,6 +80,15 @@ impl ThrottlePolicy {
         period_secs: 1,
         burst: 10,
     };
+
+    /// Policy for `GET /health/ready` — unauthenticated, and each request
+    /// takes a pooled database connection: roughly **1 req/sec sustained per
+    /// IP with a burst of 5**. Uptime probes every 30s and a deploy's checks
+    /// every 2s stay well under it.
+    pub const HEALTH_ENDPOINT: Self = Self {
+        period_secs: 1,
+        burst: 5,
+    };
 }
 
 /// Per-IP throttle backed by an in-process token bucket (`tower_governor`).

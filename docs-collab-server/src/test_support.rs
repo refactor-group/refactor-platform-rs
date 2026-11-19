@@ -52,4 +52,8 @@ impl Storage for CountingStorage {
         self.inner.lock().unwrap().remove(name);
         Ok(())
     }
+
+    async fn ping(&self) -> Result<(), StorageError> {
+        Ok(())
+    }
 }
