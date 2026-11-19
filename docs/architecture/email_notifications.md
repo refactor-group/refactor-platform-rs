@@ -147,6 +147,9 @@ by `other_user_role`, which is `colleague` in a colleague relationship, and name
 by `session_label` (`Rules::session_label`): `coaching session`, or `session` for colleagues.
 They also carry its plural, `session_label_plural` (`Rules::session_label_plural`):
 `coaching sessions`, or `sessions` for colleagues.
+The welcome template carries `session_label` alone, from the invitee's relationships in the
+organization: their kind's label when all share one kind, or `session` when there are none
+or both kinds.
 
 The `.ics` DESCRIPTION has no template. One invite goes to both participants, so it names
 the pair rather than "the other person": `Coach: {name}` for coaching, and

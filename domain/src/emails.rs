@@ -9,7 +9,7 @@ use service::config::Config;
 
 use crate::{
     actions, coaching_relationship,
-    coaching_relationship_kind::{self, Seat},
+    coaching_relationship_kind::{self, Kind, Seat},
     coaching_relationships, coaching_session, coaching_session_series,
     coaching_session_series::SeriesRule,
     coaching_sessions,
@@ -229,21 +229,25 @@ impl EmailNotification for PasswordResetEmail {
 /// org admin); their name is interpolated into the email body so the
 /// recipient sees who added them.
 ///
+/// `kinds` are the kinds of the user's relationships, which name their sessions.
+///
 /// Returns an error if token creation or email delivery fails.
 pub async fn create_and_send_welcome_email(
     db: &sea_orm::DatabaseConnection,
     config: &Config,
     user: &users::Model,
     inviter: &users::Model,
+    kinds: &[Kind],
 ) -> Result<(), Error> {
     let raw_token = crate::magic_link_token::create_setup_link(db, user.id, config).await?;
-    send_welcome_email(config, user, inviter, &raw_token).await
+    send_welcome_email(config, user, inviter, kinds, &raw_token).await
 }
 
 /// Create a magic link token and send a best-effort welcome email to a newly created user.
 ///
 /// `inviter` is the user who triggered the invite (typically the coach or
-/// org admin); their name is interpolated into the email body.
+/// org admin); their name is interpolated into the email body. `kinds` are the kinds of the
+/// user's relationships, which name their sessions.
 ///
 /// Both token creation and email delivery are best-effort — errors are logged
 /// internally and never propagate to the caller.
@@ -252,10 +256,11 @@ pub async fn notify_welcome_email(
     config: &Config,
     user: &users::Model,
     inviter: &users::Model,
+    kinds: &[Kind],
 ) {
     match crate::magic_link_token::create_setup_link(db, user.id, config).await {
         Ok(raw_token) => {
-            if let Err(e) = send_welcome_email(config, user, inviter, &raw_token).await {
+            if let Err(e) = send_welcome_email(config, user, inviter, kinds, &raw_token).await {
                 warn!("Failed to send welcome email to {}: {e:?}", user.email);
             }
         }
@@ -268,11 +273,25 @@ pub async fn notify_welcome_email(
     }
 }
 
+/// What the welcome email calls a session when the invitee's relationships share no one kind.
+const WELCOME_SESSION_LABEL: &str = "session";
+
+/// The label `kinds` share, or [`WELCOME_SESSION_LABEL`] when there are none or they differ.
+fn welcome_session_label(kinds: &[Kind]) -> &'static str {
+    kinds
+        .split_first()
+        .filter(|(first, rest)| rest.iter().all(|kind| kind == *first))
+        .map_or(WELCOME_SESSION_LABEL, |(kind, _)| {
+            kind.rules().session_label()
+        })
+}
+
 /// Build and send the welcome email to a single user.
 async fn send_welcome_email(
     config: &Config,
     user: &users::Model,
     inviter: &users::Model,
+    kinds: &[Kind],
     magic_link_token: &str,
 ) -> Result<(), Error> {
     info!(
@@ -307,6 +326,7 @@ async fn send_welcome_email(
         .add_variable("inviter_first_name", inviter.first_name.as_str())
         .add_variable("inviter_full_name", inviter_full_name.as_str())
         .add_variable("magic_link_url", magic_link_url.as_str())
+        .add_variable("session_label", welcome_session_label(kinds))
         .build()
         .await?;
     debug!("Email request created for {}", user.email);

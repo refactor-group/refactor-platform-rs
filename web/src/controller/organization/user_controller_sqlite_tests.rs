@@ -478,6 +478,61 @@ async fn admins_resend_a_pending_members_invite() {
     .await;
 }
 
+/// The `session_label` a pending member's resent invite carries once they have one
+/// relationship of `kind` in O1 with COACH.
+async fn resent_invites_session_label(kind: &str) -> Value {
+    let mut app = TestApp::new().await;
+    let o1 = app.fixture.o1;
+    let (pending, email) = seed_pending_member(&app).await;
+    let coach = app.fixture.user(Caller::Coach);
+    let created = app
+        .send(
+            Caller::Admin,
+            Method::POST,
+            &format!("/organizations/{o1}/coaching_relationships"),
+            Some(json!({ "coach_id": coach, "coachee_id": pending, "kind": kind })),
+        )
+        .await;
+    assert_eq!(created.body["status_code"], 201, "{}", created.body);
+    app.take_emailed();
+
+    let reply = app
+        .send(
+            Caller::Admin,
+            Method::POST,
+            &format!("/organizations/{o1}/users/{pending}/resend-invite"),
+            None,
+        )
+        .await;
+
+    assert_eq!(reply.status, StatusCode::OK);
+    let [(to, variables)] =
+        <[_; 1]>::try_from(app.take_emailed_variables()).expect("one invite is resent");
+    assert_eq!(to, email);
+    variables["session_label"].clone()
+}
+
+/// A resent invite names sessions by the member's colleague relationship.
+#[tokio::test]
+async fn a_colleagues_resent_invite_says_session() {
+    within_time_limit(async {
+        assert_eq!(resent_invites_session_label("colleague").await, "session");
+    })
+    .await;
+}
+
+/// A resent invite names sessions by the member's coaching relationship.
+#[tokio::test]
+async fn a_coachees_resent_invite_says_coaching_session() {
+    within_time_limit(async {
+        assert_eq!(
+            resent_invites_session_label("coaching").await,
+            "coaching session"
+        );
+    })
+    .await;
+}
+
 /// ORG-11
 #[tokio::test]
 async fn non_admins_cannot_delete_a_member() {

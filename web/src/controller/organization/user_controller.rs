@@ -11,7 +11,9 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use domain::audit_event::DatabaseRecorder;
 use domain::users::Role;
 use domain::Actor;
-use domain::{emails as EmailsAPI, user as UserApi};
+use domain::{
+    coaching_relationship as CoachingRelationshipApi, emails as EmailsAPI, user as UserApi,
+};
 use service::config::ApiVersion;
 
 use log::*;
@@ -82,6 +84,7 @@ pub(crate) async fn create(
     }: OrganizationAdminAccess,
     Json(params): Json<CreateMemberParams>,
 ) -> Result<impl IntoResponse, Error> {
+    let kind = params.relationship.as_ref().map(|r| r.kind);
     let user = UserApi::create_in_organization(
         app_state.db_conn_ref(),
         &DatabaseRecorder,
@@ -107,6 +110,7 @@ pub(crate) async fn create(
         &app_state.config,
         &user,
         &authenticated_user,
+        kind.as_slice(),
     )
     .await;
 
@@ -138,7 +142,8 @@ pub(crate) async fn resend_invite(
     CompareApiVersion(_v): CompareApiVersion,
     State(app_state): State<AppState>,
     OrganizationAdminAccess {
-        authenticated_user, ..
+        organization,
+        authenticated_user,
     }: OrganizationAdminAccess,
     OrganizationUserAccess(user): OrganizationUserAccess,
 ) -> Result<impl IntoResponse, Error> {
@@ -146,11 +151,22 @@ pub(crate) async fn resend_invite(
         return Err(Error::validation("User has already completed setup"));
     }
 
+    let kinds: Vec<_> = CoachingRelationshipApi::find_by_user_and_organization(
+        app_state.db_conn_ref(),
+        user.id,
+        organization.id,
+    )
+    .await?
+    .into_iter()
+    .map(|relationship| relationship.kind)
+    .collect();
+
     EmailsAPI::create_and_send_welcome_email(
         app_state.db_conn_ref(),
         &app_state.config,
         &user,
         &authenticated_user,
+        &kinds,
     )
     .await?;
 
