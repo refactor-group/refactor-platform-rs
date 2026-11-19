@@ -1,5 +1,5 @@
-//! `coach_is_member` / `coachee_is_member` on the wire: the relationship a session list
-//! includes, and the schemas that document them.
+//! Membership on the wire: each participant's `is_member` on the relationship lists and the
+//! session list, and the schemas that document it.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -18,7 +18,7 @@ use crate::extractors::relationship_access_test_support::{
 use crate::router::ApiDoc;
 use crate::AppState;
 
-/// Every key the relationship object carried before the membership fields.
+/// Every key of the relationship row.
 const RELATIONSHIP_KEYS: [&str; 8] = [
     "id",
     "organization_id",
@@ -71,8 +71,7 @@ async fn m4_05_an_included_relationship_marks_a_removed_coachee() {
             .append_query_results([vec![w.session.clone()]])
             .append_query_results([Vec::<coaching_sessions::Model>::new()])
             .append_query_results([vec![included_row(&w, &[w.coach.id])]])
-            .append_query_results([vec![w.coach.clone()]])
-            .append_query_results([vec![w.coachee.clone()]])
+            .append_query_results([vec![w.coach.clone(), w.coachee.clone()]])
             .append_query_results([Vec::<users::Model>::new()])
             .append_query_results([Vec::<users::Model>::new()])
             .into_connection(),
@@ -87,8 +86,9 @@ async fn m4_05_an_included_relationship_marks_a_removed_coachee() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_body(response).await;
     let relationship = &body["data"][0]["relationship"];
-    assert_eq!(relationship["coach_is_member"], json!(true), "{body}");
-    assert_eq!(relationship["coachee_is_member"], json!(false), "{body}");
+    let participants = &body["data"][0]["participants"];
+    assert_eq!(participants[0]["is_member"], json!(true), "{body}");
+    assert_eq!(participants[1]["is_member"], json!(false), "{body}");
     assert_eq!(relationship["kind"], json!("coaching"), "{body}");
     let old = serde_json::to_value(&w.relationship).expect("the model serializes");
     for key in RELATIONSHIP_KEYS {
@@ -99,33 +99,42 @@ async fn m4_05_an_included_relationship_marks_a_removed_coachee() {
     }
     assert_eq!(
         relationship.as_object().map(|o| o.len()),
-        Some(RELATIONSHIP_KEYS.len() + 2 + CAPABILITY_KEYS.len()),
+        Some(RELATIONSHIP_KEYS.len() + CAPABILITY_KEYS.len()),
         "{body}"
     );
 }
 
+/// The spec documents membership only as `participants[].is_member`, never on the relationship.
 #[test]
-fn both_schemas_document_the_membership_fields() {
+fn the_spec_documents_membership_only_on_participants() {
     let spec = serde_json::to_value(ApiDoc::openapi()).expect("the spec serializes");
     let schemas = &spec["components"]["schemas"];
-    for (schema, properties) in [
-        (
-            "domain.coaching_relationship.CoachingRelationshipWithUserNames",
-            &schemas["domain.coaching_relationship.CoachingRelationshipWithUserNames"]
-                ["properties"],
-        ),
-        (
-            "domain.coaching_relationship.Membership",
-            &schemas["domain.coaching_relationship.Membership"]["properties"],
-        ),
-    ] {
-        for field in ["coach_is_member", "coachee_is_member"] {
-            assert!(
-                properties[field]["description"].is_string(),
-                "{schema}.{field}: {properties}"
-            );
-        }
+    assert!(
+        schemas["domain.coaching_relationship.Membership"].is_null(),
+        "Membership stays off the wire"
+    );
+    let with_membership = &schemas["domain.coaching_relationship.WithMembership"]["properties"];
+    for field in ["coach_is_member", "coachee_is_member"] {
+        assert!(
+            with_membership[field].is_null(),
+            "WithMembership.{field}: {with_membership}"
+        );
     }
+    assert_eq!(
+        schemas["domain.coaching_session.EnrichedSession"]["allOf"][1]["properties"]
+            ["participants"]["items"],
+        json!({ "$ref": "#/components/schemas/domain.coaching_relationship.Participant" })
+    );
+    assert_eq!(
+        schemas["domain.coaching_relationship.CoachingRelationshipWithUserNames"]["properties"]
+            ["participants"]["items"],
+        json!({ "$ref": "#/components/schemas/domain.coaching_relationship.Participant" })
+    );
+    let participant = &schemas["domain.coaching_relationship.Participant"]["properties"];
+    assert!(
+        participant["is_member"]["description"].is_string(),
+        "Participant.is_member: {participant}"
+    );
     assert!(
         schemas["domain.coaching_relationship.CoachingRelationshipWithUserNames"]["properties"]
             ["organization_id"]

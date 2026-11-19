@@ -161,7 +161,7 @@ pub async fn read(
         ("organization_id" = Uuid, Path, description = "Organization id"),
     ),
     responses(
-        (status = 200, description = "Successfully retrieved batch actions. With `assignee=coach` or `assignee=coachee`, colleague relationships are left out; with `assignee=colleague`, coaching relationships are left out and each colleague relationship lists the other colleague's actions"),
+        (status = 200, description = "Successfully retrieved batch actions, as `actions_by_relationship` keyed by relationship id. With `assignee=coach` or `assignee=coachee`, colleague relationships are left out; with `assignee=colleague`, coaching relationships are left out and each colleague relationship lists the other colleague's actions"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Coachee scoped `assignee` to coach or another user"),
         (status = 503, description = "Service temporarily unavailable")
@@ -203,10 +203,9 @@ pub async fn index(
     )
     .await?;
 
-    // Keys are relationship ids despite the field name.
     Ok(Json(ApiResponse::new(
         StatusCode::OK.into(),
-        serde_json::json!({ "coachee_actions": relationship_actions }),
+        serde_json::json!({ "actions_by_relationship": relationship_actions }),
     )))
 }
 

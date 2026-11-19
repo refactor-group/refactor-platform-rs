@@ -340,3 +340,42 @@ async fn takes_the_pairs_advisory_lock_before_the_pair_lookup() -> Result<(), Er
 
     Ok(())
 }
+
+#[tokio::test]
+async fn a_colleague_outside_the_organization_is_refused_without_naming_a_coach() {
+    let organization_id = Id::new_v4();
+    let member = user(Id::new_v4(), "Member");
+    let outsider = user(Id::new_v4(), "Outsider");
+
+    let db = MockDatabase::new(DatabaseBackend::Postgres)
+        .append_query_results([[organization(organization_id, false)]])
+        .append_query_results::<(users::Model, Option<user_roles::Model>), _, _>([
+            vec![(member.clone(), None)],
+            vec![(outsider.clone(), None)],
+        ])
+        .append_query_results([Vec::<user_roles::Model>::new()])
+        .append_query_results([[organization(organization_id, false)]])
+        .append_query_results([Vec::<user_roles::Model>::new()])
+        .append_query_results([Vec::<organizations::Model>::new()])
+        .into_connection();
+
+    let error = create(
+        &db,
+        organization_id,
+        Draft {
+            coach_id: member.id,
+            coachee_id: outsider.id,
+            kind: Kind::Colleague,
+        },
+    )
+    .await
+    .expect_err("a non-member must be refused");
+
+    assert_eq!(
+        error.error_kind,
+        EntityApiErrorKind::ValidationError {
+            message: "Both people must belong to the specified organization.".into(),
+            details: None,
+        }
+    );
+}

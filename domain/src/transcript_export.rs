@@ -12,6 +12,7 @@ use utoipa::ToSchema;
 use crate::coaching_relationship_kind;
 use crate::coaching_relationships;
 use crate::error::{DomainErrorKind, EntityErrorKind, Error, InternalErrorKind};
+use crate::text::capitalized;
 use crate::transcript_participant::Model as Participant;
 use crate::users;
 use crate::Id;
@@ -24,6 +25,10 @@ pub struct Speaker {
     /// The speaker label exactly as it appears on transcript lines; unique per transcript.
     #[schema(example = "Jim Hodapp")]
     pub label: String,
+    /// The participant's full name, else the label; only the plain-text header uses it.
+    #[serde(skip)]
+    #[schema(ignore)]
+    pub header_name: String,
     /// The attributed participant's role in the relationship.
     ///
     /// `null` for anyone not attributed to a participant, such as a guest.
@@ -145,6 +150,12 @@ pub fn label_transcript(
         .zip(&labels)
         .map(|(key, label)| Speaker {
             label: label.clone(),
+            header_name: match key {
+                GroupKey::User(id) => participant_user(*id, coach, coachee)
+                    .full_name()
+                    .into_owned(),
+                _ => label.clone(),
+            },
             role: attribution(key, relationship).1,
         })
         .collect();
@@ -206,13 +217,27 @@ fn base_label(
     coachee: &users::Model,
 ) -> Option<String> {
     match key {
-        GroupKey::User(id) => {
-            let user = if *id == coach.id { coach } else { coachee };
-            Some(user.preferred_name().into_owned())
-        }
+        GroupKey::User(id) => Some(
+            participant_user(*id, coach, coachee)
+                .preferred_name()
+                .into_owned(),
+        ),
         GroupKey::Account(_) => first_speaker.and_then(typed_name).map(str::to_owned),
         GroupKey::Name(name) | GroupKey::Legacy(name) => Some((*name).to_owned()),
         GroupKey::Participant(_) => None,
+    }
+}
+
+/// The coach or coachee a `GroupKey::User` group speaks for.
+fn participant_user<'u>(
+    id: Id,
+    coach: &'u users::Model,
+    coachee: &'u users::Model,
+) -> &'u users::Model {
+    if id == coach.id {
+        coach
+    } else {
+        coachee
     }
 }
 
@@ -255,12 +280,14 @@ fn unique_labels(keys: &[&GroupKey], bases: &[String]) -> Vec<String> {
     labels.into_iter().flatten().collect()
 }
 
-/// Renders the labeled transcript as the downloadable plain-text file.
+/// Renders the labeled transcript as the downloadable plain-text file, titled with `kind`'s
+/// session label.
 ///
 /// Keeps segments whose role is in `filter` (every segment when it is empty) and drops blank
 /// ones; the header lists the speakers with at least one surviving line, in speaking order.
 /// Fails when a filtered role has no speaker.
 pub fn render_plain_text(
+    kind: coaching_relationship_kind::Kind,
     session_date: NaiveDate,
     labeled: &Labeled,
     filter: &[coaching_relationship_kind::Role],
@@ -286,16 +313,17 @@ pub fn render_plain_text(
         .collect();
 
     // Only speakers who contribute a line are named, so a blank-only speaker is absent.
-    let header_labels = speakers
+    let header_names = speakers
         .iter()
         .filter(|speaker| lines.iter().any(|line| line.speaker_label == speaker.label))
-        .map(|speaker| speaker.label.as_str())
+        .map(|speaker| speaker.header_name.as_str())
         .collect::<Vec<_>>()
         .join(", ");
 
+    let title = capitalized(kind.rules().session_label());
     let date = session_date.format("%Y-%m-%d");
     let body = lines.iter().fold(
-        format!("Coaching session transcript\nDate: {date}\nSpeakers: {header_labels}\n\n"),
+        format!("{title} transcript\nDate: {date}\nSpeakers: {header_names}\n\n"),
         |mut body, segment| {
             body.push_str(&format!(
                 "[{}] {}: {}\n",

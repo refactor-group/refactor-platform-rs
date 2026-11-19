@@ -12,7 +12,7 @@ Transactional emails are sent via [Resend](https://resend.com/) using template-b
 | Session Rescheduled | Periodic sweep, once a single session's edited schedule settles | Coach + coachee |
 | Action Assigned | Action created/updated with assignees | All assignees |
 
-Every email about a coaching relationship (sessions, series, reminders, reschedules, action assignments) goes only to participants who are still members of the relationship's organization; resending an invite to a coachee who is no longer a member is refused with a 409 (`details.reason` = `coachee_not_a_member`). Cancellations go to both participants regardless of membership, so a removed member's calendar is cleaned up.
+Every email about a coaching relationship (sessions, series, reminders, reschedules, action assignments) goes only to participants who are still members of the relationship's organization; resending an invite to a participant who is no longer a member is refused with a 409 (`details.reason` = `participant_not_a_member`). Cancellations go to both participants regardless of membership, so a removed member's calendar is cleaned up.
 
 ## Two-Tier Pattern
 
@@ -131,10 +131,9 @@ scheduled, rather than a job that logs a config error every few minutes.
 
 Resend templates live outside this repository, so a variable is renamed in three releases:
 the backend sends the new name beside the old one, the template switches to the new name,
-and a later release stops sending the old one. These old names are still sent, with the
-same values, for one release:
+and a later release stops sending the old one. These old names are no longer sent:
 
-| Template | Old variable, still sent | Use instead |
+| Template | Old variable, no longer sent | Use instead |
 |---|---|---|
 | Welcome | `coach_first_name` | `inviter_first_name` |
 | Welcome | `coach_full_name` | `inviter_full_name` |

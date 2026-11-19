@@ -5,13 +5,14 @@
 //! How the routes behave once allowed is tested in `coaching_session_controller_tests.rs`.
 //! `web/src/test_utils/README.md` describes the people and the database.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use axum::http::{Method, StatusCode};
 use chrono::Utc;
+use domain::test_utils::sqlite::fixture::make_colleagues;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::Id;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::test_utils::sqlite::{ids, seed_super_coaching, TestApp};
 
@@ -173,10 +174,13 @@ async fn a_coachees_sessions_include_their_relationships() {
         assert_eq!(reply.status, StatusCode::OK);
         assert_eq!(reply.ids(), expected);
         for session in reply.body["data"].as_array().expect("a list of sessions") {
-            for field in ["relationship", "coach", "coachee"] {
-                assert!(session[field].is_object(), "{field} in {session}");
-            }
-            assert_eq!(session["coachee"]["id"], coachee.to_string(), "{session}");
+            assert!(session["relationship"].is_object(), "{session}");
+            assert!(session["participants"].is_array(), "{session}");
+            assert_eq!(
+                session["participants"][1]["id"],
+                coachee.to_string(),
+                "{session}"
+            );
         }
     })
     .await;
@@ -245,6 +249,163 @@ async fn an_included_relationship_tells_the_caller_what_they_may_do() {
                 session["relationship"]["suggests_actions"], true,
                 "{session}"
             );
+        }
+    })
+    .await;
+}
+
+/// `caller`'s own session list with `query`, as its sessions keyed by id.
+async fn own_sessions(app: &mut TestApp, caller: Caller, query: &str) -> BTreeMap<Id, Value> {
+    let user = app.fixture.user(caller);
+    let path = format!("/users/{user}/coaching_sessions{query}");
+    let reply = app.send(caller, Method::GET, &path, None).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    reply.body["data"]
+        .as_array()
+        .expect("a list of sessions")
+        .iter()
+        .map(|session| {
+            let id = session["id"]
+                .as_str()
+                .and_then(|id| id.parse().ok())
+                .expect("each session has an id");
+            (id, session.clone())
+        })
+        .collect()
+}
+
+/// KIND-49
+#[tokio::test]
+async fn an_included_relationship_lists_the_sessions_coach_then_its_coachee() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (s1, coach, coachee) = (
+            app.fixture.s1,
+            app.fixture.user(Caller::Coach),
+            app.fixture.user(Caller::Coachee),
+        );
+
+        let sessions = own_sessions(&mut app, Caller::Coach, "?include=relationship").await;
+
+        let session = &sessions[&s1];
+        assert_eq!(
+            session["participants"],
+            json!([
+                {
+                    "id": coach,
+                    "first_name": "Coach",
+                    "last_name": "Access",
+                    "email": Caller::Coach.email(),
+                    "role": "coach",
+                    "is_member": true,
+                },
+                {
+                    "id": coachee,
+                    "first_name": "Coachee",
+                    "last_name": "Access",
+                    "email": Caller::Coachee.email(),
+                    "role": "coachee",
+                    "is_member": true,
+                },
+            ]),
+            "{session}"
+        );
+        for key in ["coach", "coachee"] {
+            assert!(session.get(key).is_none(), "{key}: {session}");
+        }
+        for key in ["coach_is_member", "coachee_is_member"] {
+            assert!(
+                session["relationship"].get(key).is_none(),
+                "{key}: {session}"
+            );
+        }
+    })
+    .await;
+}
+
+/// KIND-49, KIND-23
+#[tokio::test]
+async fn a_colleague_sessions_nearest_read_lists_both_as_colleagues_coach_seat_first() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (r1, s1, coach, coachee) = (
+            app.fixture.r1,
+            app.fixture.s1,
+            app.fixture.user(Caller::Coach),
+            app.fixture.user(Caller::Coachee),
+        );
+        make_colleagues(app.db(), r1).await;
+        let around = Utc::now().format("%Y-%m-%dT%H:%M:%S");
+        let path = format!(
+            "/users/{coachee}/coaching_sessions/nearest\
+             ?coaching_relationship_ids={r1}&around={around}&before=1&after=1\
+             &include=relationship"
+        );
+
+        let reply = app.send(Caller::Coachee, Method::GET, &path, None).await;
+
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+        assert_eq!(reply.ids(), ids([s1]));
+        let session = &reply.body["data"][0];
+        let participants = &session["participants"];
+        assert_eq!(
+            (&participants[0]["id"], &participants[0]["role"]),
+            (&json!(coach), &json!("colleague")),
+            "{session}"
+        );
+        assert_eq!(
+            (&participants[1]["id"], &participants[1]["role"]),
+            (&json!(coachee), &json!("colleague")),
+            "{session}"
+        );
+        assert_eq!(
+            session["relationship"]["viewer"],
+            json!({ "role": "colleague", "can_schedule_sessions": true, "sees_all_actions": true }),
+            "{session}"
+        );
+    })
+    .await;
+}
+
+/// KIND-49
+#[tokio::test]
+async fn a_coachs_session_list_marks_a_coachee_who_left() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (s3, coach, removed) = (
+            app.fixture.s3,
+            app.fixture.user(Caller::Coach),
+            app.fixture.user(Caller::Removed),
+        );
+
+        let sessions = own_sessions(&mut app, Caller::Coach, "?include=relationship").await;
+
+        let participants = &sessions[&s3]["participants"];
+        assert_eq!(
+            (&participants[0]["id"], &participants[0]["is_member"]),
+            (&json!(coach), &json!(true)),
+            "{participants}"
+        );
+        assert_eq!(
+            (&participants[1]["id"], &participants[1]["is_member"]),
+            (&json!(removed), &json!(false)),
+            "{participants}"
+        );
+    })
+    .await;
+}
+
+/// KIND-49
+#[tokio::test]
+async fn a_session_list_without_its_relationship_lists_no_participants() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+
+        let sessions = own_sessions(&mut app, Caller::Coach, "").await;
+
+        assert!(!sessions.is_empty());
+        for session in sessions.values() {
+            assert!(session.get("participants").is_none(), "{session}");
         }
     })
     .await;

@@ -10,7 +10,7 @@ use crate::user_role::is_member;
 use chrono::Utc;
 use entity::{
     coachees, coaches,
-    coaching_relationship_kind::Kind,
+    coaching_relationship_kind::{Kind, Role, Seat},
     coaching_relationships::{self, viewer_of, ActiveModel, Entity, Model, Viewer, Visibility},
     coaching_sessions, users, Id,
 };
@@ -24,7 +24,7 @@ use sea_orm::{
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
 use slugify::slugify;
-use utoipa::openapi::{ObjectBuilder, Ref, RefOr, Schema};
+use utoipa::openapi::{ArrayBuilder, ObjectBuilder, Ref, RefOr, Schema};
 use utoipa::{PartialSchema, ToSchema};
 
 /// A relationship to create: who holds each seat and what kind it is.
@@ -64,7 +64,7 @@ pub async fn create(
         return Err(Error {
             source: None,
             error_kind: EntityApiErrorKind::ValidationError {
-                message: "A user cannot be their own coach.".into(),
+                message: "A user cannot be their own partner in a relationship.".into(),
                 details: None,
             },
         });
@@ -95,15 +95,15 @@ pub async fn create(
             .map(|org| org.id)
             .collect::<Vec<Id>>();
 
-    // Check that the coach and coachee belong to the correct organization
+    // Both people must belong to the organization
     if !coach_organization_ids.contains(&organization_id)
         || !coachee_organization_ids.contains(&organization_id)
     {
-        error!("Coach and coachee do not belong to the correct organization, not creating requested new coaching relationship between coach: {:?} and coachee: {:?} for organization: {:?}.", draft.coach_id, draft.coachee_id, organization_id);
+        error!("A participant does not belong to the organization, not creating requested new relationship between {:?} and {:?} for organization: {:?}.", draft.coach_id, draft.coachee_id, organization_id);
         return Err(Error {
             source: None,
             error_kind: EntityApiErrorKind::ValidationError {
-                message: "Coach and coachee must belong to the specified organization.".into(),
+                message: "Both people must belong to the specified organization.".into(),
                 details: None,
             },
         });
@@ -389,8 +389,7 @@ pub async fn notify_member_ids(
 ///
 /// The same test as [`notify_member_ids`], so `true` means a write naming that
 /// participant is not refused for membership.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, FromQueryResult, ToSchema)]
-#[schema(as = domain::coaching_relationship::Membership)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, FromQueryResult)]
 pub struct Membership {
     /// Whether the coach still holds a role in the relationship's organization.
     pub coach_is_member: bool,
@@ -408,6 +407,41 @@ impl Membership {
         .into_iter()
         .filter_map(|(id, is_member)| is_member.then_some(id))
         .collect()
+    }
+}
+
+/// One of a relationship's two people as the wire describes them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[schema(as = domain::coaching_relationship::Participant)]
+pub struct Participant {
+    pub id: Id,
+    pub first_name: String,
+    pub last_name: String,
+    pub email: String,
+    /// What this person is to the relationship, from its kind and their seat.
+    pub role: Role,
+    /// Whether this person still holds a role in the relationship's organization.
+    pub is_member: bool,
+}
+
+impl Participant {
+    /// The person in `relationship`'s `seat`, their role taken from its kind.
+    pub fn new(
+        relationship: &Model,
+        seat: Seat,
+        first_name: String,
+        last_name: String,
+        email: String,
+        is_member: bool,
+    ) -> Self {
+        Self {
+            id: relationship.participant(seat),
+            first_name,
+            last_name,
+            email,
+            role: relationship.kind.rules().role(seat),
+            is_member,
+        }
     }
 }
 
@@ -441,19 +475,51 @@ impl Capabilities {
 }
 
 /// A coaching relationship with its participants' [`Membership`].
-#[derive(Debug, Clone, PartialEq, Serialize, FromQueryResult, ToSchema)]
-#[schema(as = domain::coaching_relationship::WithMembership)]
+#[derive(Debug, Clone, PartialEq, Serialize, FromQueryResult)]
 pub struct WithMembership {
     #[serde(flatten)]
     #[sea_orm(nested)]
     pub relationship: Model,
-    #[serde(flatten)]
+    /// Off the wire: a session list carries it on its `participants`.
+    #[serde(skip)]
     #[sea_orm(nested)]
     pub membership: Membership,
     /// Empty until [`WithMembership::for_caller`] fills it.
     #[serde(flatten)]
     #[sea_orm(skip)]
     pub capabilities: Capabilities,
+}
+
+/// By hand: the relationship's derived schema leaves out the fields it never deserializes,
+/// which the wire still carries.
+impl PartialSchema for WithMembership {
+    fn schema() -> RefOr<Schema> {
+        let fields: [(&str, RefOr<Schema>); 8] = [
+            ("id", utoipa::schema!(Uuid).into()),
+            ("organization_id", utoipa::schema!(Uuid).into()),
+            ("coach_id", utoipa::schema!(Uuid).into()),
+            ("coachee_id", utoipa::schema!(Uuid).into()),
+            (
+                "kind",
+                Ref::from_schema_name(<Kind as ToSchema>::name()).into(),
+            ),
+            ("slug", utoipa::schema!(String).into()),
+            ("created_at", utoipa::schema!(DateTime<FixedOffset>).into()),
+            ("updated_at", utoipa::schema!(DateTime<FixedOffset>).into()),
+        ];
+        object_with_capabilities(fields)
+    }
+}
+
+impl ToSchema for WithMembership {
+    fn name() -> Cow<'static, str> {
+        Cow::Borrowed("domain.coaching_relationship.WithMembership")
+    }
+
+    fn schemas(schemas: &mut Vec<(String, RefOr<Schema>)>) {
+        schemas.push((<Kind as ToSchema>::name().into_owned(), Kind::schema()));
+        schemas.push((<Viewer as ToSchema>::name().into_owned(), Viewer::schema()));
+    }
 }
 
 impl WithMembership {
@@ -877,38 +943,32 @@ fn involving(user_id: Id) -> Condition {
         .add(coaching_relationships::Column::CoacheeId.eq(user_id))
 }
 
-/// Trait for filtering coaching relationships by user's role.
-///
-/// Implement this trait in the web layer to define role-based filtering
-/// while keeping the entity_api layer decoupled from web-specific types.
-pub trait RoleFilterable {
-    /// Returns true if only relationships where the user is a coach should be returned.
-    fn filter_coach_only(&self) -> bool;
-    /// Returns true if only relationships where the user is a coachee should be returned.
-    fn filter_coachee_only(&self) -> bool;
+/// The relationships in which `user_id` holds `role`: for each kind, the seats whose rules give
+/// that role.
+fn holding_role(user_id: Id, role: Role) -> Condition {
+    Kind::iter()
+        .flat_map(|kind| kind.seats_holding(role).map(move |seat| (kind, seat)))
+        .fold(Condition::any(), |held, (kind, seat)| {
+            held.add(
+                Condition::all()
+                    .add(coaching_relationships::Column::Kind.eq(kind))
+                    .add(seat.column().eq(user_id)),
+            )
+        })
 }
 
 /// Finds coaching relationships for a user with optional role filtering.
 ///
 /// Returns relationships with user names for display purposes: those `viewer` may access
-/// (see [`accessible_to`]), narrowed to those they coach or are coached in when
-/// `role_filter` asks.
+/// (see [`accessible_to`]), narrowed to those in which they hold `role` when one is given.
 pub async fn find_by_user_id_with_user_names(
     db: &DatabaseConnection,
     viewer: &Visibility,
-    role_filter: impl RoleFilterable,
+    role: Option<Role>,
 ) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
-    let role = if role_filter.filter_coach_only() {
-        Some(coaching_relationships::Column::CoachId.eq(viewer.user_id))
-    } else if role_filter.filter_coachee_only() {
-        Some(coaching_relationships::Column::CoacheeId.eq(viewer.user_id))
-    } else {
-        None
-    };
-
     let query = coaching_relationships::Entity::find()
         .filter(accessible_to(viewer))
-        .apply_if(role, |q, role| q.filter(role));
+        .apply_if(role, |q, role| q.filter(holding_role(viewer.user_id, role)));
     let query = select_membership(select_with_user_names(query))
         .into_model::<CoachingRelationshipWithUserNames>();
 
@@ -962,12 +1022,41 @@ impl CoachingRelationshipWithUserNames {
             ..self
         }
     }
+
+    /// Its two people, the coach seat first and the coachee seat second.
+    pub fn participants(&self) -> [Participant; 2] {
+        let rules = self.kind.rules();
+        [
+            Participant {
+                id: self.coach_id,
+                first_name: self.coach_first_name.clone(),
+                last_name: self.coach_last_name.clone(),
+                email: self.coach_email.clone(),
+                role: rules.role(Seat::CoachId),
+                is_member: self.membership.coach_is_member,
+            },
+            Participant {
+                id: self.coachee_id,
+                first_name: self.coachee_first_name.clone(),
+                last_name: self.coachee_last_name.clone(),
+                email: self.coachee_email.clone(),
+                role: rules.role(Seat::CoacheeId),
+                is_member: self.membership.coachee_is_member,
+            },
+        ]
+    }
 }
 
-/// By hand: the derive would nest `membership` under `allOf`, but the wire lists its fields.
+/// By hand: the wire flattens `capabilities` and lists `participants` in place of the
+/// name, email and membership fields.
 impl PartialSchema for CoachingRelationshipWithUserNames {
     fn schema() -> RefOr<Schema> {
-        let fields: [(&str, RefOr<Schema>); 12] = [
+        let participants = ArrayBuilder::new()
+            .items(Ref::from_schema_name(<Participant as ToSchema>::name()))
+            .min_items(Some(2))
+            .max_items(Some(2))
+            .description(Some("The coach seat, then the coachee seat."));
+        let fields: [(&str, RefOr<Schema>); 7] = [
             ("id", utoipa::schema!(Uuid).into()),
             ("coach_id", utoipa::schema!(Uuid).into()),
             ("coachee_id", utoipa::schema!(Uuid).into()),
@@ -975,32 +1064,34 @@ impl PartialSchema for CoachingRelationshipWithUserNames {
                 "kind",
                 Ref::from_schema_name(<Kind as ToSchema>::name()).into(),
             ),
-            ("coach_first_name", utoipa::schema!(String).into()),
-            ("coach_last_name", utoipa::schema!(String).into()),
-            ("coachee_first_name", utoipa::schema!(String).into()),
-            ("coachee_last_name", utoipa::schema!(String).into()),
-            ("coach_email", utoipa::schema!(String).into()),
-            ("coachee_email", utoipa::schema!(String).into()),
+            ("participants", participants.into()),
             ("created_at", utoipa::schema!(DateTime<FixedOffset>).into()),
             ("updated_at", utoipa::schema!(DateTime<FixedOffset>).into()),
         ];
-        let object = fields
+        object_with_capabilities(fields)
+    }
+}
+
+/// An object requiring each of `fields` and [`Capabilities`]' fields, which the wire flattens
+/// beside them.
+fn object_with_capabilities<'a>(
+    fields: impl IntoIterator<Item = (&'a str, RefOr<Schema>)>,
+) -> RefOr<Schema> {
+    let object = fields
+        .into_iter()
+        .fold(ObjectBuilder::new(), |object, (name, schema)| {
+            object.property(name, schema).required(name)
+        });
+    if let RefOr::T(Schema::Object(flattened)) = Capabilities::schema() {
+        flattened
+            .properties
             .into_iter()
-            .fold(ObjectBuilder::new(), |object, (name, schema)| {
-                object.property(name, schema).required(name)
-            });
-        // Serialized at the top level, so these schemas' properties join this object's.
-        [Membership::schema(), Capabilities::schema()]
-            .into_iter()
-            .filter_map(|schema| match schema {
-                RefOr::T(Schema::Object(object)) => Some(object),
-                _ => None,
-            })
-            .flat_map(|flattened| flattened.properties.into_iter())
             .fold(object, |object, (name, schema)| {
                 object.property(&name, schema).required(&name)
             })
             .into()
+    } else {
+        object.into()
     }
 }
 
@@ -1012,6 +1103,11 @@ impl ToSchema for CoachingRelationshipWithUserNames {
     fn schemas(schemas: &mut Vec<(String, RefOr<Schema>)>) {
         schemas.push((<Kind as ToSchema>::name().into_owned(), Kind::schema()));
         schemas.push((<Viewer as ToSchema>::name().into_owned(), Viewer::schema()));
+        schemas.push((
+            <Participant as ToSchema>::name().into_owned(),
+            Participant::schema(),
+        ));
+        schemas.push((<Role as ToSchema>::name().into_owned(), Role::schema()));
     }
 }
 
@@ -1022,21 +1118,14 @@ impl Serialize for CoachingRelationshipWithUserNames {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("CoachingRelationship", 17)?;
+        let mut state = serializer.serialize_struct("CoachingRelationship", 10)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("coach_id", &self.coach_id)?;
         state.serialize_field("coachee_id", &self.coachee_id)?;
         state.serialize_field("kind", &self.kind)?;
-        state.serialize_field("coach_first_name", &self.coach_first_name)?;
-        state.serialize_field("coach_last_name", &self.coach_last_name)?;
-        state.serialize_field("coachee_first_name", &self.coachee_first_name)?;
-        state.serialize_field("coachee_last_name", &self.coachee_last_name)?;
-        state.serialize_field("coach_email", &self.coach_email)?;
-        state.serialize_field("coachee_email", &self.coachee_email)?;
+        state.serialize_field("participants", &self.participants())?;
         state.serialize_field("created_at", &self.created_at)?;
         state.serialize_field("updated_at", &self.updated_at)?;
-        state.serialize_field("coach_is_member", &self.membership.coach_is_member)?;
-        state.serialize_field("coachee_is_member", &self.membership.coachee_is_member)?;
         state.serialize_field("viewer", &self.capabilities.viewer)?;
         state.serialize_field("suggests_actions", &self.capabilities.suggests_actions)?;
         state.serialize_field(
@@ -1088,6 +1177,58 @@ mod wire_tests {
         assert_eq!(keys, required);
         assert_eq!(wire["kind"], "coaching");
         assert!(required.contains("kind"));
+
+        let participants = wire["participants"].as_array().expect("a participant list");
+        assert_eq!(participants.len(), 2);
+        let RefOr::T(Schema::Object(participant)) = Participant::schema() else {
+            panic!("expected an object schema");
+        };
+        let participant_properties: BTreeSet<&str> =
+            participant.properties.keys().map(String::as_str).collect();
+        let participant_required: BTreeSet<&str> =
+            participant.required.iter().map(String::as_str).collect();
+        for item in participants {
+            let item_keys: BTreeSet<&str> = item
+                .as_object()
+                .expect("a participant object")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(item_keys, participant_properties);
+            assert_eq!(item_keys, participant_required);
+        }
+    }
+
+    #[test]
+    fn a_relationship_with_membership_serializes_exactly_its_schemas_keys() {
+        let now = Utc::now().fixed_offset();
+        let with_membership = WithMembership {
+            relationship: Model {
+                id: Id::new_v4(),
+                organization_id: Id::new_v4(),
+                coach_id: Id::new_v4(),
+                coachee_id: Id::new_v4(),
+                kind: Kind::Coaching,
+                slug: String::new(),
+                created_at: now,
+                updated_at: now,
+            },
+            membership: Membership::default(),
+            capabilities: Capabilities::default(),
+        };
+        let serde_json::Value::Object(wire) =
+            serde_json::to_value(&with_membership).expect("serializes")
+        else {
+            panic!("expected an object");
+        };
+        let RefOr::T(Schema::Object(schema)) = WithMembership::schema() else {
+            panic!("expected an object schema");
+        };
+        let keys: BTreeSet<&str> = wire.keys().map(String::as_str).collect();
+        let properties: BTreeSet<&str> = schema.properties.keys().map(String::as_str).collect();
+        let required: BTreeSet<&str> = schema.required.iter().map(String::as_str).collect();
+        assert_eq!(keys, properties);
+        assert_eq!(keys, required);
     }
 }
 

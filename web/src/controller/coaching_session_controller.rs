@@ -171,7 +171,7 @@ pub async fn index(
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Coaching relationship not found"),
         (status = 405, description = "Method not allowed"),
-        (status = 409, description = "The coachee, or either colleague, is no longer a member of the organization; `details.reason` is `coachee_not_a_member`, or `participant_not_a_member` for a colleague (with `details.user_id` and `details.organization_id`)"),
+        (status = 409, description = "A participant is no longer a member of the organization; `details.reason` is `participant_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(
@@ -229,7 +229,7 @@ pub async fn create(
         (status = 204, description = "Successfully updated a Coaching Session", body = ()),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden"),
-        (status = 409, description = "A new `date` or `duration_minutes` while the coachee, or either colleague, is no longer a member of the organization; `details.reason` is `coachee_not_a_member`, or `participant_not_a_member` for a colleague (with `details.user_id` and `details.organization_id`)"),
+        (status = 409, description = "A new `date` or `duration_minutes` while a participant is no longer a member of the organization; `details.reason` is `participant_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status = 503, description = "Service temporarily unavailable"),
     ),
     security(
@@ -335,7 +335,7 @@ pub async fn delete(
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden — not permitted to schedule the relationship's sessions"),
         (status = 404, description = "Coaching Session not found"),
-        (status = 409, description = "Not resendable; `details.reason` is `no_upcoming_sessions`, `series_member`, `coachee_not_a_member`, or `participant_not_a_member` for a colleague (with `details.user_id` and `details.organization_id`)"),
+        (status = 409, description = "Not resendable; `details.reason` is `no_upcoming_sessions`, `series_member`, or `participant_not_a_member` (with `details.user_id` and `details.organization_id`)"),
         (status = 502, description = "The invite did not reach a participant other than the scheduler"),
     ),
     security(

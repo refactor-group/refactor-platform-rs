@@ -28,7 +28,7 @@ pub(crate) const MAX_NEAREST_RELATIONSHIPS: usize = 50;
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum IncludeParam {
-    /// Include coaching relationship (coach/coachee info)
+    /// Include the coaching relationship and its two participants
     Relationship,
     /// Include organization (requires relationship)
     Organization,

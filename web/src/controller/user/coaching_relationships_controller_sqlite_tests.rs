@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 
 use axum::http::{Method, StatusCode};
+use domain::test_utils::sqlite::fixture::make_colleagues;
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use serde_json::json;
 
@@ -110,6 +111,62 @@ async fn a_coach_lists_the_relationships_they_coach() {
             app.expect(Caller::Coach, Method::GET, &path, None).await,
             (StatusCode::OK, expected)
         );
+    })
+    .await;
+}
+
+/// KIND-50: `coach` and `coachee` name only coaching relationships; `colleague` names only
+/// colleague ones, even where the user holds the coach seat.
+#[tokio::test]
+async fn a_coach_with_a_colleague_relationship_lists_each_under_its_own_role() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (r1, r3) = (app.fixture.r1, app.fixture.r3);
+        make_colleagues(app.db(), r3).await;
+        let coach = app.fixture.user(Caller::Coach);
+        let path = format!("/users/{coach}/coaching-relationships");
+
+        for (query, expected) in [
+            ("?role=coach", ids([r1])),
+            ("?role=coachee", BTreeSet::new()),
+            ("?role=colleague", ids([r3])),
+            ("?role=all", ids([r1, r3])),
+            ("", ids([r1, r3])),
+        ] {
+            assert_eq!(
+                app.expect(Caller::Coach, Method::GET, &format!("{path}{query}"), None)
+                    .await,
+                (StatusCode::OK, expected),
+                "{query}"
+            );
+        }
+    })
+    .await;
+}
+
+/// KIND-50
+#[tokio::test]
+async fn a_colleague_in_the_coachee_seat_lists_it_as_a_colleague() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let (r1, r2) = (app.fixture.r1, app.fixture.r2);
+        make_colleagues(app.db(), r1).await;
+        let coachee = app.fixture.user(Caller::Coachee);
+        let path = format!("/users/{coachee}/coaching-relationships");
+
+        for (query, expected) in [("?role=colleague", ids([r1])), ("?role=coachee", ids([r2]))] {
+            assert_eq!(
+                app.expect(
+                    Caller::Coachee,
+                    Method::GET,
+                    &format!("{path}{query}"),
+                    None
+                )
+                .await,
+                (StatusCode::OK, expected),
+                "{query}"
+            );
+        }
     })
     .await;
 }

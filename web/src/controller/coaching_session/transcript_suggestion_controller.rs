@@ -39,7 +39,7 @@ const ACTION_TARGET: &str = "action";
     responses(
         (status = 200, description = "Suggestions in the requested status retrieved", body = [domain::transcript_suggestion::review::ActionSuggestion]),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Not the session's coach or coachee"),
+        (status = 403, description = "Not a participant in the session"),
         (status = 404, description = "Coaching session not found"),
         (status = 422, description = "Unsupported target or status"),
     ),
@@ -79,7 +79,7 @@ pub async fn index(
     responses(
         (status = 200, description = "Scan state retrieved", body = domain::transcript_suggestion::review::Scan),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Not the session's coach or coachee"),
+        (status = 403, description = "Not a participant in the session"),
         (status = 404, description = "Coaching session not found"),
         (status = 422, description = "Unsupported target"),
     ),
@@ -117,7 +117,7 @@ pub async fn scan(
     responses(
         (status = 202, description = "Scan queued", body = domain::transcript_suggestion::review::Scan),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Not the session's coach or coachee"),
+        (status = 403, description = "Not a participant in the session"),
         (status = 404, description = "Coaching session not found"),
         (status = 409, description = "A scan is running or already completed"),
         (status = 422, description = "Unsupported target, or suggestions are not available for this session"),

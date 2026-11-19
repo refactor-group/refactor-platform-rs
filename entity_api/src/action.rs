@@ -14,7 +14,7 @@ use log::*;
 use super::error::{EntityApiErrorKind, Error};
 use super::{actions_user, coaching_relationship};
 use entity::actions::{ActiveModel, Entity, Model};
-use entity::coaching_relationship_kind::{Role, Seat};
+use entity::coaching_relationship_kind::Role;
 use entity::coaching_relationships::Visibility;
 use entity::{actions, coaching_relationships, coaching_sessions, status::Status, Id};
 
@@ -482,10 +482,9 @@ impl AssigneeScope {
             AssigneeScope::Colleague => Role::Colleague,
             AssigneeScope::User(id) => return Some(*id),
         };
-        let rules = relationship.kind.rules();
-        [Seat::CoachId, Seat::CoacheeId]
-            .into_iter()
-            .filter(|&seat| rules.role(seat) == role)
+        relationship
+            .kind
+            .seats_holding(role)
             .map(|seat| relationship.participant(seat))
             // A holder who isn't the caller sorts first.
             .min_by_key(|&holder| holder == caller_id)
@@ -676,6 +675,7 @@ pub async fn find_by_user_relationships(
 #[cfg(feature = "mock")]
 mod tests {
     use super::*;
+    use entity::coaching_relationship_kind::Seat;
     use entity::{actions::Model, Id};
     use sea_orm::{DatabaseBackend, Iterable, MockDatabase};
 

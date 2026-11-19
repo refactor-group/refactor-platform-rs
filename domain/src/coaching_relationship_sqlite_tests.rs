@@ -12,7 +12,7 @@ use entity_api::coaching_relationship::{create, insert_unless_exists, Draft};
 use entity_api::error::EntityApiErrorKind;
 use sea_orm::{ActiveModelTrait, ConnectionTrait, DatabaseConnection, EntityTrait, Set};
 
-use super::{find_by_user_id_with_user_names, is_coach_of, RoleFilterable};
+use super::{find_by_user_id_with_user_names, is_coach_of};
 
 use crate::test_utils::sqlite::read_back::relationships_between;
 use crate::test_utils::sqlite::{
@@ -245,6 +245,29 @@ async fn a_returned_colleague_relationship_carries_each_seats_own_email() {
 }
 
 #[tokio::test]
+async fn create_refuses_to_pair_a_user_with_themselves() {
+    within_time_limit(async {
+        let (db, o, [user, _, _]) = three_members().await;
+
+        for kind in [Kind::Coaching, Kind::Colleague] {
+            let error = create(&db, o, draft(user, user, kind))
+                .await
+                .expect_err("a user cannot be paired with themselves");
+
+            assert_eq!(
+                error.error_kind,
+                EntityApiErrorKind::ValidationError {
+                    message: "A user cannot be their own partner in a relationship.".into(),
+                    details: None,
+                },
+                "{kind:?}"
+            );
+        }
+    })
+    .await
+}
+
+#[tokio::test]
 async fn create_refuses_a_pair_whose_relationship_is_of_another_kind() {
     within_time_limit(async {
         let (db, o, [coach, coachee, _]) = three_members().await;
@@ -363,22 +386,9 @@ async fn the_coachees_own_coachee_is_not_their_coach() {
     .await
 }
 
-/// Every relationship, as coach or coachee.
-struct AnyRole;
-
-impl RoleFilterable for AnyRole {
-    fn filter_coach_only(&self) -> bool {
-        false
-    }
-
-    fn filter_coachee_only(&self) -> bool {
-        false
-    }
-}
-
 /// The ids of the relationships `viewer` lists as their own.
 async fn own_relationship_ids(db: &DatabaseConnection, viewer: &Visibility) -> BTreeSet<Id> {
-    find_by_user_id_with_user_names(db, viewer, AnyRole)
+    find_by_user_id_with_user_names(db, viewer, None)
         .await
         .expect("the relationships are read")
         .into_iter()

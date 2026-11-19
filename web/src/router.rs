@@ -195,7 +195,7 @@ use utoipa_rapidoc::RapiDoc;
                 domain::agreements::Model,
                 domain::coaching_relationship::Capabilities,
                 domain::coaching_relationship::CoachingRelationshipWithUserNames,
-                domain::coaching_relationship::Membership,
+                domain::coaching_relationship::Participant,
                 domain::coaching_relationship::WithMembership,
                 domain::coaching_relationship::kind_switch::Consequences,
                 domain::coaching_relationship::kind_switch::ActionsBecomingVisible,

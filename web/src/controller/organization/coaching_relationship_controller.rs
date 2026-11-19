@@ -42,9 +42,9 @@ use log::*;
         (status = 200, description = "The relationship of the requested kind (default coaching), newly created or the existing one for this pair: for coaching, this coach and coachee; for colleagues, these two people in either order. The envelope's status_code is 201 in both cases, so it does not distinguish a reuse from a create", body = domain::coaching_relationship::CoachingRelationshipWithUserNames),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Caller does not administer the organization"),
-        (status = 404, description = "Organization, coach or coachee not found"),
+        (status = 404, description = "Organization, or the user named by `coach_id` or `coachee_id`, not found"),
         (status = 405, description = "Method not allowed"),
-        (status = 409, description = "The coach is the coachee, the coach or coachee is not a member of the organization, the organization is archived, or the two people already have a relationship of the other kind in the organization in either direction (`details.reason` `pair_already_related`, `details.relationship_id` the existing relationship)"),
+        (status = 409, description = "`coach_id` and `coachee_id` name the same user, either user is not a member of the organization, the organization is archived, or the two people already have a relationship of the other kind in the organization in either direction (`details.reason` `pair_already_related`, `details.relationship_id` the existing relationship)"),
         (status = 503, description = "Service temporarily unavailable")
     ),
     security(

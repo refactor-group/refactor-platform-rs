@@ -96,21 +96,22 @@ impl Model {
     }
 
     /// How this user is named to other humans: their chosen display name, else first and
-    /// last, else their email. Distinct from the bare `first_name` + `last_name` pairing
-    /// used where a formal name is wanted regardless of what the user chose to be called.
+    /// last, else their email. Distinct from [`Self::full_name`], used where a formal name
+    /// is wanted regardless of what the user chose to be called.
     ///
     /// Profile updates accept blank names, so every field here is treated as absent when
     /// it is blank and the email backstops a user who cleared all of them.
     pub fn preferred_name(&self) -> Cow<'_, str> {
-        let display = self
-            .display_name
+        self.display_name
             .as_deref()
             .map(str::trim)
-            .unwrap_or_default();
-        if !display.is_empty() {
-            return Cow::Borrowed(display);
-        }
+            .filter(|display| !display.is_empty())
+            .map_or_else(|| self.full_name(), Cow::Borrowed)
+    }
 
+    /// This user's first and last name, ignoring any display name; their email when both
+    /// are blank.
+    pub fn full_name(&self) -> Cow<'_, str> {
         let full = format!("{} {}", self.first_name.trim(), self.last_name.trim());
         match full.trim() {
             "" => Cow::Borrowed(&self.email),
@@ -228,6 +229,21 @@ mod tests {
         user.first_name = "".into();
         user.last_name = "".into();
         assert_eq!(user.preferred_name(), "test@example.com");
+    }
+
+    #[test]
+    fn full_name_ignores_the_display_name() {
+        let mut user = test_user(Uuid::new_v4(), None);
+        user.display_name = Some("Jim H.".into());
+        assert_eq!(user.full_name(), "Test User");
+    }
+
+    #[test]
+    fn full_name_falls_back_to_email_when_every_name_is_blank() {
+        let mut user = test_user(Uuid::new_v4(), None);
+        user.first_name = " ".into();
+        user.last_name = "".into();
+        assert_eq!(user.full_name(), "test@example.com");
     }
 
     #[test]

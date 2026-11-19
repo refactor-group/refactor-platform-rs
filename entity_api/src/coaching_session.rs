@@ -1,5 +1,5 @@
 use super::error::{EntityApiErrorKind, Error};
-use crate::coaching_relationship::{accessible_to, select_membership, WithMembership};
+use crate::coaching_relationship::{accessible_to, select_membership, Participant, WithMembership};
 use crate::duration::Duration;
 use crate::mutate::UpdateMap;
 use chrono::NaiveDateTime;
@@ -432,11 +432,8 @@ struct ClaimedPair {
 }
 
 /// The participant column for `seat`, as the reminder claim's raw SQL names it.
-fn reminder_seat_column(seat: Seat) -> &'static str {
-    match seat {
-        Seat::CoachId => "cr.coach_id",
-        Seat::CoacheeId => "cr.coachee_id",
-    }
+fn reminder_seat_column(seat: Seat) -> String {
+    format!("cr.{}", seat.column().as_str())
 }
 
 /// Each due `(session, user, date)` for every participant [`entity::coaching_relationship_kind::Rules::is_reminded`] names.
@@ -452,7 +449,7 @@ fn due_reminder_candidates() -> String {
                 .filter(|kind| kind.rules().is_reminded(seat))
                 .map(|kind| format!("'{}'", kind.to_value()))
                 .collect::<Vec<_>>();
-            (!kinds.is_empty()).then(|| due_reminders_for(reminder_seat_column(seat), &kinds))
+            (!kinds.is_empty()).then(|| due_reminders_for(&reminder_seat_column(seat), &kinds))
         })
         .collect::<Vec<_>>()
         .join("\n               UNION\n")
@@ -1081,8 +1078,8 @@ pub async fn find_counts_by_month_for_user(
 ///
 /// The session's own fields sit at the top level. `viewer_last_viewed_at` and
 /// `display_title` are always present (null when empty). The rest appear only when
-/// requested via `include`: `relationship` adds `relationship`, `coach` and
-/// `coachee`; `organization` adds `organization`; `goal` adds `goals`;
+/// requested via `include`: `relationship` adds `relationship` and its two
+/// `participants`; `organization` adds `organization`; `goal` adds `goals`;
 /// `agreements` adds `agreement`; `topics` adds `topics`; `series` adds `series`.
 ///
 /// ```json
@@ -1095,8 +1092,10 @@ pub async fn find_counts_by_month_for_user(
 ///   "viewer_last_viewed_at": null,
 ///   "display_title": "Quarterly review",
 ///   "relationship": { "id": "aa26cf35-e07a-4e9b-9ef6-efa5724eaef2", "...": "..." },
-///   "coach": { "id": "fa81f04e-fb59-4524-a4e2-ee1addb12d24", "...": "..." },
-///   "coachee": { "id": "64f2aa5c-7146-4c3c-9476-48f65f6c9cec", "...": "..." }
+///   "participants": [
+///     { "id": "fa81f04e-fb59-4524-a4e2-ee1addb12d24", "role": "coach", "...": "..." },
+///     { "id": "64f2aa5c-7146-4c3c-9476-48f65f6c9cec", "role": "coachee", "...": "..." }
+///   ]
 /// }
 /// ```
 #[derive(Debug, Clone, serde::Serialize, ToSchema)]
@@ -1104,13 +1103,13 @@ pub async fn find_counts_by_month_for_user(
 pub struct EnrichedSession {
     #[serde(flatten)]
     pub session: Model,
-    /// The session's relationship and whether each participant is still a member.
+    /// The session's relationship.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relationship: Option<WithMembership>,
+    /// The relationship's two people, the coach seat then the coachee seat.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub coach: Option<users::Model>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub coachee: Option<users::Model>,
+    #[schema(value_type = Option<Vec<Participant>>, min_items = 2, max_items = 2)]
+    pub participants: Option<[Participant; 2]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub organization: Option<organizations::Model>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1468,8 +1467,7 @@ async fn enrich(
 #[derive(Debug, Default)]
 struct RelatedData {
     relationships: HashMap<Id, WithMembership>,
-    coaches: HashMap<Id, users::Model>,
-    coachees: HashMap<Id, users::Model>,
+    users: HashMap<Id, users::Model>,
     organizations: HashMap<Id, organizations::Model>,
     goals: HashMap<Id, Vec<goals::Model>>,
     agreements: HashMap<Id, agreements::Model>,
@@ -1497,21 +1495,14 @@ async fn load_related_data(
         data.relationships = batch_load_relationships(db, &relationship_ids).await?;
     }
 
-    // Load users (coaches and coachees) if relationship is included
+    // Load both participants of each relationship if relationship is included
     if includes.relationship {
-        let coach_ids: Vec<Id> = data
+        let user_ids: Vec<Id> = data
             .relationships
             .values()
-            .map(|r| r.relationship.coach_id)
+            .flat_map(|r| [r.relationship.coach_id, r.relationship.coachee_id])
             .collect();
-        let coachee_ids: Vec<Id> = data
-            .relationships
-            .values()
-            .map(|r| r.relationship.coachee_id)
-            .collect();
-
-        data.coaches = batch_load_users(db, &coach_ids).await?;
-        data.coachees = batch_load_users(db, &coachee_ids).await?;
+        data.users = batch_load_users(db, &user_ids).await?;
     }
 
     // Load organizations if requested
@@ -1734,6 +1725,29 @@ async fn batch_load_series_summaries(
         .collect())
 }
 
+/// `rel`'s two people, the coach seat first; `None` if either is missing from `users`.
+fn participants(
+    rel: &WithMembership,
+    users: &HashMap<Id, users::Model>,
+) -> Option<[Participant; 2]> {
+    let participant = |seat: Seat, is_member: bool| {
+        users.get(&rel.relationship.participant(seat)).map(|user| {
+            Participant::new(
+                &rel.relationship,
+                seat,
+                user.first_name.clone(),
+                user.last_name.clone(),
+                user.email.clone(),
+                is_member,
+            )
+        })
+    };
+    Some([
+        participant(Seat::CoachId, rel.membership.coach_is_member)?,
+        participant(Seat::CoacheeId, rel.membership.coachee_is_member)?,
+    ])
+}
+
 /// Assemble an enriched session from base session and related data.
 ///
 /// `includes` is needed to distinguish "not requested" (`None`) from
@@ -1751,15 +1765,9 @@ fn assemble_enriched_session(
         .get(&session.coaching_relationship_id)
         .cloned();
 
-    let (coach, coachee) = relationship
+    let participants = relationship
         .as_ref()
-        .map(|rel| {
-            (
-                related.coaches.get(&rel.relationship.coach_id).cloned(),
-                related.coachees.get(&rel.relationship.coachee_id).cloned(),
-            )
-        })
-        .unwrap_or((None, None));
+        .and_then(|rel| participants(rel, &related.users));
 
     let organization = relationship.as_ref().and_then(|rel| {
         related
@@ -1802,8 +1810,7 @@ fn assemble_enriched_session(
     EnrichedSession {
         session,
         relationship,
-        coach,
-        coachee,
+        participants,
         organization,
         goals,
         agreement,
@@ -2170,7 +2177,7 @@ mod tests {
         let sql = claim_sql().await?;
 
         for seat in [Seat::CoachId, Seat::CoacheeId] {
-            let listed = candidate_for(&sql, reminder_seat_column(seat))
+            let listed = candidate_for(&sql, &reminder_seat_column(seat))
                 .map(kinds_of)
                 .unwrap_or_default();
             for kind in Kind::iter() {

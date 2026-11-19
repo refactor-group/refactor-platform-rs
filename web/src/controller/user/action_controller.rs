@@ -18,7 +18,7 @@ use log::*;
 /// GET actions for a user with flexible filtering
 ///
 /// This unified endpoint supports two query scopes:
-/// - `scope=sessions` (default): All actions from coaching sessions where user is coach or coachee
+/// - `scope=sessions` (default): All actions from sessions where the user is a participant
 /// - `scope=assigned`: Actions where the user is an assignee
 #[utoipa::path(
     get,

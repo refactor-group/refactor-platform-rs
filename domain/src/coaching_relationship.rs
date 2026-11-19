@@ -21,7 +21,7 @@ pub(crate) use entity_api::coaching_relationship::{
 pub use entity_api::coaching_relationship::{
     find_by_coach_and_organization, find_by_id, find_by_user, find_by_user_and_organization,
     find_coach_and_coachee, is_coach_of, Capabilities, CoachingRelationshipWithUserNames, Draft,
-    Membership, RoleFilterable, WithMembership,
+    Membership, Participant, WithMembership,
 };
 
 /// The relationship to create for a person joining an organization: with whom, what kind,
@@ -155,15 +155,15 @@ pub async fn get_relationship_with_user_names_for_caller(
         .map(|relationship| relationship.for_caller(caller)))
 }
 
-/// The relationships `caller` is in, narrowed by `role_filter`, with their participants'
-/// names, each as `caller` sees it.
+/// The relationships `caller` is in, narrowed to those in which they hold `role` when one is
+/// given, with their participants' names, each as `caller` sees it.
 pub async fn find_by_user_id_with_user_names_for_caller(
     db: &DatabaseConnection,
     caller: &users::Model,
-    role_filter: impl RoleFilterable,
+    role: Option<Role>,
 ) -> Result<Vec<CoachingRelationshipWithUserNames>, Error> {
     Ok(
-        find_by_user_id_with_user_names(db, &visibility_for(caller), role_filter)
+        find_by_user_id_with_user_names(db, &visibility_for(caller), role)
             .await?
             .into_iter()
             .map(|relationship| relationship.for_caller(caller))
@@ -226,6 +226,20 @@ pub async fn find_by_organization_for_user_with_user_names(
         .collect())
 }
 
+/// Whichever of `coach` and `coachee` owns the schedule of a session in `relationship`
+/// scheduled by `scheduler_id`.
+pub(crate) fn schedule_owner<'a>(
+    relationship: &Model,
+    coach: &'a users::Model,
+    coachee: &'a users::Model,
+    scheduler_id: Id,
+) -> &'a users::Model {
+    match relationship.schedule_owner_seat(scheduler_id) {
+        Seat::CoachId => coach,
+        Seat::CoacheeId => coachee,
+    }
+}
+
 /// A 409 for the first participant, coach seat first, whose seat must still be in the
 /// organization for sessions to be scheduled or changed but who is not among `member_ids`,
 /// the relationship's participants still in its organization.
@@ -241,28 +255,15 @@ pub(crate) fn ensure_required_participants_are_members(
 }
 
 /// The 409 for a relationship whose participant in `seat` no longer belongs to its
-/// organization, its reason named by that participant's role.
+/// organization, its message naming that participant's role.
 pub(crate) fn participant_not_a_member(relationship: &Model, seat: Seat) -> Error {
-    let (message, reason) = match relationship.kind.rules().role(seat) {
-        Role::Coachee => (
-            "Your coachee is no longer a member of this organization. Re-add them to the \
-             organization first.",
-            reason::COACHEE_NOT_A_MEMBER,
-        ),
-        Role::Colleague => (
-            "Your colleague is no longer a member of this organization. Re-add them to the \
-             organization first.",
-            reason::PARTICIPANT_NOT_A_MEMBER,
-        ),
-        Role::Coach => (
-            "Your coach is no longer a member of this organization. Re-add them to the \
-             organization first.",
-            reason::PARTICIPANT_NOT_A_MEMBER,
-        ),
-    };
+    let message = format!(
+        "Your {} is no longer a member of this organization. Re-add them to the organization first.",
+        relationship.kind.rules().role(seat).as_str()
+    );
     not_a_member(
-        message,
-        reason,
+        &message,
+        reason::PARTICIPANT_NOT_A_MEMBER,
         relationship.organization_id,
         relationship.participant(seat),
     )
@@ -388,7 +389,7 @@ mod tests {
         else {
             panic!("expected a conflict, got {:?}", err.error_kind);
         };
-        assert_eq!(details["reason"], "coachee_not_a_member");
+        assert_eq!(details["reason"], "participant_not_a_member");
         assert_eq!(
             details["user_id"],
             serde_json::json!(relationship.coachee_id)

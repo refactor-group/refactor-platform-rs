@@ -199,7 +199,6 @@ impl Error {
 
 /// The `details.reason` values a 409 or 422 can carry.
 pub(crate) mod reason {
-    pub(crate) const COACHEE_NOT_A_MEMBER: &str = "coachee_not_a_member";
     pub(crate) const PARTICIPANT_NOT_A_MEMBER: &str = "participant_not_a_member";
     pub(crate) const ASSIGNEE_NOT_A_MEMBER: &str = "assignee_not_a_member";
     pub(crate) const USER_HAS_COACHING_HISTORY: &str = "user_has_coaching_history";
@@ -443,7 +442,7 @@ mod tests {
     #[test]
     fn m8_01_conflict_because_adds_the_reason_to_the_details() {
         let error = Error::conflict_because(
-            reason::COACHEE_NOT_A_MEMBER,
+            reason::PARTICIPANT_NOT_A_MEMBER,
             "refused",
             serde_json::json!({ "user_id": "u", "organization_id": "o" }),
         );
@@ -458,7 +457,7 @@ mod tests {
         assert_eq!(
             details,
             Some(serde_json::json!({
-                "reason": "coachee_not_a_member",
+                "reason": "participant_not_a_member",
                 "user_id": "u",
                 "organization_id": "o",
             }))

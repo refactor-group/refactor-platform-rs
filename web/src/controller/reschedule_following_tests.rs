@@ -189,7 +189,7 @@ async fn m3_05_a_reschedule_with_a_coachee_no_longer_in_the_organization_is_a_40
     .await;
 
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert_eq!(body["details"]["reason"], "coachee_not_a_member");
+    assert_eq!(body["details"]["reason"], "participant_not_a_member");
     assert_eq!(body["details"]["user_id"], json!(f.coachee.id));
     assert_eq!(body["details"]["organization_id"], json!(f.organization.id));
 }

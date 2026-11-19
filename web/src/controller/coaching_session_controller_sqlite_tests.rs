@@ -22,8 +22,9 @@ use domain::Id;
 use serde_json::{json, Value};
 
 use crate::test_utils::sqlite::{
-    assert_coachee_not_a_member, assert_removed_coach_resend_refused, assert_resend_mails_both,
-    assert_signed_out_refused, created_id, ids, TestApp, NON_PARTICIPANTS,
+    assert_removed_coach_resend_refused, assert_removed_coachee_not_a_member,
+    assert_resend_mails_both, assert_signed_out_refused, created_id, ids, TestApp,
+    NON_PARTICIPANTS,
 };
 
 /// S1's invite resend path.
@@ -77,7 +78,7 @@ async fn assert_create_refused(
             .await;
         assert_eq!(reply.status, expected, "{caller:?}");
         if expected == StatusCode::CONFLICT {
-            assert_coachee_not_a_member(&app, &reply);
+            assert_removed_coachee_not_a_member(&app, &reply);
         }
         assert_eq!(
             relationship_sessions(app.db(), relationship).await,
@@ -163,7 +164,7 @@ async fn assert_resend_refused(
             .await;
         assert_eq!(reply.status, expected, "{caller:?}");
         if expected == StatusCode::CONFLICT {
-            assert_coachee_not_a_member(&app, &reply);
+            assert_removed_coachee_not_a_member(&app, &reply);
         }
         assert_eq!(
             session_ical_sequence(app.db(), session).await,
@@ -736,7 +737,7 @@ async fn moving_a_session_whose_coachee_left_is_refused() {
             .await;
 
         assert_eq!(reply.status, StatusCode::CONFLICT);
-        assert_eq!(reply.body["details"]["reason"], "coachee_not_a_member");
+        assert_eq!(reply.body["details"]["reason"], "participant_not_a_member");
         assert_eq!(session_schedule(app.db(), s3).await, before);
     })
     .await;
@@ -1010,6 +1011,11 @@ async fn a_colleague_cannot_schedule_with_a_colleague_who_left() {
                 .await;
 
             assert_eq!(reply.status, StatusCode::CONFLICT, "{removed:?}");
+            assert_eq!(
+                reply.body["message"],
+                "Your colleague is no longer a member of this organization. Re-add them to the organization first.",
+                "{removed:?}"
+            );
             let details = &reply.body["details"];
             assert_eq!(details["reason"], "participant_not_a_member", "{removed:?}");
             assert_eq!(details["user_id"], removed_id.to_string(), "{removed:?}");

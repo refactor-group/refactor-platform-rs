@@ -29,7 +29,7 @@ async fn batch_actions(
     );
     let reply = app.send(caller, Method::GET, &path, None).await;
     let by_relationship = match reply.status {
-        StatusCode::OK => ids_by_key(&reply.body["data"]["coachee_actions"]),
+        StatusCode::OK => ids_by_key(&reply.body["data"]["actions_by_relationship"]),
         _ => BTreeMap::new(),
     };
     (reply.status, by_relationship)
@@ -58,6 +58,26 @@ async fn a_coach_lists_actions_per_relationship() {
             batch_actions(&mut app, Caller::Coach, "").await,
             (StatusCode::OK, expected)
         );
+    })
+    .await;
+}
+
+/// ACT-01
+#[tokio::test]
+async fn the_batch_list_is_keyed_actions_by_relationship() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let path = format!(
+            "/organizations/{}/coaching_relationships/actions",
+            app.fixture.o1
+        );
+
+        let reply = app.send(Caller::Coach, Method::GET, &path, None).await;
+
+        let data = &reply.body["data"];
+        assert_eq!(reply.status, StatusCode::OK);
+        assert!(data["actions_by_relationship"].is_object(), "{data}");
+        assert!(data.get("coachee_actions").is_none(), "{data}");
     })
     .await;
 }

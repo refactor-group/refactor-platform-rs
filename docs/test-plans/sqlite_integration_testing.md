@@ -218,9 +218,9 @@ extractor cannot break one.
   send records nothing (`domain/src/coaching_session_series_sqlite_tests.rs`). Accepting a
   suggested action assigned to a removed coachee is refused
   (`domain/src/transcript_suggestion/review_sqlite_tests.rs`). The organization
-  relationship list reports `coach_is_member` and `coachee_is_member` per participant,
-  including to an org admin when the coach was removed
-  (`domain/src/coaching_relationship_membership_sqlite_tests.rs`). Those fields agree with the
+  relationship list reports `participants[].is_member` for each participant, including to
+  an org admin when the coach was removed
+  (`domain/src/coaching_relationship_membership_sqlite_tests.rs`). Those values agree with the
   notify filter for a member, a removed user, a user with a role only in another
   organization, a global super admin and an org admin, and a session read with
   `include=relationship` marks a removed coachee

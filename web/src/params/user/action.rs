@@ -15,7 +15,7 @@ pub(crate) enum Scope {
     /// Actions assigned to this user
     #[serde(rename = "assigned")]
     Assigned,
-    /// Actions from coaching sessions where user is coach or coachee (default)
+    /// Actions from sessions where the user is a participant (default)
     #[serde(rename = "sessions")]
     #[default]
     Sessions,
@@ -57,7 +57,7 @@ pub(crate) enum SortField {
 ///
 /// This unified endpoint supports multiple query modes via the `scope` parameter:
 /// - `scope=assigned`: Actions where the user is an assignee
-/// - `scope=sessions`: Actions from coaching sessions where user is coach or coachee (default)
+/// - `scope=sessions`: Actions from sessions where the user is a participant (default)
 ///
 /// Additional filters can be combined with the scope.
 #[derive(Debug, Deserialize, IntoParams)]

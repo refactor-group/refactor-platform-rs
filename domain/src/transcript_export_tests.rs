@@ -569,12 +569,18 @@ fn three_speaker_labeled() -> Labeled {
 
 #[test]
 fn render_unfiltered_pins_the_exact_body_and_filename() {
-    let rendered = render_plain_text(date(), &three_speaker_labeled(), &[]).expect("renders");
+    let rendered = render_plain_text(
+        coaching_relationship_kind::Kind::Coaching,
+        date(),
+        &three_speaker_labeled(),
+        &[],
+    )
+    .expect("renders");
     assert_eq!(
         rendered.body,
         "Coaching session transcript\n\
          Date: 2026-09-21\n\
-         Speakers: Jim H, Caleb Bourg, Pat\n\
+         Speakers: Jim Hodapp, Caleb Bourg, Pat\n\
          \n\
          [0:00] Jim H: Good morning.\n\
          [0:04] Caleb Bourg: Morning.\n\
@@ -587,6 +593,7 @@ fn render_unfiltered_pins_the_exact_body_and_filename() {
 #[test]
 fn render_filtered_to_coach_keeps_only_coach_lines() {
     let rendered = render_plain_text(
+        coaching_relationship_kind::Kind::Coaching,
         date(),
         &three_speaker_labeled(),
         &[coaching_relationship_kind::Role::Coach],
@@ -596,7 +603,7 @@ fn render_filtered_to_coach_keeps_only_coach_lines() {
         rendered.body,
         "Coaching session transcript\n\
          Date: 2026-09-21\n\
-         Speakers: Jim H\n\
+         Speakers: Jim Hodapp\n\
          \n\
          [0:00] Jim H: Good morning.\n\
          [1:02:15] Jim H: Wrapping up.\n"
@@ -607,6 +614,7 @@ fn render_filtered_to_coach_keeps_only_coach_lines() {
 #[test]
 fn render_filtered_to_both_roles_drops_guests() {
     let rendered = render_plain_text(
+        coaching_relationship_kind::Kind::Coaching,
         date(),
         &three_speaker_labeled(),
         &[
@@ -615,7 +623,9 @@ fn render_filtered_to_both_roles_drops_guests() {
         ],
     )
     .expect("renders");
-    assert!(rendered.body.contains("Speakers: Jim H, Caleb Bourg\n"));
+    assert!(rendered
+        .body
+        .contains("Speakers: Jim Hodapp, Caleb Bourg\n"));
     assert!(!rendered.body.contains("Pat"));
     assert_eq!(
         rendered.filename,
@@ -643,12 +653,14 @@ fn coach_named(display: &str) -> Labeled {
 #[test]
 fn a_filtered_filename_names_the_selected_people() {
     let coach_only = render_plain_text(
+        coaching_relationship_kind::Kind::Coaching,
         date(),
         &three_speaker_labeled(),
         &[coaching_relationship_kind::Role::Coach],
     )
     .expect("renders");
     let coachee_only = render_plain_text(
+        coaching_relationship_kind::Kind::Coaching,
         date(),
         &three_speaker_labeled(),
         &[coaching_relationship_kind::Role::Coachee],
@@ -666,6 +678,7 @@ fn a_filtered_filename_names_the_selected_people() {
 #[test]
 fn a_filtered_filename_slugs_punctuation_and_keeps_non_ascii_letters() {
     let rendered = render_plain_text(
+        coaching_relationship_kind::Kind::Coaching,
         date(),
         &coach_named("José  O'Brien-Smith!"),
         &[coaching_relationship_kind::Role::Coach],
@@ -681,6 +694,7 @@ fn a_filtered_filename_slugs_punctuation_and_keeps_non_ascii_letters() {
 #[test]
 fn a_name_with_nothing_usable_falls_back_to_the_role() {
     let rendered = render_plain_text(
+        coaching_relationship_kind::Kind::Coaching,
         date(),
         &coach_named("🙂 !!"),
         &[coaching_relationship_kind::Role::Coach],
@@ -713,9 +727,14 @@ fn names_that_slug_alike_carry_their_role() {
     );
 
     let filename = |filter: &[coaching_relationship_kind::Role]| {
-        render_plain_text(date(), &labeled, filter)
-            .expect("renders")
-            .filename
+        render_plain_text(
+            coaching_relationship_kind::Kind::Coaching,
+            date(),
+            &labeled,
+            filter,
+        )
+        .expect("renders")
+        .filename
     };
 
     assert_eq!(
@@ -756,8 +775,13 @@ fn render_filters_by_attribution_not_by_label_text() {
         &coachee,
     );
 
-    let rendered = render_plain_text(date(), &labeled, &[coaching_relationship_kind::Role::Coach])
-        .expect("renders");
+    let rendered = render_plain_text(
+        coaching_relationship_kind::Kind::Coaching,
+        date(),
+        &labeled,
+        &[coaching_relationship_kind::Role::Coach],
+    )
+    .expect("renders");
 
     assert!(rendered.body.contains("[0:05] Jim H: Coach line.\n"));
     assert!(!rendered.body.contains("Impostor line."));
@@ -784,10 +808,79 @@ fn render_header_lists_only_speakers_with_surviving_lines() {
         &coachee,
     );
 
-    let rendered = render_plain_text(date(), &labeled, &[]).expect("renders");
+    let rendered = render_plain_text(
+        coaching_relationship_kind::Kind::Coaching,
+        date(),
+        &labeled,
+        &[],
+    )
+    .expect("renders");
 
-    assert!(rendered.body.contains("Speakers: Jim H\n"));
+    assert!(rendered.body.contains("Speakers: Jim Hodapp\n"));
     assert!(!rendered.body.contains("Pat"));
+}
+
+#[test]
+fn render_header_names_colleagues_by_full_name_and_lines_by_display_name() {
+    let first = user("Jim", "Hodapp", Some("Jim H"));
+    let second = user("Caleb", "Bourg", Some("CB"));
+    let first_p = participant(Some("typed"), None, Some((first.id, MatchSource::Account)));
+    let second_p = participant(
+        Some("typed 2"),
+        None,
+        Some((second.id, MatchSource::Account)),
+    );
+    let segments = vec![
+        spoken(Some(&first_p), "typed", "Hello.", 0),
+        spoken(Some(&second_p), "typed 2", "Hi.", 2000),
+    ];
+    let labeled = label_transcript(
+        &[first_p, second_p],
+        &segments,
+        &colleagues(&first, &second),
+        &first,
+        &second,
+    );
+
+    let rendered = render_plain_text(
+        coaching_relationship_kind::Kind::Colleague,
+        date(),
+        &labeled,
+        &[],
+    )
+    .expect("renders");
+
+    assert!(rendered
+        .body
+        .contains("Speakers: Jim Hodapp, Caleb Bourg\n"));
+    assert!(rendered.body.contains("[0:00] Jim H: Hello.\n"));
+    assert!(rendered.body.contains("[0:02] CB: Hi.\n"));
+}
+
+#[test]
+fn render_header_names_a_participant_without_names_by_email() {
+    let (coach, coachee) = (user("", " ", None), coachee());
+    let coach_p = participant(Some("typed"), None, Some((coach.id, MatchSource::Account)));
+    let segments = vec![spoken(Some(&coach_p), "typed", "Hello.", 0)];
+    let labeled = label_transcript(
+        &[coach_p],
+        &segments,
+        &relationship(&coach, &coachee),
+        &coach,
+        &coachee,
+    );
+
+    let rendered = render_plain_text(
+        coaching_relationship_kind::Kind::Coaching,
+        date(),
+        &labeled,
+        &[],
+    )
+    .expect("renders");
+
+    assert!(rendered
+        .body
+        .contains(&format!("Speakers: {}\n", coach.email)));
 }
 
 #[test]
@@ -803,7 +896,13 @@ fn render_trims_surrounding_whitespace_from_text() {
         &coachee,
     );
 
-    let rendered = render_plain_text(date(), &labeled, &[]).expect("renders");
+    let rendered = render_plain_text(
+        coaching_relationship_kind::Kind::Coaching,
+        date(),
+        &labeled,
+        &[],
+    )
+    .expect("renders");
 
     assert!(rendered.body.ends_with("[0:00] Pat: Hello there.\n"));
 }
@@ -813,7 +912,13 @@ fn render_with_no_segments_yields_header_only() {
     let (coach, coachee) = (coach(), coachee());
     let labeled = label_transcript(&[], &[], &relationship(&coach, &coachee), &coach, &coachee);
 
-    let rendered = render_plain_text(date(), &labeled, &[]).expect("renders");
+    let rendered = render_plain_text(
+        coaching_relationship_kind::Kind::Coaching,
+        date(),
+        &labeled,
+        &[],
+    )
+    .expect("renders");
 
     assert_eq!(
         rendered.body,
@@ -843,6 +948,7 @@ fn render_fails_when_a_requested_role_has_no_speaker() {
     );
 
     let err = render_plain_text(
+        coaching_relationship_kind::Kind::Coaching,
         date(),
         &labeled,
         &[
@@ -875,7 +981,13 @@ fn render_unfiltered_never_fails_without_attribution() {
         &coachee,
     );
 
-    assert!(render_plain_text(date(), &labeled, &[]).is_ok());
+    assert!(render_plain_text(
+        coaching_relationship_kind::Kind::Coaching,
+        date(),
+        &labeled,
+        &[]
+    )
+    .is_ok());
 }
 
 // ---- serde ----
@@ -898,6 +1010,7 @@ fn speaker_role_serializes_lowercase() {
 fn speaker_serializes_role_as_null_when_unattributed() {
     let json = serde_json::to_value(Speaker {
         label: "Pat".to_owned(),
+        header_name: "Pat".to_owned(),
         role: None,
     })
     .unwrap();

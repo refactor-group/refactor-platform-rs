@@ -88,11 +88,12 @@ async fn analyze<S: Suggestible>(
         coaching_relationship::find_with_coach_and_coachee(db, session.coaching_relationship_id)
             .await?;
     // The schedule owner's calendar is the one the model reads.
-    let anchor = if relationship.schedule_owner_id(session.scheduled_by_user_id) == coachee.id {
-        &coachee
-    } else {
-        &coach
-    };
+    let anchor = coaching_relationship::schedule_owner(
+        &relationship,
+        &coach,
+        &coachee,
+        session.scheduled_by_user_id,
+    );
 
     let segments = read_segments(db, &session, transcription.id).await?;
     if segments.is_empty() {

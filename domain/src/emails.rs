@@ -17,7 +17,9 @@ use crate::{
     error::{DomainErrorKind, InternalErrorKind},
     gateway::ical::{self, DescriptionParts, OpenAction},
     gateway::resend::{Client as ResendClient, SendEmailRequestBuilder},
-    goal, organization, organizations, user, users,
+    goal, organization, organizations,
+    text::capitalized,
+    user, users,
     users::Role,
     Id,
 };
@@ -321,8 +323,6 @@ async fn send_welcome_email(
         .template_id(&email_config.template_id)
         .add_variable("first_name", user.first_name.as_str())
         .add_variable("last_name", user.last_name.as_str())
-        .add_variable("coach_first_name", inviter.first_name.as_str())
-        .add_variable("coach_full_name", inviter_full_name.as_str())
         .add_variable("inviter_first_name", inviter.first_name.as_str())
         .add_variable("inviter_full_name", inviter_full_name.as_str())
         .add_variable("magic_link_url", magic_link_url.as_str())
@@ -1028,15 +1028,6 @@ impl<'a> Participants<'a> {
     }
 }
 
-/// `word` with its first letter in upper case.
-fn capitalized(word: &str) -> String {
-    let mut chars = word.chars();
-    chars
-        .next()
-        .map(|first| first.to_uppercase().chain(chars).collect())
-        .unwrap_or_default()
-}
-
 /// Sends each of `copies` (coachee, then coach), skipping anyone not in `member_ids`. A failed
 /// send is logged rather than returned, so it never costs the other participant their copy.
 async fn send_to_participants<'r, 'p, F, Fut>(
@@ -1549,7 +1540,6 @@ async fn send_session_reminder_email(
     let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
     let session_duration =
         crate::duration::Duration::from_minutes_unchecked(session.duration_minutes).to_string();
-    let other_full_name = format!("{} {}", other.first_name, other.last_name);
 
     let email_request = SendEmailRequestBuilder::new()
         .from(FROM_ADDRESS)
@@ -1559,8 +1549,6 @@ async fn send_session_reminder_email(
         )
         .template_id(&email_config.template_id)
         .add_variable("first_name", recipient.first_name.as_str())
-        .add_variable("coach_first_name", other.first_name.as_str())
-        .add_variable("coach_full_name", other_full_name.as_str())
         .add_variable("other_user_first_name", other.first_name.as_str())
         .add_variable("other_user_last_name", other.last_name.as_str())
         .add_variable("other_user_role", other_user_role.as_str())

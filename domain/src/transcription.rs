@@ -30,6 +30,7 @@ use service::config::Config;
 use tokio::time::timeout;
 use utoipa::ToSchema;
 
+use crate::coaching_relationship::schedule_owner;
 use crate::coaching_relationship_kind;
 use crate::coaching_relationships;
 use crate::coaching_sessions;
@@ -619,14 +620,6 @@ pub async fn find_for_session(
         })
 }
 
-/// The coach and coachee of the session's coaching relationship, in that order.
-async fn load_participants(
-    db: &DatabaseConnection,
-    session: &coaching_sessions::Model,
-) -> Result<(users::Model, users::Model), Error> {
-    Ok(coaching_relationship::find_coach_and_coachee(db, session.coaching_relationship_id).await?)
-}
-
 /// Renders the session's transcript as plain text, optionally limited to given roles.
 ///
 /// Refuses a transcription that has not completed, since its segments are still partial.
@@ -650,9 +643,14 @@ pub async fn export_plain_text(
 
     let segments =
         segment_api::find_by_transcription_and_session(db, transcription_id, session.id).await?;
-    let (labeled, coach) = label(db, session, transcription_id, &segments).await?;
+    let (labeled, relationship, owner) = label(db, session, transcription_id, &segments).await?;
 
-    transcript_export::render_plain_text(local_session_date(session, &coach), &labeled, filter)
+    transcript_export::render_plain_text(
+        relationship.kind,
+        local_session_date(session, &owner),
+        &labeled,
+        filter,
+    )
 }
 
 /// The session's calendar date where `person` is.
@@ -679,7 +677,7 @@ pub async fn read_with_speakers(
     let transcription = find_for_session(db, transcription_id, session.id).await?;
     let segments =
         segment_api::find_by_transcription_and_session(db, transcription_id, session.id).await?;
-    let (labeled, _) = label(db, session, transcription_id, &segments).await?;
+    let (labeled, ..) = label(db, session, transcription_id, &segments).await?;
 
     Ok(WithSpeakers {
         transcription,
@@ -729,21 +727,22 @@ pub async fn read_segments(
         return Ok(vec![]);
     }
 
-    let (labeled, _) = label(db, session, transcription_id, &segments).await?;
+    let (labeled, ..) = label(db, session, transcription_id, &segments).await?;
     Ok(labeled.segments)
 }
 
-/// Labels the segments from the transcription's stored participants; also returns the coach.
+/// Labels the segments from the transcription's stored participants; also returns the
+/// relationship and the session's schedule owner.
 async fn label(
     db: &DatabaseConnection,
     session: &coaching_sessions::Model,
     transcription_id: Id,
     segments: &[Segment],
-) -> Result<(Labeled, users::Model), Error> {
+) -> Result<(Labeled, coaching_relationships::Model, users::Model), Error> {
     let participants = participant_api::find_by_transcription(db, transcription_id).await?;
-    let (coach, coachee) = load_participants(db, session).await?;
-    let relationship =
-        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    let (relationship, coach, coachee) =
+        coaching_relationship::find_with_coach_and_coachee(db, session.coaching_relationship_id)
+            .await?;
     let labeled = transcript_export::label_transcript(
         &participants,
         segments,
@@ -751,8 +750,15 @@ async fn label(
         &coach,
         &coachee,
     );
+    let owner = schedule_owner(
+        &relationship,
+        &coach,
+        &coachee,
+        session.scheduled_by_user_id,
+    )
+    .clone();
 
-    Ok((labeled, coach))
+    Ok((labeled, relationship, owner))
 }
 
 #[cfg(test)]

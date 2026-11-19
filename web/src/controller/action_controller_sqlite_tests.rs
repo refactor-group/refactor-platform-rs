@@ -423,6 +423,32 @@ async fn assignees_outside_the_relationship_are_refused() {
     .await;
 }
 
+/// ACT-36
+#[tokio::test]
+async fn an_assignee_outside_the_relationship_is_told_to_name_its_participants() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let s1 = app.fixture.s1;
+        let member = app.fixture.user(Caller::Member);
+
+        let reply = app
+            .send(
+                Caller::Coach,
+                Method::POST,
+                "/actions",
+                Some(action(s1, &[member])),
+            )
+            .await;
+
+        assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            reply.body["message"],
+            "assignee_ids must name participants in the action's relationship."
+        );
+    })
+    .await;
+}
+
 /// ACT-37
 #[tokio::test]
 async fn assigning_a_coachee_who_left_is_refused() {

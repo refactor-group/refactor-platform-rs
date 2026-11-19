@@ -589,8 +589,8 @@ async fn reminder_to(
             "to": [format!("\"{} Smith\" <{}>", recipient.first_name, recipient.email)],
             "template": { "variables": {
                 "first_name": recipient.first_name,
-                "coach_first_name": other.first_name,
-                "coach_full_name": format!("{} Smith", other.first_name),
+                "other_user_first_name": other.first_name,
+                "other_user_last_name": "Smith",
             }},
         })))
         .with_status(200)
@@ -684,8 +684,7 @@ async fn a_coach_is_not_reminded_of_a_coaching_session() {
     to_coachee.assert_async().await;
 }
 
-/// A Resend mock expecting one reminder to `recipient` that names `other` as `role`, under
-/// both the `other_user_*` names and the old `coach_*` ones.
+/// A Resend mock expecting one reminder to `recipient` that names `other` as `role`.
 async fn reminder_naming(
     server: &mut mockito::ServerGuard,
     recipient: &users::Model,
@@ -697,8 +696,6 @@ async fn reminder_naming(
         .match_body(mockito::Matcher::PartialJson(serde_json::json!({
             "to": [format!("\"{} Smith\" <{}>", recipient.first_name, recipient.email)],
             "template": { "variables": {
-                "coach_first_name": other.first_name,
-                "coach_full_name": format!("{} Smith", other.first_name),
                 "other_user_first_name": other.first_name,
                 "other_user_last_name": "Smith",
                 "other_user_role": role,

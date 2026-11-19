@@ -50,6 +50,7 @@ pub mod organization;
 pub mod password_policy;
 pub mod password_reset;
 pub mod search;
+pub(crate) mod text;
 pub mod tiptap_metrics;
 pub mod transcript_analysis;
 pub(crate) mod transcript_attribution;
