@@ -3,6 +3,7 @@ use dashmap::DashMap;
 use log::*;
 use std::collections::HashSet;
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc::UnboundedSender;
 
 // Type alias for user IDs (web layer converts domain::Id to String)
@@ -42,6 +43,9 @@ pub struct ConnectionRegistry {
 
     /// Secondary index: fast lookup by user_id for message routing - O(1)
     user_index: DashMap<UserId, HashSet<ConnectionId>>,
+
+    /// Set by `close_all`; later registrations end at once.
+    closed: AtomicBool,
 }
 
 impl ConnectionRegistry {
@@ -49,6 +53,7 @@ impl ConnectionRegistry {
         Self {
             connections: DashMap::new(),
             user_index: DashMap::new(),
+            closed: AtomicBool::new(false),
         }
     }
 
@@ -74,6 +79,12 @@ impl ConnectionRegistry {
             .entry(user_id)
             .or_default()
             .insert(connection_id.clone());
+
+        // Checked after inserting, so either this sees the flag or close_all's
+        // clear sees the connection.
+        if self.closed.load(Ordering::SeqCst) {
+            self.unregister(&connection_id);
+        }
 
         connection_id
     }
@@ -115,8 +126,10 @@ impl ConnectionRegistry {
     }
 
     /// Drop every connection's sender, which ends each stream so its HTTP response
-    /// completes. Clients reconnect on their own.
+    /// completes. Clients reconnect on their own. Connections registered later
+    /// end at once, so a request still authenticating can't hold shutdown open.
     pub fn close_all(&self) {
+        self.closed.store(true, Ordering::SeqCst);
         self.connections.clear();
         self.user_index.clear();
     }
@@ -162,5 +175,16 @@ mod tests {
             second_rx.try_recv().unwrap_err(),
             TryRecvError::Disconnected
         );
+    }
+
+    #[test]
+    fn a_connection_registered_after_close_all_ends_at_once() {
+        let registry = ConnectionRegistry::new();
+        registry.close_all();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+
+        registry.register("coach".to_string(), sender);
+
+        assert_eq!(receiver.try_recv().unwrap_err(), TryRecvError::Disconnected);
     }
 }
