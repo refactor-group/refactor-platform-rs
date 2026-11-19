@@ -21,7 +21,7 @@ pub(crate) use entity_api::coaching_relationship::{
 pub use entity_api::coaching_relationship::{
     find_by_coach_and_organization, find_by_id, find_by_user, find_by_user_and_organization,
     find_coach_and_coachee, is_coach_of, Capabilities, CoachingRelationshipWithUserNames, Draft,
-    Membership, RoleFilterable, WithMembership,
+    Membership, Participant, RoleFilterable, WithMembership,
 };
 
 /// The relationship to create for a person joining an organization: with whom, what kind,

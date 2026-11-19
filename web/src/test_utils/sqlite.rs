@@ -350,7 +350,10 @@ pub(crate) fn assert_emails_follow_seats(fixture: &Fixture, relationships: &Valu
     assert!(!rows.is_empty(), "no relationships listed");
     for row in rows {
         assert_eq!(
-            (row["coach_email"].as_str(), row["coachee_email"].as_str()),
+            (
+                row["participants"][0]["email"].as_str(),
+                row["participants"][1]["email"].as_str()
+            ),
             (
                 email_in(row, "coach_id").as_deref(),
                 email_in(row, "coachee_id").as_deref()

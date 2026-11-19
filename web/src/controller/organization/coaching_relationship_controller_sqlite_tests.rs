@@ -225,9 +225,95 @@ async fn participants_read_their_relationship_with_names() {
             assert_eq!(reply.status, StatusCode::OK, "{caller:?}");
             assert_eq!(reply.ids(), ids([r1]), "{caller:?}");
             let data = &reply.body["data"];
-            assert_eq!(data["coach_first_name"], "Coach", "{caller:?}");
-            assert_eq!(data["coachee_first_name"], "Coachee", "{caller:?}");
+            assert_eq!(data["participants"][0]["first_name"], "Coach", "{caller:?}");
+            assert_eq!(
+                data["participants"][1]["first_name"], "Coachee",
+                "{caller:?}"
+            );
         }
+    })
+    .await;
+}
+
+/// The keys `participants` replaced.
+const SEAT_NAMED_KEYS: [&str; 8] = [
+    "coach_first_name",
+    "coach_last_name",
+    "coachee_first_name",
+    "coachee_last_name",
+    "coach_email",
+    "coachee_email",
+    "coach_is_member",
+    "coachee_is_member",
+];
+
+/// KIND-48
+#[tokio::test]
+async fn a_coaching_relationship_lists_its_coach_then_its_coachee() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let r1 = app.fixture.r1;
+        let (coach, coachee) = (
+            app.fixture.user(Caller::Coach),
+            app.fixture.user(Caller::Coachee),
+        );
+
+        let data = read_as(&mut app, Caller::Coach, r1).await;
+
+        assert_eq!(
+            data["participants"],
+            json!([
+                {
+                    "id": coach,
+                    "first_name": "Coach",
+                    "last_name": "Access",
+                    "email": Caller::Coach.email(),
+                    "role": "coach",
+                    "is_member": true,
+                },
+                {
+                    "id": coachee,
+                    "first_name": "Coachee",
+                    "last_name": "Access",
+                    "email": Caller::Coachee.email(),
+                    "role": "coachee",
+                    "is_member": true,
+                },
+            ]),
+            "{data}"
+        );
+        for key in SEAT_NAMED_KEYS {
+            assert!(data.get(key).is_none(), "{key}: {data}");
+        }
+    })
+    .await;
+}
+
+/// KIND-48
+#[tokio::test]
+async fn a_colleague_relationship_lists_both_as_colleagues_coach_seat_first() {
+    within_time_limit(async {
+        let mut app = TestApp::new().await;
+        let r1 = app.fixture.r1;
+        make_colleagues(app.db(), r1).await;
+        let (coach, coachee) = (
+            app.fixture.user(Caller::Coach),
+            app.fixture.user(Caller::Coachee),
+        );
+
+        let data = read_as(&mut app, Caller::Coachee, r1).await;
+
+        let participants = &data["participants"];
+        assert_eq!(
+            (&participants[0]["id"], &participants[0]["role"]),
+            (&json!(coach), &json!("colleague")),
+            "{data}"
+        );
+        assert_eq!(
+            (&participants[1]["id"], &participants[1]["role"]),
+            (&json!(coachee), &json!("colleague")),
+            "{data}"
+        );
     })
     .await;
 }
@@ -257,8 +343,16 @@ async fn a_relationship_read_carries_each_participants_email() {
 
         let data = read_as(&mut app, Caller::Coach, r1).await;
 
-        assert_eq!(data["coach_email"], Caller::Coach.email(), "{data}");
-        assert_eq!(data["coachee_email"], Caller::Coachee.email(), "{data}");
+        assert_eq!(
+            data["participants"][0]["email"],
+            Caller::Coach.email(),
+            "{data}"
+        );
+        assert_eq!(
+            data["participants"][1]["email"],
+            Caller::Coachee.email(),
+            "{data}"
+        );
     })
     .await;
 }
@@ -349,8 +443,19 @@ async fn a_coach_keeps_a_relationship_whose_coachee_left() {
 
         assert_eq!(reply.status, StatusCode::OK);
         assert_eq!(reply.ids(), ids([r3]));
-        assert_eq!(reply.body["data"]["coach_is_member"], true);
-        assert_eq!(reply.body["data"]["coachee_is_member"], false);
+        let participants = &reply.body["data"]["participants"];
+        assert_eq!(
+            participants[0]["id"],
+            json!(app.fixture.user(Caller::Coach)),
+            "{participants}"
+        );
+        assert_eq!(participants[0]["is_member"], true, "{participants}");
+        assert_eq!(
+            participants[1]["id"],
+            json!(app.fixture.user(Caller::Removed)),
+            "{participants}"
+        );
+        assert_eq!(participants[1]["is_member"], false, "{participants}");
     })
     .await;
 }
@@ -652,8 +757,12 @@ async fn an_admin_sees_who_is_still_a_member() {
                     .as_str()
                     .and_then(|id| id.parse().ok())
                     .expect("each relationship has an id");
-                let flag = |field: &str| relationship[field].as_bool().expect("a membership flag");
-                (id, (flag("coach_is_member"), flag("coachee_is_member")))
+                let flag = |seat: usize| {
+                    relationship["participants"][seat]["is_member"]
+                        .as_bool()
+                        .expect("a membership flag")
+                };
+                (id, (flag(0), flag(1)))
             })
             .collect();
         assert_eq!(membership, expected);
@@ -1176,8 +1285,16 @@ async fn a_confirmed_reversal_returns_each_swapped_seats_email() {
 
         assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
         let data = &reply.body["data"];
-        assert_eq!(data["coach_email"], Caller::Coachee.email(), "{data}");
-        assert_eq!(data["coachee_email"], Caller::Coach.email(), "{data}");
+        assert_eq!(
+            data["participants"][0]["email"],
+            Caller::Coachee.email(),
+            "{data}"
+        );
+        assert_eq!(
+            data["participants"][1]["email"],
+            Caller::Coach.email(),
+            "{data}"
+        );
     })
     .await;
 }

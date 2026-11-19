@@ -1,5 +1,5 @@
-//! `coach_is_member` / `coachee_is_member` on the wire: the relationship a session list
-//! includes, and the schemas that document them.
+//! Membership on the wire: `coach_is_member` / `coachee_is_member` on the relationship a
+//! session list includes, each participant's `is_member`, and the schemas that document them.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -108,24 +108,23 @@ async fn m4_05_an_included_relationship_marks_a_removed_coachee() {
 fn both_schemas_document_the_membership_fields() {
     let spec = serde_json::to_value(ApiDoc::openapi()).expect("the spec serializes");
     let schemas = &spec["components"]["schemas"];
-    for (schema, properties) in [
-        (
-            "domain.coaching_relationship.CoachingRelationshipWithUserNames",
-            &schemas["domain.coaching_relationship.CoachingRelationshipWithUserNames"]
-                ["properties"],
-        ),
-        (
-            "domain.coaching_relationship.Membership",
-            &schemas["domain.coaching_relationship.Membership"]["properties"],
-        ),
-    ] {
-        for field in ["coach_is_member", "coachee_is_member"] {
-            assert!(
-                properties[field]["description"].is_string(),
-                "{schema}.{field}: {properties}"
-            );
-        }
+    let membership = &schemas["domain.coaching_relationship.Membership"]["properties"];
+    for field in ["coach_is_member", "coachee_is_member"] {
+        assert!(
+            membership[field]["description"].is_string(),
+            "Membership.{field}: {membership}"
+        );
     }
+    assert_eq!(
+        schemas["domain.coaching_relationship.CoachingRelationshipWithUserNames"]["properties"]
+            ["participants"]["items"],
+        json!({ "$ref": "#/components/schemas/domain.coaching_relationship.Participant" })
+    );
+    let participant = &schemas["domain.coaching_relationship.Participant"]["properties"];
+    assert!(
+        participant["is_member"]["description"].is_string(),
+        "Participant.is_member: {participant}"
+    );
     assert!(
         schemas["domain.coaching_relationship.CoachingRelationshipWithUserNames"]["properties"]
             ["organization_id"]
