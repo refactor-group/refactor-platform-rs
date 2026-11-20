@@ -14,9 +14,9 @@ Old calendar event removed
 {% when CancelReason::Cancelled { by } -%}
 {% match by -%}
 {% when Actor::You -%}
-You cancelled your {{ email.parties.session_label }} with {{ email.parties.other.full_name }}. Nothing else is needed from you.
+You cancelled your {{ email.parties.session_label }} with {{ email.parties.other.full_name }}.
 {% when Actor::Other -%}
-{{ email.parties.other.full_name }} cancelled your {{ email.parties.session_label }}. Nothing else is needed from you.
+{{ email.parties.other.full_name }} cancelled your {{ email.parties.session_label }}.
 {% endmatch %}
 When: {{ email.when.date }} at {{ email.when.time }}
 With: {{ email.parties.other.full_name }}

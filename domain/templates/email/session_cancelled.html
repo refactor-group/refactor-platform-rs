@@ -25,9 +25,9 @@ Old calendar event removed
 {% call m::notice() -%}
 {% match by -%}
 {% when Actor::You -%}
-You cancelled your {{ email.parties.session_label }} with <strong>{{ email.parties.other.full_name }}</strong>. Nothing else is needed from you.
+You cancelled your {{ email.parties.session_label }} with <strong>{{ email.parties.other.full_name }}</strong>.
 {%- when Actor::Other -%}
-<strong>{{ email.parties.other.full_name }}</strong> cancelled your {{ email.parties.session_label }}. Nothing else is needed from you.
+<strong>{{ email.parties.other.full_name }}</strong> cancelled your {{ email.parties.session_label }}.
 {%- endmatch %}
 {%- endcall %}
 {% call m::details() -%}
