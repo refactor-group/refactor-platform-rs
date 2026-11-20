@@ -16,6 +16,10 @@ use crate::gateway::ical::Method;
 /// Path appended to the configured base URL when sending emails.
 const SEND_EMAIL_PATH: &str = "/emails";
 
+// Sends run while a user waits, so a hung Resend fails the send instead of the request.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Template ID with validation
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct TemplateId(String);
@@ -419,6 +423,8 @@ async fn build_client(config: &Config) -> Result<reqwest::Client, Error> {
     Ok(reqwest::Client::builder()
         .use_rustls_tls()
         .default_headers(headers)
+        .timeout(REQUEST_TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
         .build()?)
 }
 

@@ -3,6 +3,8 @@
 //! This module provides an HTTP client for interacting with the Zoom API
 //! to create meetings.
 
+use std::time::Duration;
+
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 use chrono::NaiveDateTime;
 use log::*;
@@ -65,6 +67,8 @@ impl Client {
 
         let client = reqwest::Client::builder()
             .use_rustls_tls()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
             .default_headers(headers)
             .build()?;
 

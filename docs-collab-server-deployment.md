@@ -71,7 +71,7 @@ Phase 1) is cleanest. NOTE: `docs-collab-server` is in `members` but EXCLUDED fr
   - Shared CA. The collab container mounts the app's `POSTGRES_SSL_ROOT_CERT`; no
     separate cert secret exists.
   - Shared connection ceiling. `max_connections` is per-CLUSTER, so this does NOT
-    relieve the 22-connection limit; the app and collab pools must be budgeted
+    relieve the cluster's connection limit; the app and collab pools must be budgeted
     together (see the pool sizing note below).
   Rejected: a dedicated managed instance (relieves the ceiling and the failure domain,
   but adds cost and a second cluster to operate for ~250 low-traffic documents).

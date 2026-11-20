@@ -14,7 +14,7 @@ use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind}
 use crate::gateway::auth::{Authenticator, SecretAuth};
 
 // Admin endpoints need bounded budgets so a dead upstream can't hold an
-// Axum worker. `tiptap.rs` intentionally sets none; this gateway differs.
+// Axum worker. Longer than `tiptap.rs` because listing pages documents.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
