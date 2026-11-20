@@ -76,7 +76,9 @@ panel on the brand tint, then a quiet **Before** panel with only what changed; i
 text uses `Now:` and `Before:` headings. Help and
 footer sit below the card in quieter greys around a hairline. The colors are the
 frontend's `globals.css` tokens converted to hex, light and dark, and appear only in
-`base.html`'s stylesheet; templates and macros use its classes.
+`base.html`'s stylesheet; templates and macros use its classes. The token reference is
+the frontend's `docs/design-system.md` (refactor-platform-fe); a token change there
+should be mirrored in `base.html`.
 
 ## How a sender moves
 
