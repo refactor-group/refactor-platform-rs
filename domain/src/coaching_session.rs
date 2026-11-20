@@ -171,7 +171,12 @@ pub(crate) async fn create(
     .await?;
 
     let tiptap = TiptapDocument::new(config).await?;
-    tiptap.create(&document_name).await?;
+    if let Err(e) = tiptap.create(&document_name).await {
+        // A create that timed out may still have made the document, and a retry names a
+        // new one, so nothing else would ever remove it.
+        discard_document(&tiptap, &document_name, "a failed create").await;
+        return Err(e);
+    }
 
     // Wrap all DB writes in a transaction so the session and its goal links
     // succeed or fail atomically. If the transaction fails, compensate by
@@ -219,11 +224,16 @@ pub(crate) async fn create(
             Ok(session)
         }
         Err(e) => {
-            if let Err(cleanup_err) = tiptap.delete(&document_name).await {
-                warn!("Failed to clean up Tiptap document '{document_name}' after DB error: {cleanup_err}");
-            }
+            discard_document(&tiptap, &document_name, "a DB error").await;
             Err(e)
         }
+    }
+}
+
+/// Best-effort delete of a document the session it was made for will never use.
+async fn discard_document(tiptap: &TiptapDocument, document_name: &str, after: &str) {
+    if let Err(err) = tiptap.delete(document_name).await {
+        warn!("Failed to clean up Tiptap document '{document_name}' after {after}: {err}");
     }
 }
 

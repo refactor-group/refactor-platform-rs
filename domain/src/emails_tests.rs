@@ -4701,6 +4701,15 @@ async fn test_send_session_reminder_email_variables() {
 
     let mock = server
         .mock("POST", "/emails")
+        // The key reaches Resend, so a retry of this reminder cannot send it twice.
+        .match_header(
+            "idempotency-key",
+            format!(
+                "session-reminder/{}/{}/20260304T150000",
+                session.id, coachee.id
+            )
+            .as_str(),
+        )
         .match_body(expect_resend_body(serde_json::json!({
             "from": FROM_ADDRESS,
             "to": ["\"Jane Doe\" <jane@example.com>"],
@@ -5896,4 +5905,29 @@ async fn m7_04_a_series_edit_cancels_an_orphan_for_a_removed_coachee_without_the
         .iter()
         .flat_map(|mail| &mail.ics)
         .any(|ics| ics.contains(&orphan_uid)));
+}
+
+#[test]
+fn reminder_idempotency_key_changes_when_the_session_moves() {
+    let session = create_test_session();
+    let recipient_id = Id::new_v4();
+    let moved = coaching_sessions::Model {
+        date: session.date + chrono::Duration::hours(1),
+        ..session.clone()
+    };
+
+    assert_ne!(
+        reminder_idempotency_key(&session, recipient_id),
+        reminder_idempotency_key(&moved, recipient_id)
+    );
+}
+
+#[test]
+fn reminder_idempotency_key_differs_per_recipient() {
+    let session = create_test_session();
+
+    assert_ne!(
+        reminder_idempotency_key(&session, Id::new_v4()),
+        reminder_idempotency_key(&session, Id::new_v4())
+    );
 }

@@ -1,8 +1,14 @@
+use std::time::Duration;
+
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 use crate::gateway::auth::{Authenticator, SecretAuth};
 use log::*;
 use serde_json::json;
 use service::config::Config;
+
+// Calls run while a user waits, so a hung collab server fails the call instead of the request.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// HTTP client for making requests to Tiptap. Per-document operations
 /// authenticate with the raw shared secret (`SecretAuth`).
@@ -19,6 +25,8 @@ pub(crate) async fn client(config: &Config) -> Result<reqwest::Client, Error> {
     Ok(reqwest::Client::builder()
         .use_rustls_tls()
         .default_headers(headers)
+        .timeout(REQUEST_TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
         .build()?)
 }
 

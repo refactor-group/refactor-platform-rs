@@ -3,10 +3,16 @@
 //! This module provides an HTTP client for interacting with the Zoom API
 //! to create meetings.
 
+use std::time::Duration;
+
 use crate::error::{DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 use chrono::NaiveDateTime;
 use log::*;
 use serde::{Deserialize, Serialize};
+
+// Matches the Google Meet client: meeting creation runs while a user waits.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Zoom meeting configuration
 #[derive(Debug, Serialize)]
@@ -65,6 +71,8 @@ impl Client {
 
         let client = reqwest::Client::builder()
             .use_rustls_tls()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
             .default_headers(headers)
             .build()?;
 
