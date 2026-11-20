@@ -2,12 +2,12 @@
 //! SQL engine.
 
 use chrono::{NaiveDate, NaiveDateTime, TimeDelta};
-use entity_api::email_outbox::{self, Claimed, Model, New, State};
-use sea_orm::{DatabaseConnection, EntityTrait, QueryOrder, TransactionTrait};
+use entity_api::email_outbox::{self, Claimed, New, State};
+use sea_orm::{DatabaseConnection, TransactionTrait};
 use serde_json::json;
 
 use super::*;
-use crate::test_utils::email_outbox::outgoing_email;
+use crate::test_utils::email_outbox::{only_row, outgoing_email, rows};
 use crate::test_utils::sqlite::{database, seed_user, within_time_limit};
 
 const LEASE: TimeDelta = TimeDelta::minutes(5);
@@ -61,21 +61,6 @@ async fn claim(db: &DatabaseConnection, now: NaiveDateTime, limit: u64) -> Vec<C
     email_outbox::claim(db, now, LEASE, limit, Id::new_v4())
         .await
         .expect("the claim runs")
-}
-
-async fn rows(db: &DatabaseConnection) -> Vec<Model> {
-    entity::email_outbox::Entity::find()
-        .order_by_asc(entity::email_outbox::Column::CreatedAt)
-        .order_by_asc(entity::email_outbox::Column::Position)
-        .all(db)
-        .await
-        .expect("the rows read")
-}
-
-async fn only_row(db: &DatabaseConnection) -> Model {
-    let mut all = rows(db).await;
-    assert_eq!(all.len(), 1, "{all:?}");
-    all.remove(0)
 }
 
 fn envelope(recipient_id: Id, kind: &'static str) -> Envelope {

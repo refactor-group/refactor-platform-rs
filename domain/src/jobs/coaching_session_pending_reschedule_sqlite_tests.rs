@@ -1,7 +1,6 @@
 //! What the pending reschedule sweep sends and leaves behind, against a real SQL engine.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeDelta, Timelike, Utc};
 use mockito::{Matcher, Server, ServerGuard};
@@ -9,6 +8,7 @@ use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, IntoActiveModel
 use serde_json::json;
 
 use super::*;
+use crate::test_utils::jobs::job_context_with;
 use crate::test_utils::sqlite::fixture::{make_colleagues, seed_session_starting_in};
 use crate::test_utils::sqlite::read_back::pending_invites;
 use crate::test_utils::sqlite::{
@@ -28,13 +28,6 @@ fn sending(server: &ServerGuard) -> Config {
         "--frontend-base-url=https://app.example.com",
         &format!("--resend-base-url={}", server.url()),
     ])
-}
-
-fn context(db: DatabaseConnection, config: Config) -> Context {
-    Context {
-        db: Arc::new(db),
-        config,
-    }
 }
 
 async fn session(db: &DatabaseConnection, id: Id) -> coaching_sessions::Model {
@@ -140,7 +133,7 @@ async fn a_due_change_is_emailed_and_settled() {
         let db = database().await;
         let (id, _) = moved_session(&db, settled()).await;
         let before = coachee_notice(&db, id).await;
-        let ctx = context(db, sending(&server));
+        let ctx = job_context_with(db, sending(&server));
 
         let outcome = Sweep::from_config(&ctx.config)
             .run(&ctx)
@@ -170,7 +163,7 @@ async fn a_coachee_no_longer_in_the_organization_is_not_emailed() {
         let (id, start, _) = upcoming_session_without_members(&db).await;
         move_and_record(&db, id, start, settled()).await;
         let before = coachee_notice(&db, id).await;
-        let ctx = context(db, sending(&server));
+        let ctx = job_context_with(db, sending(&server));
 
         let outcome = Sweep::from_config(&ctx.config)
             .run(&ctx)
@@ -207,7 +200,7 @@ async fn the_email_says_it_moved_from_the_last_announced_start() {
             .expect_at_least(1)
             .create_async()
             .await;
-        let ctx = context(db, sending(&server));
+        let ctx = job_context_with(db, sending(&server));
 
         Sweep::from_config(&ctx.config)
             .run(&ctx)
@@ -233,7 +226,7 @@ async fn a_failed_send_is_retried_then_given_up() {
         let db = database().await;
         let (id, _) = moved_session(&db, settled()).await;
         let before = coachee_notice(&db, id).await;
-        let ctx = context(db, sending(&server));
+        let ctx = job_context_with(db, sending(&server));
         let sweep = Sweep::from_config(&ctx.config);
 
         let outcome = sweep.run(&ctx).await.expect("the tick runs");
@@ -266,7 +259,7 @@ async fn nothing_to_tell_settles_without_an_email() {
         let db = database().await;
         let (id, announced) = moved_session(&db, settled()).await;
         reschedule(&db, id, announced).await;
-        let ctx = context(db, sending(&server));
+        let ctx = job_context_with(db, sending(&server));
 
         Sweep::from_config(&ctx.config)
             .run(&ctx)
@@ -285,7 +278,7 @@ async fn drain_mode_drops_due_changes_without_sending() {
         let db = database().await;
         let (id, _) = moved_session(&db, settled()).await;
         let before = coachee_notice(&db, id).await;
-        let ctx = context(db, Config::from_args(["test"]));
+        let ctx = job_context_with(db, Config::from_args(["test"]));
         let sweep = Sweep::from_config(&ctx.config);
         assert_eq!(sweep.mode, Mode::Drain);
 
@@ -304,7 +297,7 @@ async fn a_change_that_is_not_due_is_left_alone() {
         let db = database().await;
         let (id, _) = moved_session(&db, Utc::now().naive_utc()).await;
         let before = pending(&db, id).await.expect("the change is pending");
-        let ctx = context(db, sending(&server));
+        let ctx = job_context_with(db, sending(&server));
 
         let outcome = Sweep::from_config(&ctx.config)
             .run(&ctx)
@@ -421,7 +414,7 @@ async fn a_change_told_to_both_restamps_each_participants_notice() {
         let db = database().await;
         let (id, coach_id, coachee_id) = moved_session_between_two(&db, Members::Both).await;
         let before = notices(&db, id).await;
-        let ctx = context(db, sending(&server));
+        let ctx = job_context_with(db, sending(&server));
 
         Sweep::from_config(&ctx.config)
             .run(&ctx)
@@ -443,7 +436,7 @@ async fn a_coach_no_longer_in_the_organization_keeps_their_notice() {
         let db = database().await;
         let (id, coach_id, coachee_id) = moved_session_between_two(&db, Members::CoacheeOnly).await;
         let before = notices(&db, id).await;
-        let ctx = context(db, sending(&server));
+        let ctx = job_context_with(db, sending(&server));
 
         Sweep::from_config(&ctx.config)
             .run(&ctx)
@@ -465,7 +458,7 @@ async fn a_coachee_no_longer_in_the_organization_leaves_only_the_coach_told() {
         let db = database().await;
         let (id, coach_id, coachee_id) = moved_session_between_two(&db, Members::CoachOnly).await;
         let before = notices(&db, id).await;
-        let ctx = context(db, sending(&server));
+        let ctx = job_context_with(db, sending(&server));
 
         Sweep::from_config(&ctx.config)
             .run(&ctx)
@@ -487,7 +480,7 @@ async fn a_change_told_to_nobody_restamps_no_notice() {
         let db = database().await;
         let (id, _, _) = moved_session_between_two(&db, Members::Both).await;
         let before = notices(&db, id).await;
-        let ctx = context(db, sending(&server));
+        let ctx = job_context_with(db, sending(&server));
 
         Sweep::from_config(&ctx.config)
             .run(&ctx)
@@ -533,7 +526,7 @@ async fn sweep_colleague_change_failing_for(coach_fails: bool) -> bool {
         .with_body(r#"{"id":"email_1"}"#)
         .create_async()
         .await;
-    let ctx = context(db, sending(&server));
+    let ctx = job_context_with(db, sending(&server));
 
     Sweep::from_config(&ctx.config)
         .run(&ctx)
@@ -653,7 +646,7 @@ async fn many_owed_invites_drain_over_several_ticks() {
             .await;
         let db = database().await;
         owing(&db, 6, true).await;
-        let ctx = context(db, inviting(&server));
+        let ctx = job_context_with(db, inviting(&server));
         let sweep = Sweep::from_config(&ctx.config);
 
         sweep.run(&ctx).await.expect("the tick runs");
@@ -682,7 +675,7 @@ async fn a_failed_invite_hands_the_rest_of_the_tick_back_uncharged() {
             .await;
         let db = database().await;
         owing(&db, 3, false).await;
-        let ctx = context(db, inviting(&server));
+        let ctx = job_context_with(db, inviting(&server));
 
         Sweep::from_config(&ctx.config)
             .run(&ctx)

@@ -11,6 +11,7 @@ use serde_json::json;
 
 use super::*;
 use crate::events::{DomainEvent, EventHandler};
+use crate::test_utils::jobs::job_context;
 use crate::test_utils::sqlite::{database, seed_transcription, within_time_limit};
 use crate::transcript_analysis::{create_pending, Status};
 use crate::Id;
@@ -115,13 +116,6 @@ fn recorded(provider: Arc<dyn analysis::Provider>) -> (Sweep, Arc<Recorder>) {
     (sweep, recorder)
 }
 
-fn context(db: DatabaseConnection) -> Context {
-    Context {
-        db: Arc::new(db),
-        config: Config::from_args(["test"]),
-    }
-}
-
 /// A pending analysis for a fresh transcription with one segment, at `attempts` so far.
 async fn seed_pending(db: &DatabaseConnection, attempts: i16) -> (Id, Id) {
     let seeded = seed_transcription(db, 1).await;
@@ -160,7 +154,7 @@ async fn an_authentication_error_fails_the_analysis_for_good() {
     within_time_limit(async {
         let db = database().await;
         let (id, _) = seed_pending(&db, 0).await;
-        let ctx = context(db);
+        let ctx = job_context(db);
 
         sweep(Some(authentication))
             .run(&ctx)
@@ -179,7 +173,7 @@ async fn a_network_error_on_the_first_attempt_is_released_for_retry() {
     within_time_limit(async {
         let db = database().await;
         let (id, _) = seed_pending(&db, 0).await;
-        let ctx = context(db);
+        let ctx = job_context(db);
 
         sweep(Some(network)).run(&ctx).await.expect("the tick runs");
 
@@ -202,7 +196,7 @@ async fn a_network_error_on_the_last_attempt_fails_the_analysis() {
     within_time_limit(async {
         let db = database().await;
         let (id, _) = seed_pending(&db, 2).await;
-        let ctx = context(db);
+        let ctx = job_context(db);
 
         sweep(Some(network)).run(&ctx).await.expect("the tick runs");
 
@@ -230,7 +224,7 @@ async fn a_failing_analysis_does_not_stop_the_next_one() {
         db.execute_unprepared("PRAGMA foreign_keys = ON")
             .await
             .expect("foreign keys are restored");
-        let ctx = context(db);
+        let ctx = job_context(db);
 
         let outcome = sweep(None).run(&ctx).await.expect("the tick runs");
 
@@ -250,7 +244,7 @@ async fn a_transient_database_error_on_the_first_attempt_is_released_for_retry()
         db.execute_unprepared("DROP TABLE refactor_platform.actions")
             .await
             .expect("the actions table is dropped");
-        let ctx = context(db);
+        let ctx = job_context(db);
 
         sweep(None).run(&ctx).await.expect("the tick runs");
 
@@ -268,7 +262,7 @@ async fn a_run_with_no_suggestions_announces_once() {
     within_time_limit(async {
         let db = database().await;
         let (id, session_id) = seed_pending(&db, 0).await;
-        let ctx = context(db);
+        let ctx = job_context(db);
         let (sweep, recorder) = recorded(Arc::new(FakeModel { fail: None }));
 
         sweep.run(&ctx).await.expect("the tick runs");
@@ -284,7 +278,7 @@ async fn a_run_that_gives_up_announces_once() {
     within_time_limit(async {
         let db = database().await;
         let (id, session_id) = seed_pending(&db, 2).await;
-        let ctx = context(db);
+        let ctx = job_context(db);
         let (sweep, recorder) = recorded(Arc::new(FakeModel {
             fail: Some(network),
         }));
@@ -302,7 +296,7 @@ async fn a_run_released_for_retry_announces_nothing() {
     within_time_limit(async {
         let db = database().await;
         let (id, session_id) = seed_pending(&db, 0).await;
-        let ctx = context(db);
+        let ctx = job_context(db);
         let (sweep, recorder) = recorded(Arc::new(FakeModel {
             fail: Some(network),
         }));
@@ -349,7 +343,7 @@ async fn a_late_failure_never_undoes_another_workers_completion() {
         // First attempt (released on failure) and last attempt (failed on failure).
         for (seeded, retaken_attempts) in [(0, 2), (2, 3)] {
             let (id, session_id) = seed_pending(&db, seeded).await;
-            let ctx = context(db.clone());
+            let ctx = job_context(db.clone());
             let (sweep, recorder) = recorded(Arc::new(RetakenThenFails {
                 db: ctx.db.clone(),
                 id,
@@ -401,7 +395,7 @@ async fn each_claim_is_stamped_when_it_is_made_not_when_the_tick_began() {
         let db = database().await;
         let (first, _) = seed_pending(&db, 0).await;
         let (second, _) = seed_pending(&db, 0).await;
-        let ctx = context(db);
+        let ctx = job_context(db);
         let calls = Arc::new(RecordsCalls::default());
         let (sweep, _) = recorded(calls.clone());
 
@@ -435,7 +429,7 @@ async fn an_analysis_abandoned_on_its_last_attempt_is_failed_and_announced() {
         .update(&db)
         .await
         .expect("the abandoned claim is seeded");
-        let ctx = context(db);
+        let ctx = job_context(db);
         let (sweep, recorder) = recorded(Arc::new(FakeModel { fail: None }));
 
         sweep.run(&ctx).await.expect("the tick runs");
@@ -453,7 +447,7 @@ async fn a_run_that_stores_suggestions_announces_once() {
     within_time_limit(async {
         let db = database().await;
         let (id, session_id) = seed_pending(&db, 0).await;
-        let ctx = context(db);
+        let ctx = job_context(db);
         let (sweep, recorder) = recorded(Arc::new(OneSuggestion));
 
         sweep.run(&ctx).await.expect("the tick runs");

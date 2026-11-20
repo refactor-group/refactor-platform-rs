@@ -94,11 +94,15 @@ impl Sweep {
                 error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
             }),
             (Err(e), true) => Err(e),
-            (built, false) => {
-                if let Err(e) = built {
-                    warn!("[email-outbox] the email provider failed to build: {e:?}");
-                }
+            (Ok(None), false) => {
                 warn!("[email-outbox] no email provider configured; outbox emails will be dropped unsent");
+                Ok(Self::draining(policy))
+            }
+            (Err(e), false) => {
+                warn!(
+                    "[email-outbox] the email provider failed to build, so outbox emails will be \
+                     dropped unsent: {e:?}"
+                );
                 Ok(Self::draining(policy))
             }
         }

@@ -5,12 +5,13 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{NaiveDateTime, TimeDelta, Utc};
 use entity_api::email_outbox::{Model, New, State};
-use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, IntoActiveModel, Set};
+use sea_orm::{ActiveModelTrait, IntoActiveModel, Set};
 use serde_json::{json, Value};
 use service::config::Config;
 
 use super::*;
-use crate::test_utils::email_outbox::outgoing_email;
+use crate::test_utils::email_outbox::{only_row, outgoing_email, rows};
+use crate::test_utils::jobs::job_context;
 use crate::test_utils::sqlite::{database, seed_user, within_time_limit};
 
 /// A mailer that answers from a script and records every delivery.
@@ -45,13 +46,6 @@ impl Mailer for Scripted {
             .expect("the script locks")
             .pop_front()
             .expect("a scripted answer is left")
-    }
-}
-
-fn context(db: DatabaseConnection) -> Context {
-    Context {
-        db: Arc::new(db),
-        config: Config::from_args(["test"]),
     }
 }
 
@@ -99,19 +93,6 @@ async fn tick(sweep: &Sweep, ctx: &Context) -> (u64, u64) {
     (outcome.processed, outcome.attempted)
 }
 
-async fn rows(ctx: &Context) -> Vec<Model> {
-    entity::email_outbox::Entity::find()
-        .all(&*ctx.db)
-        .await
-        .expect("the rows read")
-}
-
-async fn only_row(ctx: &Context) -> Model {
-    let mut all = rows(ctx).await;
-    assert_eq!(all.len(), 1, "{all:?}");
-    all.remove(0)
-}
-
 /// Makes a released row due again without waiting out its backoff.
 async fn due_now(ctx: &Context, row: Model) {
     let mut row = row.into_active_model();
@@ -122,7 +103,7 @@ async fn due_now(ctx: &Context, row: Model) {
 async fn one_row(answers: impl IntoIterator<Item = Receipt>) -> (Context, Sweep, Scripted) {
     let db = database().await;
     let user = seed_user(&db).await;
-    let ctx = context(db);
+    let ctx = job_context(db);
     write(&ctx, user, "user/a", "only", now()).await;
     let mailer = Scripted::answering(answers);
     (ctx, sending(&mailer), mailer)
@@ -132,11 +113,11 @@ async fn one_row(answers: impl IntoIterator<Item = Receipt>) -> (Context, Sweep,
 async fn an_accepted_email_is_sent_under_its_key_and_its_body_dropped() {
     within_time_limit(async {
         let (ctx, sweep, mailer) = one_row([Receipt::Accepted]).await;
-        let id = only_row(&ctx).await.id;
+        let id = only_row(&*ctx.db).await.id;
 
         assert_eq!(tick(&sweep, &ctx).await, (1, 1), "a sent email is handled");
 
-        let row = only_row(&ctx).await;
+        let row = only_row(&*ctx.db).await;
         assert_eq!(
             (row.state, row.request, row.claim_id),
             (State::Sent, None, None)
@@ -162,7 +143,7 @@ async fn a_retried_email_waits_then_goes_again_under_the_same_key() {
             "a retry leaves the tick short"
         );
 
-        let row = only_row(&ctx).await;
+        let row = only_row(&*ctx.db).await;
         assert_eq!(row.state, State::Pending);
         assert!(
             row.not_before >= before + RetryPolicy::default().base,
@@ -176,7 +157,7 @@ async fn a_retried_email_waits_then_goes_again_under_the_same_key() {
         sweep.run(&ctx).await.expect("the second tick runs");
 
         let delivered = mailer.delivered();
-        assert_eq!(only_row(&ctx).await.state, State::Sent);
+        assert_eq!(only_row(&*ctx.db).await.state, State::Sent);
         assert_eq!(delivered.len(), 2);
         assert_eq!(
             delivered[0], delivered[1],
@@ -197,7 +178,7 @@ async fn a_rejected_email_fails() {
             "a rejection leaves the tick short"
         );
 
-        let row = only_row(&ctx).await;
+        let row = only_row(&*ctx.db).await;
         assert_eq!(
             (row.state, row.request, row.last_error.as_deref()),
             (State::Failed, None, Some("422 - bad"))
@@ -211,7 +192,7 @@ async fn an_expired_email_fails_without_a_delivery() {
     within_time_limit(async {
         let db = database().await;
         let user = seed_user(&db).await;
-        let ctx = context(db);
+        let ctx = job_context(db);
         let max_age = RetryPolicy::default().max_age;
         write(&ctx, user, "user/a", "stale", now() - max_age).await;
         let mailer = Scripted::default();
@@ -219,7 +200,7 @@ async fn an_expired_email_fails_without_a_delivery() {
         let expired = tick(&sending(&mailer), &ctx).await;
 
         assert_eq!(expired, (0, 1), "an expired email leaves the tick short");
-        assert_eq!(only_row(&ctx).await.state, State::Failed);
+        assert_eq!(only_row(&*ctx.db).await.state, State::Failed);
         assert!(mailer.delivered().is_empty());
     })
     .await;
@@ -230,14 +211,14 @@ async fn a_newer_email_is_sent_after_the_older_one_finishes() {
     within_time_limit(async {
         let db = database().await;
         let user = seed_user(&db).await;
-        let ctx = context(db);
+        let ctx = job_context(db);
         write(&ctx, user, "user/a", "older", now() - TimeDelta::seconds(1)).await;
         write(&ctx, user, "user/a", "newer", now()).await;
         let mailer = Scripted::answering([retry(), Receipt::Accepted, Receipt::Accepted]);
         let sweep = sending(&mailer);
 
         sweep.run(&ctx).await.expect("the first tick runs");
-        let older = rows(&ctx)
+        let older = rows(&*ctx.db)
             .await
             .into_iter()
             .find(|row| row.last_error.is_some())
@@ -252,7 +233,10 @@ async fn a_newer_email_is_sent_after_the_older_one_finishes() {
             .map(|(_, email)| email.subject.clone())
             .collect();
         assert_eq!(labels, ["older", "older", "newer"]);
-        assert!(rows(&ctx).await.iter().all(|row| row.state == State::Sent));
+        assert!(rows(&*ctx.db)
+            .await
+            .iter()
+            .all(|row| row.state == State::Sent));
     })
     .await;
 }
@@ -264,7 +248,7 @@ async fn without_a_mailer_due_emails_are_dropped_unsent() {
 
         let drained = tick(&Sweep::draining(RetryPolicy::default()), &ctx).await;
 
-        let row = only_row(&ctx).await;
+        let row = only_row(&*ctx.db).await;
         assert_eq!(drained, (1, 1), "draining is not a failing tick");
         assert_eq!(
             (row.state, row.request, row.last_error.as_deref()),
@@ -279,13 +263,13 @@ async fn an_unreadable_stored_email_fails_without_a_delivery() {
     within_time_limit(async {
         let db = database().await;
         let user = seed_user(&db).await;
-        let ctx = context(db);
+        let ctx = job_context(db);
         store(&ctx, user, "user/a", json!({ "template": "t" }), now()).await;
         let mailer = Scripted::default();
 
         let unreadable = tick(&sending(&mailer), &ctx).await;
 
-        let row = only_row(&ctx).await;
+        let row = only_row(&*ctx.db).await;
         assert_eq!(
             unreadable,
             (0, 1),

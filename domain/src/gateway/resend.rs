@@ -11,7 +11,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize, Serializer};
 use service::config::Config;
 
-use crate::email_outbox::{Mailer, OutgoingEmail, Receipt};
+use crate::email_outbox::{Attachment as OutboxAttachment, Mailer, OutgoingEmail, Receipt};
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::gateway::ical::Method;
 
@@ -512,15 +512,8 @@ struct RenderedRequest<'a> {
     subject: &'a str,
     html: &'a str,
     text: &'a str,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    attachments: Vec<RenderedAttachment<'a>>,
-}
-
-#[derive(Serialize)]
-struct RenderedAttachment<'a> {
-    filename: &'a str,
-    content_type: &'a str,
-    content: &'a str,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    attachments: &'a [OutboxAttachment],
 }
 
 impl<'a> From<&'a OutgoingEmail> for RenderedRequest<'a> {
@@ -539,15 +532,7 @@ impl<'a> From<&'a OutgoingEmail> for RenderedRequest<'a> {
             subject: &email.subject,
             html: &email.html,
             text: &email.text,
-            attachments: email
-                .attachments
-                .iter()
-                .map(|attachment| RenderedAttachment {
-                    filename: &attachment.filename,
-                    content_type: &attachment.content_type,
-                    content: &attachment.content,
-                })
-                .collect(),
+            attachments: &email.attachments,
         }
     }
 }
@@ -660,7 +645,7 @@ mod tests {
     use super::*;
     use service::config::Config;
 
-    use crate::email_outbox::{Attachment as OutboxAttachment, Mailbox};
+    use crate::email_outbox::Mailbox;
 
     #[tokio::test]
     async fn test_client_creation_fails_without_api_key() {
