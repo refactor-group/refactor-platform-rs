@@ -19,6 +19,10 @@ pub fn load_env_file() {
 /// Session store pool size, carved out of `db_max_connections`.
 pub const SESSION_POOL_MAX_CONNECTIONS: u32 = 3;
 
+/// Pooled connections idle at least this long are pinged before reuse. Pinging every
+/// acquire would cost a PgBouncer server checkout per query.
+pub const PING_IF_IDLE_FOR: Duration = Duration::from_secs(30);
+
 /// Main pool `(max, min)` after reserving the session pool; max stays at least 1.
 fn main_pool_bounds(db_max_connections: u32, db_min_connections: u32) -> (u32, u32) {
     let max = db_max_connections
@@ -51,9 +55,11 @@ pub async fn init_database(config: &Config) -> Result<DatabaseConnection, DbErr>
         .acquire_timeout(Duration::from_secs(config.db_acquire_timeout_secs))
         .idle_timeout(Duration::from_secs(config.db_idle_timeout_secs))
         .max_lifetime(Duration::from_secs(config.db_max_lifetime_secs))
+        .test_before_acquire_if_idle_for(PING_IF_IDLE_FOR)
         .sqlx_logging(true)
-        .sqlx_logging_level(log::LevelFilter::Info)
-        .set_schema_search_path("refactor_platform"); // Setting default PostgreSQL schema
+        .sqlx_logging_level(log::LevelFilter::Info);
+    // No per-connection `search_path`: a transaction-mode pooler would not keep it. The
+    // role's per-database default (see migration m20261119_000000) applies instead.
 
     let db = Database::connect(opt).await?;
 

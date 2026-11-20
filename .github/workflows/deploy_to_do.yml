@@ -112,6 +112,11 @@ jobs:
           POSTGRES_OPTIONS=sslmode=verify-full&sslrootcert=/app/root.crt
           # Database connection string
           DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@${{ vars.POSTGRES_HOST }}:${{ vars.POSTGRES_PORT }}/${{ vars.POSTGRES_DB }}?${{ vars.POSTGRES_OPTIONS }}
+          # The backend's PgBouncer pool (transaction mode). When empty the backend uses
+          # DATABASE_URL; the migrator always does. The value MUST include
+          # ?sslmode=verify-full&sslrootcert=/app/root.crt and MUST NOT set
+          # statement-cache-capacity=0 (wrong query results through PgBouncer with sqlx 0.9.1+).
+          DATABASE_POOL_URL=${{ secrets.DATABASE_POOL_URL }}
 
           # -------- docs-collab dedicated database
           # Full connection string for the collab server's own database on the
@@ -127,10 +132,13 @@ jobs:
 
           # -------- Database Pool Config
           # Pool sizing must stay below the managed Postgres max connections
-          # ceiling (22 on the 1 GB DO tier) to leave headroom for migrator,
-          # doadmin, and platform agents. Clap defaults in service/src/config.rs
+          # ceiling to leave headroom for the migrator, admin sessions, and
+          # platform agents. Clap defaults in service/src/config.rs
           # apply if any of these are left unset in the GitHub environment.
           # DB_MAX_CONNECTIONS is the app's total, split between the main pool and the session store pool.
+          # With DATABASE_POOL_URL set it counts client connections to PgBouncer, and the pool's
+          # size in DigitalOcean caps server connections. Keep it near twice the pool size so
+          # overload still fails fast (503) instead of waiting in PgBouncer's queue.
           DB_MAX_CONNECTIONS=${{ vars.DB_MAX_CONNECTIONS }}
           DB_MIN_CONNECTIONS=${{ vars.DB_MIN_CONNECTIONS }}
           DB_CONNECT_TIMEOUT_SECS=${{ vars.DB_CONNECT_TIMEOUT_SECS }}

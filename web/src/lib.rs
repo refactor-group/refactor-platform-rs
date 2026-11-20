@@ -13,6 +13,7 @@ use domain::jobs::{
 use domain::user::Backend;
 use futures::future::join_all;
 use sqlx::postgres::{PgPool, PgPoolOptions};
+use sqlx::Connection;
 use tower_sessions::ExpiredDeletion;
 use tower_sessions_sqlx_store::PostgresStore;
 
@@ -22,7 +23,7 @@ use log::*;
 use meeting_ai::traits::{recording_bot, transcription as transcription_trait};
 use sea_orm::DatabaseConnection;
 use service::config::{ApiVersion, Config};
-use service::SESSION_POOL_MAX_CONNECTIONS;
+use service::{PING_IF_IDLE_FOR, SESSION_POOL_MAX_CONNECTIONS};
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -101,6 +102,15 @@ async fn session_pool(config: &Config) -> Result<PgPool> {
         .acquire_timeout(StdDuration::from_secs(config.db_acquire_timeout_secs))
         .idle_timeout(StdDuration::from_secs(config.db_idle_timeout_secs))
         .max_lifetime(StdDuration::from_secs(config.db_max_lifetime_secs))
+        .test_before_acquire(false)
+        .before_acquire(|conn, meta| {
+            Box::pin(async move {
+                if meta.idle_for >= PING_IF_IDLE_FOR {
+                    conn.ping().await?;
+                }
+                Ok(true)
+            })
+        })
         .connect(config.database_url())
         .await
         .map_err(|err| {
