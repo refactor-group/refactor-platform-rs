@@ -1,0 +1,17 @@
+{% extends "email/base.txt" %}
+
+{% block content -%}
+A quick reminder that you have a {{ email.parties.session_label }} with {{ email.parties.other.full_name() }} coming up.
+
+{% if let Some(title) = email.title -%}
+Session: {{ title }}
+{% endif -%}
+When: {{ email.when.date }} at {{ email.when.time }} for {{ email.duration }}
+
+Join Session:
+{{ email.url }}
+
+Please take a few moments to add your topics most worth discussing, review your actions due for this session, and confirm your goals still reflect what you're working toward.
+
+If you have any questions, reach out to {{ email.parties.other.first_name }} directly.
+{%- endblock %}

@@ -142,7 +142,10 @@ jobs:
         run: cargo build --all-targets
 
       # Also runs the mock-gated suites, via the all_tests runner in src/main.rs.
+      # A changed email snapshot fails instead of being written.
       - name: Run tests
+        env:
+          INSTA_UPDATE: no
         run: cargo test
 
       # Excluded from default-members, so `cargo test` above skips it. Runs the

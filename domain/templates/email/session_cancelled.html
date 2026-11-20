@@ -1,0 +1,27 @@
+{% extends "email/base.html" -%}
+{% import "email/macros.html" as m -%}
+
+{% block preheader %}
+{%- match email.reason -%}
+{%- when CancelReason::Cancelled { .. } -%}
+Your session on {{ email.when.date }} has been cancelled.
+{%- when CancelReason::Superseded -%}
+An out-of-date calendar event for your {{ email.parties.session_label }} on {{ email.when.date }} was removed.
+{%- endmatch -%}
+{% endblock %}
+
+{% block content -%}
+{% match email.reason -%}
+{% when CancelReason::Cancelled { by } -%}
+{% match by -%}
+{% when Actor::You -%}
+<p>You have cancelled your {{ email.parties.session_label }} with {{ email.parties.other.full_name() }}.</p>
+{% when Actor::Other -%}
+<p>{{ email.parties.other.full_name() }} has cancelled your {{ email.parties.session_label }}.</p>
+{% endmatch -%}
+{% call m::row("Was scheduled for") %}{{ email.when.date }} at {{ email.when.time }}{% endcall %}
+<p>The attached calendar update removes this event from your calendar. Nothing else is needed from you.</p>
+{% when CancelReason::Superseded -%}
+<p>Your {{ email.parties.session_label }} with {{ email.parties.other.full_name() }} on {{ email.when.date }} at {{ email.when.time }} had its own calendar event from before it was part of a recurring series. That event is out of date, so the attached update removes it from your calendar.</p>
+{% endmatch -%}
+{% endblock %}

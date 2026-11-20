@@ -355,6 +355,28 @@ impl From<serde_json::Error> for Error {
     }
 }
 
+impl From<askama::Error> for Error {
+    fn from(err: askama::Error) -> Self {
+        Error {
+            source: Some(Box::new(err)),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "Email template rendering error".to_string(),
+            )),
+        }
+    }
+}
+
+impl From<css_inline::InlineError> for Error {
+    fn from(err: css_inline::InlineError) -> Self {
+        Error {
+            source: Some(Box::new(err)),
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                "Email stylesheet inlining error".to_string(),
+            )),
+        }
+    }
+}
+
 impl From<reqwest::Error> for Error {
     fn from(err: reqwest::Error) -> Self {
         // Errors that result from issues building the reqwest::Client instance. This

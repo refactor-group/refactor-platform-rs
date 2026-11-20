@@ -1,6 +1,6 @@
 # Email Notifications Architecture
 
-Transactional emails are sent via [Resend](https://resend.com/) using template-based variable interpolation. The backend handles all email logic — the frontend has no involvement.
+Transactional emails are sent via [Resend](https://resend.com/). Most still use Resend-hosted templates filled with variables; the single-session cancellation is composed in the backend from in-repo templates and written to the [email outbox](email_outbox.md) in the transaction that deletes the session (see [Email composition](email_composition.md)). The rest move the same way, one sender at a time. The backend handles all email logic; the frontend has no involvement.
 
 ## Notification Types
 
@@ -69,14 +69,14 @@ Encapsulates config resolution so `send_*` functions don't leak config details t
 | `RecurringSessionsScheduled` | `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID` |
 | `SessionRescheduled` | `SESSION_RESCHEDULED_EMAIL_TEMPLATE_ID` |
 | `RecurringSessionsRescheduled` | `RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID` |
-| `SessionCancelled` | `SESSION_CANCELLED_EMAIL_TEMPLATE_ID` |
 | `RecurringSessionsCancelled` | `RECURRING_SESSIONS_CANCELLED_EMAIL_TEMPLATE_ID` |
 | `ActionAssigned` | `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID` |
 | `AddedToOrganization` | `ADDED_TO_ORGANIZATION_EMAIL_TEMPLATE_ID` |
 | `SessionReminder` | `SESSION_REMINDER_EMAIL_TEMPLATE_ID` |
 
-The two cancellation implementors deliberately keep the trait's `None` URL template: the
-record is deleted by the time a recipient could click through, so those emails carry no link.
+`RecurringSessionsCancelled` deliberately keeps the trait's `None` URL template: the
+record is deleted by the time a recipient could click through, so the email carries no link.
+The composed single-session cancellation carries no link for the same reason.
 
 ## Calendar Invites (`.ics`)
 
@@ -218,7 +218,6 @@ Session dates are stored as UTC. The `format_session_date_time()` helper convert
 | `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID` | Recurring Sessions scheduled template |
 | `SESSION_RESCHEDULED_EMAIL_TEMPLATE_ID` | Single-session reschedule template |
 | `RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID` | Series reschedule template |
-| `SESSION_CANCELLED_EMAIL_TEMPLATE_ID` | Single-session cancellation template |
 | `RECURRING_SESSIONS_CANCELLED_EMAIL_TEMPLATE_ID` | Series cancellation template |
 | `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID` | Action assigned template |
 | `ADDED_TO_ORGANIZATION_EMAIL_TEMPLATE_ID` | Added-to-organization template |
@@ -227,7 +226,7 @@ Session dates are stored as UTC. The `format_session_date_time()` helper convert
 | `SESSION_REMINDER_POLL_MINUTES` | How often the reminder sweep runs (default: `15`) |
 | `SESSION_RESCHEDULE_SETTLE_SECONDS` | How long a single session's schedule must be quiet before its reschedule is emailed (default: `60`, minimum `1`) |
 | `SESSION_RESCHEDULE_SETTLE_MAX_SECONDS` | Longest a reschedule waits for its email after the first unannounced change (default: `300`, never below the settle period) |
-| `FRONTEND_BASE_URL` | Base URL for email links (e.g. `https://app.myrefactor.com`) |
+| `FRONTEND_BASE_URL` | Base URL for email links (e.g. `https://app.myrefactor.com`), and for the composed emails' logo and privacy link |
 | `SESSION_SCHEDULED_EMAIL_URL_PATH` | URL path template for session links (default: `/coaching-sessions/{session_id}`) |
 | `ACTION_ASSIGNED_EMAIL_URL_PATH` | URL path template for action links (default: `/coaching-sessions/{session_id}?tab=actions`) |
 | `ADDED_TO_ORGANIZATION_EMAIL_URL_PATH` | URL path for added-to-organization links, supports `{organization_id}` (default: `/dashboard`) |
@@ -236,7 +235,8 @@ Session dates are stored as UTC. The `format_session_date_time()` helper convert
 
 | File | Role |
 |---|---|
-| `domain/src/emails.rs` | `notify_*` + `send_*` + `EmailNotification` trait |
+| `domain/src/emails.rs` | `notify_*` + `send_*` + `EmailNotification` trait; builds and enqueues the composed emails |
+| `domain/src/email_composition/` | Composed emails: the `Email` trait, `compose`, the shared view pieces |
 | `domain/src/gateway/resend.rs` | HTTP client, request builder, fire-and-forget delivery |
 | `domain/src/jobs/session_reminder.rs` | The reminder sweep |
 | `domain/src/jobs/coaching_session_pending_reschedule.rs` | The settled-reschedule sweep |

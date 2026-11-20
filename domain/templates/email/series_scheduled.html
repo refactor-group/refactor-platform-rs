@@ -1,0 +1,18 @@
+{% extends "email/base.html" -%}
+{% import "email/macros.html" as m -%}
+
+{% block preheader %}{{ email.cadence }} at {{ email.first.time }}, {{ email.count }} {{ email.parties.session_label_plural }} scheduled.{% endblock %}
+
+{% block content -%}
+{% match email.by -%}
+{% when Actor::You -%}
+<p>You scheduled a recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name() }}.</p>
+{% when Actor::Other -%}
+<p>{{ email.parties.other.full_name() }} scheduled a recurring series of {{ email.parties.session_label_plural }} with you.</p>
+{% endmatch -%}
+{% call m::row("Starts") %}{{ email.first.date }} at {{ email.first.time }} for {{ email.duration }}{% endcall %}
+{% call m::row("Repeats") %}{{ email.cadence }}{% endcall %}
+{% call m::row("Runs through") %}{{ email.last_date }}{% endcall %}
+{% call m::row("Total sessions scheduled") %}{{ email.count }}{% endcall %}
+{% call m::button(email.url, "Join First Session") %}{% endcall %}
+{% endblock %}

@@ -1,0 +1,68 @@
+---
+source: domain/src/email_composition/tests.rs
+expression: email.html
+---
+<!DOCTYPE html><html lang="en" xmlns="http://www.w3.org/1999/xhtml"><head><style>@media only screen and (max-width: 620px) {
+    .logo, .content, .rule, .help, .footer { padding-left: 16px !important; padding-right: 16px !important; }
+  } @media (prefers-color-scheme: dark) {
+    body, .page { background-color: #121212 !important; }
+    .content, .content a { color: #f2f2f2 !important; }
+    .help, .footer { color: #b3b3b3 !important; }
+    .button-cell { background-color: #ffffff !important; }
+    .button { color: #000000 !important; }
+    .rule hr { border-top-color: #333333 !important; }
+  } </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="format-detection" content="telephone=no, date=no, address=no, email=no">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
+<title>Your coaching session with Alex on Wednesday, March 4, 2026</title>
+
+</head>
+<body style="margin: 0;padding: 0;width: 100%;background-color: #ffffff;">
+<div style="display: none; max-height: 0; max-width: 0; overflow: hidden; opacity: 0; mso-hide: all; font-size: 1px; line-height: 1px;">Wednesday, March 4, 2026 at 10:00 AM — here's everything you need.‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;</div>
+<table class="page" role="presentation" border="0" width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;width: 100%;background-color: #ffffff;">
+<tbody><tr>
+<td align="center">
+<!--[if mso]><table role="presentation" width="600" align="center" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
+<table class="container" role="presentation" border="0" width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;width: 100%;max-width: 600px;">
+<tbody><tr>
+<td class="logo" align="right" style="padding: 32px 24px 8px 24px;text-align: right;"><img src="https://app.example.com/22JHC_Monogram_RGB_small.png" alt="Refactor Coach" width="48" height="48" style="border: 0;outline: none;text-decoration: none;"></td>
+</tr>
+<tr>
+<td class="content" style="padding: 8px 24px 0 24px;font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;font-size: 16px;line-height: 24px;color: #1a1a1a;">
+<p style="margin: 0 0 16px 0;">Hi Jane,</p>
+<p style="margin: 0 0 16px 0;"><strong>Alex Smith</strong> scheduled a coaching session with you.</p>
+<p style="margin: 0 0 16px 0;"><strong>When:</strong> Wednesday, March 4, 2026 at 10:00 AM for 1 hour</p>
+<table class="button-table" role="presentation" border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse;margin: 8px 0 24px 0;">
+<tbody><tr>
+<td class="button-cell" bgcolor="#000000" style="background-color: #000000;border-radius: 4px;"><a class="button" href="https://app.example.com/coaching-sessions/1" style="display: inline-block;padding: 12px 24px;font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;font-size: 16px;font-weight: 600;line-height: 20px;color: #ffffff;text-decoration: none;border-radius: 4px;">Join Session</a></td>
+</tr>
+</tbody></table>
+
+<p style="margin: 0 0 16px 0;">— The Acme Corp Team</p>
+</td>
+</tr>
+<tr>
+<td class="rule" style="padding: 8px 24px;"><hr style="border: 0;border-top: 1px solid #e5e5e5;margin: 0;"></td>
+</tr>
+<tr>
+<td class="help" style="padding: 8px 24px 0 24px;font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;font-size: 14px;line-height: 20px;color: #4d4d4d;">
+<p style="margin: 0 0 16px 0;"><strong>Need help?</strong> If you have any questions about Refactor Coach, please reply to this email or contact us at <a href="mailto:hello@refactorcoach.com" style="color: inherit;">hello@refactorcoach.com</a>.</p>
+</td>
+</tr>
+<tr>
+<td class="footer" style="padding: 0 24px 32px 24px;font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;font-size: 12px;line-height: 18px;color: #808080;">
+<p style="margin: 0;">— Refactor Coach is a product of <a href="https://www.refactorgroup.com" style="color: inherit;">Refactor Group</a>. <a href="https://app.example.com/privacy" style="color: inherit;">Privacy</a></p>
+</td>
+</tr>
+</tbody></table>
+<!--[if mso]></td></tr></table><![endif]-->
+</td>
+</tr>
+</tbody></table>
+
+</body></html>

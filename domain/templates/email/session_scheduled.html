@@ -1,0 +1,15 @@
+{% extends "email/base.html" -%}
+{% import "email/macros.html" as m -%}
+
+{% block preheader %}{{ email.when.date }} at {{ email.when.time }} — here's everything you need.{% endblock %}
+
+{% block content -%}
+{% match email.by -%}
+{% when Actor::You -%}
+<p>You scheduled a {{ email.parties.session_label }} with <strong>{{ email.parties.other.full_name() }}</strong>.</p>
+{% when Actor::Other -%}
+<p><strong>{{ email.parties.other.full_name() }}</strong> scheduled a {{ email.parties.session_label }} with you.</p>
+{% endmatch -%}
+{% call m::row("When") %}{{ email.when.date }} at {{ email.when.time }} for {{ email.duration }}{% endcall %}
+{% call m::button(email.url, "Join Session") %}{% endcall %}
+{% endblock %}

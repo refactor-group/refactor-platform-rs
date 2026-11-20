@@ -1,0 +1,44 @@
+{% extends "email/base.txt" %}
+
+{% block content -%}
+{% match email.scope -%}
+{% when Scope::WholeSeries { previous_start, previous_cadence } -%}
+{% match email.by -%}
+{% when Actor::You -%}
+You have rescheduled your recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name() }}.
+{% when Actor::Other -%}
+{{ email.parties.other.full_name() }} has rescheduled your recurring series of {{ email.parties.session_label_plural }}.
+{% endmatch %}
+{% if let Some(previous) = previous_start -%}
+Previously started: {{ previous.date }} at {{ previous.time }}
+{% endif -%}
+Now starts: {{ email.starts.date }} at {{ email.starts.time }} for {{ email.duration }}
+{% if let Some(previous) = previous_cadence -%}
+Previously repeated: {{ previous }}
+{% endif -%}
+Now repeats: {{ email.cadence }}
+Runs through: {{ email.last_date }}
+Total sessions scheduled: {{ email.count }}
+
+The attached calendar invite replaces your existing recurring event, so you don't need to delete the old one.
+
+Join First Session:
+{{ email.url }}
+{%- when Scope::FromSession { first_moved_date, previous_cadence, previous_time } -%}
+{% match email.by -%}
+{% when Actor::You -%}
+You changed your recurring {{ email.parties.session_label_plural }} from {{ first_moved_date }} onward.
+{% when Actor::Other -%}
+{{ email.parties.other.full_name() }} changed your recurring {{ email.parties.session_label_plural }} from {{ first_moved_date }} onward.
+{% endmatch %}
+Before: {{ previous_cadence }} at {{ previous_time }}
+From {{ first_moved_date }}: {{ email.cadence }} at {{ email.starts.time }} for {{ email.duration }}
+Runs through: {{ email.last_date }}
+Sessions affected: {{ email.count }}
+
+Sessions before {{ first_moved_date }} are unchanged. The attached calendar invite updates your calendar, so there's nothing to delete.
+
+View Session:
+{{ email.url }}
+{%- endmatch %}
+{%- endblock %}

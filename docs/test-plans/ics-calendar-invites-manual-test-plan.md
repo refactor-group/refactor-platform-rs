@@ -369,7 +369,7 @@ the original, and a **bumped `SEQUENCE`**, so calendar clients remove the event.
 
 The email fires **after** the delete succeeds, so a failed delete never produces a cancellation notice.
 
-**Extra setup:** `--session-cancelled-email-template-id` and `--recurring-sessions-cancelled-email-template-id`.
+**Extra setup:** `--recurring-sessions-cancelled-email-template-id` for the series cancellation; a single-session cancellation is composed in the backend and needs only `--frontend-base-url`.
 
 ### HC1: Cancel a single session (happy path)
 1. Create a **future** single session (H1) and import its `.ics`.

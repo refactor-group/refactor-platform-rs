@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="format-detection" content="telephone=no, date=no, address=no, email=no">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
+<title>{{ email.subject() }}</title>
+<style>
+  body { margin: 0; padding: 0; width: 100%; background-color: #ffffff; }
+  table { border-collapse: collapse; }
+  img { border: 0; outline: none; text-decoration: none; }
+  .page { width: 100%; background-color: #ffffff; }
+  .container { width: 100%; max-width: 600px; }
+  .logo { padding: 32px 24px 8px 24px; text-align: right; }
+  .content { padding: 8px 24px 0 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 16px; line-height: 24px; color: #1a1a1a; }
+  .content p { margin: 0 0 16px 0; }
+  .button-table { margin: 8px 0 24px 0; }
+  .button-cell { background-color: #000000; border-radius: 4px; }
+  .button { display: inline-block; padding: 12px 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 600; line-height: 20px; color: #ffffff; text-decoration: none; border-radius: 4px; }
+  .rule { padding: 8px 24px; }
+  .rule hr { border: 0; border-top: 1px solid #e5e5e5; margin: 0; }
+  .help { padding: 8px 24px 0 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 14px; line-height: 20px; color: #4d4d4d; }
+  .help p { margin: 0 0 16px 0; }
+  .footer { padding: 0 24px 32px 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 12px; line-height: 18px; color: #808080; }
+  .footer p { margin: 0; }
+  a { color: #1a1a1a; }
+  .help a, .footer a { color: inherit; }
+  @media only screen and (max-width: 620px) {
+    .logo, .content, .rule, .help, .footer { padding-left: 16px !important; padding-right: 16px !important; }
+  }
+  @media (prefers-color-scheme: dark) {
+    body, .page { background-color: #121212 !important; }
+    .content, .content a { color: #f2f2f2 !important; }
+    .help, .footer { color: #b3b3b3 !important; }
+    .button-cell { background-color: #ffffff !important; }
+    .button { color: #000000 !important; }
+    .rule hr { border-top-color: #333333 !important; }
+  }
+</style>
+</head>
+<body>
+<div style="display: none; max-height: 0; max-width: 0; overflow: hidden; opacity: 0; mso-hide: all; font-size: 1px; line-height: 1px;">{% block preheader %}{% endblock %}{% for _ in 0..90 %}&zwnj;&nbsp;{% endfor %}</div>
+<table role="presentation" class="page" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr>
+<td align="center">
+<!--[if mso]><table role="presentation" width="600" align="center" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
+<table role="presentation" class="container" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr>
+<td class="logo" align="right"><img src="{{ brand.logo_url }}" alt="Refactor Coach" width="48" height="48"></td>
+</tr>
+<tr>
+<td class="content">
+<p>Hi {{ email.parties.recipient.first_name }},</p>
+{% block content %}{% endblock %}
+<p>— The {{ email.parties.organization_name }} Team</p>
+</td>
+</tr>
+<tr>
+<td class="rule"><hr></td>
+</tr>
+<tr>
+<td class="help">
+<p><strong>Need help?</strong> If you have any questions about Refactor Coach, please reply to this email or contact us at <a href="mailto:{{ brand.support_email }}">{{ brand.support_email }}</a>.</p>
+</td>
+</tr>
+<tr>
+<td class="footer">
+<p>— Refactor Coach is a product of <a href="{{ brand.company_url }}">Refactor Group</a>. <a href="{{ brand.privacy_url }}">Privacy</a></p>
+</td>
+</tr>
+</table>
+<!--[if mso]></td></tr></table><![endif]-->
+</td>
+</tr>
+</table>
+</body>
+</html>

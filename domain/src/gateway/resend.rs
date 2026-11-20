@@ -274,10 +274,6 @@ impl SendEmailRequestBuilder {
     /// left behind), and clients key attachments by name, so identically-named parts risk
     /// being collapsed into one.
     pub fn add_ics_attachment(mut self, ics_body: &str, method: &Method) -> Self {
-        let m = match method {
-            Method::Request => "REQUEST",
-            Method::Cancel => "CANCEL",
-        };
         // Counts the calendar parts specifically, not every attachment, so the numbering
         // stays correct if a send ever carries an attachment of another kind.
         let calendar_parts = self
@@ -291,7 +287,7 @@ impl SendEmailRequestBuilder {
         };
         self.attachments.push(Attachment {
             filename,
-            content_type: format!("text/calendar; method={m}; charset=UTF-8"),
+            content_type: format!("text/calendar; method={}; charset=UTF-8", method.as_str()),
             content: STANDARD.encode(ics_body.as_bytes()),
         });
         self

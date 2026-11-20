@@ -1,0 +1,32 @@
+---
+source: domain/src/email_composition/series_tests.rs
+expression: copy(&series_rescheduled_from_session())
+---
+Subject: Your coaching sessions with Alex change from Wednesday, March 4, 2026
+Preheader: From Wednesday, March 4, 2026: Weekly on Wednesday at 10:00 AM. Earlier sessions are unchanged.
+
+Hi Jane,
+
+Alex Smith changed your recurring coaching sessions from Wednesday, March 4, 2026 onward.
+
+Before: Weekly on Tuesday at 4:00 PM
+From Wednesday, March 4, 2026: Weekly on Wednesday at 10:00 AM for 1 hour
+Runs through: Wednesday, May 27, 2026
+Sessions affected: 12
+
+Sessions before Wednesday, March 4, 2026 are unchanged. The attached calendar invite updates your calendar, so there's nothing to delete.
+
+View Session:
+https://app.example.com/coaching-sessions/1
+
+— The Acme Corp Team
+
+---
+
+Need help? If you have any questions about Refactor Coach, please reply to this email or contact us at hello@refactorcoach.com.
+
+— Refactor Coach is a product of Refactor Group.
+https://www.refactorgroup.com
+
+Privacy:
+https://app.example.com/privacy

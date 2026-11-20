@@ -1,0 +1,27 @@
+---
+source: domain/src/email_composition/session_tests.rs
+expression: copy(&session_scheduled())
+---
+Subject: Your coaching session with Alex on Wednesday, March 4, 2026
+Preheader: Wednesday, March 4, 2026 at 10:00 AM — here's everything you need.
+
+Hi Jane,
+
+Alex Smith scheduled a coaching session with you.
+
+When: Wednesday, March 4, 2026 at 10:00 AM for 1 hour
+
+Join Session:
+https://app.example.com/coaching-sessions/1
+
+— The Acme Corp Team
+
+---
+
+Need help? If you have any questions about Refactor Coach, please reply to this email or contact us at hello@refactorcoach.com.
+
+— Refactor Coach is a product of Refactor Group.
+https://www.refactorgroup.com
+
+Privacy:
+https://app.example.com/privacy

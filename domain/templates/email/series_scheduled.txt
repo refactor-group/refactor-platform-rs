@@ -1,0 +1,17 @@
+{% extends "email/base.txt" %}
+
+{% block content -%}
+{% match email.by -%}
+{% when Actor::You -%}
+You scheduled a recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name() }}.
+{% when Actor::Other -%}
+{{ email.parties.other.full_name() }} scheduled a recurring series of {{ email.parties.session_label_plural }} with you.
+{% endmatch %}
+Starts: {{ email.first.date }} at {{ email.first.time }} for {{ email.duration }}
+Repeats: {{ email.cadence }}
+Runs through: {{ email.last_date }}
+Total sessions scheduled: {{ email.count }}
+
+Join First Session:
+{{ email.url }}
+{%- endblock %}

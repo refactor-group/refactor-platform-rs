@@ -23,7 +23,7 @@ async fn read(db: &DatabaseConnection, id: Id) -> Option<coaching_sessions::Mode
 async fn assert_refused(db: &DatabaseConnection, session_id: Id) {
     let before = read(db, session_id).await.expect("the session exists");
 
-    let err = delete(db, &Config::default(), session_id)
+    let err = delete(db, &Config::default(), session_id, Id::new_v4())
         .await
         .expect_err("a session with content is refused");
 
@@ -91,7 +91,7 @@ async fn sd_03_a_session_without_content_is_deleted_with_its_topics_and_views() 
         let topic_id = seed_topic(&db, session_id, user_id, "Agenda", 0, false).await;
         let view_id = seed_view(&db, session_id, user_id).await;
 
-        delete(&db, &Config::default(), session_id)
+        delete(&db, &Config::default(), session_id, user_id)
             .await
             .expect("the delete succeeds");
 

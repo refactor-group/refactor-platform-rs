@@ -4,7 +4,7 @@ use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use entity_api::coaching_relationship::notify_member_ids;
 use log::*;
-use sea_orm::DatabaseConnection;
+use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 use service::config::Config;
 
 use crate::{
@@ -13,6 +13,12 @@ use crate::{
     coaching_relationships, coaching_session, coaching_session_series,
     coaching_session_series::SeriesRule,
     coaching_sessions,
+    email_composition::{
+        calendar_attachments, compose,
+        session::{CancelReason, SessionCancelled},
+        Actor, Brand, Email, Parties, Person, When, FROM_ADDRESS, FROM_DISPLAY_NAME,
+    },
+    email_outbox::{self, Envelope, Subject},
     error::Error,
     error::{DomainErrorKind, InternalErrorKind},
     gateway::ical::{self, DescriptionParts, OpenAction},
@@ -132,18 +138,6 @@ impl EmailNotification for RecurringSessionsRescheduled {
     }
     fn url_path_template(config: &Config) -> Option<String> {
         Some(config.session_scheduled_email_url_path().to_owned())
-    }
-}
-
-/// Deliberately keeps the trait's `None` URL template: the session row is gone by the
-/// time a recipient could click through.
-struct SessionCancelled;
-impl EmailNotification for SessionCancelled {
-    fn template_id(config: &Config) -> Option<String> {
-        config.session_cancelled_email_template_id()
-    }
-    fn notification_name() -> &'static str {
-        "session cancelled"
     }
 }
 
@@ -599,6 +593,19 @@ struct Recipient<'a> {
     session_label_plural: &'static str,
 }
 
+impl Recipient<'_> {
+    /// This copy's parties, in `organization`.
+    fn parties(&self, organization: &organizations::Model) -> Parties {
+        Parties {
+            recipient: Person::from(self.user),
+            other: Person::from(self.other_user),
+            session_label: self.session_label,
+            session_label_plural: self.session_label_plural,
+            organization_name: organization.name.clone(),
+        }
+    }
+}
+
 /// Template variables carried only by the reschedule sends: the discriminant the
 /// shared template copy reads, plus the start the recipient previously held.
 struct RescheduleVars {
@@ -613,16 +620,8 @@ const TOKEN_PLACEHOLDER: &str = "{token}";
 const SESSION_ID_PLACEHOLDER: &str = "{session_id}";
 const ORGANIZATION_ID_PLACEHOLDER: &str = "{organization_id}";
 
-/// The `From:` address used for every transactional email sent through this module.
-/// Kept on the `mail.` subdomain so production DMARC/SPF/DKIM records for the
-/// `myrefactor.com` apex aren't affected by Resend's sending infrastructure.
-const FROM_ADDRESS: &str = "hello@mail.myrefactor.com";
-
 /// `UID` domain. Not a sending address: RFC 5545 only requires global uniqueness.
 const UID_DOMAIN: &str = "myrefactor.com";
-
-/// Display name paired with `FROM_ADDRESS` on the `.ics` `ORGANIZER`.
-const FROM_DISPLAY_NAME: &str = "Refactor Coach";
 
 /// The zone a series this schedule owner publishes now is written in, after the `VTIMEZONE`
 /// fallback, so expansion and the emitted `DTSTART;TZID` always agree.
@@ -638,7 +637,7 @@ fn series_zone(series: &coaching_session_series::Model) -> Result<Tz, Error> {
 /// The zone for an invite about `session`: its series' when it is an occurrence of one,
 /// so `RECURRENCE-ID` names an instance in the zone the calendar expanded.
 async fn invite_zone(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     session: &coaching_sessions::Model,
     owner: &users::Model,
 ) -> Result<Tz, Error> {
@@ -1659,66 +1658,67 @@ fn build_occurrence_cancel_ics(
     ical::build(&invite)
 }
 
-/// Send a session-cancelled notification email to a single recipient. Carries fewer
-/// variables than the invite sends: no `session_url` (the row is gone) and no duration.
-async fn send_session_cancelled_email_to_recipient(
-    email_config: &ResolvedEmailConfig,
-    to: &Recipient<'_>,
-    session: &coaching_sessions::Model,
-    organization: &organizations::Model,
-    ics_body: &str,
-) -> Result<(), Error> {
-    let recipient = to.user;
-    let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
-
-    let email_request = SendEmailRequestBuilder::new()
-        .from(FROM_ADDRESS)
-        .to_with_name(
-            &recipient.email,
-            format!("{} {}", recipient.first_name, recipient.last_name),
-        )
-        .template_id(&email_config.template_id)
-        .add_variable("first_name", recipient.first_name.as_str())
-        .add_variable("other_user_first_name", to.other_user.first_name.as_str())
-        .add_variable("other_user_last_name", to.other_user.last_name.as_str())
-        .add_variable("other_user_role", to.other_user_role.as_str())
-        .add_variable("session_label", to.session_label)
-        .add_variable("session_label_plural", to.session_label_plural)
-        .add_variable("organization_name", organization.name.as_str())
-        .add_variable("session_date", session_date.as_str())
-        .add_variable("session_time", session_time.as_str())
-        .add_ics_attachment(ics_body, &ical::Method::Cancel)
-        .build()
-        .await?;
-
-    email_config.client.send_email(email_request).await
+/// Why a session's participants are told its calendar event is gone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cancellation {
+    /// This user cancelled the session.
+    By(Id),
+    /// A series edit replaced the standalone event a legacy member left on calendars.
+    Superseded,
 }
 
-/// Send session-cancelled emails to the participants `audience` may reach. Takes no database
-/// handle: a cancellation loads no topics, goals, or actions. `series_zone` is the zone
-/// from [`invite_zone`], resolved by the caller.
-async fn send_session_cancelled_email(
-    config: &Config,
+impl Cancellation {
+    /// The reason as `recipient_id` reads it.
+    fn reason_for(self, recipient_id: Id) -> CancelReason {
+        match self {
+            Cancellation::By(actor_id) => CancelReason::Cancelled {
+                by: Actor::of(actor_id, recipient_id),
+            },
+            Cancellation::Superseded => CancelReason::Superseded,
+        }
+    }
+}
+
+/// `email` composed into an envelope for `recipient_id`, or `None` once a failure is logged:
+/// a recipient whose copy won't render is skipped rather than failing the change.
+fn envelope<E: Email>(
+    brand: &Brand,
+    email: &E,
+    subject: Subject,
+    recipient_id: Id,
+) -> Option<Envelope> {
+    compose(email, brand)
+        .inspect_err(|e| {
+            warn!(
+                "Skipping the {} email to user {recipient_id}: it failed to compose: {e:?}",
+                E::KIND
+            )
+        })
+        .ok()
+        .map(|email| Envelope {
+            kind: E::KIND,
+            subject,
+            recipient_id,
+            email,
+        })
+}
+
+/// The session-cancelled email for each participant `audience` may reach, carrying the
+/// `CANCEL` for `session`'s event. `zone` is the zone from [`invite_zone`]. `session` must
+/// already carry the `SEQUENCE` that outranks the event's last invite.
+fn session_cancelled_envelopes(
+    brand: &Brand,
     audience: &Audience<'_>,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
-    series_zone: Tz,
-) -> Result<(), Error> {
-    let Audience {
-        participants,
-        member_ids,
-    } = *audience;
+    cancellation: Cancellation,
+    zone: Tz,
+) -> Result<Vec<Envelope>, Error> {
+    let participants = audience.participants;
     let Participants { coach, coachee, .. } = *participants;
-    info!(
-        "Initiating session cancelled emails for session: {} (coach: {}, coachee: {})",
-        session.id, coach.email, coachee.email
-    );
-
-    let email_config = ResolvedEmailConfig::new::<SessionCancelled>(config).await?;
-
-    let dtstamp = chrono::Utc::now().naive_utc();
+    let dtstamp = Utc::now().naive_utc();
     // A session inside a series is addressed as an override of its occurrence.
-    let ics_body = build_session_ics(
+    let ics = build_session_ics(
         session,
         participants.session_cancelled_description(),
         |series_id, description| {
@@ -1727,7 +1727,7 @@ async fn send_session_cancelled_email(
                 coachee,
                 session,
                 series_id,
-                series_zone,
+                zone,
                 description,
                 dtstamp,
             )
@@ -1744,74 +1744,80 @@ async fn send_session_cancelled_email(
             )
         },
     )?;
+    let calendar = calendar_attachments([(ics.as_str(), &ical::Method::Cancel)]);
 
-    let copies = participants.copies();
-    send_to_participants(
-        &copies,
-        member_ids,
-        SessionCancelled::notification_name(),
-        |to| {
-            send_session_cancelled_email_to_recipient(
-                &email_config,
-                to,
-                session,
-                organization,
-                &ics_body,
+    Ok(participants
+        .copies()
+        .iter()
+        .filter(|(_, to)| audience.member_ids.contains(&to.user.id))
+        .filter_map(|(_, to)| {
+            let email = SessionCancelled {
+                parties: to.parties(organization),
+                when: When::from(format_session_date_time(session.date, &to.user.timezone)),
+                reason: cancellation.reason_for(to.user.id),
+                calendar: calendar.clone(),
+            };
+            envelope(
+                brand,
+                &email,
+                Subject::CoachingRelationship(session.coaching_relationship_id),
+                to.user.id,
             )
-        },
-    )
-    .await;
-
-    Ok(())
+        })
+        .collect())
 }
 
-/// Orchestrate sending session-cancelled emails (best-effort).
+/// Writes the session-cancelled emails for `session` to the outbox on `db`, the transaction
+/// that removes it, so they go out exactly when it commits.
 ///
-/// Call this with the in-memory model after the delete has committed. Deleting a session
-/// whose date has already passed is housekeeping rather than a cancellation, so that case
-/// returns before any lookup. Errors are logged internally and never block the caller.
-pub async fn notify_session_cancelled(
-    db: &DatabaseConnection,
+/// Both participants are told, members or not: a removed member still holds the event. A
+/// session already past is housekeeping, not a cancellation, and owes no email. Failing to
+/// load or render costs only the email, logged; only the outbox write itself fails `db`.
+pub(crate) async fn enqueue_session_cancelled(
+    db: &impl ConnectionTrait,
     config: &Config,
     session: &coaching_sessions::Model,
-) {
-    if session.date < chrono::Utc::now().naive_utc() {
-        return;
+    cancellation: Cancellation,
+) -> Result<(), Error> {
+    if session.date < Utc::now().naive_utc() {
+        return Ok(());
     }
-    let result: Result<(), Error> = async {
-        let relationship =
-            coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
-        let org = organization::find_by_id(db, relationship.organization_id).await?;
-        let participants = Participants {
-            coach: &coach,
-            coachee: &coachee,
-            kind: relationship.kind,
-        };
-
-        let series_zone = invite_zone(db, session, participants.schedule_owner(session)).await?;
-        // Both, members or not: a removed member still holds the event.
-        send_session_cancelled_email(
-            config,
-            &Audience {
-                participants: &participants,
-                member_ids: &participants.ids(),
-            },
-            session,
-            &org,
-            series_zone,
-        )
+    let envelopes = session_cancelled_for_both(db, config, session, cancellation)
         .await
-    }
-    .await;
+        .unwrap_or_else(|e| {
+            warn!(
+                "Failed to prepare session cancelled emails for session {}: {e:?}",
+                session.id
+            );
+            Vec::new()
+        });
+    email_outbox::enqueue(db, envelopes).await.map(|_| ())
+}
 
-    if let Err(e) = result {
-        warn!(
-            "Failed to send session cancelled emails for session {}: {e:?}",
-            session.id
-        );
-    }
+/// Loads what `session`'s cancellation names and renders it for both participants.
+async fn session_cancelled_for_both(
+    db: &impl ConnectionTrait,
+    config: &Config,
+    session: &coaching_sessions::Model,
+    cancellation: Cancellation,
+) -> Result<Vec<Envelope>, Error> {
+    let brand = Brand::from_config(config)?;
+    let relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    let parties = InviteParties::load(db, &relationship).await?;
+    let participants = parties.participants();
+    let zone = invite_zone(db, session, participants.schedule_owner(session)).await?;
+    session_cancelled_envelopes(
+        &brand,
+        &Audience {
+            participants: &participants,
+            member_ids: &participants.ids(),
+        },
+        session,
+        &parties.organization,
+        cancellation,
+        zone,
+    )
 }
 
 /// Send a recurring-sessions-scheduled notification email to a single recipient.
@@ -2215,6 +2221,7 @@ async fn send_series_invite_email<N: EmailNotification>(
     })
     .await;
     cancel_orphans_for(
+        db,
         config,
         participants,
         replaced,
@@ -2324,7 +2331,7 @@ pub(crate) struct InviteParties {
 
 impl InviteParties {
     pub(crate) async fn load(
-        db: &DatabaseConnection,
+        db: &impl ConnectionTrait,
         relationship: &coaching_relationships::Model,
     ) -> Result<Self, Error> {
         Ok(Self {
@@ -2780,31 +2787,112 @@ fn build_stale_override_cancels(
         .collect()
 }
 
-/// Cancel the standalone events left by legacy members of `sessions`, each on its own
-/// session-cancelled email.
+/// A copy of `session` whose `SEQUENCE` outranks the standalone invite that placed its event.
+fn orphan_cancel(session: &coaching_sessions::Model) -> coaching_sessions::Model {
+    coaching_sessions::Model {
+        ical_sequence: orphan_cancel_sequence(session),
+        ..session.clone()
+    }
+}
+
+/// A [`Cancellation::Superseded`] email per orphan in `orphans`, for each participant
+/// `audience` may reach. One orphan that fails to build is logged and skipped.
+fn orphan_cancel_envelopes<'s>(
+    brand: &Brand,
+    audience: &Audience<'_>,
+    orphans: impl IntoIterator<Item = &'s coaching_sessions::Model>,
+    organization: &organizations::Model,
+) -> Vec<Envelope> {
+    orphans
+        .into_iter()
+        .flat_map(|orphan| {
+            // An orphan is standalone, so its invite was anchored to its schedule owner.
+            let zone = user::timezone(audience.participants.schedule_owner(orphan));
+            session_cancelled_envelopes(
+                brand,
+                audience,
+                &orphan_cancel(orphan),
+                organization,
+                Cancellation::Superseded,
+                zone,
+            )
+            .inspect_err(|e| {
+                warn!(
+                    "Could not cancel the standalone event of session {}, so it will linger: \
+                     {e:?}",
+                    orphan.id
+                )
+            })
+            .unwrap_or_default()
+        })
+        .collect()
+}
+
+/// Writes `envelopes` to the outbox in a transaction of their own.
+///
+/// For the series senders, which still send after their change commits: until they write in
+/// that transaction, the orphan cancellations they owe follow it here.
+async fn enqueue_after_commit(
+    db: &DatabaseConnection,
+    envelopes: Vec<Envelope>,
+) -> Result<(), Error> {
+    if envelopes.is_empty() {
+        return Ok(());
+    }
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    email_outbox::enqueue(&txn, envelopes).await?;
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+    Ok(())
+}
+
+/// Cancel the upcoming standalone events left by legacy members of `sessions`, each on its
+/// own session-cancelled email to both participants.
 ///
 /// The fallback for when a series-level operation has no series email to attach them to.
 /// A reschedule that leaves no future occurrences still deletes the rows it replaced, and
-/// "your session was cancelled" is what actually happened to each of them. Best-effort per
-/// session, so one failure does not cost the rest.
+/// nothing else addresses the events they left. Best-effort: a failure is logged.
 async fn cancel_orphaned_standalones(
     db: &DatabaseConnection,
     config: &Config,
     sessions: &[coaching_sessions::Model],
 ) {
-    for session in sessions.iter().filter(|s| is_orphaned_standalone(s)) {
-        let cancelled = coaching_sessions::Model {
-            ical_sequence: orphan_cancel_sequence(session),
-            ..session.clone()
-        };
-        notify_session_cancelled(db, config, &cancelled).await;
+    let now = Utc::now().naive_utc();
+    let orphans: Vec<&coaching_sessions::Model> = sessions
+        .iter()
+        .filter(|session| is_orphaned_standalone(session) && session.date >= now)
+        .collect();
+    let Some(first) = orphans.first() else {
+        return;
+    };
+    let relationship_id = first.coaching_relationship_id;
+    let result: Result<(), Error> = async {
+        let brand = Brand::from_config(config)?;
+        let relationship = coaching_relationship::find_by_id(db, relationship_id).await?;
+        let parties = InviteParties::load(db, &relationship).await?;
+        let participants = parties.participants();
+        let envelopes = orphan_cancel_envelopes(
+            &brand,
+            &Audience {
+                participants: &participants,
+                member_ids: &participants.ids(),
+            },
+            orphans,
+            &parties.organization,
+        );
+        enqueue_after_commit(db, envelopes).await
+    }
+    .await;
+
+    if let Err(e) = result {
+        warn!("Failed to cancel standalone events in relationship {relationship_id}: {e:?}");
     }
 }
 
 /// Cancel the standalone events left by legacy members of `sessions` for `recipients`, each
-/// on its own session-cancelled email, so a participant a members-only series email
-/// skipped still loses the event without seeing the series details. Best-effort per session.
+/// on its own session-cancelled email, so a participant a members-only series email skipped
+/// still loses the event without seeing the series details. Best-effort: a failure is logged.
 async fn cancel_orphans_for(
+    db: &DatabaseConnection,
     config: &Config,
     participants: &Participants<'_>,
     sessions: &[coaching_sessions::Model],
@@ -2814,29 +2902,24 @@ async fn cancel_orphans_for(
     if recipients.is_empty() {
         return;
     }
-    for session in sessions.iter().filter(|s| is_orphaned_standalone(s)) {
-        let cancelled = coaching_sessions::Model {
-            ical_sequence: orphan_cancel_sequence(session),
-            ..session.clone()
-        };
-        // An orphan is standalone, so its invite was anchored to its schedule owner.
-        if let Err(e) = send_session_cancelled_email(
-            config,
+    let result: Result<(), Error> = async {
+        let envelopes = orphan_cancel_envelopes(
+            &Brand::from_config(config)?,
             &Audience {
                 participants,
                 member_ids: recipients,
             },
-            &cancelled,
+            sessions
+                .iter()
+                .filter(|session| is_orphaned_standalone(session)),
             organization,
-            user::timezone(participants.schedule_owner(session)),
-        )
-        .await
-        {
-            warn!(
-                "Failed to cancel the standalone event of session {} for removed members: {e:?}",
-                session.id
-            );
-        }
+        );
+        enqueue_after_commit(db, envelopes).await
+    }
+    .await;
+
+    if let Err(e) = result {
+        warn!("Failed to cancel standalone events for removed members: {e:?}");
     }
 }
 

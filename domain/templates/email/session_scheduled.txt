@@ -1,0 +1,14 @@
+{% extends "email/base.txt" %}
+
+{% block content -%}
+{% match email.by -%}
+{% when Actor::You -%}
+You scheduled a {{ email.parties.session_label }} with {{ email.parties.other.full_name() }}.
+{% when Actor::Other -%}
+{{ email.parties.other.full_name() }} scheduled a {{ email.parties.session_label }} with you.
+{% endmatch %}
+When: {{ email.when.date }} at {{ email.when.time }} for {{ email.duration }}
+
+Join Session:
+{{ email.url }}
+{%- endblock %}
