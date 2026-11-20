@@ -73,14 +73,17 @@ hand per email, with each link as a bare URL on its own line.
    (`Participants::copies`, `format_session_date_time`).
 2. `compose` it with the `Brand`, and wrap it in an `Envelope` with its kind,
    `Subject::CoachingRelationship(id)` (or `Subject::User`) and recipient.
-3. `email_outbox::enqueue` the envelopes on the transaction that makes the change, with
-   the reads it renders from moved onto that transaction. A load or render failure is
-   logged and costs only the email; only the outbox write can fail the transaction.
+3. Load what the emails name before the transaction begins: a failed read inside it would
+   abort it in Postgres, so its commit would roll the change back while the call reported
+   success. Inside the transaction, only render (no reads) and `email_outbox::enqueue`.
+   A load or render failure is logged and costs only the email; only the outbox write can
+   fail the transaction.
 4. Remove the sender's Resend template path and its `*_TEMPLATE_ID` from the config and
    every passthrough layer.
 
-The single-session cancellation follows this: the session delete writes both participants'
-emails inside its transaction. The standalone-event cancellations that series edits owe
+The single-session cancellation follows this: the session delete loads a
+`CancellationNotice` first, then writes both participants' emails inside its transaction.
+Production refuses to start without `FRONTEND_BASE_URL`, next to the email provider check. The standalone-event cancellations that series edits owe
 still follow the series emails, which send after their own transaction, so they are
 enqueued in a transaction of their own right after it until the series emails move.
 
@@ -95,5 +98,5 @@ enqueued in a transaction of their own right after it until the series emails mo
 - CI runs with `INSTA_UPDATE=no`, so a changed email fails until its snapshot is reviewed
   and accepted (`cargo insta review`, or rerun with `INSTA_UPDATE=always` and read the diff).
 - To look at the emails in a browser, run
-  `EMAIL_PREVIEW=https://app.myrefactor.com cargo test -p domain write_previews`; each
-  kind is written to `target/email-preview/<kind>.html`.
+  `EMAIL_PREVIEW=https://app.myrefactor.com cargo test -p domain write_previews -- --ignored`;
+  each kind is written to `target/email-preview/<kind>.html`.

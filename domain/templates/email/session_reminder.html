@@ -4,7 +4,7 @@
 {% block preheader %}{{ email.when.date }} at {{ email.when.time }}. Add your topics and review your actions before you meet.{% endblock %}
 
 {% block content -%}
-<p>A quick reminder that you have a {{ email.parties.session_label }} with {{ email.parties.other.full_name() }} coming up.</p>
+<p>A quick reminder that you have a {{ email.parties.session_label }} with {{ email.parties.other.full_name }} coming up.</p>
 {% if let Some(title) = email.title -%}
 {% call m::row("Session") %}{{ title }}{% endcall %}
 {% endif -%}

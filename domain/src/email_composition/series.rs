@@ -38,7 +38,7 @@ impl Email for SeriesScheduled {
     fn subject(&self) -> String {
         format!(
             "Your {} series with {} starts {}",
-            self.parties.session_label, self.parties.other.first_name, self.first.date
+            self.parties.session_label, self.parties.other.full_name, self.first.date
         )
     }
 
@@ -106,13 +106,13 @@ impl Email for SeriesRescheduled {
         match &self.scope {
             Scope::WholeSeries { .. } => format!(
                 "Your series of {session_label_plural} with {} has been rescheduled",
-                other.first_name
+                other.full_name
             ),
             Scope::FromSession {
                 first_moved_date, ..
             } => format!(
                 "Your {session_label_plural} with {} change from {first_moved_date}",
-                other.first_name
+                other.full_name
             ),
         }
     }
@@ -151,7 +151,7 @@ impl Email for SeriesCancelled {
     fn subject(&self) -> String {
         format!(
             "Your series of {} with {} has been cancelled",
-            self.parties.session_label_plural, self.parties.other.first_name
+            self.parties.session_label_plural, self.parties.other.full_name
         )
     }
 

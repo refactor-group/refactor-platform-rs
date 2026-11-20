@@ -89,22 +89,19 @@ impl Brand {
 /// Someone an email names, as their account spells it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Person {
+    /// What a greeting calls them: their first name, else the next name they have.
     pub first_name: String,
-    pub last_name: String,
+    /// Their first and last name, else their email.
+    pub full_name: String,
     pub email: String,
 }
 
 impl Person {
-    /// First and last name, as the copy names the other participant.
-    pub fn full_name(&self) -> String {
-        format!("{} {}", self.first_name, self.last_name)
-    }
-
     /// This person as an addressee.
     fn mailbox(&self) -> Mailbox {
         Mailbox {
             email: self.email.clone(),
-            name: Some(self.full_name()),
+            name: Some(self.full_name.clone()),
         }
     }
 }
@@ -112,8 +109,8 @@ impl Person {
 impl From<&users::Model> for Person {
     fn from(user: &users::Model) -> Self {
         Self {
-            first_name: user.first_name.clone(),
-            last_name: user.last_name.clone(),
+            first_name: user.short_name().to_string(),
+            full_name: user.full_name().into_owned(),
             email: user.email.clone(),
         }
     }
@@ -214,15 +211,20 @@ pub fn calendar_attachments<'a>(
     parts
         .into_iter()
         .enumerate()
-        .map(|(index, (body, method))| Attachment {
-            filename: match index {
-                0 => "invite.ics".to_string(),
-                n => format!("invite-{}.ics", n + 1),
-            },
-            content_type: format!("text/calendar; method={}; charset=UTF-8", method.as_str()),
-            content: STANDARD.encode(body.as_bytes()),
-        })
+        .map(|(position, (body, method))| calendar_attachment(position, body, method))
         .collect()
+}
+
+/// The calendar part at `position` among an email's calendar parts, counting from zero.
+pub fn calendar_attachment(position: usize, body: &str, method: &Method) -> Attachment {
+    Attachment {
+        filename: match position {
+            0 => "invite.ics".to_string(),
+            n => format!("invite-{}.ics", n + 1),
+        },
+        content_type: format!("text/calendar; method={}; charset=UTF-8", method.as_str()),
+        content: STANDARD.encode(body.as_bytes()),
+    }
 }
 
 /// Emits `$email`'s HTML and text templates and its [`Bodies`] impl. The derive needs

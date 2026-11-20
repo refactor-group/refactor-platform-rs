@@ -2,7 +2,7 @@
 source: domain/src/email_composition/session_tests.rs
 expression: "copy(&SessionScheduled { by: Actor::You, ..session_scheduled() })"
 ---
-Subject: Your coaching session with Alex on Wednesday, March 4, 2026
+Subject: Your coaching session with Alex Smith on Wednesday, March 4, 2026
 Preheader: Wednesday, March 4, 2026 at 10:00 AM — here's everything you need.
 
 Hi Jane,

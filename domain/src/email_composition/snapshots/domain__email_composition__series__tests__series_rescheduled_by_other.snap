@@ -2,7 +2,7 @@
 source: domain/src/email_composition/series_tests.rs
 expression: copy(&series_rescheduled())
 ---
-Subject: Your series of coaching sessions with Alex has been rescheduled
+Subject: Your series of coaching sessions with Alex Smith has been rescheduled
 Preheader: Your recurring sessions have moved. Your updated calendar invite is attached.
 
 Hi Jane,

@@ -2,7 +2,7 @@
 source: domain/src/email_composition/series_tests.rs
 expression: "copy(&SeriesRescheduled\n{ by: Actor::You, ..series_rescheduled_from_session() })"
 ---
-Subject: Your coaching sessions with Alex change from Wednesday, March 4, 2026
+Subject: Your coaching sessions with Alex Smith change from Wednesday, March 4, 2026
 Preheader: From Wednesday, March 4, 2026: Weekly on Wednesday at 10:00 AM. Earlier sessions are unchanged.
 
 Hi Jane,

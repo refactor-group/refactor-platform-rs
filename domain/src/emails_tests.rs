@@ -1972,9 +1972,9 @@ async fn test_session_cancelled_no_longer_short_circuits_a_legacy_series_member(
 
     let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
-    enqueue_session_cancelled(&db, &config, &session, Cancellation::By(Id::new_v4()))
-        .await
-        .expect("a failed lookup costs only the email");
+    let notice = CancellationNotice::load(&db, &config, &session).await;
+
+    assert!(notice.is_none(), "the mock answers no lookup");
 
     assert!(
         !db.into_transaction_log().is_empty(),
@@ -2063,59 +2063,122 @@ fn test_occurrence_cancelled_is_the_session_email() {
     );
 }
 
-/// A delete's cancellations are written inside its transaction, after the row is gone and
-/// before the commit, so they go out exactly when the delete does.
+/// The parties of a coaching relationship whose upcoming session is deleted, as the mock
+/// answers the delete's reads.
 #[cfg(feature = "mock")]
-#[tokio::test]
-async fn test_a_delete_writes_its_cancellations_inside_its_transaction() {
-    let config = create_full_config_with_mock("http://localhost:1");
-    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
-    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-    let org = create_test_organization();
-    let mut relationship = test_relationship();
-    relationship.coach_id = coach.id;
-    relationship.coachee_id = coachee.id;
-    relationship.organization_id = org.id;
-    let session = coaching_sessions::Model {
-        coaching_relationship_id: relationship.id,
-        date: chrono::Utc::now().naive_utc() + chrono::Duration::days(7),
-        ..create_test_session()
-    };
-    let bumped = coaching_sessions::Model {
-        ical_sequence: session.ical_sequence + 1,
-        ..session.clone()
-    };
-    let done = || sea_orm::MockExecResult {
-        last_insert_id: 0,
-        rows_affected: 1,
-    };
-    // The DELETE, a lock per recipient's conversation, then the outbox INSERT.
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results([vec![session.clone()]])
-        .append_query_results([Vec::<entity::coaching_session_images::Model>::new()])
-        .append_query_results([vec![bumped]])
-        .append_query_results([vec![relationship]])
-        .append_query_results([vec![coach.clone()]])
-        .append_query_results([vec![coachee]])
-        .append_query_results([vec![org]])
-        .append_exec_results([done(), done(), done(), done()])
-        .into_connection();
+struct DeleteFixture {
+    coach: users::Model,
+    coachee: users::Model,
+    organization: organizations::Model,
+    relationship: coaching_relationships::Model,
+    session: coaching_sessions::Model,
+}
 
-    crate::coaching_session::delete(&db, &config, session.id, coach.id)
+#[cfg(feature = "mock")]
+impl DeleteFixture {
+    fn new() -> Self {
+        let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+        let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+        let organization = create_test_organization();
+        let relationship = coaching_relationships::Model {
+            coach_id: coach.id,
+            coachee_id: coachee.id,
+            organization_id: organization.id,
+            ..test_relationship()
+        };
+        let session = coaching_sessions::Model {
+            coaching_relationship_id: relationship.id,
+            date: chrono::Utc::now().naive_utc() + chrono::Duration::days(7),
+            ..create_test_session()
+        };
+        Self {
+            coach,
+            coachee,
+            organization,
+            relationship,
+            session,
+        }
+    }
+
+    fn bumped(&self) -> coaching_sessions::Model {
+        coaching_sessions::Model {
+            ical_sequence: self.session.ical_sequence + 1,
+            ..self.session.clone()
+        }
+    }
+
+    /// Deletes the session as its coach, the email loads answered by `loads`, and returns
+    /// the SQL of each logged transaction.
+    async fn delete(&self, loads: impl FnOnce(MockDatabase) -> MockDatabase) -> Vec<Vec<String>> {
+        let done = || sea_orm::MockExecResult {
+            last_insert_id: 0,
+            rows_affected: 1,
+        };
+        let reads = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([vec![self.session.clone()]])
+            .append_query_results([Vec::<entity::coaching_session_images::Model>::new()]);
+        // Then the SEQUENCE bump; the DELETE, a lock per conversation and the outbox INSERT.
+        let db = loads(reads)
+            .append_query_results([vec![self.bumped()]])
+            .append_exec_results([done(), done(), done(), done()])
+            .into_connection();
+
+        crate::coaching_session::delete(
+            &db,
+            &create_full_config_with_mock("http://localhost:1"),
+            self.session.id,
+            self.coach.id,
+        )
         .await
         .expect("the delete succeeds");
 
-    let log = db.into_transaction_log();
-    let delete_txn = log
-        .iter()
-        .map(|txn| {
-            txn.statements()
-                .iter()
-                .map(|statement| statement.sql.clone())
-                .collect::<Vec<_>>()
-        })
+        db.into_transaction_log()
+            .iter()
+            .map(|txn| {
+                txn.statements()
+                    .iter()
+                    .map(|statement| statement.sql.clone())
+                    .collect()
+            })
+            .collect()
+    }
+}
+
+/// Whether `sql` reads what the cancellation emails name.
+#[cfg(feature = "mock")]
+fn reads_email_parties(sql: &str) -> bool {
+    sql.starts_with("SELECT")
+        && ["coaching_relationships", "users", "organizations"]
+            .iter()
+            .any(|table| sql.contains(&format!(r#"FROM "refactor_platform"."{table}""#)))
+}
+
+/// The logged transaction holding the DELETE.
+#[cfg(feature = "mock")]
+fn delete_transaction(log: &[Vec<String>]) -> &[String] {
+    log.iter()
         .find(|sql| sql.iter().any(|q| q.starts_with("DELETE")))
-        .unwrap_or_else(|| panic!("no DELETE: {log:?}"));
+        .unwrap_or_else(|| panic!("no DELETE: {log:?}"))
+}
+
+/// A delete's cancellations are written inside its transaction, after the row is gone and
+/// before the commit, and every read they need runs before it begins: a failed read inside
+/// would abort the transaction, rolling the delete back while it reported success.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_a_delete_writes_its_cancellations_inside_its_transaction() {
+    let f = DeleteFixture::new();
+
+    let log = f
+        .delete(|db| {
+            db.append_query_results([vec![f.relationship.clone()]])
+                .append_query_results([vec![f.coach.clone()]])
+                .append_query_results([vec![f.coachee.clone()]])
+                .append_query_results([vec![f.organization.clone()]])
+        })
+        .await;
+
+    let delete_txn = delete_transaction(&log);
     let deleted = delete_txn.iter().position(|q| q.starts_with("DELETE"));
     let enqueued = delete_txn
         .iter()
@@ -2123,6 +2186,40 @@ async fn test_a_delete_writes_its_cancellations_inside_its_transaction() {
     assert!(
         enqueued.is_some() && enqueued > deleted,
         "the outbox write follows the delete in its transaction: {delete_txn:?}"
+    );
+    assert!(
+        !delete_txn.iter().any(|q| reads_email_parties(q)),
+        "the emails' reads run before the transaction: {delete_txn:?}"
+    );
+    assert!(
+        log.iter().flatten().any(|q| reads_email_parties(q)),
+        "the emails' reads ran: {log:?}"
+    );
+}
+
+/// An email load that fails costs only the email: the delete still commits, writing no
+/// outbox row, and its transaction never ran the failed read.
+#[cfg(feature = "mock")]
+#[tokio::test]
+async fn test_a_failed_email_load_still_deletes_without_emails() {
+    let f = DeleteFixture::new();
+
+    let log = f
+        .delete(|db| db.append_query_errors([sea_orm::DbErr::Custom("down".into())]))
+        .await;
+
+    let delete_txn = delete_transaction(&log);
+    assert!(
+        !delete_txn.iter().any(|q| q.contains("email_outbox")),
+        "{delete_txn:?}"
+    );
+    assert!(
+        !delete_txn.iter().any(|q| reads_email_parties(q)),
+        "the failed read ran outside the transaction: {delete_txn:?}"
+    );
+    assert!(
+        log.iter().flatten().any(|q| reads_email_parties(q)),
+        "the load was tried: {log:?}"
     );
 }
 
@@ -2141,9 +2238,9 @@ async fn test_session_cancelled_skips_past_session() {
     // Zero appended results: any query would panic or error rather than pass.
     let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
-    enqueue_session_cancelled(&db, &config, &session, Cancellation::By(Id::new_v4()))
+    assert!(CancellationNotice::load(&db, &config, &session)
         .await
-        .expect("nothing is owed");
+        .is_none());
 
     assert!(
         db.into_transaction_log().is_empty(),
@@ -5062,8 +5159,8 @@ fn cancelled_emails_carry_the_kinds_session_label() {
                 .map(|envelope| envelope.email.subject.as_str())
                 .collect::<Vec<_>>(),
             [
-                format!("Your {label} with Alex has been cancelled"),
-                format!("Your {label} with Jane has been cancelled"),
+                format!("Your {label} with Alex Smith has been cancelled"),
+                format!("Your {label} with Jane Doe has been cancelled"),
             ],
             "{kind:?}"
         );
@@ -5422,9 +5519,10 @@ async fn occurrence_cancel_uses_the_stored_series_zone() {
         .append_query_results(vec![vec![series]])
         .into_connection();
 
-    let envelopes = session_cancelled_for_both(&db, &config, &session, Cancellation::By(coach.id))
+    let envelopes = CancellationNotice::load(&db, &config, &session)
         .await
-        .expect("the cancellation renders");
+        .expect("the cancellation loads")
+        .envelopes(&session, Cancellation::By(coach.id));
 
     let local = Utc
         .from_utc_datetime(&slot)

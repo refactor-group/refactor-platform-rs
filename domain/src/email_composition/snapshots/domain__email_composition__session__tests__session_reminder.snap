@@ -2,7 +2,7 @@
 source: domain/src/email_composition/session_tests.rs
 expression: copy(&session_reminder())
 ---
-Subject: Your coaching session with Alex is coming up
+Subject: Your coaching session with Alex Smith is coming up
 Preheader: Wednesday, March 4, 2026 at 10:00 AM. Add your topics and review your actions before you meet.
 
 Hi Jane,

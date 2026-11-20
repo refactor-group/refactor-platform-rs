@@ -15,9 +15,9 @@ From {{ first_moved_date }}: {{ email.cadence }} at {{ email.starts.time }}. Ear
 {% when Scope::WholeSeries { previous_start, previous_cadence } -%}
 {% match email.by -%}
 {% when Actor::You -%}
-<p>You have rescheduled your recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name() }}.</p>
+<p>You have rescheduled your recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name }}.</p>
 {% when Actor::Other -%}
-<p>{{ email.parties.other.full_name() }} has rescheduled your recurring series of {{ email.parties.session_label_plural }}.</p>
+<p>{{ email.parties.other.full_name }} has rescheduled your recurring series of {{ email.parties.session_label_plural }}.</p>
 {% endmatch -%}
 {% if let Some(previous) = previous_start -%}
 {% call m::row("Previously started") %}{{ previous.date }} at {{ previous.time }}{% endcall %}
@@ -36,7 +36,7 @@ From {{ first_moved_date }}: {{ email.cadence }} at {{ email.starts.time }}. Ear
 {% when Actor::You -%}
 <p>You changed your recurring {{ email.parties.session_label_plural }} from {{ first_moved_date }} onward.</p>
 {% when Actor::Other -%}
-<p>{{ email.parties.other.full_name() }} changed your recurring {{ email.parties.session_label_plural }} from {{ first_moved_date }} onward.</p>
+<p>{{ email.parties.other.full_name }} changed your recurring {{ email.parties.session_label_plural }} from {{ first_moved_date }} onward.</p>
 {% endmatch -%}
 {% call m::row("Before") %}{{ previous_cadence }} at {{ previous_time }}{% endcall %}
 {% call m::row(format!("From {first_moved_date}")) %}{{ email.cadence }} at {{ email.starts.time }} for {{ email.duration }}{% endcall %}

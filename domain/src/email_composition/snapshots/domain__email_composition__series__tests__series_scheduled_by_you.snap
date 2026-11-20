@@ -2,7 +2,7 @@
 source: domain/src/email_composition/series_tests.rs
 expression: "copy(&SeriesScheduled { by: Actor::You, ..series_scheduled() })"
 ---
-Subject: Your coaching session series with Alex starts Wednesday, March 4, 2026
+Subject: Your coaching session series with Alex Smith starts Wednesday, March 4, 2026
 Preheader: Weekly on Wednesday at 10:00 AM, 13 coaching sessions scheduled.
 
 Hi Jane,

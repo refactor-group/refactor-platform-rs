@@ -1,7 +1,7 @@
 {% extends "email/base.txt" %}
 
 {% block content -%}
-Your {{ email.parties.session_label }} with {{ email.parties.other.full_name() }} has been rescheduled.
+Your {{ email.parties.session_label }} with {{ email.parties.other.full_name }} has been rescheduled.
 
 {% if let Some(previous) = email.previous -%}
 Previous time: {{ previous.date }} at {{ previous.time }}

@@ -32,7 +32,7 @@ impl Email for SessionScheduled {
     fn subject(&self) -> String {
         format!(
             "Your {} with {} on {}",
-            self.parties.session_label, self.parties.other.first_name, self.when.date
+            self.parties.session_label, self.parties.other.full_name, self.when.date
         )
     }
 
@@ -70,7 +70,7 @@ impl Email for SessionRescheduled {
     fn subject(&self) -> String {
         format!(
             "Your {} with {} has been rescheduled",
-            self.parties.session_label, self.parties.other.first_name
+            self.parties.session_label, self.parties.other.full_name
         )
     }
 
@@ -117,7 +117,7 @@ impl Email for SessionCancelled {
         match self.reason {
             CancelReason::Cancelled { .. } => format!(
                 "Your {label} with {} has been cancelled",
-                self.parties.other.first_name
+                self.parties.other.full_name
             ),
             CancelReason::Superseded => format!(
                 "An old calendar event for your {label} on {} was removed",
@@ -157,7 +157,7 @@ impl Email for SessionReminder {
     fn subject(&self) -> String {
         format!(
             "Your {} with {} is coming up",
-            self.parties.session_label, self.parties.other.first_name
+            self.parties.session_label, self.parties.other.full_name
         )
     }
 }

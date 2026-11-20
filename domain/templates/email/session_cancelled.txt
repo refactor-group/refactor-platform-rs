@@ -5,14 +5,14 @@
 {% when CancelReason::Cancelled { by } -%}
 {% match by -%}
 {% when Actor::You -%}
-You have cancelled your {{ email.parties.session_label }} with {{ email.parties.other.full_name() }}.
+You have cancelled your {{ email.parties.session_label }} with {{ email.parties.other.full_name }}.
 {% when Actor::Other -%}
-{{ email.parties.other.full_name() }} has cancelled your {{ email.parties.session_label }}.
+{{ email.parties.other.full_name }} has cancelled your {{ email.parties.session_label }}.
 {% endmatch %}
 Was scheduled for: {{ email.when.date }} at {{ email.when.time }}
 
 The attached calendar update removes this event from your calendar. Nothing else is needed from you.
 {%- when CancelReason::Superseded -%}
-Your {{ email.parties.session_label }} with {{ email.parties.other.full_name() }} on {{ email.when.date }} at {{ email.when.time }} had its own calendar event from before it was part of a recurring series. That event is out of date, so the attached update removes it from your calendar.
+Your {{ email.parties.session_label }} with {{ email.parties.other.full_name }} on {{ email.when.date }} at {{ email.when.time }} had its own calendar event from before it was part of a recurring series. That event is out of date, so the attached update removes it from your calendar.
 {%- endmatch %}
 {%- endblock %}

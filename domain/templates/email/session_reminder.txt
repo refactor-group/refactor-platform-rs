@@ -1,7 +1,7 @@
 {% extends "email/base.txt" %}
 
 {% block content -%}
-A quick reminder that you have a {{ email.parties.session_label }} with {{ email.parties.other.full_name() }} coming up.
+A quick reminder that you have a {{ email.parties.session_label }} with {{ email.parties.other.full_name }} coming up.
 
 {% if let Some(title) = email.title -%}
 Session: {{ title }}

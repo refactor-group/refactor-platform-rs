@@ -2,7 +2,7 @@
 source: domain/src/email_composition/session_tests.rs
 expression: copy(&session_rescheduled())
 ---
-Subject: Your coaching session with Alex has been rescheduled
+Subject: Your coaching session with Alex Smith has been rescheduled
 Preheader: Now Wednesday, March 4, 2026 at 10:00 AM. Your calendar invite is attached.
 
 Hi Jane,

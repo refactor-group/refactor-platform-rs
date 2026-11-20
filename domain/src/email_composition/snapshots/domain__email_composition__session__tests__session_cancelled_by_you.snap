@@ -2,8 +2,8 @@
 source: domain/src/email_composition/session_tests.rs
 expression: "copy(&SessionCancelled\n{ reason: CancelReason::Cancelled { by: Actor::You }, ..session_cancelled() })"
 ---
-Subject: Your coaching session with Alex has been cancelled
-Preheader: Your session on Wednesday, March 4, 2026 has been cancelled.
+Subject: Your coaching session with Alex Smith has been cancelled
+Preheader: Your coaching session on Wednesday, March 4, 2026 has been cancelled.
 
 Hi Jane,
 

@@ -3,9 +3,9 @@
 {% block content -%}
 {% match email.by -%}
 {% when Actor::You -%}
-You have cancelled your recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name() }}.
+You have cancelled your recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name }}.
 {% when Actor::Other -%}
-{{ email.parties.other.full_name() }} has cancelled your recurring series of {{ email.parties.session_label_plural }}.
+{{ email.parties.other.full_name }} has cancelled your recurring series of {{ email.parties.session_label_plural }}.
 {% endmatch %}
 Upcoming sessions cancelled: {{ email.count }}
 Covering: {{ email.first_date }} through {{ email.last_date }}

@@ -23,6 +23,7 @@ use sea_orm::DatabaseConnection;
 use serde::Deserialize;
 use service::config::Config;
 
+use crate::email_composition::Brand;
 use crate::email_outbox::{
     idempotency_key, settle, Mailer, OutgoingEmail, Receipt, RetryPolicy, Transition,
 };
@@ -61,6 +62,22 @@ pub struct Sweep {
     policy: RetryPolicy,
 }
 
+/// Composed emails link to the frontend, so production refuses to start without
+/// `FRONTEND_BASE_URL`; elsewhere they are skipped, which is said once here.
+fn ensure_composable(config: &Config) -> Result<(), Error> {
+    match (Brand::from_config(config), config.is_production()) {
+        (Ok(_), _) => Ok(()),
+        (Err(e), true) => Err(Error {
+            source: Some("no frontend base URL configured for composed emails".into()),
+            ..e
+        }),
+        (Err(_), false) => {
+            warn!("[email-outbox] FRONTEND_BASE_URL is not set; composed emails will be skipped");
+            Ok(())
+        }
+    }
+}
+
 impl Sweep {
     /// A sweep that delivers through `mailer`.
     pub fn new(mailer: Arc<dyn Mailer>, policy: RetryPolicy) -> Self {
@@ -80,9 +97,11 @@ impl Sweep {
 
     /// Builds the sweep over the configured email provider.
     ///
-    /// In production a missing or broken provider is an error, so the server refuses to
-    /// start. Elsewhere the sweep drains instead and says so once.
+    /// In production a missing or broken provider, or no frontend for composed emails to
+    /// link to, is an error, so the server refuses to start. Elsewhere the sweep drains
+    /// instead and says so once.
     pub async fn from_config(config: &Config) -> Result<Self, Error> {
+        ensure_composable(config)?;
         let policy = RetryPolicy::default();
         match (mailer::from_config(config).await, config.is_production()) {
             (Ok(Some(mailer)), _) => {

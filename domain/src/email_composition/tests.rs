@@ -17,6 +17,44 @@ fn the_layout_renders_as_snapshotted() {
     insta::assert_snapshot!("layout_session_scheduled", email.html);
 }
 
+/// A user named `first` `last`, with a display name the composed emails don't use.
+fn user(first: &str, last: &str) -> users::Model {
+    let now = chrono::Utc::now().fixed_offset();
+    users::Model {
+        id: Id::new_v4(),
+        email: "pat@example.com".into(),
+        first_name: first.into(),
+        last_name: last.into(),
+        display_name: Some("Pat the Coach".into()),
+        password: None,
+        github_username: None,
+        github_profile_url: None,
+        timezone: "UTC".into(),
+        default_coaching_session_duration_minutes: crate::duration::Duration::default_minutes(),
+        working_hours_start: crate::working_hours::default_start(),
+        working_hours_end: crate::working_hours::default_end(),
+        roles: Vec::new(),
+        invite_status: None,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+#[test]
+fn a_person_falls_back_through_blank_names() {
+    let names = |first, last| {
+        let person = Person::from(&user(first, last));
+        (person.first_name, person.full_name)
+    };
+
+    assert_eq!(names(" Pat ", " Lee "), ("Pat".into(), "Pat Lee".into()));
+    assert_eq!(names("", "Lee"), ("Pat the Coach".into(), "Lee".into()));
+    assert_eq!(
+        names(" ", ""),
+        ("Pat the Coach".into(), "pat@example.com".into())
+    );
+}
+
 #[test]
 fn compose_sends_from_the_brand_to_the_recipient_with_the_calendar() {
     let email = compose(&session_cancelled(), &brand()).expect("the email composes");
@@ -80,7 +118,7 @@ fn user_text_is_escaped_in_html_and_verbatim_in_text() {
         parties: Parties {
             other: Person {
                 first_name: HOSTILE.into(),
-                last_name: HOSTILE.into(),
+                full_name: HOSTILE.into(),
                 email: "alex@example.com".into(),
             },
             organization_name: HOSTILE.into(),
@@ -179,14 +217,13 @@ fn calendar_parts_are_numbered_after_the_first() {
     );
 }
 
-/// Writes each kind's sample to `target/email-preview/<kind>.html` for a browser when
-/// `EMAIL_PREVIEW` names the frontend to take the logo from, such as
-/// `https://app.myrefactor.com`. Does nothing otherwise.
+/// Writes each kind's sample to `target/email-preview/<kind>.html` for a browser. Run with
+/// `EMAIL_PREVIEW=<frontend base URL> cargo test -p domain write_previews -- --ignored`.
 #[test]
+#[ignore = "writes previews for a browser; checks nothing"]
 fn write_previews() {
-    let Ok(frontend) = std::env::var("EMAIL_PREVIEW") else {
-        return;
-    };
+    let frontend =
+        std::env::var("EMAIL_PREVIEW").unwrap_or_else(|_| "https://app.myrefactor.com".to_string());
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/email-preview");
     fs::create_dir_all(&dir).expect("the preview directory is created");
     for (kind, email) in every_email(&Brand::new(&frontend)) {

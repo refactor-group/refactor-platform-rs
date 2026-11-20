@@ -3,14 +3,13 @@ use std::fmt::Display;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 use email_address::EmailAddress;
 use log::*;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize, Serializer};
 use service::config::Config;
 
+use crate::email_composition::calendar_attachment;
 use crate::email_outbox::{Attachment as OutboxAttachment, Mailer, OutgoingEmail, Receipt};
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::gateway::ical::Method;
@@ -281,14 +280,15 @@ impl SendEmailRequestBuilder {
             .iter()
             .filter(|attachment| attachment.filename.ends_with(".ics"))
             .count();
-        let filename = match calendar_parts {
-            0 => "invite.ics".to_string(),
-            n => format!("invite-{}.ics", n + 1),
-        };
+        let OutboxAttachment {
+            filename,
+            content_type,
+            content,
+        } = calendar_attachment(calendar_parts, ics_body, method);
         self.attachments.push(Attachment {
             filename,
-            content_type: format!("text/calendar; method={}; charset=UTF-8", method.as_str()),
-            content: STANDARD.encode(ics_body.as_bytes()),
+            content_type,
+            content,
         });
         self
     }
@@ -638,9 +638,11 @@ async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMa
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
     use service::config::Config;
 
+    use super::*;
     use crate::email_outbox::Mailbox;
 
     #[tokio::test]

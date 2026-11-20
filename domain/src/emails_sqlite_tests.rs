@@ -258,14 +258,12 @@ impl Seeded {
 }
 
 async fn cancel_session(seeded: &Seeded, db: &DatabaseConnection) -> BTreeSet<String> {
-    enqueue_session_cancelled(
-        db,
-        &composing(),
-        &seeded.session,
-        Cancellation::By(seeded.coach.id),
-    )
-    .await
-    .expect("the cancellations are written");
+    CancellationNotice::load(db, &composing(), &seeded.session)
+        .await
+        .expect("the cancellation loads")
+        .enqueue(db, &seeded.session, Cancellation::By(seeded.coach.id))
+        .await
+        .expect("the cancellations are written");
     outbox_kinds(db)
         .await
         .into_iter()
@@ -1008,6 +1006,48 @@ async fn a_refused_delete_writes_no_cancellation() {
             .await
             .expect_err("a session with an action is refused");
 
+        assert!(outbox(&db).await.is_empty());
+    })
+    .await;
+}
+
+/// A series edit that skips a coachee holding no role writes her no cancellation for a
+/// standalone event already past: that is housekeeping, not a change to announce.
+#[tokio::test]
+async fn a_series_edit_writes_no_cancellation_for_a_past_orphan() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed(&db).await;
+        seeded.grant_role(&db, seeded.coach.id).await;
+        let (series, sessions) = seeded.series(&db).await;
+        let past_orphan = coaching_sessions::Model {
+            ical_recurrence_id: None,
+            ical_sequence: 1,
+            date: Utc::now().naive_utc() - TimeDelta::days(1),
+            ..sessions[0].clone()
+        };
+        let member_ids = notify_member_ids(&db, &seeded.relationship)
+            .await
+            .expect("membership reads");
+        let mut server = Server::new_async().await;
+        let sent = Sent::default();
+        let _mock = sent.capture(&mut server).await;
+
+        notify_recurring_sessions_rescheduled(
+            &db,
+            &sending(&server),
+            &series,
+            PreviousSeries(&series),
+            &sessions,
+            ReplacedSessions(std::slice::from_ref(&past_orphan)),
+            &member_ids,
+        )
+        .await;
+
+        assert_eq!(
+            sent.all(),
+            [(seeded.coach.email.clone(), SERIES_RESCHEDULED.to_string())]
+        );
         assert!(outbox(&db).await.is_empty());
     })
     .await;

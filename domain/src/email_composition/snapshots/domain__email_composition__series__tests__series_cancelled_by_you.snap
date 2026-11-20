@@ -2,7 +2,7 @@
 source: domain/src/email_composition/series_tests.rs
 expression: "copy(&SeriesCancelled { by: Actor::You, ..series_cancelled() })"
 ---
-Subject: Your series of coaching sessions with Alex has been cancelled
+Subject: Your series of coaching sessions with Alex Smith has been cancelled
 Preheader: Your recurring coaching sessions have been cancelled.
 
 Hi Jane,

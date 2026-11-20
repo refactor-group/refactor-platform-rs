@@ -4,7 +4,7 @@
 {% block preheader %}Now {{ email.when.date }} at {{ email.when.time }}. Your calendar invite is attached.{% endblock %}
 
 {% block content -%}
-<p>Your {{ email.parties.session_label }} with {{ email.parties.other.full_name() }} has been rescheduled.</p>
+<p>Your {{ email.parties.session_label }} with {{ email.parties.other.full_name }} has been rescheduled.</p>
 {% if let Some(previous) = email.previous -%}
 {% call m::row("Previous time") %}{{ previous.date }} at {{ previous.time }}{% endcall %}
 {% endif -%}

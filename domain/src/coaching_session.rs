@@ -12,7 +12,7 @@ use crate::coaching_session_hydration::{
 };
 use crate::coaching_session_image;
 use crate::coaching_sessions::Model;
-use crate::emails::{self, Cancellation};
+use crate::emails::{self, Cancellation, CancellationNotice};
 use crate::error::{reason, DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
 use crate::gateway::tiptap::TiptapDocument;
@@ -646,6 +646,9 @@ pub(crate) async fn delete(
     // Read before the delete: the image rows' FK cascades, and `storage_key` is the only
     // pointer to the bytes. Afterwards there is nothing left to find them by.
     let image_keys = coaching_session_image::storage_keys_for_sessions(db, &[id]).await?;
+    // Loaded outside the transaction: a failed read there would abort it, and the commit
+    // would roll the delete back while this call reported success.
+    let notice = CancellationNotice::load(db, config, &coaching_session).await;
 
     // Bump the SEQUENCE and delete in one transaction, and take the number from the DB
     // rather than from the model read above. An edit committing between that read and
@@ -663,7 +666,11 @@ pub(crate) async fn delete(
             err.into()
         }
     })?;
-    emails::enqueue_session_cancelled(&txn, config, &cancelled, Cancellation::By(actor_id)).await?;
+    if let Some(notice) = &notice {
+        notice
+            .enqueue(&txn, &cancelled, Cancellation::By(actor_id))
+            .await?;
+    }
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
     // Best effort, and only after the rows are gone: a Tiptap or storage failure must not

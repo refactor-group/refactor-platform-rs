@@ -5,9 +5,9 @@
 {% when Scope::WholeSeries { previous_start, previous_cadence } -%}
 {% match email.by -%}
 {% when Actor::You -%}
-You have rescheduled your recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name() }}.
+You have rescheduled your recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name }}.
 {% when Actor::Other -%}
-{{ email.parties.other.full_name() }} has rescheduled your recurring series of {{ email.parties.session_label_plural }}.
+{{ email.parties.other.full_name }} has rescheduled your recurring series of {{ email.parties.session_label_plural }}.
 {% endmatch %}
 {% if let Some(previous) = previous_start -%}
 Previously started: {{ previous.date }} at {{ previous.time }}
@@ -29,7 +29,7 @@ Join First Session:
 {% when Actor::You -%}
 You changed your recurring {{ email.parties.session_label_plural }} from {{ first_moved_date }} onward.
 {% when Actor::Other -%}
-{{ email.parties.other.full_name() }} changed your recurring {{ email.parties.session_label_plural }} from {{ first_moved_date }} onward.
+{{ email.parties.other.full_name }} changed your recurring {{ email.parties.session_label_plural }} from {{ first_moved_date }} onward.
 {% endmatch %}
 Before: {{ previous_cadence }} at {{ previous_time }}
 From {{ first_moved_date }}: {{ email.cadence }} at {{ email.starts.time }} for {{ email.duration }}

@@ -18,12 +18,12 @@ pub(crate) fn parties() -> Parties {
     Parties {
         recipient: Person {
             first_name: "Jane".into(),
-            last_name: "Doe".into(),
+            full_name: "Jane Doe".into(),
             email: "jane@example.com".into(),
         },
         other: Person {
             first_name: "Alex".into(),
-            last_name: "Smith".into(),
+            full_name: "Alex Smith".into(),
             email: "alex@example.com".into(),
         },
         session_label: "coaching session",

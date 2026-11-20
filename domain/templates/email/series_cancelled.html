@@ -6,9 +6,9 @@
 {% block content -%}
 {% match email.by -%}
 {% when Actor::You -%}
-<p>You have cancelled your recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name() }}.</p>
+<p>You have cancelled your recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name }}.</p>
 {% when Actor::Other -%}
-<p>{{ email.parties.other.full_name() }} has cancelled your recurring series of {{ email.parties.session_label_plural }}.</p>
+<p>{{ email.parties.other.full_name }} has cancelled your recurring series of {{ email.parties.session_label_plural }}.</p>
 {% endmatch -%}
 {% call m::row("Upcoming sessions cancelled") %}{{ email.count }}{% endcall %}
 {% call m::row("Covering") %}{{ email.first_date }} through {{ email.last_date }}{% endcall %}

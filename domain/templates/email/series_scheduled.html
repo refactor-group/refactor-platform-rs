@@ -6,9 +6,9 @@
 {% block content -%}
 {% match email.by -%}
 {% when Actor::You -%}
-<p>You scheduled a recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name() }}.</p>
+<p>You scheduled a recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name }}.</p>
 {% when Actor::Other -%}
-<p>{{ email.parties.other.full_name() }} scheduled a recurring series of {{ email.parties.session_label_plural }} with you.</p>
+<p>{{ email.parties.other.full_name }} scheduled a recurring series of {{ email.parties.session_label_plural }} with you.</p>
 {% endmatch -%}
 {% call m::row("Starts") %}{{ email.first.date }} at {{ email.first.time }} for {{ email.duration }}{% endcall %}
 {% call m::row("Repeats") %}{{ email.cadence }}{% endcall %}
