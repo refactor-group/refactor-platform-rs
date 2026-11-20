@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use email_address::EmailAddress;
@@ -10,6 +11,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize, Serializer};
 use service::config::Config;
 
+use crate::email_outbox::{Mailer, Receipt};
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::gateway::ical::Method;
 
@@ -18,6 +20,8 @@ const SEND_EMAIL_PATH: &str = "/emails";
 const IDEMPOTENCY_KEY_HEADER: &str = "Idempotency-Key";
 /// Resend's 409 `name` for a reused idempotency key whose request body changed.
 const INVALID_IDEMPOTENT_REQUEST: &str = "invalid_idempotent_request";
+/// Resend's 409 `name` for a request under a key whose first request is still in flight.
+const CONCURRENT_IDEMPOTENT_REQUESTS: &str = "concurrent_idempotent_requests";
 
 // Most sends run while a user waits, so a hung Resend fails the send instead of the
 // request. A timeout can follow an accepted send, so retried sends need an idempotency key.
@@ -372,7 +376,6 @@ impl Client {
 
     /// Send an email via Resend's `POST /emails` endpoint.
     pub async fn send_email(&self, request: SendEmailRequest) -> Result<(), Error> {
-        let url = format!("{}{SEND_EMAIL_PATH}", self.base_url);
         let to_emails: Vec<String> = request.to.iter().map(|r| r.email.clone()).collect();
 
         info!(
@@ -380,20 +383,72 @@ impl Client {
             request.to.len()
         );
 
-        let post = self.client.post(&url).json(&request);
-        let post = match &request.idempotency_key {
+        let posted = self
+            .post(&request, request.idempotency_key.as_deref())
+            .await
+            .map_err(|e| {
+                warn!("Failed to send email request: {e:?}");
+                Error {
+                    source: Some(Box::new(e)),
+                    error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                        "Failed to send email request".to_string(),
+                    )),
+                }
+            })?;
+
+        match posted {
+            Posted::Sent(id) => {
+                info!("Email sent successfully to {to_emails:?}, id: {id:?}");
+                Ok(())
+            }
+            Posted::AlreadySent => {
+                info!(
+                    "Email to {to_emails:?} was already sent under idempotency key {:?}",
+                    request.idempotency_key
+                );
+                Ok(())
+            }
+            Posted::Refused {
+                status,
+                retry_after,
+                body,
+            } => {
+                // A rejection is usually payload versus template, and the template is the
+                // half not otherwise visible here.
+                let template_id = request
+                    .template
+                    .as_ref()
+                    .map(|t| t.id.as_str())
+                    .unwrap_or("none");
+                warn!(
+                    "Failed to send email to {to_emails:?} using template {template_id}: \
+                     {status} - {body}"
+                );
+                Err(Error {
+                    source: None,
+                    error_kind: DomainErrorKind::Internal(classify_failure(
+                        status,
+                        retry_after,
+                        body,
+                    )),
+                })
+            }
+        }
+    }
+
+    /// Posts `body` to `POST /emails` under `key`, if any, and reads Resend's answer.
+    async fn post(
+        &self,
+        body: &impl Serialize,
+        key: Option<&str>,
+    ) -> Result<Posted, reqwest::Error> {
+        let url = format!("{}{SEND_EMAIL_PATH}", self.base_url);
+        let post = self.client.post(&url).json(body);
+        let post = match key {
             Some(key) => post.header(IDEMPOTENCY_KEY_HEADER, key),
             None => post,
         };
-        let response = post.send().await.map_err(|e| {
-            warn!("Failed to send email request: {e:?}");
-            Error {
-                source: Some(Box::new(e)),
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                    "Failed to send email request".to_string(),
-                )),
-            }
-        })?;
+        let response = post.send().await?;
 
         let status = response.status();
         if status.is_success() {
@@ -401,47 +456,60 @@ impl Client {
                 .json()
                 .await
                 .unwrap_or(SendEmailResponse { id: None });
-            info!(
-                "Email sent successfully to {to_emails:?}, id: {:?}",
-                parsed.id
-            );
-            Ok(())
-        } else {
-            let retry_after = retry_after_from(response.headers());
-            let error_text = response.text().await.unwrap_or_default();
-            // Resend refuses a reused key whose body changed, but only because it already
-            // sent an email under that key, so the send this retry stands for happened.
+            return Ok(Posted::Sent(parsed.id));
+        }
+        let retry_after = retry_after_from(response.headers());
+        let body = response.text().await.unwrap_or_default();
+        // Resend refuses a reused key whose body changed, but only because it already
+        // sent an email under that key, so the send this retry stands for happened.
+        Ok(
             if status == StatusCode::CONFLICT
-                && request.idempotency_key.is_some()
-                && error_text.contains(INVALID_IDEMPOTENT_REQUEST)
+                && key.is_some()
+                && body.contains(INVALID_IDEMPOTENT_REQUEST)
             {
-                info!(
-                    "Email to {to_emails:?} was already sent under idempotency key {:?}",
-                    request.idempotency_key
-                );
-                return Ok(());
-            }
-            // A rejection is usually payload versus template, and the template is the
-            // half not otherwise visible here.
-            let template_id = request
-                .template
-                .as_ref()
-                .map(|t| t.id.as_str())
-                .unwrap_or("none");
-            warn!(
-                "Failed to send email to {to_emails:?} using template {template_id}: \
-                 {status} - {error_text}"
-            );
-            Err(Error {
-                source: None,
-                error_kind: DomainErrorKind::Internal(classify_failure(
+                Posted::AlreadySent
+            } else {
+                Posted::Refused {
                     status,
                     retry_after,
-                    error_text,
-                )),
-            })
+                    body,
+                }
+            },
+        )
+    }
+}
+
+/// Sends a stored outbox body verbatim under the row's key.
+#[async_trait]
+impl Mailer for Client {
+    async fn deliver(&self, key: &str, body: &serde_json::Value) -> Receipt {
+        match self.post(body, Some(key)).await {
+            Ok(Posted::Sent(_) | Posted::AlreadySent) => Receipt::Accepted,
+            Ok(Posted::Refused {
+                status,
+                retry_after,
+                body,
+            }) => receipt_for(status, retry_after, &body),
+            // Unanswered, so Resend may or may not have it; the key makes a repeat safe.
+            Err(e) => Receipt::Retry {
+                after: None,
+                error: e.to_string(),
+            },
         }
     }
+}
+
+/// What came of one `POST /emails` that got an answer.
+enum Posted {
+    /// Accepted, with the id Resend gave it when it said.
+    Sent(Option<String>),
+    /// Refused only because an email was already sent under this key.
+    AlreadySent,
+    Refused {
+        status: StatusCode,
+        retry_after: Option<Duration>,
+        body: String,
+    },
 }
 
 /// Build HTTP client with Resend authentication headers preconfigured.
@@ -465,11 +533,28 @@ fn classify_failure(
 ) -> InternalErrorKind {
     match status {
         StatusCode::TOO_MANY_REQUESTS => InternalErrorKind::RateLimited { retry_after },
-        // Not from Resend itself, but an intermediary can emit either, and both mean
-        // "came at a bad time" rather than "this request is wrong".
-        StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_EARLY => InternalErrorKind::Unavailable(body),
-        s if s.is_server_error() => InternalErrorKind::Unavailable(body),
+        s if is_transient(s) => InternalErrorKind::Unavailable(body),
         _ => InternalErrorKind::Rejected(body),
+    }
+}
+
+/// Whether a failed status means "came at a bad time" rather than "this request is wrong".
+fn is_transient(status: StatusCode) -> bool {
+    // 408 and 425 come from intermediaries rather than Resend, but mean the same.
+    matches!(status, StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_EARLY)
+        || status.is_server_error()
+}
+
+/// The outbox's reading of a refusal: a 409 for a key still in flight is retried too.
+fn receipt_for(status: StatusCode, retry_after: Option<Duration>, body: &str) -> Receipt {
+    let in_flight = status == StatusCode::CONFLICT && body.contains(CONCURRENT_IDEMPOTENT_REQUESTS);
+    if status == StatusCode::TOO_MANY_REQUESTS || is_transient(status) || in_flight {
+        Receipt::Retry {
+            after: retry_after,
+            error: format!("{status} - {body}"),
+        }
+    } else {
+        Receipt::Rejected(format!("{status} - {body}"))
     }
 }
 
@@ -1065,5 +1150,109 @@ mod tests {
         let result = client.send_email(request).await;
 
         assert!(result.is_ok());
+    }
+
+    // ── Mailer for the outbox ──────────────────────────────────────────
+
+    const OUTBOX_KEY: &str = "email-outbox/1";
+
+    /// Delivers a stored body against a server answering `status` with `body` and
+    /// `headers`; returns the receipt and the mock, to check what was sent.
+    async fn deliver_against(
+        status: usize,
+        body: &str,
+        headers: &[(&str, &str)],
+    ) -> (Receipt, mockito::Mock, mockito::ServerGuard) {
+        let mut server = mockito::Server::new_async().await;
+        let stored = serde_json::json!({
+            "from": "sender@example.com",
+            "to": ["recipient@example.com"],
+            "template": { "id": "t", "variables": { "name": "Ada" } },
+        });
+        let mock = headers
+            .iter()
+            .fold(
+                server
+                    .mock("POST", "/emails")
+                    .match_header("idempotency-key", OUTBOX_KEY)
+                    .match_body(mockito::Matcher::Json(stored.clone()))
+                    .with_status(status)
+                    .with_body(body),
+                |mock, (name, value)| mock.with_header(*name, value),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let (client, _) = client_and_request(&server.url()).await;
+        let receipt = client.deliver(OUTBOX_KEY, &stored).await;
+        (receipt, mock, server)
+    }
+
+    #[tokio::test]
+    async fn deliver_sends_the_stored_body_verbatim_under_the_key() {
+        let (receipt, mock, _server) = deliver_against(200, r#"{"id":"email_abc"}"#, &[]).await;
+
+        assert_eq!(receipt, Receipt::Accepted);
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn deliver_counts_a_changed_body_under_a_used_key_as_accepted() {
+        let (receipt, _, _server) = deliver_against(
+            409,
+            r#"{"statusCode":409,"name":"invalid_idempotent_request"}"#,
+            &[],
+        )
+        .await;
+
+        assert_eq!(receipt, Receipt::Accepted);
+    }
+
+    #[tokio::test]
+    async fn deliver_retries_while_the_key_is_in_flight() {
+        let (receipt, _, _server) = deliver_against(
+            409,
+            r#"{"statusCode":409,"name":"concurrent_idempotent_requests"}"#,
+            &[],
+        )
+        .await;
+
+        assert!(
+            matches!(receipt, Receipt::Retry { after: None, .. }),
+            "{receipt:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn deliver_retries_a_rate_limit_after_the_wait_resend_named() {
+        let (receipt, _, _server) = deliver_against(
+            429,
+            r#"{"name":"rate_limit_exceeded"}"#,
+            &[("retry-after", "4")],
+        )
+        .await;
+
+        assert!(
+            matches!(receipt, Receipt::Retry { after: Some(after), .. } if after == Duration::from_secs(4)),
+            "{receipt:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn deliver_retries_a_server_error() {
+        let (receipt, _, _server) = deliver_against(500, r#"{"name":"internal"}"#, &[]).await;
+
+        assert!(matches!(receipt, Receipt::Retry { .. }), "{receipt:?}");
+    }
+
+    #[tokio::test]
+    async fn deliver_rejects_a_refused_request_with_resends_reason() {
+        let (receipt, _, _server) =
+            deliver_against(422, r#"{"message":"validation failed"}"#, &[]).await;
+
+        assert!(
+            matches!(&receipt, Receipt::Rejected(error) if error.contains("validation failed")),
+            "{receipt:?}"
+        );
     }
 }

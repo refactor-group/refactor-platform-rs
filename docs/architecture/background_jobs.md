@@ -22,8 +22,12 @@ The cost of a sweep is latency bounded by the tick interval. For work measured i
 (a reminder 24 hours out, a 30-day retention purge) that is free.
 
 If a future job ever needs sub-second dispatch, per-item retry/backoff state, or a
-dead-letter queue, that is the point to revisit a real broker — none of the current jobs
-do.
+dead-letter queue, that is the point to revisit a real broker.
+
+Event emails are the one exception: they go through the email outbox, a table written in
+the transaction the email announces and drained by its own sweep. An event email stays
+true after later edits, so the staleness argument above does not apply to it, while work
+derived from state stays a sweep. See [`email_outbox.md`](email_outbox.md).
 
 ## Interface
 
@@ -157,6 +161,8 @@ drains over several ticks instead of bursting against the Resend API.
 |---|---|---|---|
 | `password-reset-sweep` | 24h | After interval | Deletes `password_reset_attempts` rows older than 30 days. Retention outlives the 24-hour daily-cap window; the rest is forensics. |
 | `session-reminder` | `SESSION_REMINDER_POLL_MINUTES` (default 15) | Immediately | Emails each participant the relationship's kind reminds (a coaching relationship's coachee, both colleagues) ahead of an upcoming session. Not scheduled at all when `SESSION_REMINDER_EMAIL_TEMPLATE_ID` is unset. |
+| `email-outbox` | 1s | Immediately | Delivers due `email_outbox` rows to Resend under each row's idempotency key, retrying with backoff and failing rows past 20 hours. Not scheduled when `RESEND_API_KEY` is unset. See [`email_outbox.md`](email_outbox.md). |
+| `email-outbox-purge` | 1h | After interval | Deletes `email_outbox` rows finished more than 7 days ago. |
 | `coaching-session-pending-reschedule` | 15s | Immediately | Emails a single session's net reschedule once it settles (`SESSION_RESCHEDULE_SETTLE_SECONDS`, default 60, capped by `SESSION_RESCHEDULE_SETTLE_MAX_SECONDS`, default 300). Always scheduled: without Resend or `SESSION_RESCHEDULED_EMAIL_TEMPLATE_ID` it drops due rows unsent, since a pending row suppresses the session's reminder. |
 
 The session-store expiry task in `web::init_server` stays hand-rolled: it is
@@ -178,6 +184,7 @@ The session-store expiry task in `web::init_server` stays hand-rolled: it is
 | `domain/src/jobs/session_reminder.rs` | Upcoming-session reminder sweep |
 | `domain/src/jobs/password_reset.rs` | Password-reset attempt retention sweep |
 | `domain/src/jobs/coaching_session_pending_reschedule.rs` | Settled-reschedule email sweep |
+| `domain/src/jobs/email_outbox.rs` | Email outbox delivery sweep and purge |
 | `entity_api/src/coaching_session_pending_reschedule.rs` | `claim_due` / `complete` / `release` (lease-based claim) |
 | `entity_api/src/coaching_session.rs` | `claim_due_reminders` / `release_reminder_claim` |
 | `web/src/lib.rs` | Registers the jobs at server start |

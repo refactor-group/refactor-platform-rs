@@ -7,8 +7,8 @@ use axum_login::{
     AuthManagerLayerBuilder,
 };
 use domain::jobs::{
-    coaching_session_image_purge, coaching_session_pending_reschedule, password_reset,
-    session_reminder, transcript_suggestions, Scheduler,
+    coaching_session_image_purge, coaching_session_pending_reschedule, email_outbox,
+    password_reset, session_reminder, transcript_suggestions, Scheduler,
 };
 use domain::user::Backend;
 use futures::future::join_all;
@@ -167,6 +167,13 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
     scheduler.spawn(coaching_session_pending_reschedule::Sweep::from_config(
         &app_state.config,
     ));
+    match email_outbox::Sweep::from_config(&app_state.config).await {
+        Some(sweep) => {
+            scheduler.spawn(sweep);
+        }
+        None => info!("RESEND_API_KEY not set, outbox emails will not be sent"),
+    }
+    scheduler.spawn(email_outbox::Purge);
     match session_reminder::Sweep::from_config(&app_state.config) {
         Some(sweep) => {
             scheduler.spawn(sweep);

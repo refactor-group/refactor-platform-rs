@@ -235,6 +235,14 @@ extractor cannot break one.
   the check, forced with a temporary trigger, is refused the same way rather than surfacing a
   foreign key fault. The tests recreate `user_role_changes` with SQLite defaults, since its id
   and timestamp defaults exist only in the migrations.
+- **The email outbox** (`domain/src/email_outbox_sqlite_tests.rs`,
+  `domain/src/jobs/email_outbox_sqlite_tests.rs`): an email enqueued in a rolled-back
+  transaction is not stored. A claim takes due rows oldest first up to its limit, skips a
+  live lease and retakes a lapsed one, and holds a row back while an older pending row has
+  the same subject and recipient. Sending and failing drop the body, a stale claim changes
+  nothing, and the purge deletes only rows finished before its cutoff. The sweep marks an
+  accepted email sent, retries under the same key after its backoff, fails a rejected or
+  expired one, and sends a held-back email once the older one finishes.
 - **The coaching session image purge**, below.
 
 ### The coaching session image purge
