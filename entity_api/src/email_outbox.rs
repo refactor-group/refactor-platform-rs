@@ -5,6 +5,8 @@
 //! holds the claim, so a sweep whose lease lapsed changes nothing. Every time comes from
 //! the caller.
 
+use std::collections::BTreeSet;
+
 use chrono::{NaiveDateTime, TimeDelta};
 use sea_orm::prelude::DateTimeWithTimeZone;
 use sea_orm::sea_query::{Alias, Expr, ExprTrait, LockBehavior, LockType, Query};
@@ -13,11 +15,18 @@ use sea_orm::{
     QueryFilter, QueryTrait, UpdateMany,
 };
 
+use crate::advisory_lock::{advisory_xact_lock, fold};
 use crate::error::Error;
 use crate::Id;
 use entity::email_outbox::{ActiveModel, Column, Entity};
 
 pub use entity::email_outbox::{Model, State};
+
+/// The columns that order pending rows, most significant first; `id` breaks every tie.
+const ORDER: [Column; 3] = [Column::CreatedAt, Column::Position, Column::Id];
+
+/// The first key of every conversation lock, apart from the other two-key locks.
+const CONVERSATION_LOCK_NAMESPACE: i32 = 3;
 
 /// One email to write: what it is, the conversation it belongs to, and its request body.
 #[derive(Clone, Debug, PartialEq)]
@@ -78,6 +87,20 @@ pub async fn insert(
     Ok(())
 }
 
+/// Holds each conversation of `rows` locked until the transaction ends, so writers to one
+/// conversation commit one after the other. Locks are taken in key order, so two writers
+/// never wait on each other.
+pub async fn lock_conversations(db: &impl ConnectionTrait, rows: &[New]) -> Result<(), Error> {
+    let keys: BTreeSet<i32> = rows
+        .iter()
+        .map(|row| conversation_lock_key(&row.subject_key, row.recipient_user_id))
+        .collect();
+    for key in keys {
+        advisory_xact_lock(db, CONVERSATION_LOCK_NAMESPACE, key).await?;
+    }
+    Ok(())
+}
+
 /// Claims up to `limit` due rows, oldest first, skipping rows another claim holds and rows
 /// waiting behind an older pending row in their conversation. Counts the attempt.
 pub async fn claim(
@@ -92,8 +115,7 @@ pub async fn claim(
         .column(Column::Id)
         .from(Entity.table_ref())
         .cond_where(eligible.clone())
-        .order_by(Column::CreatedAt, Order::Asc)
-        .order_by(Column::Position, Order::Asc)
+        .order_by_columns(ORDER.map(|column| (column, Order::Asc)))
         .limit(limit)
         .lock_with_behavior(LockType::Update, LockBehavior::SkipLocked)
         .to_owned();
@@ -108,11 +130,10 @@ pub async fn claim(
         .returning_all()
         .to_owned();
 
-    let mut claimed = Entity::find()
+    let claimed = Entity::find()
         .from_raw_sql(db.get_database_backend().build(&claim))
         .all(db)
         .await?;
-    claimed.sort_by_key(|row| (row.created_at, row.position));
 
     Ok(claimed
         .into_iter()
@@ -224,7 +245,7 @@ fn due(now: NaiveDateTime) -> Condition {
         )
 }
 
-/// No older pending row exists for the same subject and recipient.
+/// No pending row ahead of this one in `ORDER` exists for the same subject and recipient.
 fn first_in_line() -> Condition {
     let older = Alias::new("older");
     let theirs = |column: Column| Expr::col((older.clone(), column));
@@ -235,17 +256,20 @@ fn first_in_line() -> Condition {
         .and_where(theirs(Column::State).eq(State::Pending))
         .and_where(theirs(Column::SubjectKey).equals((Entity, Column::SubjectKey)))
         .and_where(theirs(Column::RecipientUserId).equals((Entity, Column::RecipientUserId)))
-        .cond_where(
-            Condition::any()
-                .add(theirs(Column::CreatedAt).lt(ours(Column::CreatedAt)))
-                .add(
-                    Condition::all()
-                        .add(theirs(Column::CreatedAt).eq(ours(Column::CreatedAt)))
-                        .add(theirs(Column::Position).lt(ours(Column::Position))),
-                ),
-        )
+        .and_where(Expr::tuple(ORDER.map(theirs)).lt(Expr::tuple(ORDER.map(ours))))
         .to_owned();
     Condition::all().add(Expr::exists(ahead).not())
+}
+
+/// The second key of the lock for a subject and recipient.
+fn conversation_lock_key(subject_key: &str, recipient_user_id: Id) -> i32 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let (upper, lower) = recipient_user_id.as_u64_pair();
+    let hash = subject_key.bytes().fold(FNV_OFFSET, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(FNV_PRIME)
+    });
+    fold(hash ^ upper ^ lower)
 }
 
 /// The row `claimed` names, still under its claim.

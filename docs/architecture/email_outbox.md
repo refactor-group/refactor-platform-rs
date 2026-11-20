@@ -14,7 +14,7 @@ calls Resend directly.
 | **Never sent twice.** | Each row's id is its Resend `Idempotency-Key` (`email-outbox/{id}`). Every attempt sends the same stored body under the same key, so Resend delivers it once. |
 | **Survives crashes and deploys.** | Rows are durable. A claim is a lease; a row whose sender died is claimable again when the lease lapses. The key makes the repeat safe. |
 | **Safe with many replicas.** | Rows are claimed with `FOR UPDATE SKIP LOCKED` and every state change is conditional on the caller still holding the claim. |
-| **Ordered per conversation.** | A row is not claimed while an older pending row exists for the same subject and recipient. |
+| **Ordered per conversation.** | A row is not claimed while an older pending row exists for the same subject and recipient. Writers to one conversation are serialized by a transaction-scoped advisory lock taken before the rows are stamped, so rows are ordered by commit, assuming replica clocks are NTP-synced. |
 | **Never outlives the key window.** | Resend remembers a key for 24 hours. A row older than 20 hours is failed without an attempt, so a late retry can never become a duplicate. |
 | **A render error never undoes the user's action.** | Senders render before enqueueing and log and skip a render or configuration failure. Only the insert itself can fail the caller's transaction. |
 | **Requests never wait on Resend.** | Requests only insert rows. |
@@ -70,8 +70,9 @@ codebase already uses (`coaching_session_pending_reschedule`).
 | `last_error` text null | Last failure as Resend described it. Never the body. |
 | `created_at`, `updated_at`, `finished_at` | `finished_at` is set when the row becomes `sent` or `failed`. |
 
-Pending rows are ordered by `(created_at, position)`. Partial indexes on pending rows
-serve the claim and the ordering check; an index on `finished_at` serves the purge.
+Pending rows are ordered by `(created_at, position, id)`. Partial indexes on pending rows
+serve the claim and the ordering check; a partial index on finished rows' `finished_at`
+serves the purge.
 
 ### Privacy
 
@@ -102,8 +103,9 @@ Constants, not configuration: tick 1s, batch 10, concurrency 5, lease 5 minutes,
 30s doubling to a 30-minute cap, cutoff 20 hours, retention 7 days. The sweep polls
 every second instead of waking on commit: one indexed query on an empty partial index is
 cheaper than threading a wake handle through every sender, and `LISTEN`/`NOTIFY` does not
-work through the transaction-mode connection pool. The sweep runs only where Resend is
-configured.
+work through the transaction-mode connection pool. Where Resend is not configured the
+sweep still runs and fails each due row with "email is not configured", so pending
+bodies never pile up.
 
 ## Code layout
 

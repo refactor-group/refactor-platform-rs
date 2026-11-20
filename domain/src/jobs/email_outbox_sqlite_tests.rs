@@ -80,6 +80,12 @@ async fn write(ctx: &Context, recipient: Id, subject: &str, label: &str, at: Nai
     .expect("the row inserts");
 }
 
+/// Runs one tick; returns what it handled of what it found.
+async fn tick(sweep: &Sweep<Scripted>, ctx: &Context) -> (u64, u64) {
+    let outcome = sweep.run(ctx).await.expect("the tick runs");
+    (outcome.processed, outcome.attempted)
+}
+
 async fn rows(ctx: &Context) -> Vec<Model> {
     entity::email_outbox::Entity::find()
         .all(&*ctx.db)
@@ -121,7 +127,7 @@ async fn an_accepted_email_is_sent_under_its_key_and_its_body_dropped() {
         let (ctx, sweep, mailer) = one_row([Receipt::Accepted]).await;
         let id = only_row(&ctx).await.id;
 
-        sweep.run(&ctx).await.expect("the tick runs");
+        assert_eq!(tick(&sweep, &ctx).await, (1, 1), "a sent email is handled");
 
         let row = only_row(&ctx).await;
         assert_eq!(
@@ -143,7 +149,11 @@ async fn a_retried_email_waits_then_goes_again_under_the_same_key() {
         let (ctx, sweep, mailer) = one_row([retry(), Receipt::Accepted]).await;
         let before = now();
 
-        sweep.run(&ctx).await.expect("the first tick runs");
+        assert_eq!(
+            tick(&sweep, &ctx).await,
+            (0, 1),
+            "a retry leaves the tick short"
+        );
 
         let row = only_row(&ctx).await;
         assert_eq!(row.state, State::Pending);
@@ -174,7 +184,11 @@ async fn a_rejected_email_fails() {
     within_time_limit(async {
         let (ctx, sweep, _) = one_row([Receipt::Rejected("422 - bad".to_string())]).await;
 
-        sweep.run(&ctx).await.expect("the tick runs");
+        assert_eq!(
+            tick(&sweep, &ctx).await,
+            (0, 1),
+            "a rejection leaves the tick short"
+        );
 
         let row = only_row(&ctx).await;
         assert_eq!(
@@ -195,11 +209,9 @@ async fn an_expired_email_fails_without_a_delivery() {
         write(&ctx, user, "user/a", "stale", now() - max_age).await;
         let mailer = Scripted::default();
 
-        Sweep::new(mailer.clone(), RetryPolicy::default())
-            .run(&ctx)
-            .await
-            .expect("the tick runs");
+        let expired = tick(&Sweep::new(mailer.clone(), RetryPolicy::default()), &ctx).await;
 
+        assert_eq!(expired, (0, 1), "an expired email leaves the tick short");
         assert_eq!(only_row(&ctx).await.state, State::Failed);
         assert!(mailer.delivered().is_empty());
     })
@@ -236,4 +248,31 @@ async fn a_newer_email_is_sent_after_the_older_one_finishes() {
         assert!(rows(&ctx).await.iter().all(|row| row.state == State::Sent));
     })
     .await;
+}
+
+#[tokio::test]
+async fn without_a_mailer_due_emails_are_dropped_unsent() {
+    within_time_limit(async {
+        let (ctx, _, _) = one_row([]).await;
+
+        let drained = tick(&Sweep::draining(RetryPolicy::default()), &ctx).await;
+
+        let row = only_row(&ctx).await;
+        assert_eq!(drained, (1, 1), "draining is not a failing tick");
+        assert_eq!(
+            (row.state, row.request, row.last_error.as_deref()),
+            (State::Failed, None, Some("email is not configured"))
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn from_config_delivers_only_where_resend_is_configured() {
+    let unconfigured = Sweep::from_config(&Config::from_args(["test"])).await;
+    let configured =
+        Sweep::from_config(&Config::from_args(["test", "--resend-api-key=test_key"])).await;
+
+    assert!(unconfigured.mailer.is_none());
+    assert!(configured.mailer.is_some());
 }

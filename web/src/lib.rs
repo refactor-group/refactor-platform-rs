@@ -167,12 +167,7 @@ pub async fn init_server(app_state: AppState) -> Result<()> {
     scheduler.spawn(coaching_session_pending_reschedule::Sweep::from_config(
         &app_state.config,
     ));
-    match email_outbox::Sweep::from_config(&app_state.config).await {
-        Some(sweep) => {
-            scheduler.spawn(sweep);
-        }
-        None => info!("RESEND_API_KEY not set, outbox emails will not be sent"),
-    }
+    scheduler.spawn(email_outbox::Sweep::from_config(&app_state.config).await);
     scheduler.spawn(email_outbox::Purge);
     match session_reminder::Sweep::from_config(&app_state.config) {
         Some(sweep) => {

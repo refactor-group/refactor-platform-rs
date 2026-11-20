@@ -34,9 +34,9 @@ async fn write(db: &DatabaseConnection, rows: Vec<New>, now: NaiveDateTime) {
         .expect("the rows insert");
 }
 
-/// Claims every eligible row at `now`; returns their labels in claim order.
+/// Claims every eligible row at `now`; returns their labels, sorted.
 async fn claim_labels(db: &DatabaseConnection, now: NaiveDateTime, limit: u64) -> Vec<String> {
-    claim(db, now, limit)
+    let mut labels: Vec<String> = claim(db, now, limit)
         .await
         .iter()
         .map(|claimed| {
@@ -45,7 +45,16 @@ async fn claim_labels(db: &DatabaseConnection, now: NaiveDateTime, limit: u64) -
                 .unwrap_or_default()
                 .to_string()
         })
-        .collect()
+        .collect();
+    labels.sort();
+    labels
+}
+
+/// The held row whose body carries `label`.
+fn labelled<'a>(held: &'a [Claimed], label: &str) -> &'a Claimed {
+    held.iter()
+        .find(|claimed| claimed.request["label"] == label)
+        .expect("the row is held")
 }
 
 async fn claim(db: &DatabaseConnection, now: NaiveDateTime, limit: u64) -> Vec<Claimed> {
@@ -197,6 +206,31 @@ async fn an_older_pending_row_holds_back_its_conversation_only() {
 }
 
 #[tokio::test]
+async fn rows_written_at_the_same_instant_are_ordered_by_id() {
+    within_time_limit(async {
+        let db = database().await;
+        let user = seed_user(&db).await;
+        write(&db, vec![new("user/a", user, "one")], at(1)).await;
+        write(&db, vec![new("user/a", user, "two")], at(1)).await;
+        let first = rows(&db)
+            .await
+            .into_iter()
+            .map(|row| row.id)
+            .min()
+            .expect("two rows");
+
+        let claimed = claim(&db, at(5), 10).await;
+
+        assert_eq!(
+            claimed.iter().map(|row| row.id).collect::<Vec<_>>(),
+            [first],
+            "only the lower id of a tie goes first"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_batch_is_claimed_in_the_order_it_was_written() {
     within_time_limit(async {
         let db = database().await;
@@ -225,7 +259,7 @@ async fn a_batch_is_claimed_in_the_order_it_was_written() {
 
         assert_eq!(
             claim_labels(&db, at(5) + LEASE * 2, 10).await,
-            ["two", "three"],
+            ["three", "two"],
             "the second waits until the first of its batch finishes"
         );
     })
@@ -267,12 +301,14 @@ async fn finishing_drops_the_body_and_the_claim() {
         .await;
         let held = claim(&db, at(5), 10).await;
 
-        assert!(email_outbox::mark_sent(&db, &held[0], at(6))
+        assert!(email_outbox::mark_sent(&db, labelled(&held, "sent"), at(6))
             .await
             .expect("it is sent"));
-        assert!(email_outbox::fail(&db, &held[1], at(7), "422 - refused")
-            .await
-            .expect("it fails"));
+        assert!(
+            email_outbox::fail(&db, labelled(&held, "failed"), at(7), "422 - refused")
+                .await
+                .expect("it fails")
+        );
 
         let finished = rows(&db).await;
         assert_eq!(
@@ -375,10 +411,10 @@ async fn purge_deletes_only_rows_finished_before_the_cutoff() {
         )
         .await;
         let held = claim(&db, at(2), 2).await;
-        email_outbox::mark_sent(&db, &held[0], at(3))
+        email_outbox::mark_sent(&db, labelled(&held, "old"), at(3))
             .await
             .expect("it is sent");
-        email_outbox::fail(&db, &held[1], at(10), "x")
+        email_outbox::fail(&db, labelled(&held, "recent"), at(10), "x")
             .await
             .expect("it fails");
 

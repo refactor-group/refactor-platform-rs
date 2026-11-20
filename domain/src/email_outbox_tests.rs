@@ -3,6 +3,7 @@ use std::time::Duration;
 use chrono::{NaiveDate, NaiveDateTime, TimeDelta};
 
 use super::*;
+use crate::gateway::resend::SendEmailRequestBuilder;
 
 fn at(hour: u32) -> NaiveDateTime {
     NaiveDate::from_ymd_opt(2026, 12, 1)
@@ -107,4 +108,46 @@ fn keys_and_subjects_have_stable_forms() {
         Subject::User(id).key(),
         "user/00000000-0000-0000-0000-000000000000"
     );
+}
+
+async fn envelope(key: Option<&str>) -> Envelope {
+    let builder = SendEmailRequestBuilder::new()
+        .from("sender@example.com")
+        .to_with_name("ada@example.com", "Ada")
+        .template_id("t");
+    let builder = match key {
+        Some(key) => builder.idempotency_key(key),
+        None => builder,
+    };
+    Envelope {
+        kind: "welcome",
+        subject: Subject::User(Id::nil()),
+        recipient_id: Id::nil(),
+        request: builder.build().await.expect("the request builds"),
+    }
+}
+
+#[tokio::test]
+async fn an_envelope_naming_its_own_key_is_refused() {
+    let refused = New::try_from(envelope(Some("welcome/1")).await);
+
+    assert!(
+        matches!(
+            &refused,
+            Err(Error {
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Rejected(message)),
+                ..
+            }) if message.contains("outbox sets it")
+        ),
+        "{refused:?}"
+    );
+    assert!(New::try_from(envelope(None).await).is_ok());
+}
+
+#[tokio::test]
+async fn an_envelopes_debug_leaves_out_the_request() {
+    let shown = format!("{:?}", envelope(None).await);
+
+    assert!(shown.contains("welcome"), "{shown}");
+    assert!(!shown.contains("ada@example.com"), "{shown}");
 }

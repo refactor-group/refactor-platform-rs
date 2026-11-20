@@ -1,7 +1,8 @@
 //! Transaction-scoped Postgres advisory locks, in the two-key form.
 //!
 //! Each kind of lock has its own first key (namespace): 1 for relationship pairs in
-//! `coaching_relationship`, 2 for organizations' audit chains in `audit_event`.
+//! `coaching_relationship`, 2 for organizations' audit chains in `audit_event`, 3 for
+//! email conversations in `email_outbox`.
 
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
 

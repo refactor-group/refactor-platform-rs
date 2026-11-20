@@ -38,10 +38,10 @@ impl MigrationTrait for Migration {
         )
         .await?;
 
-        // Serves the claim's scan of due rows.
+        // Serves the claim's scan in claim order, so its LIMIT can stop early.
         db.execute_unprepared(
-            "CREATE INDEX IF NOT EXISTS email_outbox_pending_not_before_idx
-                ON refactor_platform.email_outbox (not_before)
+            "CREATE INDEX IF NOT EXISTS email_outbox_pending_claim_idx
+                ON refactor_platform.email_outbox (created_at, position, id)
                 WHERE state = 'pending'",
         )
         .await?;
@@ -50,7 +50,7 @@ impl MigrationTrait for Migration {
         db.execute_unprepared(
             "CREATE INDEX IF NOT EXISTS email_outbox_pending_order_idx
                 ON refactor_platform.email_outbox
-                    (subject_key, recipient_user_id, created_at, position)
+                    (subject_key, recipient_user_id, created_at, position, id)
                 WHERE state = 'pending'",
         )
         .await?;
@@ -58,7 +58,8 @@ impl MigrationTrait for Migration {
         // Serves the purge of finished rows.
         db.execute_unprepared(
             "CREATE INDEX IF NOT EXISTS email_outbox_finished_at_idx
-                ON refactor_platform.email_outbox (finished_at)",
+                ON refactor_platform.email_outbox (finished_at)
+                WHERE finished_at IS NOT NULL",
         )
         .await?;
 

@@ -6,6 +6,7 @@
 //! under the row's own idempotency key, and [`settle`] decides what the [`Receipt`] leaves
 //! behind. See `docs/architecture/email_outbox.md`.
 
+use std::fmt;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -13,7 +14,7 @@ use chrono::{NaiveDateTime, TimeDelta, Utc};
 use entity_api::email_outbox::{self, New};
 use sea_orm::ConnectionTrait;
 
-use crate::error::Error;
+use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::gateway::resend::SendEmailRequest;
 use crate::Id;
 
@@ -37,7 +38,6 @@ impl Subject {
 }
 
 /// A rendered email with the conversation it belongs to and who receives it.
-#[derive(Debug)]
 pub struct Envelope {
     /// Stable notification name, for logs and audit.
     pub kind: &'static str,
@@ -46,10 +46,31 @@ pub struct Envelope {
     pub request: SendEmailRequest,
 }
 
+/// Omits the request, which holds addresses and sign-in links.
+impl fmt::Debug for Envelope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Envelope")
+            .field("kind", &self.kind)
+            .field("subject", &self.subject)
+            .field("recipient_id", &self.recipient_id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl TryFrom<Envelope> for New {
     type Error = Error;
 
+    /// Refuses a request that names its own idempotency key; the outbox sets it.
     fn try_from(envelope: Envelope) -> Result<Self, Error> {
+        if envelope.request.idempotency_key.is_some() {
+            return Err(Error {
+                source: None,
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Rejected(format!(
+                    "{} email names an idempotency key, but the outbox sets it",
+                    envelope.kind
+                ))),
+            });
+        }
         Ok(New {
             kind: envelope.kind.to_string(),
             subject_key: envelope.subject.key(),
@@ -61,7 +82,9 @@ impl TryFrom<Envelope> for New {
 
 /// Writes `envelopes` to the outbox on `db`, in order; returns how many were written.
 ///
-/// Pass the transaction that makes the change the emails announce.
+/// Pass the transaction that makes the change the emails announce. Each conversation is
+/// locked before the rows are stamped, so a second writer to it waits for this one to
+/// commit and stamps a later time.
 pub async fn enqueue(
     db: &impl ConnectionTrait,
     envelopes: impl IntoIterator<Item = Envelope>,
@@ -71,6 +94,7 @@ pub async fn enqueue(
         .map(New::try_from)
         .collect::<Result<Vec<_>, _>>()?;
     let count = rows.len();
+    email_outbox::lock_conversations(db, &rows).await?;
     email_outbox::insert(db, rows, Utc::now().naive_utc()).await?;
     Ok(count)
 }
@@ -181,3 +205,7 @@ mod tests;
 #[cfg(test)]
 #[path = "email_outbox_sqlite_tests.rs"]
 mod sqlite_tests;
+
+#[cfg(all(test, feature = "mock"))]
+#[path = "email_outbox_mock_tests.rs"]
+mod mock_tests;

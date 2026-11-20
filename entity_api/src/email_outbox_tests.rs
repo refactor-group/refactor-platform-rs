@@ -32,6 +32,10 @@ async fn claim_locks_rows_with_skip_locked() {
         "the ordering check reads the schema's table: {subquery}"
     );
     assert!(
+        subquery.contains(r#"ORDER BY \"created_at\" ASC, \"position\" ASC, \"id\" ASC LIMIT"#),
+        "the claim takes rows in total order: {subquery}"
+    );
+    assert!(
         subquery.contains(" LIMIT $") && subquery.contains(" FOR UPDATE SKIP LOCKED) AND "),
         "the subquery must lock its rows and skip locked ones: {subquery}"
     );
