@@ -4,24 +4,40 @@
 {% block preheader %}
 {%- match email.reason -%}
 {%- when CancelReason::Cancelled { .. } -%}
-Your {{ email.parties.session_label }} on {{ email.when.date }} has been cancelled.
+The attached calendar update removes it from your calendar.
 {%- when CancelReason::Superseded -%}
-An out-of-date calendar event for your {{ email.parties.session_label }} on {{ email.when.date }} was removed.
+It was replaced by your recurring series with {{ email.parties.other.full_name }}.
+{%- endmatch -%}
+{% endblock %}
+
+{% block title %}
+{%- match email.reason -%}
+{%- when CancelReason::Cancelled { .. } -%}
+Session cancelled
+{%- when CancelReason::Superseded -%}
+Old calendar event removed
 {%- endmatch -%}
 {% endblock %}
 
 {% block content -%}
 {% match email.reason -%}
 {% when CancelReason::Cancelled { by } -%}
+{% call m::notice() -%}
 {% match by -%}
 {% when Actor::You -%}
-<p>You have cancelled your {{ email.parties.session_label }} with {{ email.parties.other.full_name }}.</p>
-{% when Actor::Other -%}
-<p>{{ email.parties.other.full_name }} has cancelled your {{ email.parties.session_label }}.</p>
-{% endmatch -%}
-{% call m::session(email.when.time, email.parties.other.full_name, "Was scheduled for {}"|format(email.when.date)) %}{% endcall %}
-<p>The attached calendar update removes this event from your calendar. Nothing else is needed from you.</p>
+You cancelled your {{ email.parties.session_label }} with <strong>{{ email.parties.other.full_name }}</strong>. Nothing else is needed from you.
+{%- when Actor::Other -%}
+<strong>{{ email.parties.other.full_name }}</strong> cancelled your {{ email.parties.session_label }}. Nothing else is needed from you.
+{%- endmatch %}
+{%- endcall %}
+{% call m::details() -%}
+{% call m::row("When") %}{{ email.when.date }} at {{ email.when.time }}{% endcall %}
+{% call m::row("With") %}{{ email.parties.other.full_name }}{% endcall %}
+{%- endcall %}
 {% when CancelReason::Superseded -%}
-<p>Your {{ email.parties.session_label }} with {{ email.parties.other.full_name }} on {{ email.when.date }} at {{ email.when.time }} had its own calendar event from before it was part of a recurring series. That event is out of date, so the attached update removes it from your calendar.</p>
+{% call m::notice() -%}
+Your {{ email.parties.session_label }} with <strong>{{ email.parties.other.full_name }}</strong> on {{ email.when.date }} at {{ email.when.time }} had its own calendar event from before it joined a recurring series. That event is out of date, so the update removes it.
+{%- endcall %}
 {% endmatch -%}
+<p class="secondary">A calendar update is attached.</p>
 {% endblock %}

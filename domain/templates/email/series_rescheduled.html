@@ -4,9 +4,18 @@
 {% block preheader %}
 {%- match email.scope -%}
 {%- when Scope::WholeSeries { .. } -%}
-Your recurring sessions have moved. Your updated calendar invite is attached.
+{{ email.cadence }} at {{ email.starts.time }}, starting {{ email.starts.date }}.
 {%- when Scope::FromSession { first_moved_date, .. } -%}
-From {{ first_moved_date }}: {{ email.cadence }} at {{ email.starts.time }}. Earlier sessions are unchanged.
+{{ email.cadence }} at {{ email.starts.time }} from {{ first_moved_date }}, and earlier sessions are unchanged.
+{%- endmatch -%}
+{% endblock %}
+
+{% block title %}
+{%- match email.scope -%}
+{%- when Scope::WholeSeries { .. } -%}
+Series moved
+{%- when Scope::FromSession { .. } -%}
+Sessions moved
 {%- endmatch -%}
 {% endblock %}
 
@@ -15,46 +24,50 @@ From {{ first_moved_date }}: {{ email.cadence }} at {{ email.starts.time }}. Ear
 {% when Scope::WholeSeries { previous_start, previous_cadence } -%}
 {% match email.by -%}
 {% when Actor::You -%}
-<p>You have rescheduled your recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name }}.</p>
+<p>You moved your recurring series of {{ email.parties.session_label_plural }} with <strong>{{ email.parties.other.full_name }}</strong>. Your calendar updates in place, so there's nothing to delete.</p>
 {% when Actor::Other -%}
-<p>{{ email.parties.other.full_name }} has rescheduled your recurring series of {{ email.parties.session_label_plural }}.</p>
+<p><strong>{{ email.parties.other.full_name }}</strong> moved your recurring series of {{ email.parties.session_label_plural }}. Your calendar updates in place, so there's nothing to delete.</p>
 {% endmatch -%}
 {% call m::change() -%}
-{% call m::now("{} · {}"|format(email.starts.time, email.duration), email.parties.other.full_name) -%}
-<p>{{ email.cadence }}</p>
-<p>{{ email.starts.date }} through {{ email.last_date }} · {{ email.count }} session{{ email.count|pluralize }}</p>
+{% call m::now() -%}
+{% call m::row("Starts") %}{{ email.starts.date }} at {{ email.starts.time }}{% endcall %}
+{% call m::row("Repeats") %}{{ email.cadence }}{% endcall %}
+{% call m::row("Runs through") %}{{ email.last_date }} · {{ email.count }} session{{ email.count|pluralize }}{% endcall %}
+{% call m::row("With") %}{{ email.parties.other.full_name }}{% endcall %}
+{% call m::row("Length") %}{{ email.duration }}{% endcall %}
 {%- endcall %}
 {% if previous_start.is_some() || previous_cadence.is_some() -%}
 {% call m::before() -%}
 {% if let Some(previous) = previous_start -%}
-<p>{{ previous.date }} at {{ previous.time }}</p>
+{% call m::row("Starts") %}{{ previous.date }} at {{ previous.time }}{% endcall %}
 {%- endif %}
 {% if let Some(previous) = previous_cadence -%}
-<p>{{ previous }}</p>
+{% call m::row("Repeats") %}{{ previous }}{% endcall %}
 {%- endif %}
 {%- endcall %}
 {%- endif %}
 {%- endcall %}
-<p>The attached calendar invite replaces your existing recurring event, so you don't need to delete the old one.</p>
-{% call m::button(email.url, "Join First Session") %}{% endcall %}
+{% call m::button(email.url, "Open first session") %}{% endcall %}
 {% when Scope::FromSession { first_moved_date, previous_cadence, previous_time } -%}
 {% match email.by -%}
 {% when Actor::You -%}
-<p>You changed your recurring {{ email.parties.session_label_plural }} from {{ first_moved_date }} onward.</p>
+<p>You changed your recurring {{ email.parties.session_label_plural }} with <strong>{{ email.parties.other.full_name }}</strong> from {{ first_moved_date }} onward. Your calendar updates in place, so there's nothing to delete.</p>
 {% when Actor::Other -%}
-<p>{{ email.parties.other.full_name }} changed your recurring {{ email.parties.session_label_plural }} from {{ first_moved_date }} onward.</p>
+<p><strong>{{ email.parties.other.full_name }}</strong> changed your recurring {{ email.parties.session_label_plural }} from {{ first_moved_date }} onward. Your calendar updates in place, so there's nothing to delete.</p>
 {% endmatch -%}
 {% call m::change() -%}
-{% call m::now("{} · {}"|format(email.starts.time, email.duration), email.parties.other.full_name) -%}
-<p>{{ email.cadence }}</p>
-<p>{{ first_moved_date }} through {{ email.last_date }} · {{ email.count }} session{{ email.count|pluralize }}</p>
+{% call m::now() -%}
+{% call m::row("Repeats") %}{{ email.cadence }} at {{ email.starts.time }}{% endcall %}
+{% call m::row("Dates") %}{{ first_moved_date }} through {{ email.last_date }} · {{ email.count }} session{{ email.count|pluralize }}{% endcall %}
+{% call m::row("With") %}{{ email.parties.other.full_name }}{% endcall %}
+{% call m::row("Length") %}{{ email.duration }}{% endcall %}
 {%- endcall %}
 {% call m::before() -%}
-<p>{{ previous_cadence }} at {{ previous_time }}</p>
-<p>Sessions before {{ first_moved_date }} are unchanged.</p>
+{% call m::row("Repeats") %}{{ previous_cadence }} at {{ previous_time }}{% endcall %}
+<p class="secondary">Sessions before {{ first_moved_date }} are unchanged.</p>
 {%- endcall %}
 {%- endcall %}
-<p>The attached calendar invite updates your calendar, so there's nothing to delete.</p>
-{% call m::button(email.url, "View Session") %}{% endcall %}
+{% call m::button(email.url, "Open session") %}{% endcall %}
 {% endmatch -%}
+<p class="secondary">A calendar invite is attached.</p>
 {% endblock %}

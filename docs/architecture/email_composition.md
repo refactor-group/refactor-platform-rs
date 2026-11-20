@@ -22,8 +22,8 @@ output is not clean enough to send).
 
 ```
 domain/templates/email/
-  base.html  base.txt        the layout: logo, greeting, content, sign-off, help, footer
-  macros.html                the session card and its rows, the Now/Before panels, the button
+  base.html  base.txt        the layout: logo, card with title and greeting, content, footer
+  macros.html                the details block and its rows, the notice, Now/Before, the button
   <kind>.html  <kind>.txt    one pair per email
 domain/src/email_composition/
   mod.rs       Email, compose, Brand, Person, When, Parties, Actor, templates!
@@ -67,23 +67,31 @@ padded so clients don't pull body text into the inbox preview, and `color-scheme
 metadata. The plain-text part is written by hand per email, with each link as a bare URL
 on its own line.
 
-It follows the frontend's design system: the logo above a white card with a hairline
-border and 16px radius, Inter where it is installed and the system stack elsewhere (no
-web font is loaded), a session card on the `fill` grey with the time and duration, the
-other participant's name in bold, and grey detail rows, and the primary indigo pill
-button (square in Outlook, which ignores `border-radius`). A reschedule shows a **Now**
-panel on the brand tint, then a quiet **Before** panel with only what changed; its plain
-text uses `Now:` and `Before:` headings. Help and
-footer sit below the card in quieter greys around a hairline. The colors are the
-frontend's `globals.css` tokens converted to hex, light and dark, and appear only in
-`base.html`'s stylesheet; templates and macros use its classes. The token reference is
-the frontend's `docs/design-system.md` (refactor-platform-fe); a token change there
-should be mirrored in `base.html`.
+It follows refactor-platform-fe's `docs/design-system.md`, and its email spec (section 14)
+in particular: a Well canvas behind one white card (1px border, 16px radius, 32px
+padding), Inter where it is installed and the system stack elsewhere (no web font is
+loaded), and the spec's type scale. Inside the card come a short sentence-case title,
+"Hi {first name},", one or two sentences, a details block of label-over-value rows (When,
+With, Length, and Where when there is a meeting link), one pill button labelled as the
+app labels it ("Open session"), and a secondary line naming the calendar attachment.
+Cancellations put their statement in a neutral notice and have no button. The footer
+below the card says why the person received the email, with the organization's name,
+plus the contact address and the company and privacy links.
+
+Two deliberate departures from section 14: the R monogram logo sits above the card in
+place of the text wordmark, and a reschedule shows the **Now** panel on the brand tint
+first, then a quiet **Before** with only what changed (the spec puts "Was" first). The
+other person is always named in full. The plain text follows the same structure: the
+title, `Label: value` lines, `Now:` and `Before:` headings, and the footer.
+
+The colors are the frontend's tokens in hex, light and dark, and appear only in
+`base.html`'s stylesheet; templates and macros use its classes. A token change in the
+design system should be mirrored there.
 
 ## How a sender moves
 
 1. Build the email's struct per recipient with the existing helpers in `emails.rs`
-   (`Participants::copies`, `format_session_date_time`).
+   (`Participants::copies`, and `session_when` for a start in the recipient's zone).
 2. `compose` it with the `Brand`, and wrap it in an `Envelope` with its kind,
    `Subject::CoachingRelationship(id)` (or `Subject::User`) and recipient.
 3. Load what the emails name before the transaction begins: a failed read inside it would

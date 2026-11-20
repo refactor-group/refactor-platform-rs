@@ -32,15 +32,16 @@ pub(crate) fn parties() -> Parties {
     }
 }
 
-pub(crate) fn when(date: &str, time: &str) -> When {
+pub(crate) fn when(date: &str, day: &str, time: &str) -> When {
     When {
         date: date.into(),
+        day: day.into(),
         time: time.into(),
     }
 }
 
 fn march_4() -> When {
-    when("Wednesday, March 4, 2026", "10:00 AM")
+    when("Wednesday, March 4, 2026", "Wed, Mar 4", "10:00 AM")
 }
 
 const SESSION_URL: &str = "https://app.example.com/coaching-sessions/1";
@@ -65,7 +66,7 @@ pub(crate) fn session_rescheduled() -> SessionRescheduled {
     SessionRescheduled {
         parties: parties(),
         when: march_4(),
-        previous: Some(when("Tuesday, March 3, 2026", "4:00 PM")),
+        previous: Some(when("Tuesday, March 3, 2026", "Tue, Mar 3", "4:00 PM")),
         duration: "1 hour".into(),
         url: SESSION_URL.into(),
         calendar: calendar(&Method::Request),
@@ -88,6 +89,7 @@ pub(crate) fn session_reminder() -> SessionReminder {
         when: march_4(),
         duration: "1 hour".into(),
         url: SESSION_URL.into(),
+        meeting_url: Some("https://meet.example.com/alex-jane".into()),
     }
 }
 
@@ -110,7 +112,7 @@ pub(crate) fn series_rescheduled() -> SeriesRescheduled {
         parties: parties(),
         by: Actor::Other,
         scope: Scope::WholeSeries {
-            previous_start: Some(when("Tuesday, March 3, 2026", "4:00 PM")),
+            previous_start: Some(when("Tuesday, March 3, 2026", "Tue, Mar 3", "4:00 PM")),
             previous_cadence: Some("Weekly on Tuesday".into()),
         },
         starts: march_4(),

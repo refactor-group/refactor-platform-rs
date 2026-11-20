@@ -1,10 +1,7 @@
-{% macro session(above, name, below) -%}
-<table role="presentation" class="session" width="100%" cellpadding="0" cellspacing="0" border="0">
+{% macro details() -%}
+<table role="presentation" class="details" width="100%" cellpadding="0" cellspacing="0" border="0">
 <tr>
-<td class="session-cell">
-<p class="when">{{ above }}</p>
-<p class="name">{{ name }}</p>
-<p class="when">{{ below }}</p>
+<td class="details-cell">
 {{ caller() }}
 </td>
 </tr>
@@ -12,13 +9,16 @@
 {%- endmacro %}
 
 {% macro row(label) -%}
-<p class="detail"><span class="label">{{ label }}:</span> {{ caller() }}</p>
+<p class="label">{{ label }}</p>
+<p class="value">{{ caller() }}</p>
 {%- endmacro %}
 
-{% macro button(url, label) -%}
-<table role="presentation" class="button-table" cellpadding="0" cellspacing="0" border="0">
+{% macro notice() -%}
+<table role="presentation" class="notice" width="100%" cellpadding="0" cellspacing="0" border="0">
 <tr>
-<td class="button-cell"><a class="button" href="{{ url }}">{{ label }}</a></td>
+<td class="notice-cell">
+<p>{{ caller() }}</p>
+</td>
 </tr>
 </table>
 {%- endmacro %}
@@ -33,13 +33,11 @@
 </table>
 {%- endmacro %}
 
-{% macro now(time, name) -%}
+{% macro now() -%}
 <table role="presentation" class="now" width="100%" cellpadding="0" cellspacing="0" border="0">
 <tr>
 <td class="now-cell">
 <p class="tag">Now</p>
-<p class="lead">{{ time }}</p>
-<p class="name">{{ name }}</p>
 {{ caller() }}
 </td>
 </tr>
@@ -53,6 +51,14 @@
 <p class="tag">Before</p>
 {{ caller() }}
 </td>
+</tr>
+</table>
+{%- endmacro %}
+
+{% macro button(url, label) -%}
+<table role="presentation" class="button-table" cellpadding="0" cellspacing="0" border="0">
+<tr>
+<td class="button-cell"><a class="button" href="{{ url }}">{{ label }}</a></td>
 </tr>
 </table>
 {%- endmacro %}

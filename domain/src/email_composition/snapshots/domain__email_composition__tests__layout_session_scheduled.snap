@@ -3,20 +3,18 @@ source: domain/src/email_composition/tests.rs
 expression: email.html
 ---
 <!DOCTYPE html><html lang="en" xmlns="http://www.w3.org/1999/xhtml"><head><style>@media only screen and (max-width: 620px) {
-    .page-cell { padding: 24px 12px !important; }
-    .content { padding: 24px 20px 8px 20px !important; }
-    .help, .rule, .footer { padding-left: 20px !important; padding-right: 20px !important; }
+    .canvas-cell { padding: 16px 12px !important; }
+    .content { padding: 24px 24px 8px 24px !important; }
   } @media (prefers-color-scheme: dark) {
-    body, .page { background-color: #121214 !important; }
-    .content { background-color: #1b1b1f !important; border-color: #2c2c33 !important; color: #f4f4f5 !important; }
-    .content .signoff, .session-cell p, .now-cell p { color: #c4c4cb !important; }
-    .session-cell { background-color: #26262c !important; }
+    body, .canvas { background-color: #121214 !important; }
+    .content { background-color: #1b1b1f !important; border-color: #2c2c33 !important; color: #c4c4cb !important; }
+    .content .title, .content strong, .content .value { color: #f4f4f5 !important; }
+    .content .label, .content .tag, .content .secondary, .footer { color: #8e8e98 !important; }
+    .details-cell { background-color: #19191c !important; }
+    .notice-cell { background-color: #26262c !important; color: #c4c4cb !important; }
     .now-cell { background-color: #22233a !important; border-color: #34366a !important; }
-    .session-cell .name, .now-cell .lead, .now-cell .name { color: #f4f4f5 !important; }
-    .now-cell .tag { color: #7b7ff0 !important; }
-    .session-cell .label, .before-cell p, .before-cell .tag, .help { color: #8e8e98 !important; }
-    .rule hr { border-top-color: #232328 !important; }
-    .footer { color: #5f5f69 !important; }
+    .now-cell .tag, .content .link { color: #7b7ff0 !important; }
+    .before-cell .value { color: #8e8e98 !important; }
   } </style>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -25,59 +23,56 @@ expression: email.html
 <meta name="format-detection" content="telephone=no, date=no, address=no, email=no">
 <meta name="color-scheme" content="light dark">
 <meta name="supported-color-schemes" content="light dark">
-<title>Your coaching session with Alex Smith on Wednesday, March 4, 2026</title>
+<title>Session with Alex Smith on Wed, Mar 4 at 10:00 AM</title>
 
 </head>
-<body style="margin: 0;padding: 0;width: 100%;background-color: #ffffff;">
-<div style="display: none; max-height: 0; max-width: 0; overflow: hidden; opacity: 0; mso-hide: all; font-size: 1px; line-height: 1px;">Wednesday, March 4, 2026 at 10:00 AM — here's everything you need.‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;</div>
-<table class="page" role="presentation" border="0" width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;width: 100%;background-color: #ffffff;">
+<body style="margin: 0;padding: 0;width: 100%;background-color: #f7f7f8;">
+<div style="display: none; max-height: 0; max-width: 0; overflow: hidden; opacity: 0; mso-hide: all; font-size: 1px; line-height: 1px;">Add the topics you want to cover before you meet.‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;‌&nbsp;</div>
+<table class="canvas" role="presentation" border="0" width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;width: 100%;background-color: #f7f7f8;">
 <tbody><tr>
-<td class="page-cell" align="center" style="padding: 32px 16px;">
+<td class="canvas-cell" align="center" style="padding: 32px 16px;">
 <!--[if mso]><table role="presentation" width="600" align="center" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
 <table class="container" role="presentation" border="0" width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse;width: 100%;max-width: 600px;">
 <tbody><tr>
-<td class="logo" align="left" style="padding: 0 0 20px 0;text-align: left;"><img src="https://app.example.com/22JHC_Monogram_RGB_small.png" alt="Refactor Coach" width="40" height="40" style="border: 0;outline: none;text-decoration: none;"></td>
+<td class="logo" align="left" style="padding: 0 4px 16px 4px;text-align: left;"><img src="https://app.example.com/22JHC_Monogram_RGB_small.png" alt="Refactor Coach" width="40" height="40" style="border: 0;outline: none;text-decoration: none;"></td>
 </tr>
 <tr>
 <td>
 <table class="frame" role="presentation" border="0" width="100%" cellpadding="0" cellspacing="0" style="border-collapse: separate;">
 <tbody><tr>
-<td class="content" style="font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;padding: 32px 32px 16px 32px;background-color: #ffffff;border: 1px solid #e5e7eb;border-radius: 16px;font-size: 15px;line-height: 24px;color: #0a0a0a;">
+<td class="content" style="font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;padding: 32px 32px 16px 32px;background-color: #ffffff;border: 1px solid #e5e7eb;border-radius: 16px;font-size: 15px;line-height: 24px;color: #525252;">
+<h1 class="title" style="margin: 0 0 12px 0;font-size: 26px;line-height: 1.25;font-weight: 400;letter-spacing: -0.01em;color: #0a0a0a;">Session scheduled</h1>
 <p style="margin: 0 0 16px 0;">Hi Jane,</p>
-<p style="margin: 0 0 16px 0;"><strong>Alex Smith</strong> scheduled a coaching session with you.</p>
-<table class="session" role="presentation" border="0" width="100%" cellpadding="0" cellspacing="0" style="border-collapse: separate;margin: 4px 0 20px 0;">
+<p style="margin: 0 0 16px 0;"><strong style="font-weight: 500;color: #0a0a0a;">Alex Smith</strong> scheduled a coaching session with you.</p>
+<table class="details" role="presentation" border="0" width="100%" cellpadding="0" cellspacing="0" style="border-collapse: separate;margin: 4px 0 24px 0;">
 <tbody><tr>
-<td class="session-cell" style="padding: 14px 16px;background-color: #f2f3f5;border-radius: 12px;">
-<p class="when" style="margin: 0;font-size: 13px;line-height: 20px;color: #525252;">10:00 AM · 1 hour</p>
-<p class="name" style="margin: 2px 0;font-size: 15px;line-height: 22px;color: #0a0a0a;font-weight: 600;">Alex Smith</p>
-<p class="when" style="margin: 0;font-size: 13px;line-height: 20px;color: #525252;">Wednesday, March 4, 2026</p>
+<td class="details-cell" style="padding: 16px 16px 4px 16px;background-color: #f7f7f8;border-radius: 12px;">
+<p class="label" style="margin: 0;font-size: 12.5px;line-height: 18px;font-weight: 500;color: #737373;">When</p>
+<p class="value" style="margin: 2px 0 12px 0;font-size: 15px;line-height: 22px;font-weight: 500;color: #0a0a0a;">Wednesday, March 4, 2026 at 10:00 AM</p>
+<p class="label" style="margin: 0;font-size: 12.5px;line-height: 18px;font-weight: 500;color: #737373;">With</p>
+<p class="value" style="margin: 2px 0 12px 0;font-size: 15px;line-height: 22px;font-weight: 500;color: #0a0a0a;">Alex Smith</p>
+<p class="label" style="margin: 0;font-size: 12.5px;line-height: 18px;font-weight: 500;color: #737373;">Length</p>
+<p class="value" style="margin: 2px 0 12px 0;font-size: 15px;line-height: 22px;font-weight: 500;color: #0a0a0a;">1 hour</p>
+</td>
+</tr>
+</tbody></table>
+<table class="button-table" role="presentation" border="0" cellpadding="0" cellspacing="0" style="border-collapse: separate;margin: 8px 0 24px 0;">
+<tbody><tr>
+<td class="button-cell" style="background-color: #5b5fe8;border-radius: 9999px;mso-padding-alt: 14px 24px;"><a class="button" href="https://app.example.com/coaching-sessions/1" style="font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;display: inline-block;padding: 14px 24px;font-size: 15px;font-weight: 500;line-height: 20px;color: #ffffff;text-decoration: none;border-radius: 9999px;">Open session</a></td>
+</tr>
+</tbody></table>
+<p class="secondary" style="margin: 0 0 16px 0;font-size: 13px;line-height: 21px;color: #737373;">A calendar invite is attached.</p>
 
 </td>
 </tr>
 </tbody></table>
-<table class="button-table" role="presentation" border="0" cellpadding="0" cellspacing="0" style="border-collapse: separate;margin: 4px 0 24px 0;">
-<tbody><tr>
-<td class="button-cell" style="background-color: #5b5fe8;border-radius: 9999px;mso-padding-alt: 12px 24px;"><a class="button" href="https://app.example.com/coaching-sessions/1" style="font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;display: inline-block;padding: 12px 24px;font-size: 15px;font-weight: 600;line-height: 20px;color: #ffffff;text-decoration: none;border-radius: 9999px;">Join Session</a></td>
-</tr>
-</tbody></table>
-
-<p class="signoff" style="margin: 0 0 16px 0;color: #525252;">— The Acme Corp Team</p>
-</td>
-</tr>
-</tbody></table>
 </td>
 </tr>
 <tr>
-<td class="help" style="font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;padding: 24px 32px 0 32px;font-size: 13px;line-height: 20px;color: #737373;">
-<p style="margin: 0;"><strong>Need help?</strong> If you have any questions about Refactor Coach, please reply to this email or contact us at <a href="mailto:hello@refactorcoach.com" style="color: inherit;">hello@refactorcoach.com</a>.</p>
-</td>
-</tr>
-<tr>
-<td class="rule" style="padding: 16px 32px;"><hr style="border: 0;border-top: 1px solid #f0f0f0;margin: 0;"></td>
-</tr>
-<tr>
-<td class="footer" style="font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;padding: 0 32px;font-size: 12px;line-height: 18px;color: #a3a3a3;">
-<p style="margin: 0;">— Refactor Coach is a product of <a href="https://www.refactorgroup.com" style="color: inherit;">Refactor Group</a>. <a href="https://app.example.com/privacy" style="color: inherit;">Privacy</a></p>
+<td class="footer" style="font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;padding: 16px 4px 0 4px;font-size: 12px;line-height: 1.6;color: #737373;">
+<p style="margin: 0;">You're receiving this because you have sessions with Acme Corp on Refactor Coach.</p>
+<p style="margin: 0;">Questions? Reply to this email or write to <a href="mailto:hello@refactorcoach.com" style="color: inherit;text-decoration: underline;">hello@refactorcoach.com</a>.</p>
+<p style="margin: 0;">Refactor Coach is a product of <a href="https://www.refactorgroup.com" style="color: inherit;text-decoration: underline;">Refactor Group</a> · <a href="https://app.example.com/privacy" style="color: inherit;text-decoration: underline;">Privacy</a></p>
 </td>
 </tr>
 </tbody></table>

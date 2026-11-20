@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::future::Future;
 
 use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
@@ -457,21 +458,33 @@ fn series_bounds(
 /// Format a NaiveDateTime (assumed UTC) in the recipient's timezone.
 /// Falls back to UTC formatting if the timezone string is invalid.
 fn format_session_date_time(date: NaiveDateTime, timezone: &str) -> (String, String) {
+    let When { date, time, .. } = session_when(date, timezone);
+    (date, time)
+}
+
+/// A start (assumed UTC) in the recipient's timezone, as composed emails show it.
+/// Falls back to UTC, marked as such, if the timezone string is invalid.
+fn session_when(date: NaiveDateTime, timezone: &str) -> When {
     let utc_dt = Utc.from_utc_datetime(&date);
 
     match timezone.parse::<Tz>() {
-        Ok(tz) => {
-            let local_dt = utc_dt.with_timezone(&tz);
-            let date_str = local_dt.format("%A, %B %-d, %Y").to_string();
-            let time_str = local_dt.format("%-I:%M %p").to_string();
-            (date_str, time_str)
-        }
+        Ok(tz) => when_at(&utc_dt.with_timezone(&tz), ""),
         Err(_) => {
             warn!("Invalid timezone '{timezone}', falling back to UTC");
-            let date_str = utc_dt.format("%A, %B %-d, %Y").to_string();
-            let time_str = format!("{} UTC", utc_dt.format("%-I:%M %p"));
-            (date_str, time_str)
+            when_at(&utc_dt, " UTC")
         }
+    }
+}
+
+/// `local` formatted for an email, with `zone_suffix` after the time.
+fn when_at<Z: TimeZone>(local: &DateTime<Z>, zone_suffix: &str) -> When
+where
+    Z::Offset: Display,
+{
+    When {
+        date: local.format("%A, %B %-d, %Y").to_string(),
+        day: local.format("%a, %b %-d").to_string(),
+        time: format!("{}{zone_suffix}", local.format("%-I:%M %p")),
     }
 }
 
@@ -1753,7 +1766,7 @@ fn session_cancelled_envelopes(
         .filter_map(|(_, to)| {
             let email = SessionCancelled {
                 parties: to.parties(organization),
-                when: When::from(format_session_date_time(session.date, &to.user.timezone)),
+                when: session_when(session.date, &to.user.timezone),
                 reason: cancellation.reason_for(to.user.id),
                 calendar: calendar.clone(),
             };

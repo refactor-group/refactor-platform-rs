@@ -1,16 +1,20 @@
 {% extends "email/base.txt" %}
 
+{% block title %}Session moved{% endblock %}
+
 {% block content -%}
-Your {{ email.parties.session_label }} with {{ email.parties.other.full_name }} has been rescheduled.
+Your {{ email.parties.session_label }} with {{ email.parties.other.full_name }} has moved. Your calendar updates in place, so there's nothing to delete.
 
 Now:
-{{ email.when.date }} at {{ email.when.time }} for {{ email.duration }}
+When: {{ email.when.date }} at {{ email.when.time }}
+With: {{ email.parties.other.full_name }}
+Length: {{ email.duration }}
 {% if let Some(previous) = email.previous %}
 Before:
-{{ previous.date }} at {{ previous.time }}
+When: {{ previous.date }} at {{ previous.time }}
 {% endif %}
-The attached calendar invite updates your existing event, so you don't need to delete the old one.
-
-View Session:
+Open session:
 {{ email.url }}
+
+A calendar invite is attached.
 {%- endblock %}

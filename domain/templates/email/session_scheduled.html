@@ -1,7 +1,9 @@
 {% extends "email/base.html" -%}
 {% import "email/macros.html" as m -%}
 
-{% block preheader %}{{ email.when.date }} at {{ email.when.time }} — here's everything you need.{% endblock %}
+{% block preheader %}Add the topics you want to cover before you meet.{% endblock %}
+
+{% block title %}Session scheduled{% endblock %}
 
 {% block content -%}
 {% match email.by -%}
@@ -10,6 +12,11 @@
 {% when Actor::Other -%}
 <p><strong>{{ email.parties.other.full_name }}</strong> scheduled a {{ email.parties.session_label }} with you.</p>
 {% endmatch -%}
-{% call m::session("{} · {}"|format(email.when.time, email.duration), email.parties.other.full_name, email.when.date) %}{% endcall %}
-{% call m::button(email.url, "Join Session") %}{% endcall %}
+{% call m::details() -%}
+{% call m::row("When") %}{{ email.when.date }} at {{ email.when.time }}{% endcall %}
+{% call m::row("With") %}{{ email.parties.other.full_name }}{% endcall %}
+{% call m::row("Length") %}{{ email.duration }}{% endcall %}
+{%- endcall %}
+{% call m::button(email.url, "Open session") %}{% endcall %}
+<p class="secondary">A calendar invite is attached.</p>
 {% endblock %}

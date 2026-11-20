@@ -2,25 +2,30 @@
 source: domain/src/email_composition/session_tests.rs
 expression: "copy(&SessionScheduled { by: Actor::You, ..session_scheduled() })"
 ---
-Subject: Your coaching session with Alex Smith on Wednesday, March 4, 2026
-Preheader: Wednesday, March 4, 2026 at 10:00 AM — here's everything you need.
+Subject: Session with Alex Smith on Wed, Mar 4 at 10:00 AM
+Preheader: Add the topics you want to cover before you meet.
+
+Session scheduled
 
 Hi Jane,
 
 You scheduled a coaching session with Alex Smith.
 
-When: Wednesday, March 4, 2026 at 10:00 AM for 1 hour
+When: Wednesday, March 4, 2026 at 10:00 AM
+With: Alex Smith
+Length: 1 hour
 
-Join Session:
+Open session:
 https://app.example.com/coaching-sessions/1
 
-— The Acme Corp Team
+A calendar invite is attached.
 
 ---
 
-Need help? If you have any questions about Refactor Coach, please reply to this email or contact us at hello@refactorcoach.com.
+You're receiving this because you have sessions with Acme Corp on Refactor Coach.
+Questions? Reply to this email or write to hello@refactorcoach.com.
 
-— Refactor Coach is a product of Refactor Group.
+Refactor Coach is a product of Refactor Group:
 https://www.refactorgroup.com
 
 Privacy:

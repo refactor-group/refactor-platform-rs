@@ -1,48 +1,59 @@
 {% extends "email/base.txt" %}
 
+{% block title %}
+{%- match email.scope -%}
+{%- when Scope::WholeSeries { .. } -%}
+Series moved
+{%- when Scope::FromSession { .. } -%}
+Sessions moved
+{%- endmatch -%}
+{% endblock %}
+
 {% block content -%}
 {% match email.scope -%}
 {% when Scope::WholeSeries { previous_start, previous_cadence } -%}
 {% match email.by -%}
 {% when Actor::You -%}
-You have rescheduled your recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name }}.
+You moved your recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name }}. Your calendar updates in place, so there's nothing to delete.
 {% when Actor::Other -%}
-{{ email.parties.other.full_name }} has rescheduled your recurring series of {{ email.parties.session_label_plural }}.
+{{ email.parties.other.full_name }} moved your recurring series of {{ email.parties.session_label_plural }}. Your calendar updates in place, so there's nothing to delete.
 {% endmatch %}
 Now:
-{{ email.cadence }} at {{ email.starts.time }} for {{ email.duration }}
-{{ email.starts.date }} through {{ email.last_date }} · {{ email.count }} session{{ email.count|pluralize }}
+Starts: {{ email.starts.date }} at {{ email.starts.time }}
+Repeats: {{ email.cadence }}
+Runs through: {{ email.last_date }} · {{ email.count }} session{{ email.count|pluralize }}
+With: {{ email.parties.other.full_name }}
+Length: {{ email.duration }}
 {% if previous_start.is_some() || previous_cadence.is_some() %}
 Before:
 {% if let Some(previous) = previous_start -%}
-{{ previous.date }} at {{ previous.time }}
+Starts: {{ previous.date }} at {{ previous.time }}
 {% endif -%}
 {% if let Some(previous) = previous_cadence -%}
-{{ previous }}
+Repeats: {{ previous }}
 {% endif -%}
 {% endif %}
-The attached calendar invite replaces your existing recurring event, so you don't need to delete the old one.
-
-Join First Session:
+Open first session:
 {{ email.url }}
-{%- when Scope::FromSession { first_moved_date, previous_cadence, previous_time } -%}
+{% when Scope::FromSession { first_moved_date, previous_cadence, previous_time } -%}
 {% match email.by -%}
 {% when Actor::You -%}
-You changed your recurring {{ email.parties.session_label_plural }} from {{ first_moved_date }} onward.
+You changed your recurring {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name }} from {{ first_moved_date }} onward. Your calendar updates in place, so there's nothing to delete.
 {% when Actor::Other -%}
-{{ email.parties.other.full_name }} changed your recurring {{ email.parties.session_label_plural }} from {{ first_moved_date }} onward.
+{{ email.parties.other.full_name }} changed your recurring {{ email.parties.session_label_plural }} from {{ first_moved_date }} onward. Your calendar updates in place, so there's nothing to delete.
 {% endmatch %}
 Now:
-{{ email.cadence }} at {{ email.starts.time }} for {{ email.duration }}
-{{ first_moved_date }} through {{ email.last_date }} · {{ email.count }} session{{ email.count|pluralize }}
+Repeats: {{ email.cadence }} at {{ email.starts.time }}
+Dates: {{ first_moved_date }} through {{ email.last_date }} · {{ email.count }} session{{ email.count|pluralize }}
+With: {{ email.parties.other.full_name }}
+Length: {{ email.duration }}
 
 Before:
-{{ previous_cadence }} at {{ previous_time }}
+Repeats: {{ previous_cadence }} at {{ previous_time }}
 Sessions before {{ first_moved_date }} are unchanged.
 
-The attached calendar invite updates your calendar, so there's nothing to delete.
-
-View Session:
+Open session:
 {{ email.url }}
-{%- endmatch %}
+{% endmatch %}
+A calendar invite is attached.
 {%- endblock %}

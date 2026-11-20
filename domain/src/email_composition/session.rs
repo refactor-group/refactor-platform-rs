@@ -31,8 +31,8 @@ impl Email for SessionScheduled {
 
     fn subject(&self) -> String {
         format!(
-            "Your {} with {} on {}",
-            self.parties.session_label, self.parties.other.full_name, self.when.date
+            "Session with {} on {} at {}",
+            self.parties.other.full_name, self.when.day, self.when.time
         )
     }
 
@@ -69,8 +69,8 @@ impl Email for SessionRescheduled {
 
     fn subject(&self) -> String {
         format!(
-            "Your {} with {} has been rescheduled",
-            self.parties.session_label, self.parties.other.full_name
+            "Your {} with {} moved to {}",
+            self.parties.session_label, self.parties.other.full_name, self.when.day
         )
     }
 
@@ -113,16 +113,19 @@ impl Email for SessionCancelled {
     }
 
     fn subject(&self) -> String {
-        let label = self.parties.session_label;
+        let (label, other, day) = (
+            self.parties.session_label,
+            &self.parties.other.full_name,
+            &self.when.day,
+        );
         match self.reason {
-            CancelReason::Cancelled { .. } => format!(
-                "Your {label} with {} has been cancelled",
-                self.parties.other.full_name
-            ),
-            CancelReason::Superseded => format!(
-                "An old calendar event for your {label} on {} was removed",
-                self.when.date
-            ),
+            CancelReason::Cancelled { by: Actor::Other } => {
+                format!("{other} cancelled your {label} on {day}")
+            }
+            CancelReason::Cancelled { by: Actor::You } => {
+                format!("You cancelled your {label} with {other}")
+            }
+            CancelReason::Superseded => format!("Old calendar event removed for {day}"),
         }
     }
 
@@ -139,6 +142,8 @@ pub struct SessionReminder {
     pub when: When,
     pub duration: String,
     pub url: String,
+    /// Where they meet, when the session has a meeting link.
+    pub meeting_url: Option<String>,
 }
 
 templates!(

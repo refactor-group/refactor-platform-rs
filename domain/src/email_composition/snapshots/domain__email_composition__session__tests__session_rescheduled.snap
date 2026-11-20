@@ -2,31 +2,34 @@
 source: domain/src/email_composition/session_tests.rs
 expression: copy(&session_rescheduled())
 ---
-Subject: Your coaching session with Alex Smith has been rescheduled
-Preheader: Now Wednesday, March 4, 2026 at 10:00 AM. Your calendar invite is attached.
+Subject: Your coaching session with Alex Smith moved to Wed, Mar 4
+Preheader: It now starts at 10:00 AM, and your calendar updates in place.
+
+Session moved
 
 Hi Jane,
 
-Your coaching session with Alex Smith has been rescheduled.
+Your coaching session with Alex Smith has moved. Your calendar updates in place, so there's nothing to delete.
 
 Now:
-Wednesday, March 4, 2026 at 10:00 AM for 1 hour
+When: Wednesday, March 4, 2026 at 10:00 AM
+With: Alex Smith
+Length: 1 hour
 
 Before:
-Tuesday, March 3, 2026 at 4:00 PM
+When: Tuesday, March 3, 2026 at 4:00 PM
 
-The attached calendar invite updates your existing event, so you don't need to delete the old one.
-
-View Session:
+Open session:
 https://app.example.com/coaching-sessions/1
 
-— The Acme Corp Team
+A calendar invite is attached.
 
 ---
 
-Need help? If you have any questions about Refactor Coach, please reply to this email or contact us at hello@refactorcoach.com.
+You're receiving this because you have sessions with Acme Corp on Refactor Coach.
+Questions? Reply to this email or write to hello@refactorcoach.com.
 
-— Refactor Coach is a product of Refactor Group.
+Refactor Coach is a product of Refactor Group:
 https://www.refactorgroup.com
 
 Privacy:

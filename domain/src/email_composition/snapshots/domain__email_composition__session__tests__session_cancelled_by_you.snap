@@ -2,24 +2,26 @@
 source: domain/src/email_composition/session_tests.rs
 expression: "copy(&SessionCancelled\n{ reason: CancelReason::Cancelled { by: Actor::You }, ..session_cancelled() })"
 ---
-Subject: Your coaching session with Alex Smith has been cancelled
-Preheader: Your coaching session on Wednesday, March 4, 2026 has been cancelled.
+Subject: You cancelled your coaching session with Alex Smith
+Preheader: The attached calendar update removes it from your calendar.
+
+Session cancelled
 
 Hi Jane,
 
-You have cancelled your coaching session with Alex Smith.
+You cancelled your coaching session with Alex Smith. Nothing else is needed from you.
 
-Was scheduled for: Wednesday, March 4, 2026 at 10:00 AM
+When: Wednesday, March 4, 2026 at 10:00 AM
+With: Alex Smith
 
-The attached calendar update removes this event from your calendar. Nothing else is needed from you.
-
-— The Acme Corp Team
+A calendar update is attached.
 
 ---
 
-Need help? If you have any questions about Refactor Coach, please reply to this email or contact us at hello@refactorcoach.com.
+You're receiving this because you have sessions with Acme Corp on Refactor Coach.
+Questions? Reply to this email or write to hello@refactorcoach.com.
 
-— Refactor Coach is a product of Refactor Group.
+Refactor Coach is a product of Refactor Group:
 https://www.refactorgroup.com
 
 Privacy:

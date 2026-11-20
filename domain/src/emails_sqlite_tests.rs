@@ -898,9 +898,7 @@ async fn a_reschedule_to_no_future_sessions_still_cancels_the_standalone_events(
         );
         let (_, email) = &rows[0];
         assert!(
-            email
-                .subject
-                .starts_with("An old calendar event for your coaching session on"),
+            email.subject.starts_with("Old calendar event removed for "),
             "a replaced event, not a cancelled session: {}",
             email.subject
         );
@@ -964,10 +962,7 @@ async fn deleting_a_session_writes_both_cancellations_with_the_delete() {
                         session_label_plural: "coaching sessions",
                         organization_name: organization.name.clone(),
                     },
-                    when: When::from(format_session_date_time(
-                        seeded.session.date,
-                        &reader.timezone,
-                    )),
+                    when: session_when(seeded.session.date, &reader.timezone),
                     reason: CancelReason::Cancelled { by },
                     calendar: Vec::new(),
                 },

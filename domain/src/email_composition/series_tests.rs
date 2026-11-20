@@ -55,7 +55,7 @@ fn series_cancelled_copy() {
 
 #[test]
 fn a_whole_series_reschedule_shows_only_what_changed() {
-    let start = || Some(when("Tuesday, March 3, 2026", "4:00 PM"));
+    let start = || Some(when("Tuesday, March 3, 2026", "Tue, Mar 3", "4:00 PM"));
     let cadence = || Some("Weekly on Tuesday".to_string());
     for (previous_start, previous_cadence, started, repeated) in [
         (start(), cadence(), true, true),

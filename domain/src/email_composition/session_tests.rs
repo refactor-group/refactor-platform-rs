@@ -67,7 +67,29 @@ fn a_reminder_shows_the_title_only_when_there_is_one() {
             ..session_reminder()
         });
 
-        assert_eq!(html.contains("Session:</span>"), shown, "{html}");
+        assert_eq!(html.contains(">Session</p>"), shown, "{html}");
         assert_eq!(text.contains("\nSession: "), shown, "{text}");
+    }
+}
+
+#[test]
+fn a_reminder_shows_where_only_when_there_is_a_meeting_link() {
+    for (meeting_url, shown) in [(session_reminder().meeting_url, true), (None, false)] {
+        let (html, text) = bodies(&SessionReminder {
+            meeting_url,
+            ..session_reminder()
+        });
+
+        assert_eq!(html.contains(">Where</p>"), shown, "{html}");
+        assert_eq!(
+            html.contains(r#"href="https://meet.example.com/alex-jane""#),
+            shown,
+            "{html}"
+        );
+        assert_eq!(
+            text.contains("\nWhere: https://meet.example.com/alex-jane\n"),
+            shown,
+            "{text}"
+        );
     }
 }

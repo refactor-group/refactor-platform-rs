@@ -37,8 +37,8 @@ impl Email for SeriesScheduled {
 
     fn subject(&self) -> String {
         format!(
-            "Your {} series with {} starts {}",
-            self.parties.session_label, self.parties.other.full_name, self.first.date
+            "Series with {} starts {}",
+            self.parties.other.full_name, self.first.day
         )
     }
 
@@ -98,22 +98,18 @@ impl Email for SeriesRescheduled {
     }
 
     fn subject(&self) -> String {
-        let Parties {
-            other,
-            session_label_plural,
-            ..
-        } = &self.parties;
-        match &self.scope {
-            Scope::WholeSeries { .. } => format!(
-                "Your series of {session_label_plural} with {} has been rescheduled",
-                other.full_name
-            ),
-            Scope::FromSession {
-                first_moved_date, ..
-            } => format!(
-                "Your {session_label_plural} with {} change from {first_moved_date}",
-                other.full_name
-            ),
+        let other = &self.parties.other.full_name;
+        match (&self.scope, self.by) {
+            (Scope::WholeSeries { .. }, Actor::Other) => format!("{other} moved your series"),
+            (Scope::WholeSeries { .. }, Actor::You) => {
+                format!("You moved your series with {other}")
+            }
+            (Scope::FromSession { .. }, Actor::Other) => {
+                format!("{other} changed part of your series")
+            }
+            (Scope::FromSession { .. }, Actor::You) => {
+                format!("You changed part of your series with {other}")
+            }
         }
     }
 
@@ -149,10 +145,11 @@ impl Email for SeriesCancelled {
     }
 
     fn subject(&self) -> String {
-        format!(
-            "Your series of {} with {} has been cancelled",
-            self.parties.session_label_plural, self.parties.other.full_name
-        )
+        let other = &self.parties.other.full_name;
+        match self.by {
+            Actor::Other => format!("{other} cancelled your series"),
+            Actor::You => format!("You cancelled your series with {other}"),
+        }
     }
 
     fn attachments(&self) -> Vec<Attachment> {

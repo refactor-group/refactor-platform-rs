@@ -121,14 +121,10 @@ impl From<&users::Model> for Person {
 pub struct When {
     /// For example `Wednesday, March 4, 2026`.
     pub date: String,
+    /// The short date a subject line uses, for example `Wed, Mar 4`.
+    pub day: String,
     /// For example `10:00 AM`.
     pub time: String,
-}
-
-impl From<(String, String)> for When {
-    fn from((date, time): (String, String)) -> Self {
-        Self { date, time }
-    }
 }
 
 /// Who an email is between and what their sessions are called.

@@ -3,29 +3,31 @@ source: domain/src/email_composition/session_tests.rs
 expression: copy(&session_reminder())
 ---
 Subject: Your coaching session with Alex Smith is coming up
-Preheader: Wednesday, March 4, 2026 at 10:00 AM. Add your topics and review your actions before you meet.
+Preheader: Add your topics and review your actions before Wednesday, March 4, 2026 at 10:00 AM.
+
+Your session is coming up
 
 Hi Jane,
 
-A quick reminder that you have a coaching session with Alex Smith coming up.
+Your coaching session with Alex Smith is coming up. Take a few moments to add the topics most worth discussing, review your actions due, and check that your goals still reflect what you're working toward.
 
 Session: Quarterly planning
-When: Wednesday, March 4, 2026 at 10:00 AM for 1 hour
+When: Wednesday, March 4, 2026 at 10:00 AM
+With: Alex Smith
+Length: 1 hour
+Where: https://meet.example.com/alex-jane
 
-Join Session:
+Open session:
 https://app.example.com/coaching-sessions/1
 
-Please take a few moments to add your topics most worth discussing, review your actions due for this session, and confirm your goals still reflect what you're working toward.
-
-If you have any questions, reach out to Alex directly.
-
-— The Acme Corp Team
+Questions before you meet? Reach out to Alex Smith directly.
 
 ---
 
-Need help? If you have any questions about Refactor Coach, please reply to this email or contact us at hello@refactorcoach.com.
+You're receiving this because you have sessions with Acme Corp on Refactor Coach.
+Questions? Reply to this email or write to hello@refactorcoach.com.
 
-— Refactor Coach is a product of Refactor Group.
+Refactor Coach is a product of Refactor Group:
 https://www.refactorgroup.com
 
 Privacy:

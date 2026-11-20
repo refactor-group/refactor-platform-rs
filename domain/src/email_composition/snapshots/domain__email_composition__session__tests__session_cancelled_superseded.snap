@@ -2,20 +2,23 @@
 source: domain/src/email_composition/session_tests.rs
 expression: "copy(&SessionCancelled\n{ reason: CancelReason::Superseded, ..session_cancelled() })"
 ---
-Subject: An old calendar event for your coaching session on Wednesday, March 4, 2026 was removed
-Preheader: An out-of-date calendar event for your coaching session on Wednesday, March 4, 2026 was removed.
+Subject: Old calendar event removed for Wed, Mar 4
+Preheader: It was replaced by your recurring series with Alex Smith.
+
+Old calendar event removed
 
 Hi Jane,
 
-Your coaching session with Alex Smith on Wednesday, March 4, 2026 at 10:00 AM had its own calendar event from before it was part of a recurring series. That event is out of date, so the attached update removes it from your calendar.
+Your coaching session with Alex Smith on Wednesday, March 4, 2026 at 10:00 AM had its own calendar event from before it joined a recurring series. That event is out of date, so the update removes it.
 
-— The Acme Corp Team
+A calendar update is attached.
 
 ---
 
-Need help? If you have any questions about Refactor Coach, please reply to this email or contact us at hello@refactorcoach.com.
+You're receiving this because you have sessions with Acme Corp on Refactor Coach.
+Questions? Reply to this email or write to hello@refactorcoach.com.
 
-— Refactor Coach is a product of Refactor Group.
+Refactor Coach is a product of Refactor Group:
 https://www.refactorgroup.com
 
 Privacy:

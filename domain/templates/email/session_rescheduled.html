@@ -1,20 +1,24 @@
 {% extends "email/base.html" -%}
 {% import "email/macros.html" as m -%}
 
-{% block preheader %}Now {{ email.when.date }} at {{ email.when.time }}. Your calendar invite is attached.{% endblock %}
+{% block preheader %}It now starts at {{ email.when.time }}, and your calendar updates in place.{% endblock %}
+
+{% block title %}Session moved{% endblock %}
 
 {% block content -%}
-<p>Your {{ email.parties.session_label }} with {{ email.parties.other.full_name }} has been rescheduled.</p>
+<p>Your {{ email.parties.session_label }} with <strong>{{ email.parties.other.full_name }}</strong> has moved. Your calendar updates in place, so there's nothing to delete.</p>
 {% call m::change() -%}
-{% call m::now("{} · {}"|format(email.when.time, email.duration), email.parties.other.full_name) -%}
-<p>{{ email.when.date }}</p>
+{% call m::now() -%}
+{% call m::row("When") %}{{ email.when.date }} at {{ email.when.time }}{% endcall %}
+{% call m::row("With") %}{{ email.parties.other.full_name }}{% endcall %}
+{% call m::row("Length") %}{{ email.duration }}{% endcall %}
 {%- endcall %}
 {% if let Some(previous) = email.previous -%}
 {% call m::before() -%}
-<p>{{ previous.date }} at {{ previous.time }}</p>
+{% call m::row("When") %}{{ previous.date }} at {{ previous.time }}{% endcall %}
 {%- endcall %}
 {%- endif %}
 {%- endcall %}
-<p>The attached calendar invite updates your existing event, so you don't need to delete the old one.</p>
-{% call m::button(email.url, "View Session") %}{% endcall %}
+{% call m::button(email.url, "Open session") %}{% endcall %}
+<p class="secondary">A calendar invite is attached.</p>
 {% endblock %}

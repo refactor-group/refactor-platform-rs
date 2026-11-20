@@ -1673,20 +1673,20 @@ fn test_session_cancelled_envelopes() {
     // New York reads 10:00 AM; Tokyo's clock has already rolled into the next day.
     let jane = &to_coachee.email.text;
     assert!(
-        jane.contains("Alex Smith has cancelled your coaching session."),
+        jane.contains("Alex Smith cancelled your coaching session."),
         "{jane}"
     );
     assert!(
-        jane.contains("Was scheduled for: Wednesday, March 4, 2026 at 10:00 AM"),
+        jane.contains("When: Wednesday, March 4, 2026 at 10:00 AM"),
         "{jane}"
     );
     let alex = &to_coach.email.text;
     assert!(
-        alex.contains("You have cancelled your coaching session with Jane Doe."),
+        alex.contains("You cancelled your coaching session with Jane Doe."),
         "{alex}"
     );
     assert!(
-        alex.contains("Was scheduled for: Thursday, March 5, 2026 at 12:00 AM"),
+        alex.contains("When: Thursday, March 5, 2026 at 12:00 AM"),
         "{alex}"
     );
 
@@ -5024,7 +5024,7 @@ fn each_colleagues_cancelled_email_names_the_other() {
     assert!(to_jane
         .email
         .text
-        .contains("Alex Smith has cancelled your session."));
+        .contains("Alex Smith cancelled your session."));
     assert_eq!(to_alex.email.to[0].email, alex.email);
     assert!(to_alex.email.text.contains("with Jane Doe."));
 }
@@ -5159,8 +5159,8 @@ fn cancelled_emails_carry_the_kinds_session_label() {
                 .map(|envelope| envelope.email.subject.as_str())
                 .collect::<Vec<_>>(),
             [
-                format!("Your {label} with Alex Smith has been cancelled"),
-                format!("Your {label} with Jane Doe has been cancelled"),
+                format!("Alex Smith cancelled your {label} on Wed, Mar 4"),
+                format!("You cancelled your {label} with Jane Doe"),
             ],
             "{kind:?}"
         );
