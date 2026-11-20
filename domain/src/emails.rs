@@ -1570,10 +1570,21 @@ async fn send_session_reminder_email(
         // `fallback_value` fires instead of rendering an empty line.
         .add_optional_variable("session_title", session.title.as_deref())
         .add_optional_variable("meeting_url", session.meeting_url.as_deref())
+        .idempotency_key(reminder_idempotency_key(session, recipient.id))
         .build()
         .await?;
 
     email_config.client.send_email(email_request).await
+}
+
+/// One key per reminder: the job retries a send that timed out after Resend accepted it,
+/// and a moved session needs a new reminder, so the scheduled time is part of the key.
+fn reminder_idempotency_key(session: &coaching_sessions::Model, recipient_id: Id) -> String {
+    format!(
+        "session-reminder/{}/{recipient_id}/{}",
+        session.id,
+        session.date.format("%Y%m%dT%H%M%S")
+    )
 }
 
 /// Build the single-session cancellation `.ics` body. Pure: `dtstamp` is injected so the

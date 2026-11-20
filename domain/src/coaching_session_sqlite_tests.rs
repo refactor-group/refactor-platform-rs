@@ -676,6 +676,46 @@ async fn create_records_the_acting_user_as_scheduler() {
     .await;
 }
 
+/// A failed document create still deletes that document: a create that timed out may have
+/// made it, and the retry names a new one.
+#[tokio::test]
+async fn create_deletes_the_document_when_its_create_fails() {
+    within_time_limit(async {
+        let (db, rel) = scheduling_database().await;
+        let mut server = Server::new_async().await;
+        let _create = server
+            .mock("POST", Matcher::Regex("^/api/documents/".to_string()))
+            .with_status(500)
+            .create_async()
+            .await;
+        let delete = server
+            .mock("DELETE", Matcher::Regex("^/api/documents/".to_string()))
+            .with_status(200)
+            .expect(1)
+            .create_async()
+            .await;
+        let config = Config::from_args([
+            "test",
+            "--tiptap-auth-key=test-auth-key",
+            &format!("--tiptap-url={}", server.url()),
+        ]);
+
+        let result = create(
+            &db,
+            &config,
+            &EventPublisher::new(),
+            new_session(&rel, None),
+            rel.coach_id,
+            None,
+        )
+        .await;
+
+        assert!(result.is_err());
+        delete.assert_async().await;
+    })
+    .await;
+}
+
 /// Both participants' notice rows are stamped at the session's `created_at`.
 #[tokio::test]
 async fn create_stamps_both_participants_notice_at_the_sessions_creation() {

@@ -15,8 +15,10 @@ use crate::gateway::ical::Method;
 
 /// Path appended to the configured base URL when sending emails.
 const SEND_EMAIL_PATH: &str = "/emails";
+const IDEMPOTENCY_KEY_HEADER: &str = "Idempotency-Key";
 
-// Sends run while a user waits, so a hung Resend fails the send instead of the request.
+// Most sends run while a user waits, so a hung Resend fails the send instead of the
+// request. A timeout can follow an accepted send, so retried sends need an idempotency key.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -161,6 +163,10 @@ pub struct SendEmailRequest {
     pub template: Option<TemplateRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<Attachment>>,
+    /// Sent as the `Idempotency-Key` header: Resend delivers one email per key within 24
+    /// hours, so a retry after an ambiguous failure cannot send it twice.
+    #[serde(skip)]
+    pub idempotency_key: Option<String>,
 }
 
 /// A base64-inline email attachment for the Resend payload.
@@ -178,6 +184,7 @@ pub struct SendEmailRequestBuilder {
     template_id: Option<String>,
     variables: HashMap<String, serde_json::Value>,
     attachments: Vec<Attachment>,
+    idempotency_key: Option<String>,
 }
 
 /// Response from Resend's `POST /emails` endpoint.
@@ -200,6 +207,7 @@ impl SendEmailRequestBuilder {
             template_id: None,
             variables: HashMap::new(),
             attachments: Vec::new(),
+            idempotency_key: None,
         }
     }
 
@@ -280,6 +288,12 @@ impl SendEmailRequestBuilder {
         self
     }
 
+    /// Name this email so Resend sends it at most once, however often it is retried.
+    pub fn idempotency_key(mut self, key: impl Into<String>) -> Self {
+        self.idempotency_key = Some(key.into());
+        self
+    }
+
     /// Build the SendEmailRequest with validation.
     pub async fn build(self) -> Result<SendEmailRequest, Error> {
         let from = self.from.ok_or_else(|| Error {
@@ -323,6 +337,7 @@ impl SendEmailRequestBuilder {
             subject: None,
             template,
             attachments,
+            idempotency_key: self.idempotency_key,
         })
     }
 }
@@ -363,21 +378,20 @@ impl Client {
             request.to.len()
         );
 
-        let response = self
-            .client
-            .post(&url)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| {
-                warn!("Failed to send email request: {e:?}");
-                Error {
-                    source: Some(Box::new(e)),
-                    error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                        "Failed to send email request".to_string(),
-                    )),
-                }
-            })?;
+        let post = self.client.post(&url).json(&request);
+        let post = match &request.idempotency_key {
+            Some(key) => post.header(IDEMPOTENCY_KEY_HEADER, key),
+            None => post,
+        };
+        let response = post.send().await.map_err(|e| {
+            warn!("Failed to send email request: {e:?}");
+            Error {
+                source: Some(Box::new(e)),
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                    "Failed to send email request".to_string(),
+                )),
+            }
+        })?;
 
         let status = response.status();
         if status.is_success() {
@@ -816,6 +830,48 @@ mod tests {
         let result = client.send_email(request).await;
 
         assert!(result.is_ok());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_client_send_email_sends_the_idempotency_key_as_a_header_only() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/emails")
+            .match_header("idempotency-key", "reminder/1")
+            .match_body(mockito::Matcher::PartialJson(
+                serde_json::json!({ "from": "sender@example.com" }),
+            ))
+            .with_status(200)
+            .with_body(r#"{"id":"email_abc"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let (client, mut request) = client_and_request(&server.url()).await;
+        request.idempotency_key = Some("reminder/1".to_string());
+        let body = serde_json::to_value(&request).unwrap();
+        client.send_email(request).await.unwrap();
+
+        mock.assert_async().await;
+        assert!(body.get("idempotency_key").is_none(), "{body}");
+    }
+
+    #[tokio::test]
+    async fn test_client_send_email_without_a_key_omits_the_header() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/emails")
+            .match_header("idempotency-key", mockito::Matcher::Missing)
+            .with_status(200)
+            .with_body(r#"{"id":"email_abc"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let (client, request) = client_and_request(&server.url()).await;
+        client.send_email(request).await.unwrap();
+
         mock.assert_async().await;
     }
 

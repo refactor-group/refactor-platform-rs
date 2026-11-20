@@ -10,6 +10,10 @@ use chrono::NaiveDateTime;
 use log::*;
 use serde::{Deserialize, Serialize};
 
+// Matches the Google Meet client: meeting creation runs while a user waits.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Zoom meeting configuration
 #[derive(Debug, Serialize)]
 pub struct MeetingConfig {
@@ -67,8 +71,8 @@ impl Client {
 
         let client = reqwest::Client::builder()
             .use_rustls_tls()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
             .default_headers(headers)
             .build()?;
 
