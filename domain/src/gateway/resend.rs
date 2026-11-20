@@ -16,6 +16,8 @@ use crate::gateway::ical::Method;
 /// Path appended to the configured base URL when sending emails.
 const SEND_EMAIL_PATH: &str = "/emails";
 const IDEMPOTENCY_KEY_HEADER: &str = "Idempotency-Key";
+/// Resend's 409 `name` for a reused idempotency key whose request body changed.
+const INVALID_IDEMPOTENT_REQUEST: &str = "invalid_idempotent_request";
 
 // Most sends run while a user waits, so a hung Resend fails the send instead of the
 // request. A timeout can follow an accepted send, so retried sends need an idempotency key.
@@ -407,6 +409,18 @@ impl Client {
         } else {
             let retry_after = retry_after_from(response.headers());
             let error_text = response.text().await.unwrap_or_default();
+            // Resend refuses a reused key whose body changed, but only because it already
+            // sent an email under that key, so the send this retry stands for happened.
+            if status == StatusCode::CONFLICT
+                && request.idempotency_key.is_some()
+                && error_text.contains(INVALID_IDEMPOTENT_REQUEST)
+            {
+                info!(
+                    "Email to {to_emails:?} was already sent under idempotency key {:?}",
+                    request.idempotency_key
+                );
+                return Ok(());
+            }
             // A rejection is usually payload versus template, and the template is the
             // half not otherwise visible here.
             let template_id = request
@@ -855,6 +869,44 @@ mod tests {
 
         mock.assert_async().await;
         assert!(body.get("idempotency_key").is_none(), "{body}");
+    }
+
+    /// Sends `request` against a server answering 409 with the given Resend error `name`.
+    async fn send_against_conflict(name: &str, key: Option<&str>) -> Result<(), Error> {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/emails")
+            .with_status(409)
+            .with_body(format!(
+                r#"{{"statusCode":409,"name":"{name}","message":"conflict"}}"#
+            ))
+            .create_async()
+            .await;
+        let (client, mut request) = client_and_request(&server.url()).await;
+        request.idempotency_key = key.map(str::to_string);
+        client.send_email(request).await
+    }
+
+    #[tokio::test]
+    async fn test_client_send_email_counts_a_changed_body_under_a_used_key_as_sent() {
+        let result = send_against_conflict("invalid_idempotent_request", Some("reminder/1")).await;
+
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn test_client_send_email_without_a_key_keeps_that_conflict_an_error() {
+        let result = send_against_conflict("invalid_idempotent_request", None).await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_client_send_email_keeps_a_concurrent_request_an_error() {
+        let result =
+            send_against_conflict("concurrent_idempotent_requests", Some("reminder/1")).await;
+
+        assert!(result.is_err());
     }
 
     #[tokio::test]
