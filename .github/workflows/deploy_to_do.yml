@@ -113,8 +113,9 @@ jobs:
           # Database connection string
           DATABASE_URL=postgres://${{ secrets.POSTGRES_USER }}:${{ secrets.POSTGRES_PASSWORD }}@${{ vars.POSTGRES_HOST }}:${{ vars.POSTGRES_PORT }}/${{ vars.POSTGRES_DB }}?${{ vars.POSTGRES_OPTIONS }}
           # The backend's PgBouncer pool (transaction mode). When empty the backend uses
-          # DATABASE_URL; the migrator always does. The value MUST include
-          # ?sslmode=verify-full&sslrootcert=/app/root.crt and MUST NOT set
+          # DATABASE_URL; the migrator always does. The value MUST connect as POSTGRES_USER
+          # (the pool set to "Use inbound user"), since search_path is that role's default,
+          # MUST include ?sslmode=verify-full&sslrootcert=/app/root.crt, and MUST NOT set
           # statement-cache-capacity=0 (wrong query results through PgBouncer with sqlx 0.9.1+).
           DATABASE_POOL_URL=${{ secrets.DATABASE_POOL_URL }}
 
@@ -137,8 +138,9 @@ jobs:
           # apply if any of these are left unset in the GitHub environment.
           # DB_MAX_CONNECTIONS is the app's total, split between the main pool and the session store pool.
           # With DATABASE_POOL_URL set it counts client connections to PgBouncer, and the pool's
-          # size in DigitalOcean caps server connections. Keep it near twice the pool size so
-          # overload still fails fast (503) instead of waiting in PgBouncer's queue.
+          # size in DigitalOcean caps server connections. Queries beyond the pool size wait in
+          # PgBouncer's queue; keeping this near twice the pool size bounds that queue, and
+          # requests past it get a 503 after DB_ACQUIRE_TIMEOUT_SECS.
           DB_MAX_CONNECTIONS=${{ vars.DB_MAX_CONNECTIONS }}
           DB_MIN_CONNECTIONS=${{ vars.DB_MIN_CONNECTIONS }}
           DB_CONNECT_TIMEOUT_SECS=${{ vars.DB_CONNECT_TIMEOUT_SECS }}

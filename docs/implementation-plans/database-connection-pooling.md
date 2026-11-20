@@ -121,25 +121,33 @@ the direct (non-pooled) URL. Only the `rust-app` service moves to the pooled URL
 - The "up to three connections per request" (auth session load, protect middleware,
   handler) are acquired one after another, not held together.
 
-### Connection health check on every acquire
+### Not changed: the health check on every acquire
 
-SeaORM defaults `test_before_acquire` to true. The ping is a bare `Sync` that PgBouncer
-must forward to a server connection, so every acquire costs a server checkout before the
-real query does. Set `.test_before_acquire_if_idle_for(...)` in `init_database` so only
-connections idle for a while are pinged.
+SeaORM pings a pooled connection on every acquire (`test_before_acquire`). Behind
+PgBouncer each ping costs a server checkout, so pinging only idle connections would be
+cheaper, but it would also let connections killed by a database restart fail one request
+each. Keep the default until the pool's metrics show the pings matter, then change it in
+its own pull request.
+
+### Startup check
+
+The role default exists only for the role that ran the migration. If migrations run as
+another role, or the pool logs in as one, enum casts fail on every write. `init_database`
+checks that `refactor_platform` is on the connection's `search_path` and refuses to start
+otherwise, so a misconfigured deploy fails its health check instead of serving errors.
 
 ## Changes
 
 0. Gate: confirm the pool handles named prepared statements (see Blocker 2).
 1. Migration setting the connecting role's per-database `search_path` default; remove
-   `set_schema_search_path` and ping only connections idle 30s or longer, in both the
-   SeaORM pool (`service/src/lib.rs`) and the session-store pool (`web/src/lib.rs`).
+   `set_schema_search_path` and add the startup check in `service/src/lib.rs`.
 2. `docker-compose.yaml`: `rust-app` gets
    `DATABASE_URL: ${DATABASE_POOL_URL:-<current direct URL>}`. The migrator keeps the
    direct URL. PR previews have no pooler and keep the direct URL through the fallback.
 3. `.github/workflows/deploy_to_do.yml`: add `DATABASE_POOL_URL` to the production `.env`
    heredoc from a new `production` environment secret, and note next to
-   `DB_MAX_CONNECTIONS` that it now counts client connections to PgBouncer.
+   `DB_MAX_CONNECTIONS` that it now counts client connections to PgBouncer. Note that the
+   pooled URL must log in as `POSTGRES_USER`.
 4. Verify locally with the `SET` removed after the migration: enum writes (roles, topic
    status) and the raw-SQL paths. Then a PR preview, then watch the first production deploy.
 
@@ -150,8 +158,9 @@ connections idle for a while are pinged.
   what remains after the collab server's pool.
 - Keep `DB_MAX_CONNECTIONS` at roughly twice the backend pool size, not far above it.
   Behind PgBouncer, sqlx's `acquire_timeout` only fires when all *client* connections are
-  busy; otherwise queries wait in PgBouncer's queue. Keeping the client pool modest
-  preserves the fast 503 under overload.
+  busy. Queries beyond the pool size wait in PgBouncer's queue, for as long as the queries
+  ahead of them take. Keeping the client pool near twice the pool size bounds that queue,
+  and requests past it still get a 503.
 - The session store's reserved connections (`SESSION_POOL_MAX_CONNECTIONS`) are carved out
   of `DB_MAX_CONNECTIONS` as before and also go through the pool.
 
@@ -161,10 +170,9 @@ connections idle for a while are pinged.
    Run the prepared-statement test against it (Blocker 2) and stop if it fails.
 2. Merge and deploy the code. The migrator sets the role default before the backend
    starts; with no `DATABASE_POOL_URL` set, the backend still connects directly.
-3. A role default applies only to server connections opened after the migration. The
-   pool has no clients until this step, and PgBouncer closes idle server connections
-   after `server_idle_timeout` (10 minutes by default), so wait at least that long after
-   the migration before switching.
+3. A role default applies only to server connections opened after the migration.
+   PgBouncer closes a server connection after `server_lifetime` (an hour by default),
+   sooner when it sits idle, so wait an hour after the migration before switching.
    Add the `DATABASE_POOL_URL` secret (pooled port, pool name as the database name, the
    existing TLS parameters) and adjust
    `DB_MAX_CONNECTIONS`. Redeploy.

@@ -1,6 +1,8 @@
 use config::Config;
 use log::info;
-use sea_orm::{ConnectOptions, Database, DatabaseConnection, DbErr};
+use sea_orm::{
+    ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend, DbErr, Statement,
+};
 use std::sync::Arc;
 use tokio::time::Duration;
 
@@ -19,9 +21,8 @@ pub fn load_env_file() {
 /// Session store pool size, carved out of `db_max_connections`.
 pub const SESSION_POOL_MAX_CONNECTIONS: u32 = 3;
 
-/// Pooled connections idle at least this long are pinged before reuse. Pinging every
-/// acquire would cost a PgBouncer server checkout per query.
-pub const PING_IF_IDLE_FOR: Duration = Duration::from_secs(30);
+/// The schema every query expects to resolve unqualified names in.
+const SCHEMA: &str = "refactor_platform";
 
 /// Main pool `(max, min)` after reserving the session pool; max stays at least 1.
 fn main_pool_bounds(db_max_connections: u32, db_min_connections: u32) -> (u32, u32) {
@@ -55,15 +56,39 @@ pub async fn init_database(config: &Config) -> Result<DatabaseConnection, DbErr>
         .acquire_timeout(Duration::from_secs(config.db_acquire_timeout_secs))
         .idle_timeout(Duration::from_secs(config.db_idle_timeout_secs))
         .max_lifetime(Duration::from_secs(config.db_max_lifetime_secs))
-        .test_before_acquire_if_idle_for(PING_IF_IDLE_FOR)
         .sqlx_logging(true)
         .sqlx_logging_level(log::LevelFilter::Info);
     // No per-connection `search_path`: a transaction-mode pooler would not keep it. The
     // role's per-database default (see migration m20261119_000000) applies instead.
 
     let db = Database::connect(opt).await?;
+    ensure_schema_on_search_path(&db).await?;
 
     Ok(db)
+}
+
+/// Fails unless the connection's `search_path` includes [`SCHEMA`], so a role without the
+/// per-database default stops startup instead of failing enum casts on later writes.
+async fn ensure_schema_on_search_path(db: &DatabaseConnection) -> Result<(), DbErr> {
+    let on_path = db
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT $1 = ANY(current_schemas(false)) AS on_path",
+            [SCHEMA.into()],
+        ))
+        .await?
+        .map(|row| row.try_get::<bool>("", "on_path"))
+        .transpose()?
+        .unwrap_or(false);
+
+    if on_path {
+        Ok(())
+    } else {
+        Err(DbErr::Custom(format!(
+            "search_path does not include {SCHEMA}: the database role has no per-database \
+             default. Run migrations as the backend's role, or connect as the role that ran them."
+        )))
+    }
 }
 
 // Service-level state containing only infrastructure concerns
