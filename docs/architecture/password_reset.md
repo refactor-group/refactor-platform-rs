@@ -433,7 +433,7 @@ Each deferral is a deliberate scoping decision, not an oversight.
 
 | Item | Reason for Deferral |
 |---|---|
-| **Per-IP rate limiting at the application layer is shipped in v1** (was originally deferred) | See [`throttling.md`](throttling.md) for the design. What remains out of scope: per-AS / per-network-owner throttling and reputation-based blocking — those defend distributed-botnet attacks and belong at the CDN/WAF edge, not the application layer. Add when we ever sit behind Cloudflare or similar. |
+| **Per-IP rate limiting at the application layer is shipped in v1** (was originally deferred) | See [`throttling.md`](throttling.md) for the design. What remains out of scope: per-AS / per-network-owner throttling and reputation-based blocking — those defend distributed-botnet attacks and belong at the CDN/WAF edge, not the application layer. Production sits behind Cloudflare, so configure them there. |
 | Periodic sweep of expired tokens | Expired tokens in `magic_link_tokens` are validated as inert (`validate_token` refuses them) but are not auto-deleted. Three implicit cleanup paths cover the common case: (a) issuing a new token of the same purpose runs `delete_all_for_user(user_id, purpose)` first; (b) user deletion cascades via the `user_id` FK; (c) successful consumption deletes inside the consume transaction. A separate periodic sweep would only matter at scale or under a regulatory deletion requirement — neither applies today. **Add a sweep migration when**: (i) the table exceeds ~10⁶ rows, (ii) `EXPLAIN` shows index degradation on the `token_hash` UNIQUE index, or (iii) a compliance requirement mandates prompt deletion. |
 
 ## Monitoring & Operational Visibility
