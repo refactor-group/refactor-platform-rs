@@ -10,7 +10,9 @@ use chrono::{NaiveDateTime, TimeDelta, Timelike, Utc};
 use entity::coaching_session_series as series_entity;
 use entity_api::coaching_session_pending_reschedule::{self, Schedule};
 use mockito::{Matcher, Mock, Server, ServerGuard};
-use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, QueryOrder, Set};
+use sea_orm::{
+    ActiveModelTrait, DatabaseConnection, EntityTrait, QueryOrder, Set, TransactionTrait,
+};
 
 use super::*;
 use crate::coaching_session::{Frequency, Recurrence};
@@ -258,12 +260,15 @@ impl Seeded {
 }
 
 async fn cancel_session(seeded: &Seeded, db: &DatabaseConnection) -> BTreeSet<String> {
-    CancellationNotice::load(db, &composing(), &seeded.session)
+    let notice = CancellationNotice::load(db, &composing(), &seeded.session)
         .await
-        .expect("the cancellation loads")
-        .enqueue(db, &seeded.session, Cancellation::By(seeded.coach.id))
+        .expect("the cancellation loads");
+    let txn = db.begin().await.expect("the transaction begins");
+    notice
+        .enqueue(&txn, &seeded.session, Cancellation::By(seeded.coach.id))
         .await
         .expect("the cancellations are written");
+    txn.commit().await.expect("the transaction commits");
     outbox_kinds(db)
         .await
         .into_iter()

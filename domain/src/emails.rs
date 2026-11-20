@@ -5,7 +5,7 @@ use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use entity_api::coaching_relationship::notify_member_ids;
 use log::*;
-use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
+use sea_orm::{ConnectionTrait, DatabaseConnection, DatabaseTransaction, TransactionTrait};
 use service::config::Config;
 
 use crate::{
@@ -1831,15 +1831,15 @@ impl CancellationNotice {
     }
 
     /// Renders both participants' emails for `cancelled`, which carries the outranking
-    /// `SEQUENCE`, and writes them on `db`, the removing transaction. Rendering reads
-    /// nothing; a copy that fails to render is logged and skipped. Only the write fails `db`.
+    /// `SEQUENCE`, and writes them on `txn`, the removing transaction. Rendering reads
+    /// nothing; a copy that fails to render is logged and skipped. Only the write fails `txn`.
     pub(crate) async fn enqueue(
         &self,
-        db: &impl ConnectionTrait,
+        txn: &DatabaseTransaction,
         cancelled: &coaching_sessions::Model,
         cancellation: Cancellation,
     ) -> Result<(), Error> {
-        email_outbox::enqueue(db, self.envelopes(cancelled, cancellation))
+        email_outbox::enqueue(txn, self.envelopes(cancelled, cancellation))
             .await
             .map(|_| ())
     }
