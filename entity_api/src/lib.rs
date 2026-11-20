@@ -32,6 +32,7 @@ pub mod coaching_session_series;
 pub mod coaching_session_topic;
 pub mod coaching_session_view;
 pub mod cost_pricing_config;
+pub mod email_outbox;
 pub mod error;
 pub mod goal;
 pub mod goal_progress;

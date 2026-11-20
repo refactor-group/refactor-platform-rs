@@ -17,10 +17,10 @@ use entity::{
     coaching_session_images, coaching_session_notices, coaching_session_pending_invites,
     coaching_session_pending_reschedules, coaching_session_reminders, coaching_session_series,
     coaching_session_topics, coaching_session_views, coaching_sessions, coaching_sessions_goals,
-    cost_pricing_config, goals, magic_link_tokens, meeting_recording, oauth_connections,
-    organizations, password_reset_attempts, platform_cost_metrics, transcript_analysis,
-    transcript_participant, transcript_segment, transcript_suggestion, transcription,
-    user_lookup_attempts, user_role_changes, user_roles, users, Id,
+    cost_pricing_config, email_outbox, goals, magic_link_tokens, meeting_recording,
+    oauth_connections, organizations, password_reset_attempts, platform_cost_metrics,
+    transcript_analysis, transcript_participant, transcript_segment, transcript_suggestion,
+    transcription, user_lookup_attempts, user_role_changes, user_roles, users, Id,
 };
 #[cfg(all(test, feature = "mock"))]
 use sea_orm::DbErr;
@@ -92,6 +92,7 @@ pub async fn database() -> DatabaseConnection {
         .register(coaching_sessions::Entity)
         .register(coaching_sessions_goals::Entity)
         .register(cost_pricing_config::Entity)
+        .register(email_outbox::Entity)
         .register(goals::Entity)
         .register(magic_link_tokens::Entity)
         .register(meeting_recording::Entity)

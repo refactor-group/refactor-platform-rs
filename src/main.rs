@@ -112,7 +112,10 @@ async fn main() {
         object_store,
     );
 
-    web::init_server(web_state).await.unwrap();
+    if let Err(e) = web::init_server(web_state).await {
+        error!("Server stopped: {e:?}");
+        process::exit(1);
+    }
 }
 
 // Runs the mock-gated suites so a plain `cargo test` covers them too.

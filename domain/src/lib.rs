@@ -35,6 +35,7 @@ pub mod coaching_session_topic;
 pub mod coaching_session_view;
 pub mod collab_import;
 pub mod cost;
+pub mod email_outbox;
 pub mod emails;
 pub mod error;
 pub mod goal;

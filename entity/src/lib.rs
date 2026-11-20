@@ -25,6 +25,7 @@ pub mod cost_metric;
 pub mod cost_pricing_config;
 pub mod cost_unit;
 pub mod duration;
+pub mod email_outbox;
 pub mod goals;
 pub mod jwts;
 pub mod links;
