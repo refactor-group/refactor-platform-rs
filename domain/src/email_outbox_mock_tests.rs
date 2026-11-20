@@ -1,20 +1,14 @@
 use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
 
 use super::*;
-use crate::gateway::resend::SendEmailRequestBuilder;
+use crate::test_utils::email_outbox::outgoing_email;
 
-async fn envelope(subject: Subject, recipient_id: Id) -> Envelope {
+fn envelope(subject: Subject, recipient_id: Id) -> Envelope {
     Envelope {
         kind: "test",
         subject,
         recipient_id,
-        request: SendEmailRequestBuilder::new()
-            .from("sender@example.com")
-            .to_with_name("recipient@example.com", "Recipient")
-            .template_id("t")
-            .build()
-            .await
-            .expect("the request builds"),
+        email: outgoing_email("test"),
     }
 }
 
@@ -32,9 +26,9 @@ async fn enqueue_locks_each_conversation_once_before_writing() {
     enqueue(
         &db,
         [
-            envelope(Subject::CoachingRelationship(relationship), coachee).await,
-            envelope(Subject::CoachingRelationship(relationship), coachee).await,
-            envelope(Subject::CoachingRelationship(relationship), coach).await,
+            envelope(Subject::CoachingRelationship(relationship), coachee),
+            envelope(Subject::CoachingRelationship(relationship), coachee),
+            envelope(Subject::CoachingRelationship(relationship), coach),
         ],
     )
     .await

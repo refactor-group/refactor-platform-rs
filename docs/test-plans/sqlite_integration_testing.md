@@ -242,7 +242,8 @@ extractor cannot break one.
   the same subject and recipient. Sending and failing drop the body, a stale claim changes
   nothing, and the purge deletes only rows finished before its cutoff. The sweep marks an
   accepted email sent, retries under the same key after its backoff, fails a rejected or
-  expired one, drains rows unsent without a mailer, and sends a held-back email once the
+  expired one, fails one whose stored email no longer parses, drains rows unsent without a
+  mailer, and sends a held-back email once the
   older one finishes. Rows stamped at the same instant are ordered by id.
 - **The coaching session image purge**, below.
 

@@ -2,6 +2,7 @@ pub mod assembly_ai;
 pub(crate) mod auth;
 pub mod google_meet;
 pub(crate) mod ical;
+pub mod mailer;
 pub mod oauth;
 pub mod object_storage;
 pub mod recall_ai;

@@ -3,7 +3,7 @@ use std::time::Duration;
 use chrono::{NaiveDate, NaiveDateTime, TimeDelta};
 
 use super::*;
-use crate::gateway::resend::SendEmailRequestBuilder;
+use crate::test_utils::email_outbox::outgoing_email;
 
 fn at(hour: u32) -> NaiveDateTime {
     NaiveDate::from_ymd_opt(2026, 12, 1)
@@ -110,44 +110,26 @@ fn keys_and_subjects_have_stable_forms() {
     );
 }
 
-async fn envelope(key: Option<&str>) -> Envelope {
-    let builder = SendEmailRequestBuilder::new()
-        .from("sender@example.com")
-        .to_with_name("ada@example.com", "Ada")
-        .template_id("t");
-    let builder = match key {
-        Some(key) => builder.idempotency_key(key),
-        None => builder,
+#[test]
+fn an_outgoing_emails_debug_shows_addresses_but_not_its_contents() {
+    let email = OutgoingEmail {
+        attachments: vec![Attachment {
+            filename: "invite.ics".to_string(),
+            content_type: "text/calendar".to_string(),
+            content: "c2VjcmV0".to_string(),
+        }],
+        ..outgoing_email("Reset your password")
     };
-    Envelope {
-        kind: "welcome",
-        subject: Subject::User(Id::nil()),
-        recipient_id: Id::nil(),
-        request: builder.build().await.expect("the request builds"),
-    }
-}
 
-#[tokio::test]
-async fn an_envelope_naming_its_own_key_is_refused() {
-    let refused = New::try_from(envelope(Some("welcome/1")).await);
+    let shown = format!("{email:?}");
 
     assert!(
-        matches!(
-            &refused,
-            Err(Error {
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Rejected(message)),
-                ..
-            }) if message.contains("outbox sets it")
+        shown.contains(
+            "from sender@example.com to recipient@example.com, replies to hello@example.com"
         ),
-        "{refused:?}"
+        "{shown}"
     );
-    assert!(New::try_from(envelope(None).await).is_ok());
-}
-
-#[tokio::test]
-async fn an_envelopes_debug_leaves_out_the_request() {
-    let shown = format!("{:?}", envelope(None).await);
-
-    assert!(shown.contains("welcome"), "{shown}");
-    assert!(!shown.contains("ada@example.com"), "{shown}");
+    assert!(shown.contains("invite.ics"), "{shown}");
+    assert!(!shown.contains("Reset your password"), "{shown}");
+    assert!(!shown.contains("c2VjcmV0"), "{shown}");
 }

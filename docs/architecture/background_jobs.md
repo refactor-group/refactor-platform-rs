@@ -161,7 +161,7 @@ drains over several ticks instead of bursting against the Resend API.
 |---|---|---|---|
 | `password-reset-sweep` | 24h | After interval | Deletes `password_reset_attempts` rows older than 30 days. Retention outlives the 24-hour daily-cap window; the rest is forensics. |
 | `session-reminder` | `SESSION_REMINDER_POLL_MINUTES` (default 15) | Immediately | Emails each participant the relationship's kind reminds (a coaching relationship's coachee, both colleagues) ahead of an upcoming session. Not scheduled at all when `SESSION_REMINDER_EMAIL_TEMPLATE_ID` is unset. |
-| `email-outbox` | 1s | Immediately | Delivers due `email_outbox` rows to Resend under each row's idempotency key, retrying with backoff and failing rows past 20 hours. Always scheduled: without `RESEND_API_KEY` it fails due rows unsent. See [`email_outbox.md`](email_outbox.md). |
+| `email-outbox` | 1s | Immediately | Delivers due `email_outbox` rows, rendered emails, through the configured provider (Resend) under each row's idempotency key, retrying with backoff and failing rows past 20 hours. Always scheduled. In production the server refuses to start without a provider; elsewhere the sweep fails due rows unsent. See [`email_outbox.md`](email_outbox.md). |
 | `email-outbox-purge` | 1h | After interval | Deletes `email_outbox` rows finished more than 7 days ago. |
 | `coaching-session-pending-reschedule` | 15s | Immediately | Emails a single session's net reschedule once it settles (`SESSION_RESCHEDULE_SETTLE_SECONDS`, default 60, capped by `SESSION_RESCHEDULE_SETTLE_MAX_SECONDS`, default 300). Always scheduled: without Resend or `SESSION_RESCHEDULED_EMAIL_TEMPLATE_ID` it drops due rows unsent, since a pending row suppresses the session's reminder. |
 

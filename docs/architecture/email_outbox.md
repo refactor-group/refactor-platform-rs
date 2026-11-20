@@ -1,10 +1,12 @@
 # Email outbox
 
 Every email the backend sends is written as a row in `refactor_platform.email_outbox`, in
-the same database transaction as the change it announces. One background sweep is the
-only code that hands email to Resend. This document describes that system and the
-guarantees it makes. Senders move onto it in phases; until a sender has moved, it still
-calls Resend directly.
+the same database transaction as the change it announces. A row holds a fully rendered,
+provider-neutral email (`OutgoingEmail`: from, to, reply-to, subject, HTML, plain text,
+attachments), never a provider's template request. One background sweep is the only code
+that hands outbox email to a provider. This document describes that system and the
+guarantees it makes. Senders move onto it as their templates are rendered in-repo; until
+a sender has moved, it still sends through a Resend-hosted template.
 
 ## Guarantees
 
@@ -62,7 +64,7 @@ codebase already uses (`coaching_session_pending_reschedule`).
 | `subject_key` text | Ordering scope: `coaching_relationship/{id}` for every session and series email, `user/{id}` otherwise. |
 | `recipient_user_id` uuid | Addressee; cascades on user delete. |
 | `position` smallint | Order within the batch that wrote it. |
-| `request` jsonb null | The Resend request body exactly as sent. Cleared when the row finishes. |
+| `request` jsonb null | The rendered `OutgoingEmail`, sent as stored on every attempt. Cleared when the row finishes. |
 | `state` text | `pending`, `sent` or `failed` (CHECK constraint, not a Postgres enum). |
 | `attempts` smallint | Attempts so far. |
 | `not_before` timestamp | Earliest next attempt. |
@@ -103,9 +105,17 @@ Constants, not configuration: tick 1s, batch 10, concurrency 5, lease 5 minutes,
 30s doubling to a 30-minute cap, cutoff 20 hours, retention 7 days. The sweep polls
 every second instead of waking on commit: one indexed query on an empty partial index is
 cheaper than threading a wake handle through every sender, and `LISTEN`/`NOTIFY` does not
-work through the transaction-mode connection pool. Where Resend is not configured the
-sweep still runs and fails each due row with "email is not configured", so pending
-bodies never pile up.
+work through the transaction-mode connection pool. A row whose stored email no longer
+parses is failed with "stored email could not be read", never sent.
+
+## Providers
+
+The provider sits behind the `Mailer` trait, which takes an `OutgoingEmail` and returns a
+provider-neutral `Receipt`. `domain::gateway::mailer::from_config` is the one place that
+chooses the provider; today that is Resend, whose `Mailer` maps the email onto its send
+fields. In production the server refuses to start when no provider is configured or it
+fails to build. Elsewhere the sweep warns once at startup and fails each due row with
+"email is not configured", so pending bodies never pile up.
 
 ## Code layout
 
@@ -113,20 +123,18 @@ bodies never pile up.
 |---|---|
 | `entity::email_outbox` | The row. |
 | `entity_api::email_outbox` | `insert`, `claim`, `mark_sent`, `release`, `fail`, `purge`: one statement each, every transition filtered by the held claim. |
-| `domain::email_outbox` | `Envelope` (a rendered email with its subject and recipient), `enqueue`, the `Mailer` trait and its provider-neutral `Receipt`, `RetryPolicy` and the pure `settle`, which maps a receipt to the row's next state. |
-| `domain::gateway::resend` | `Mailer` for Resend: classifies responses into `Receipt`. |
+| `domain::email_outbox` | `OutgoingEmail`, `Envelope` (the email with its subject and recipient), `enqueue`, the `Mailer` trait and its `Receipt`, `RetryPolicy` and the pure `settle`, which maps a receipt to the row's next state. |
+| `domain::gateway::mailer` | `from_config`: the configured `Mailer`, if any. |
+| `domain::gateway::resend` | `Mailer` for Resend: maps an `OutgoingEmail` onto its send fields and classifies responses into `Receipt`. |
 | `domain::jobs::email_outbox` | The sweep and the purge, composed from a `Mailer` and a `RetryPolicy`. |
 
 ## Phases
 
 1. This infrastructure, with no sender moved. No behavior change.
-2. Session and series emails (scheduled, cancelled, series scheduled, rescheduled,
-   rescheduled-following, cancelled, orphan-occurrence cancels).
-3. The reminder and pending-reschedule sweeps, including owed invites: each claim, render
-   and enqueue in one transaction. A reschedule then counts as told when its email is
-   enqueued.
-4. Action-assigned (needs a transaction around action writes and the call moved from
-   `web` into `domain`), welcome, added-to-organization, password reset.
-5. The three resend-invite endpoints return success once the invite is enqueued, after a
-   frontend copy change ships first; then `gateway::resend::Client::send_email` keeps one
-   caller, the outbox.
+2. Senders move one at a time as their templates are rendered in-repo on the shared
+   layout (issue #525). Each sender's move ports its template, renders and enqueues in
+   the transaction it announces, and retires its `*_TEMPLATE_ID`. Sweeps that decide an
+   email is owed (reminders, pending reschedules, owed invites) claim, render and enqueue
+   in one transaction.
+3. Once every sender has moved, `gateway::resend::Client::send_email` and the template
+   path are removed, and the outbox is the only way email leaves.

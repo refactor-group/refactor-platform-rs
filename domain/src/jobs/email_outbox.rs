@@ -10,6 +10,7 @@
 //! Without a mailer the sweep still runs, failing due rows unsent, so pending bodies and
 //! the sign-in links in them never pile up.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -19,11 +20,14 @@ use futures::future::ready;
 use futures::stream::{self, StreamExt};
 use log::*;
 use sea_orm::DatabaseConnection;
+use serde::Deserialize;
 use service::config::Config;
 
-use crate::email_outbox::{idempotency_key, settle, Mailer, Receipt, RetryPolicy, Transition};
-use crate::error::Error;
-use crate::gateway::resend;
+use crate::email_outbox::{
+    idempotency_key, settle, Mailer, OutgoingEmail, Receipt, RetryPolicy, Transition,
+};
+use crate::error::{DomainErrorKind, Error, InternalErrorKind};
+use crate::gateway::mailer;
 use crate::jobs::{Context, FirstRun, Job, Outcome};
 use crate::Id;
 
@@ -45,15 +49,21 @@ const RETENTION: TimeDelta = TimeDelta::days(7);
 /// What a row drained without a mailer is failed with.
 const NOT_CONFIGURED: &str = "email is not configured";
 
-/// Delivers due outbox rows through `M`, or drains them unsent without one.
-pub struct Sweep<M: Mailer> {
-    mailer: Option<M>,
+/// What a row too old to send is failed with.
+const EXPIRED: &str = "expired before it could be sent";
+
+/// What a row whose stored email does not parse is failed with.
+const UNREADABLE: &str = "stored email could not be read";
+
+/// Delivers due outbox rows through a mailer, or drains them unsent without one.
+pub struct Sweep {
+    mailer: Option<Arc<dyn Mailer>>,
     policy: RetryPolicy,
 }
 
-impl<M: Mailer> Sweep<M> {
+impl Sweep {
     /// A sweep that delivers through `mailer`.
-    pub fn new(mailer: M, policy: RetryPolicy) -> Self {
+    pub fn new(mailer: Arc<dyn Mailer>, policy: RetryPolicy) -> Self {
         Self {
             mailer: Some(mailer),
             policy,
@@ -68,76 +78,84 @@ impl<M: Mailer> Sweep<M> {
         }
     }
 
-    /// Settles one claimed row: drains it without a mailer, fails it unsent when expired,
-    /// otherwise delivers it. True when the row was recorded as sent, or drained.
-    async fn settle_one(&self, db: &DatabaseConnection, claimed: &Claimed) -> bool {
-        let now = Utc::now().naive_utc();
-        let (transition, handled) = match &self.mailer {
-            None => {
-                debug!(
-                    "[email-outbox] {} email {} dropped: {NOT_CONFIGURED}",
-                    claimed.kind, claimed.id
-                );
-                (Transition::Fail(NOT_CONFIGURED.to_string()), true)
+    /// Builds the sweep over the configured email provider.
+    ///
+    /// In production a missing or broken provider is an error, so the server refuses to
+    /// start. Elsewhere the sweep drains instead and says so once.
+    pub async fn from_config(config: &Config) -> Result<Self, Error> {
+        let policy = RetryPolicy::default();
+        match (mailer::from_config(config).await, config.is_production()) {
+            (Ok(Some(mailer)), _) => {
+                info!("[email-outbox] delivering through the configured email provider");
+                Ok(Self::new(mailer, policy))
             }
-            Some(_) if self.policy.is_expired(claimed.created_at, now) => {
-                error!(
-                    "[email-outbox] {} email {} expired after {} attempt(s) and will not be sent",
-                    claimed.kind,
-                    claimed.id,
-                    claimed.attempts - 1
-                );
-                (
-                    Transition::Fail("expired before it could be sent".to_string()),
-                    false,
-                )
-            }
-            Some(mailer) => {
-                let receipt = mailer
-                    .deliver(&idempotency_key(claimed.id), &claimed.request)
-                    .await;
-                log_receipt(claimed, &receipt);
-                let transition = settle(
-                    &receipt,
-                    claimed.attempts,
-                    Utc::now().naive_utc(),
-                    &self.policy,
-                );
-                let sent = transition == Transition::Sent;
-                (transition, sent)
-            }
-        };
-        record(db, claimed, transition).await && handled
-    }
-}
-
-impl Sweep<resend::Client> {
-    /// Builds the sweep over Resend, draining instead when Resend is not configured.
-    pub async fn from_config(config: &Config) -> Self {
-        let mailer = match config.resend_api_key() {
-            None => None,
-            Some(_) => resend::Client::new(config)
-                .await
-                .inspect_err(|e| {
-                    warn!("[email-outbox] could not build the Resend client: {e:?}");
-                })
-                .ok(),
-        };
-        match mailer {
-            Some(client) => {
-                info!("[email-outbox] delivering through Resend");
-                Self::new(client, RetryPolicy::default())
-            }
-            None => {
-                info!("[email-outbox] {NOT_CONFIGURED}; due rows will be dropped unsent");
-                Self::draining(RetryPolicy::default())
+            (Ok(None), true) => Err(Error {
+                source: Some("no email provider configured".into()),
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+            }),
+            (Err(e), true) => Err(e),
+            (built, false) => {
+                if let Err(e) = built {
+                    warn!("[email-outbox] the email provider failed to build: {e:?}");
+                }
+                warn!("[email-outbox] no email provider configured; outbox emails will be dropped unsent");
+                Ok(Self::draining(policy))
             }
         }
+    }
+
+    /// Settles one claimed row. True when it was recorded as sent, or drained.
+    async fn settle_one(&self, db: &DatabaseConnection, claimed: &Claimed) -> bool {
+        let (transition, handled) = self.decide(claimed).await;
+        record(db, claimed, transition).await && handled
+    }
+
+    /// What becomes of a claimed row: drained without a mailer, failed unsent when expired
+    /// or unreadable, otherwise delivered and settled by its receipt. Paired with whether
+    /// that counts as handled.
+    async fn decide(&self, claimed: &Claimed) -> (Transition, bool) {
+        let Some(mailer) = &self.mailer else {
+            debug!(
+                "[email-outbox] {} email {} dropped: {NOT_CONFIGURED}",
+                claimed.kind, claimed.id
+            );
+            return (Transition::Fail(NOT_CONFIGURED.to_string()), true);
+        };
+        if self
+            .policy
+            .is_expired(claimed.created_at, Utc::now().naive_utc())
+        {
+            error!(
+                "[email-outbox] {} email {} expired after {} attempt(s) and will not be sent",
+                claimed.kind,
+                claimed.id,
+                claimed.attempts - 1
+            );
+            return (Transition::Fail(EXPIRED.to_string()), false);
+        }
+        // The parse error can quote the body, so it is not logged.
+        let Ok(email) = OutgoingEmail::deserialize(&claimed.request) else {
+            error!(
+                "[email-outbox] {} email {} {UNREADABLE} and will not be sent",
+                claimed.kind, claimed.id
+            );
+            return (Transition::Fail(UNREADABLE.to_string()), false);
+        };
+        let receipt = mailer.deliver(&idempotency_key(claimed.id), &email).await;
+        log_receipt(claimed, &receipt);
+        let transition = settle(
+            &receipt,
+            claimed.attempts,
+            Utc::now().naive_utc(),
+            &self.policy,
+        );
+        let sent = transition == Transition::Sent;
+        (transition, sent)
     }
 }
 
 #[async_trait]
-impl<M: Mailer> Job for Sweep<M> {
+impl Job for Sweep {
     fn name(&self) -> &'static str {
         "email-outbox"
     }
@@ -161,7 +179,7 @@ impl<M: Mailer> Job for Sweep<M> {
         )
         .await?;
 
-        // A retried or failed send leaves the tick short, so a failing Resend shows at WARN.
+        // A retried or failed send leaves the tick short, so a failing provider shows at WARN.
         let attempted = claimed.len() as u64;
         let handled = stream::iter(claimed)
             .map(|row| async move { self.settle_one(&ctx.db, &row).await })

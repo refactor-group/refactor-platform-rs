@@ -11,7 +11,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize, Serializer};
 use service::config::Config;
 
-use crate::email_outbox::{Mailer, Receipt};
+use crate::email_outbox::{Mailer, OutgoingEmail, Receipt};
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::gateway::ical::Method;
 
@@ -91,17 +91,20 @@ fn format_mailbox(name: &str, email: &str) -> String {
     format!("\"{escaped}\" <{email}>")
 }
 
+/// `email` as a mailbox string, with `name` when there is one.
+fn mailbox(email: &str, name: Option<&str>) -> String {
+    match name {
+        Some(name) if !name.is_empty() => format_mailbox(name, email),
+        _ => email.to_string(),
+    }
+}
+
 impl Serialize for EmailRecipient {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        match &self.name {
-            Some(name) if !name.is_empty() => {
-                serializer.serialize_str(&format_mailbox(name, &self.email))
-            }
-            _ => serializer.serialize_str(&self.email),
-        }
+        serializer.serialize_str(&mailbox(&self.email, self.name.as_deref()))
     }
 }
 
@@ -479,11 +482,11 @@ impl Client {
     }
 }
 
-/// Sends a stored outbox body verbatim under the row's key.
+/// Sends a rendered email under the outbox row's key.
 #[async_trait]
 impl Mailer for Client {
-    async fn deliver(&self, key: &str, body: &serde_json::Value) -> Receipt {
-        match self.post(body, Some(key)).await {
+    async fn deliver(&self, key: &str, email: &OutgoingEmail) -> Receipt {
+        match self.post(&RenderedRequest::from(email), Some(key)).await {
             Ok(Posted::Sent(_) | Posted::AlreadySent) => Receipt::Accepted,
             Ok(Posted::Refused {
                 status,
@@ -495,6 +498,56 @@ impl Mailer for Client {
                 after: None,
                 error: e.to_string(),
             },
+        }
+    }
+}
+
+/// Resend's send fields for an email rendered here rather than from a Resend template.
+#[derive(Serialize)]
+struct RenderedRequest<'a> {
+    from: String,
+    to: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reply_to: Option<String>,
+    subject: &'a str,
+    html: &'a str,
+    text: &'a str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    attachments: Vec<RenderedAttachment<'a>>,
+}
+
+#[derive(Serialize)]
+struct RenderedAttachment<'a> {
+    filename: &'a str,
+    content_type: &'a str,
+    content: &'a str,
+}
+
+impl<'a> From<&'a OutgoingEmail> for RenderedRequest<'a> {
+    fn from(email: &'a OutgoingEmail) -> Self {
+        Self {
+            from: mailbox(&email.from.email, email.from.name.as_deref()),
+            to: email
+                .to
+                .iter()
+                .map(|to| mailbox(&to.email, to.name.as_deref()))
+                .collect(),
+            reply_to: email
+                .reply_to
+                .as_ref()
+                .map(|reply_to| mailbox(&reply_to.email, reply_to.name.as_deref())),
+            subject: &email.subject,
+            html: &email.html,
+            text: &email.text,
+            attachments: email
+                .attachments
+                .iter()
+                .map(|attachment| RenderedAttachment {
+                    filename: &attachment.filename,
+                    content_type: &attachment.content_type,
+                    content: &attachment.content,
+                })
+                .collect(),
         }
     }
 }
@@ -606,6 +659,8 @@ async fn build_auth_headers(config: &Config) -> Result<reqwest::header::HeaderMa
 mod tests {
     use super::*;
     use service::config::Config;
+
+    use crate::email_outbox::{Attachment as OutboxAttachment, Mailbox};
 
     #[tokio::test]
     async fn test_client_creation_fails_without_api_key() {
@@ -1156,6 +1211,68 @@ mod tests {
 
     const OUTBOX_KEY: &str = "email-outbox/1";
 
+    fn outgoing_email() -> OutgoingEmail {
+        OutgoingEmail {
+            from: Mailbox {
+                email: "sender@example.com".to_string(),
+                name: Some("Refactor".to_string()),
+            },
+            to: vec![
+                Mailbox {
+                    email: "ada@example.com".to_string(),
+                    name: Some("Ada \"The\" Countess".to_string()),
+                },
+                Mailbox {
+                    email: "grace@example.com".to_string(),
+                    name: None,
+                },
+            ],
+            reply_to: Some(Mailbox {
+                email: "hello@example.com".to_string(),
+                name: None,
+            }),
+            subject: "Your session moved".to_string(),
+            html: "<p>Moved</p>".to_string(),
+            text: "Moved".to_string(),
+            attachments: vec![OutboxAttachment {
+                filename: "invite.ics".to_string(),
+                content_type: "text/calendar; method=REQUEST; charset=UTF-8".to_string(),
+                content: "QkVHSU4=".to_string(),
+            }],
+        }
+    }
+
+    /// The exact body Resend must receive for `outgoing_email`.
+    fn rendered_body() -> serde_json::Value {
+        serde_json::json!({
+            "from": "\"Refactor\" <sender@example.com>",
+            "to": ["\"Ada \\\"The\\\" Countess\" <ada@example.com>", "grace@example.com"],
+            "reply_to": "hello@example.com",
+            "subject": "Your session moved",
+            "html": "<p>Moved</p>",
+            "text": "Moved",
+            "attachments": [{
+                "filename": "invite.ics",
+                "content_type": "text/calendar; method=REQUEST; charset=UTF-8",
+                "content": "QkVHSU4=",
+            }],
+        })
+    }
+
+    #[test]
+    fn a_rendered_email_omits_the_optional_fields_it_lacks() {
+        let email = OutgoingEmail {
+            reply_to: None,
+            attachments: Vec::new(),
+            ..outgoing_email()
+        };
+
+        let body = serde_json::to_value(RenderedRequest::from(&email)).unwrap();
+
+        assert!(body.get("attachments").is_none(), "{body}");
+        assert!(body.get("reply_to").is_none(), "{body}");
+    }
+
     /// Delivers a stored body against a server answering `status` with `body` and
     /// `headers`; returns the receipt and the mock, to check what was sent.
     async fn deliver_against(
@@ -1164,18 +1281,14 @@ mod tests {
         headers: &[(&str, &str)],
     ) -> (Receipt, mockito::Mock, mockito::ServerGuard) {
         let mut server = mockito::Server::new_async().await;
-        let stored = serde_json::json!({
-            "from": "sender@example.com",
-            "to": ["recipient@example.com"],
-            "template": { "id": "t", "variables": { "name": "Ada" } },
-        });
+        let email = outgoing_email();
         let mock = headers
             .iter()
             .fold(
                 server
                     .mock("POST", "/emails")
                     .match_header("idempotency-key", OUTBOX_KEY)
-                    .match_body(mockito::Matcher::Json(stored.clone()))
+                    .match_body(mockito::Matcher::Json(rendered_body()))
                     .with_status(status)
                     .with_body(body),
                 |mock, (name, value)| mock.with_header(*name, value),
@@ -1184,12 +1297,12 @@ mod tests {
             .create_async()
             .await;
         let (client, _) = client_and_request(&server.url()).await;
-        let receipt = client.deliver(OUTBOX_KEY, &stored).await;
+        let receipt = client.deliver(OUTBOX_KEY, &email).await;
         (receipt, mock, server)
     }
 
     #[tokio::test]
-    async fn deliver_sends_the_stored_body_verbatim_under_the_key() {
+    async fn deliver_sends_the_rendered_email_under_the_key() {
         let (receipt, mock, _server) = deliver_against(200, r#"{"id":"email_abc"}"#, &[]).await;
 
         assert_eq!(receipt, Receipt::Accepted);

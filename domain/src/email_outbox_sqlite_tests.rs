@@ -7,7 +7,7 @@ use sea_orm::{DatabaseConnection, EntityTrait, QueryOrder, TransactionTrait};
 use serde_json::json;
 
 use super::*;
-use crate::gateway::resend::SendEmailRequestBuilder;
+use crate::test_utils::email_outbox::outgoing_email;
 use crate::test_utils::sqlite::{database, seed_user, within_time_limit};
 
 const LEASE: TimeDelta = TimeDelta::minutes(5);
@@ -78,19 +78,12 @@ async fn only_row(db: &DatabaseConnection) -> Model {
     all.remove(0)
 }
 
-async fn envelope(recipient_id: Id, kind: &'static str) -> Envelope {
+fn envelope(recipient_id: Id, kind: &'static str) -> Envelope {
     Envelope {
         kind,
         subject: Subject::User(recipient_id),
         recipient_id,
-        request: SendEmailRequestBuilder::new()
-            .from("sender@example.com")
-            .to_with_name("recipient@example.com", "Recipient")
-            .template_id("t")
-            .add_variable("name", "Ada")
-            .build()
-            .await
-            .expect("the request builds"),
+        email: outgoing_email(kind),
     }
 }
 
@@ -101,7 +94,7 @@ async fn enqueue_writes_with_the_callers_transaction() {
         let user = seed_user(&db).await;
 
         let rolled_back = db.begin().await?;
-        enqueue(&rolled_back, [envelope(user, "dropped").await]).await?;
+        enqueue(&rolled_back, [envelope(user, "dropped")]).await?;
         rolled_back.rollback().await?;
         assert!(
             rows(&db).await.is_empty(),
@@ -111,10 +104,7 @@ async fn enqueue_writes_with_the_callers_transaction() {
         let committed = db.begin().await?;
         let written = enqueue(
             &committed,
-            [
-                envelope(user, "first").await,
-                envelope(user, "second").await,
-            ],
+            [envelope(user, "first"), envelope(user, "second")],
         )
         .await?;
         committed.commit().await?;
@@ -129,11 +119,12 @@ async fn enqueue_writes_with_the_callers_transaction() {
             [("first", 0, State::Pending), ("second", 1, State::Pending)]
         );
         assert_eq!(stored[0].subject_key, Subject::User(user).key());
+        let first: OutgoingEmail =
+            serde_json::from_value(stored[0].request.clone().unwrap_or_default())?;
         assert_eq!(
-            stored[0].request,
-            Some(serde_json::to_value(
-                &envelope(user, "first").await.request
-            )?)
+            first,
+            outgoing_email("first"),
+            "the stored email reads back whole"
         );
         Ok::<(), Box<dyn std::error::Error>>(())
     })
