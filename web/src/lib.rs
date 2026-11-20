@@ -22,7 +22,7 @@ use log::*;
 use meeting_ai::traits::{recording_bot, transcription as transcription_trait};
 use sea_orm::DatabaseConnection;
 use service::config::{ApiVersion, Config};
-use service::SESSION_POOL_MAX_CONNECTIONS;
+use service::{SCHEMA, SESSION_POOL_MAX_CONNECTIONS};
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -135,12 +135,17 @@ async fn shutdown_signal() {
 pub async fn init_server(app_state: AppState) -> Result<()> {
     // Session layer
     let session_store = PostgresStore::new(session_pool(&app_state.config).await?)
-        .with_schema_name("refactor_platform") // FIXME: consolidate all schema strings into a config field with default option
-        .unwrap()
-        .with_table_name("authorized_sessions")
-        .unwrap();
+        .with_schema_name(SCHEMA)
+        .and_then(|store| store.with_table_name("authorized_sessions"))
+        .map_err(|err| {
+            error!("Session store configuration is invalid: {err}");
+            Error::Web(WebErrorKind::Other)
+        })?;
 
-    session_store.migrate().await.unwrap();
+    session_store.migrate().await.map_err(|err| {
+        error!("Session store migration failed: {err}");
+        Error::Web(WebErrorKind::Other)
+    })?;
 
     let deletion_task = tokio::task::spawn(
         session_store
