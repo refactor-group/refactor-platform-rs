@@ -13,7 +13,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{NaiveDateTime, TimeDelta, Utc};
 use entity_api::email_outbox::{self, New};
-use sea_orm::ConnectionTrait;
+use sea_orm::DatabaseTransaction;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
@@ -116,13 +116,13 @@ impl TryFrom<Envelope> for New {
     }
 }
 
-/// Writes `envelopes` to the outbox on `db`, in order; returns how many were written.
+/// Writes `envelopes` to the outbox on `txn`, in order; returns how many were written.
 ///
-/// Pass the transaction that makes the change the emails announce. Each conversation is
-/// locked before the rows are stamped, so a second writer to it waits for this one to
-/// commit and stamps a later time.
+/// Takes the transaction that makes the change the emails announce, so the rows commit or
+/// roll back with it. Each conversation is locked until that transaction ends, so a second
+/// writer to it waits for this one to commit and stamps a later time.
 pub async fn enqueue(
-    db: &impl ConnectionTrait,
+    txn: &DatabaseTransaction,
     envelopes: impl IntoIterator<Item = Envelope>,
 ) -> Result<usize, Error> {
     let rows = envelopes
@@ -130,8 +130,8 @@ pub async fn enqueue(
         .map(New::try_from)
         .collect::<Result<Vec<_>, _>>()?;
     let count = rows.len();
-    email_outbox::lock_conversations(db, &rows).await?;
-    email_outbox::insert(db, rows, Utc::now().naive_utc()).await?;
+    email_outbox::lock_conversations(txn, &rows).await?;
+    email_outbox::insert(txn, rows, Utc::now().naive_utc()).await?;
     Ok(count)
 }
 
