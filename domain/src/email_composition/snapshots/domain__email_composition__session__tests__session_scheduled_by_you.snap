@@ -5,7 +5,7 @@ expression: "copy(&SessionScheduled { by: Actor::You, ..session_scheduled() })"
 Subject: Session with Alex Smith on Wed, Mar 4 at 10:00 AM
 Preheader: Add the topics you want to cover before you meet.
 
-Session scheduled
+Coaching session scheduled
 
 Hi Jane,
 

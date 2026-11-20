@@ -5,7 +5,7 @@ expression: "copy(&SeriesScheduled { by: Actor::You, ..series_scheduled() })"
 Subject: Series with Alex Smith starts Wed, Mar 4
 Preheader: Weekly on Wednesday at 10:00 AM, 13 coaching sessions scheduled.
 
-Series scheduled
+Coaching session series scheduled
 
 Hi Jane,
 

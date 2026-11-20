@@ -3,7 +3,7 @@
 
 {% block preheader %}Upcoming sessions from {{ email.first_date }} through {{ email.last_date }} are cancelled.{% endblock %}
 
-{% block title %}Series cancelled{% endblock %}
+{% block title %}{{ email.parties.session_label|capitalize }} series cancelled{% endblock %}
 
 {% block content -%}
 {% call m::notice() -%}

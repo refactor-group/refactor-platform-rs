@@ -3,7 +3,7 @@
 
 {% block preheader %}It now starts at {{ email.when.time }}, and your calendar updates in place.{% endblock %}
 
-{% block title %}Session moved{% endblock %}
+{% block title %}{{ email.parties.session_label|capitalize }} moved{% endblock %}
 
 {% block content -%}
 <p>Your {{ email.parties.session_label }} with <strong>{{ email.parties.other.full_name }}</strong> has moved. Your calendar updates in place, so there's nothing to delete.</p>

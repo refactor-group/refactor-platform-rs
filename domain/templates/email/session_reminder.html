@@ -3,7 +3,7 @@
 
 {% block preheader %}Add your topics and review your actions before {{ email.when.date }} at {{ email.when.time }}.{% endblock %}
 
-{% block title %}Your session is coming up{% endblock %}
+{% block title %}Your {{ email.parties.session_label }} is coming up{% endblock %}
 
 {% block content -%}
 <p>Your {{ email.parties.session_label }} with <strong>{{ email.parties.other.full_name }}</strong> is coming up. Take a few moments to add the topics most worth discussing, review your actions due, and check that your goals still reflect what you're working toward.</p>

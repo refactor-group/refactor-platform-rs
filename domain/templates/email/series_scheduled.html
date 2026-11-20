@@ -3,7 +3,7 @@
 
 {% block preheader %}{{ email.cadence }} at {{ email.first.time }}, {{ email.count }} {{ email.parties.session_label_plural }} scheduled.{% endblock %}
 
-{% block title %}Series scheduled{% endblock %}
+{% block title %}{{ email.parties.session_label|capitalize }} series scheduled{% endblock %}
 
 {% block content -%}
 {% match email.by -%}

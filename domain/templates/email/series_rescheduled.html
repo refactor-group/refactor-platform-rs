@@ -13,9 +13,9 @@
 {% block title %}
 {%- match email.scope -%}
 {%- when Scope::WholeSeries { .. } -%}
-Series moved
+{{ email.parties.session_label|capitalize }} series moved
 {%- when Scope::FromSession { .. } -%}
-Sessions moved
+{{ email.parties.session_label_plural|capitalize }} moved
 {%- endmatch -%}
 {% endblock %}
 

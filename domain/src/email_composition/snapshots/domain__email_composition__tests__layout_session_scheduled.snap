@@ -41,7 +41,7 @@ expression: email.html
 <table class="frame" role="presentation" border="0" width="100%" cellpadding="0" cellspacing="0" style="border-collapse: separate;">
 <tbody><tr>
 <td class="content" style="font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;padding: 32px 32px 16px 32px;background-color: #ffffff;border: 1px solid #e5e7eb;border-radius: 16px;font-size: 15px;line-height: 24px;color: #525252;">
-<h1 class="title" style="margin: 0 0 12px 0;font-size: 26px;line-height: 1.25;font-weight: 400;letter-spacing: -0.01em;color: #0a0a0a;">Session scheduled</h1>
+<h1 class="title" style="margin: 0 0 12px 0;font-size: 26px;line-height: 1.25;font-weight: 400;letter-spacing: -0.01em;color: #0a0a0a;">Coaching session scheduled</h1>
 <p style="margin: 0 0 16px 0;">Hi Jane,</p>
 <p style="margin: 0 0 16px 0;"><strong style="font-weight: 500;color: #0a0a0a;">Alex Smith</strong> scheduled a coaching session with you.</p>
 <table class="details" role="presentation" border="0" width="100%" cellpadding="0" cellspacing="0" style="border-collapse: separate;margin: 4px 0 24px 0;">

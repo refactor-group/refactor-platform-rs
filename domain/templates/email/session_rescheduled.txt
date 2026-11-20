@@ -1,6 +1,6 @@
 {% extends "email/base.txt" %}
 
-{% block title %}Session moved{% endblock %}
+{% block title %}{{ email.parties.session_label|capitalize }} moved{% endblock %}
 
 {% block content -%}
 Your {{ email.parties.session_label }} with {{ email.parties.other.full_name }} has moved. Your calendar updates in place, so there's nothing to delete.

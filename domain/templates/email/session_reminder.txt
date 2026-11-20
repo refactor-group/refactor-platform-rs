@@ -1,6 +1,6 @@
 {% extends "email/base.txt" %}
 
-{% block title %}Your session is coming up{% endblock %}
+{% block title %}Your {{ email.parties.session_label }} is coming up{% endblock %}
 
 {% block content -%}
 Your {{ email.parties.session_label }} with {{ email.parties.other.full_name }} is coming up. Take a few moments to add the topics most worth discussing, review your actions due, and check that your goals still reflect what you're working toward.

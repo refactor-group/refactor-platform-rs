@@ -1,6 +1,6 @@
 {% extends "email/base.txt" %}
 
-{% block title %}Series scheduled{% endblock %}
+{% block title %}{{ email.parties.session_label|capitalize }} series scheduled{% endblock %}
 
 {% block content -%}
 {% match email.by -%}

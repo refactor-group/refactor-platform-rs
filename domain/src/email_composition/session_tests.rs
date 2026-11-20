@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::test_utils::email_composition::{
-    bodies, copy, session_cancelled, session_reminder, session_rescheduled, session_scheduled,
+    bodies, copy, parties, session_cancelled, session_reminder, session_rescheduled,
+    session_scheduled,
 };
 
 #[test]
@@ -39,6 +40,24 @@ fn session_cancelled_copy() {
             ..session_cancelled()
         })
     );
+}
+
+/// The title names the session the way the relationship's kind does, so colleagues read
+/// "Session cancelled" where coaching reads "Coaching session cancelled".
+#[test]
+fn a_colleague_cancellation_title_names_a_session() {
+    let email = SessionCancelled {
+        parties: Parties {
+            session_label: "session",
+            session_label_plural: "sessions",
+            ..parties()
+        },
+        ..session_cancelled()
+    };
+    let (html, text) = bodies(&email);
+
+    assert!(html.contains(">Session cancelled</h1>"), "{html}");
+    assert!(text.starts_with("Session cancelled"), "{text}");
 }
 
 #[test]

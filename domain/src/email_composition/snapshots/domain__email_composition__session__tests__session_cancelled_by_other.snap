@@ -5,7 +5,7 @@ expression: copy(&session_cancelled())
 Subject: Alex Smith cancelled your coaching session on Wed, Mar 4
 Preheader: The attached calendar update removes it from your calendar.
 
-Session cancelled
+Coaching session cancelled
 
 Hi Jane,
 

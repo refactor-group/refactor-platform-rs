@@ -5,7 +5,7 @@ expression: "copy(&SeriesCancelled { by: Actor::You, ..series_cancelled() })"
 Subject: You cancelled your series with Alex Smith
 Preheader: Upcoming sessions from Wednesday, March 4, 2026 through Wednesday, May 27, 2026 are cancelled.
 
-Series cancelled
+Coaching session series cancelled
 
 Hi Jane,
 

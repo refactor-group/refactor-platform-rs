@@ -5,7 +5,7 @@ expression: "copy(&SessionCancelled\n{ reason: CancelReason::Cancelled { by: Act
 Subject: You cancelled your coaching session with Alex Smith
 Preheader: The attached calendar update removes it from your calendar.
 
-Session cancelled
+Coaching session cancelled
 
 Hi Jane,
 

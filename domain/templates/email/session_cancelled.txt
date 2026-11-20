@@ -3,7 +3,7 @@
 {% block title %}
 {%- match email.reason -%}
 {%- when CancelReason::Cancelled { .. } -%}
-Session cancelled
+{{ email.parties.session_label|capitalize }} cancelled
 {%- when CancelReason::Superseded -%}
 Old calendar event removed
 {%- endmatch -%}

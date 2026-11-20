@@ -13,7 +13,7 @@ It was replaced by your recurring series with {{ email.parties.other.full_name }
 {% block title %}
 {%- match email.reason -%}
 {%- when CancelReason::Cancelled { .. } -%}
-Session cancelled
+{{ email.parties.session_label|capitalize }} cancelled
 {%- when CancelReason::Superseded -%}
 Old calendar event removed
 {%- endmatch -%}
