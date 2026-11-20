@@ -23,7 +23,7 @@ output is not clean enough to send).
 ```
 domain/templates/email/
   base.html  base.txt        the layout: logo, greeting, content, sign-off, help, footer
-  macros.html                the labelled row and the button
+  macros.html                the session card, its labelled rows, and the button
   <kind>.html  <kind>.txt    one pair per email
 domain/src/email_composition/
   mod.rs       Email, compose, Brand, Person, When, Parties, Actor, templates!
@@ -63,9 +63,18 @@ variable of its own; without `FRONTEND_BASE_URL` composed emails are skipped and
 
 Hand-written for email clients: nested tables with `role="presentation"`, a 600px
 `<!--[if mso]>` wrapper for Outlook, `<html lang="en">`, a `<title>`, a hidden preheader
-padded so clients don't pull body text into the inbox preview, `color-scheme` metadata
-with a dark palette, and a padded table-cell button. The plain-text part is written by
-hand per email, with each link as a bare URL on its own line.
+padded so clients don't pull body text into the inbox preview, and `color-scheme`
+metadata. The plain-text part is written by hand per email, with each link as a bare URL
+on its own line.
+
+It follows the frontend's design system: the logo above a white card with a hairline
+border and 16px radius, Inter (a Google Fonts `<link>`, honored by Apple Mail and iOS;
+other clients fall back to the system stack), a session card on the `fill` grey with the
+time and duration, the other participant's name in bold, and grey detail rows, and the
+primary indigo pill button (square in Outlook, which ignores `border-radius`). Help and
+footer sit below the card in quieter greys around a hairline. The colors are the
+frontend's `globals.css` tokens converted to hex, light and dark, and appear only in
+`base.html`'s stylesheet; templates and macros use its classes.
 
 ## How a sender moves
 

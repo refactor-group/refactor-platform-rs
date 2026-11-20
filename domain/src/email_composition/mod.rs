@@ -196,10 +196,12 @@ pub fn compose<E: Email>(email: &E, brand: &Brand) -> Result<OutgoingEmail, Erro
     })
 }
 
-/// Inlines the layout's stylesheet and keeps its `@media` rules, which cannot be inlined.
+/// Inlines the layout's stylesheet and keeps its `@media` rules, which cannot be inlined,
+/// and its web font `<link>`, which it never fetches.
 static INLINER: LazyLock<CSSInliner<'static>> = LazyLock::new(|| {
     CSSInliner::options()
         .keep_at_rules(true)
+        .keep_link_tags(true)
         .load_remote_stylesheets(false)
         .build()
 });

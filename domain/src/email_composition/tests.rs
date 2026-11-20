@@ -94,7 +94,7 @@ fn compose_inlines_the_stylesheet_and_keeps_its_media_rules() {
         .html;
 
     assert!(
-        html.contains(r#"<td class="content" style="padding: 8px 24px 0 24px;"#),
+        html.contains(r#"<td class="content" style="font-family: Inter,"#),
         "{html}"
     );
     assert!(
@@ -145,9 +145,10 @@ fn every_link_in_the_html_is_in_the_text() {
     for (kind, email) in every_email(&brand()) {
         let hrefs: Vec<&str> = email
             .html
-            .split(r#"href=""#)
+            .split("<a ")
             .skip(1)
-            .filter_map(|rest| rest.split('"').next())
+            .filter_map(|tag| tag.split_once(r#"href=""#))
+            .filter_map(|(_, rest)| rest.split('"').next())
             .collect();
 
         assert!(hrefs.len() >= 3, "{kind} links its footer: {hrefs:?}");

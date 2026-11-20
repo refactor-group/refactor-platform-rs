@@ -5,10 +5,11 @@
 
 {% block content -%}
 <p>A quick reminder that you have a {{ email.parties.session_label }} with {{ email.parties.other.full_name }} coming up.</p>
+{% call m::session("{} · {}"|format(email.when.time, email.duration), email.parties.other.full_name, email.when.date) -%}
 {% if let Some(title) = email.title -%}
 {% call m::row("Session") %}{{ title }}{% endcall %}
-{% endif -%}
-{% call m::row("When") %}{{ email.when.date }} at {{ email.when.time }} for {{ email.duration }}{% endcall %}
+{%- endif %}
+{%- endcall %}
 {% call m::button(email.url, "Join Session") %}{% endcall %}
 <p>Please take a few moments to add your topics most worth discussing, review your actions due for this session, and confirm your goals still reflect what you're working toward.</p>
 <p>If you have any questions, reach out to {{ email.parties.other.first_name }} directly.</p>

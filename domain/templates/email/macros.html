@@ -1,11 +1,24 @@
+{% macro session(above, name, below) -%}
+<table role="presentation" class="session" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr>
+<td class="session-cell">
+<p class="when">{{ above }}</p>
+<p class="name">{{ name }}</p>
+<p class="when">{{ below }}</p>
+{{ caller() }}
+</td>
+</tr>
+</table>
+{%- endmacro %}
+
 {% macro row(label) -%}
-<p><strong>{{ label }}:</strong> {{ caller() }}</p>
+<p class="detail"><span class="label">{{ label }}:</span> {{ caller() }}</p>
 {%- endmacro %}
 
 {% macro button(url, label) -%}
 <table role="presentation" class="button-table" cellpadding="0" cellspacing="0" border="0">
 <tr>
-<td class="button-cell" bgcolor="#000000"><a class="button" href="{{ url }}">{{ label }}</a></td>
+<td class="button-cell"><a class="button" href="{{ url }}">{{ label }}</a></td>
 </tr>
 </table>
 {%- endmacro %}

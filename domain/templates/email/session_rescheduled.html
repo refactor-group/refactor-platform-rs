@@ -5,10 +5,11 @@
 
 {% block content -%}
 <p>Your {{ email.parties.session_label }} with {{ email.parties.other.full_name }} has been rescheduled.</p>
+{% call m::session("{} · {}"|format(email.when.time, email.duration), email.parties.other.full_name, "New time: {}"|format(email.when.date)) -%}
 {% if let Some(previous) = email.previous -%}
 {% call m::row("Previous time") %}{{ previous.date }} at {{ previous.time }}{% endcall %}
-{% endif -%}
-{% call m::row("New time") %}{{ email.when.date }} at {{ email.when.time }} for {{ email.duration }}{% endcall %}
+{%- endif %}
+{%- endcall %}
 <p>The attached calendar invite updates your existing event, so you don't need to delete the old one.</p>
 {% call m::button(email.url, "View Session") %}{% endcall %}
 {% endblock %}

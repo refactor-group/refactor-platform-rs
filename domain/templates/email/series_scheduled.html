@@ -10,9 +10,10 @@
 {% when Actor::Other -%}
 <p>{{ email.parties.other.full_name }} scheduled a recurring series of {{ email.parties.session_label_plural }} with you.</p>
 {% endmatch -%}
-{% call m::row("Starts") %}{{ email.first.date }} at {{ email.first.time }} for {{ email.duration }}{% endcall %}
+{% call m::session("{} · {}"|format(email.first.time, email.duration), email.parties.other.full_name, "Starts {}"|format(email.first.date)) -%}
 {% call m::row("Repeats") %}{{ email.cadence }}{% endcall %}
 {% call m::row("Runs through") %}{{ email.last_date }}{% endcall %}
 {% call m::row("Total sessions scheduled") %}{{ email.count }}{% endcall %}
+{%- endcall %}
 {% call m::button(email.url, "Join First Session") %}{% endcall %}
 {% endblock %}

@@ -1,3 +1,9 @@
+{#- Colors are the frontend's tokens (src/styles/globals.css), light / dark:
+    background #ffffff / #121214, card #ffffff / #1b1b1f, border #e5e7eb / #2c2c33,
+    hairline #f0f0f0 / #232328, fill #f2f3f5 / #26262c, foreground #0a0a0a / #f4f4f5,
+    ink-2 #525252 / #c4c4cb, muted-foreground #737373 / #8e8e98, faint #a3a3a3 / #5f5f69,
+    primary #5b5fe8 with primary-foreground #ffffff in both.
+    This stylesheet is the only place they appear. -#}
 <!DOCTYPE html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
@@ -9,36 +15,51 @@
 <meta name="color-scheme" content="light dark">
 <meta name="supported-color-schemes" content="light dark">
 <title>{{ email.subject() }}</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
 <style>
   body { margin: 0; padding: 0; width: 100%; background-color: #ffffff; }
   table { border-collapse: collapse; }
   img { border: 0; outline: none; text-decoration: none; }
+  .content, .help, .footer, .button { font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; }
   .page { width: 100%; background-color: #ffffff; }
+  .page-cell { padding: 32px 16px; }
   .container { width: 100%; max-width: 600px; }
-  .logo { padding: 32px 24px 8px 24px; text-align: right; }
-  .content { padding: 8px 24px 0 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 16px; line-height: 24px; color: #1a1a1a; }
+  .logo { padding: 0 0 20px 0; text-align: left; }
+  .frame { border-collapse: separate; }
+  .content { padding: 32px 32px 16px 32px; background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 16px; font-size: 15px; line-height: 24px; color: #0a0a0a; }
   .content p { margin: 0 0 16px 0; }
-  .button-table { margin: 8px 0 24px 0; }
-  .button-cell { background-color: #000000; border-radius: 4px; }
-  .button { display: inline-block; padding: 12px 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 600; line-height: 20px; color: #ffffff; text-decoration: none; border-radius: 4px; }
-  .rule { padding: 8px 24px; }
-  .rule hr { border: 0; border-top: 1px solid #e5e5e5; margin: 0; }
-  .help { padding: 8px 24px 0 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 14px; line-height: 20px; color: #4d4d4d; }
-  .help p { margin: 0 0 16px 0; }
-  .footer { padding: 0 24px 32px 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 12px; line-height: 18px; color: #808080; }
+  .content .signoff { color: #525252; }
+  .session { border-collapse: separate; margin: 4px 0 20px 0; }
+  .session-cell { padding: 14px 16px; background-color: #f2f3f5; border-radius: 12px; }
+  .session-cell p { margin: 0; font-size: 13px; line-height: 20px; color: #525252; }
+  .session-cell .name { margin: 2px 0; font-size: 15px; line-height: 22px; font-weight: 600; color: #0a0a0a; }
+  .session-cell .detail { margin: 6px 0 0 0; }
+  .session-cell .label { color: #737373; }
+  .button-table { border-collapse: separate; margin: 4px 0 24px 0; }
+  .button-cell { background-color: #5b5fe8; border-radius: 9999px; mso-padding-alt: 12px 24px; }
+  .button { display: inline-block; padding: 12px 24px; font-size: 15px; font-weight: 600; line-height: 20px; color: #ffffff; text-decoration: none; border-radius: 9999px; }
+  .help { padding: 24px 32px 0 32px; font-size: 13px; line-height: 20px; color: #737373; }
+  .help p { margin: 0; }
+  .rule { padding: 16px 32px; }
+  .rule hr { border: 0; border-top: 1px solid #f0f0f0; margin: 0; }
+  .footer { padding: 0 32px; font-size: 12px; line-height: 18px; color: #a3a3a3; }
   .footer p { margin: 0; }
-  a { color: #1a1a1a; }
+  a { color: #5b5fe8; }
   .help a, .footer a { color: inherit; }
   @media only screen and (max-width: 620px) {
-    .logo, .content, .rule, .help, .footer { padding-left: 16px !important; padding-right: 16px !important; }
+    .page-cell { padding: 24px 12px !important; }
+    .content { padding: 24px 20px 8px 20px !important; }
+    .help, .rule, .footer { padding-left: 20px !important; padding-right: 20px !important; }
   }
   @media (prefers-color-scheme: dark) {
-    body, .page { background-color: #121212 !important; }
-    .content, .content a { color: #f2f2f2 !important; }
-    .help, .footer { color: #b3b3b3 !important; }
-    .button-cell { background-color: #ffffff !important; }
-    .button { color: #000000 !important; }
-    .rule hr { border-top-color: #333333 !important; }
+    body, .page { background-color: #121214 !important; }
+    .content { background-color: #1b1b1f !important; border-color: #2c2c33 !important; color: #f4f4f5 !important; }
+    .content .signoff, .session-cell p { color: #c4c4cb !important; }
+    .session-cell { background-color: #26262c !important; }
+    .session-cell .name { color: #f4f4f5 !important; }
+    .session-cell .label, .help { color: #8e8e98 !important; }
+    .rule hr { border-top-color: #232328 !important; }
+    .footer { color: #5f5f69 !important; }
   }
 </style>
 </head>
@@ -46,26 +67,32 @@
 <div style="display: none; max-height: 0; max-width: 0; overflow: hidden; opacity: 0; mso-hide: all; font-size: 1px; line-height: 1px;">{% block preheader %}{% endblock %}{% for _ in 0..90 %}&zwnj;&nbsp;{% endfor %}</div>
 <table role="presentation" class="page" width="100%" cellpadding="0" cellspacing="0" border="0">
 <tr>
-<td align="center">
+<td class="page-cell" align="center">
 <!--[if mso]><table role="presentation" width="600" align="center" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
 <table role="presentation" class="container" width="100%" cellpadding="0" cellspacing="0" border="0">
 <tr>
-<td class="logo" align="right"><img src="{{ brand.logo_url }}" alt="Refactor Coach" width="48" height="48"></td>
+<td class="logo" align="left"><img src="{{ brand.logo_url }}" alt="Refactor Coach" width="40" height="40"></td>
 </tr>
+<tr>
+<td>
+<table role="presentation" class="frame" width="100%" cellpadding="0" cellspacing="0" border="0">
 <tr>
 <td class="content">
 <p>Hi {{ email.parties.recipient.first_name }},</p>
 {% block content %}{% endblock %}
-<p>— The {{ email.parties.organization_name }} Team</p>
+<p class="signoff">— The {{ email.parties.organization_name }} Team</p>
 </td>
 </tr>
-<tr>
-<td class="rule"><hr></td>
+</table>
+</td>
 </tr>
 <tr>
 <td class="help">
 <p><strong>Need help?</strong> If you have any questions about Refactor Coach, please reply to this email or contact us at <a href="mailto:{{ brand.support_email }}">{{ brand.support_email }}</a>.</p>
 </td>
+</tr>
+<tr>
+<td class="rule"><hr></td>
 </tr>
 <tr>
 <td class="footer">

@@ -19,7 +19,7 @@ An out-of-date calendar event for your {{ email.parties.session_label }} on {{ e
 {% when Actor::Other -%}
 <p>{{ email.parties.other.full_name }} has cancelled your {{ email.parties.session_label }}.</p>
 {% endmatch -%}
-{% call m::row("Was scheduled for") %}{{ email.when.date }} at {{ email.when.time }}{% endcall %}
+{% call m::session(email.when.time, email.parties.other.full_name, "Was scheduled for {}"|format(email.when.date)) %}{% endcall %}
 <p>The attached calendar update removes this event from your calendar. Nothing else is needed from you.</p>
 {% when CancelReason::Superseded -%}
 <p>Your {{ email.parties.session_label }} with {{ email.parties.other.full_name }} on {{ email.when.date }} at {{ email.when.time }} had its own calendar event from before it was part of a recurring series. That event is out of date, so the attached update removes it from your calendar.</p>

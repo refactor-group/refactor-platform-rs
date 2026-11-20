@@ -54,7 +54,7 @@ fn a_reschedule_shows_the_previous_time_only_when_the_start_moved() {
             ..session_rescheduled()
         });
 
-        assert_eq!(html.contains("Previous time:</strong>"), shown, "{html}");
+        assert_eq!(html.contains("Previous time:</span>"), shown, "{html}");
         assert_eq!(text.contains("\nPrevious time: "), shown, "{text}");
     }
 }
@@ -67,7 +67,7 @@ fn a_reminder_shows_the_title_only_when_there_is_one() {
             ..session_reminder()
         });
 
-        assert_eq!(html.contains("Session:</strong>"), shown, "{html}");
+        assert_eq!(html.contains("Session:</span>"), shown, "{html}");
         assert_eq!(text.contains("\nSession: "), shown, "{text}");
     }
 }

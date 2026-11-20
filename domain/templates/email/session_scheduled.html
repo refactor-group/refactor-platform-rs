@@ -10,6 +10,6 @@
 {% when Actor::Other -%}
 <p><strong>{{ email.parties.other.full_name }}</strong> scheduled a {{ email.parties.session_label }} with you.</p>
 {% endmatch -%}
-{% call m::row("When") %}{{ email.when.date }} at {{ email.when.time }} for {{ email.duration }}{% endcall %}
+{% call m::session("{} · {}"|format(email.when.time, email.duration), email.parties.other.full_name, email.when.date) %}{% endcall %}
 {% call m::button(email.url, "Join Session") %}{% endcall %}
 {% endblock %}
