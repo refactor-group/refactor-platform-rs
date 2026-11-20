@@ -4701,6 +4701,15 @@ async fn test_send_session_reminder_email_variables() {
 
     let mock = server
         .mock("POST", "/emails")
+        // The key reaches Resend, so a retry of this reminder cannot send it twice.
+        .match_header(
+            "idempotency-key",
+            format!(
+                "session-reminder/{}/{}/20260304T150000",
+                session.id, coachee.id
+            )
+            .as_str(),
+        )
         .match_body(expect_resend_body(serde_json::json!({
             "from": FROM_ADDRESS,
             "to": ["\"Jane Doe\" <jane@example.com>"],
