@@ -9,17 +9,18 @@ You have rescheduled your recurring series of {{ email.parties.session_label_plu
 {% when Actor::Other -%}
 {{ email.parties.other.full_name }} has rescheduled your recurring series of {{ email.parties.session_label_plural }}.
 {% endmatch %}
+Now:
+{{ email.cadence }} at {{ email.starts.time }} for {{ email.duration }}
+{{ email.starts.date }} through {{ email.last_date }} · {{ email.count }} session{{ email.count|pluralize }}
+{% if previous_start.is_some() || previous_cadence.is_some() %}
+Before:
 {% if let Some(previous) = previous_start -%}
-Previously started: {{ previous.date }} at {{ previous.time }}
+{{ previous.date }} at {{ previous.time }}
 {% endif -%}
-Now starts: {{ email.starts.date }} at {{ email.starts.time }} for {{ email.duration }}
 {% if let Some(previous) = previous_cadence -%}
-Previously repeated: {{ previous }}
+{{ previous }}
 {% endif -%}
-Now repeats: {{ email.cadence }}
-Runs through: {{ email.last_date }}
-Total sessions scheduled: {{ email.count }}
-
+{% endif %}
 The attached calendar invite replaces your existing recurring event, so you don't need to delete the old one.
 
 Join First Session:
@@ -31,12 +32,15 @@ You changed your recurring {{ email.parties.session_label_plural }} from {{ firs
 {% when Actor::Other -%}
 {{ email.parties.other.full_name }} changed your recurring {{ email.parties.session_label_plural }} from {{ first_moved_date }} onward.
 {% endmatch %}
-Before: {{ previous_cadence }} at {{ previous_time }}
-From {{ first_moved_date }}: {{ email.cadence }} at {{ email.starts.time }} for {{ email.duration }}
-Runs through: {{ email.last_date }}
-Sessions affected: {{ email.count }}
+Now:
+{{ email.cadence }} at {{ email.starts.time }} for {{ email.duration }}
+{{ first_moved_date }} through {{ email.last_date }} · {{ email.count }} session{{ email.count|pluralize }}
 
-Sessions before {{ first_moved_date }} are unchanged. The attached calendar invite updates your calendar, so there's nothing to delete.
+Before:
+{{ previous_cadence }} at {{ previous_time }}
+Sessions before {{ first_moved_date }} are unchanged.
+
+The attached calendar invite updates your calendar, so there's nothing to delete.
 
 View Session:
 {{ email.url }}

@@ -146,7 +146,8 @@ pub(crate) fn series_rescheduled_from_session() -> SeriesRescheduled {
     }
 }
 
-/// Every kind's sample, composed with `brand`, beside its kind.
+/// Every kind's sample, and the series reschedule from one session on, composed with
+/// `brand`, beside its name.
 pub(crate) fn every_email(brand: &Brand) -> Vec<(&'static str, OutgoingEmail)> {
     fn composed<E: Email>(email: &E, brand: &Brand) -> (&'static str, OutgoingEmail) {
         (E::KIND, compose(email, brand).expect("the sample composes"))
@@ -158,6 +159,10 @@ pub(crate) fn every_email(brand: &Brand) -> Vec<(&'static str, OutgoingEmail)> {
         composed(&session_reminder(), brand),
         composed(&series_scheduled(), brand),
         composed(&series_rescheduled(), brand),
+        (
+            "series_rescheduled_from_session",
+            compose(&series_rescheduled_from_session(), brand).expect("the sample composes"),
+        ),
         composed(&series_cancelled(), brand),
     ]
 }

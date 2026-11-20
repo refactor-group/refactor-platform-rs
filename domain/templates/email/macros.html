@@ -22,3 +22,37 @@
 </tr>
 </table>
 {%- endmacro %}
+
+{% macro change() -%}
+<table role="presentation" class="change" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr>
+<td>
+{{ caller() }}
+</td>
+</tr>
+</table>
+{%- endmacro %}
+
+{% macro now(time, name) -%}
+<table role="presentation" class="now" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr>
+<td class="now-cell">
+<p class="tag">Now</p>
+<p class="lead">{{ time }}</p>
+<p class="name">{{ name }}</p>
+{{ caller() }}
+</td>
+</tr>
+</table>
+{%- endmacro %}
+
+{% macro before() -%}
+<table role="presentation" class="before" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr>
+<td class="before-cell">
+<p class="tag">Before</p>
+{{ caller() }}
+</td>
+</tr>
+</table>
+{%- endmacro %}

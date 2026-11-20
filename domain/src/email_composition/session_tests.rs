@@ -54,8 +54,8 @@ fn a_reschedule_shows_the_previous_time_only_when_the_start_moved() {
             ..session_rescheduled()
         });
 
-        assert_eq!(html.contains("Previous time:</span>"), shown, "{html}");
-        assert_eq!(text.contains("\nPrevious time: "), shown, "{text}");
+        assert_eq!(html.contains(r#"class="before""#), shown, "{html}");
+        assert_eq!(text.contains("\nBefore:\n"), shown, "{text}");
     }
 }
 

@@ -9,10 +9,12 @@ expression: email.html
   } @media (prefers-color-scheme: dark) {
     body, .page { background-color: #121214 !important; }
     .content { background-color: #1b1b1f !important; border-color: #2c2c33 !important; color: #f4f4f5 !important; }
-    .content .signoff, .session-cell p { color: #c4c4cb !important; }
+    .content .signoff, .session-cell p, .now-cell p { color: #c4c4cb !important; }
     .session-cell { background-color: #26262c !important; }
-    .session-cell .name { color: #f4f4f5 !important; }
-    .session-cell .label, .help { color: #8e8e98 !important; }
+    .now-cell { background-color: #22233a !important; border-color: #34366a !important; }
+    .session-cell .name, .now-cell .lead, .now-cell .name { color: #f4f4f5 !important; }
+    .now-cell .tag { color: #7b7ff0 !important; }
+    .session-cell .label, .before-cell p, .before-cell .tag, .help { color: #8e8e98 !important; }
     .rule hr { border-top-color: #232328 !important; }
     .footer { color: #5f5f69 !important; }
   } </style>
@@ -24,7 +26,6 @@ expression: email.html
 <meta name="color-scheme" content="light dark">
 <meta name="supported-color-schemes" content="light dark">
 <title>Your coaching session with Alex Smith on Wednesday, March 4, 2026</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&amp;display=swap" rel="stylesheet">
 
 </head>
 <body style="margin: 0;padding: 0;width: 100%;background-color: #ffffff;">

@@ -3,11 +3,12 @@
 {% block content -%}
 Your {{ email.parties.session_label }} with {{ email.parties.other.full_name }} has been rescheduled.
 
-{% if let Some(previous) = email.previous -%}
-Previous time: {{ previous.date }} at {{ previous.time }}
-{% endif -%}
-New time: {{ email.when.date }} at {{ email.when.time }} for {{ email.duration }}
-
+Now:
+{{ email.when.date }} at {{ email.when.time }} for {{ email.duration }}
+{% if let Some(previous) = email.previous %}
+Before:
+{{ previous.date }} at {{ previous.time }}
+{% endif %}
 The attached calendar invite updates your existing event, so you don't need to delete the old one.
 
 View Session:

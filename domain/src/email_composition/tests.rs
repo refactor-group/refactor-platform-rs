@@ -145,10 +145,9 @@ fn every_link_in_the_html_is_in_the_text() {
     for (kind, email) in every_email(&brand()) {
         let hrefs: Vec<&str> = email
             .html
-            .split("<a ")
+            .split(r#"href=""#)
             .skip(1)
-            .filter_map(|tag| tag.split_once(r#"href=""#))
-            .filter_map(|(_, rest)| rest.split('"').next())
+            .filter_map(|rest| rest.split('"').next())
             .collect();
 
         assert!(hrefs.len() >= 3, "{kind} links its footer: {hrefs:?}");

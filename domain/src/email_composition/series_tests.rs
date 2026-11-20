@@ -71,9 +71,11 @@ fn a_whole_series_reschedule_shows_only_what_changed() {
             ..series_rescheduled()
         });
 
-        assert_eq!(html.contains("Previously started:</span>"), started);
-        assert_eq!(text.contains("\nPreviously started: "), started);
-        assert_eq!(html.contains("Previously repeated:</span>"), repeated);
-        assert_eq!(text.contains("\nPreviously repeated: "), repeated);
+        assert_eq!(html.contains(r#"class="before""#), started || repeated);
+        assert_eq!(text.contains("\nBefore:\n"), started || repeated);
+        assert_eq!(html.contains("March 3, 2026 at 4:00 PM"), started);
+        assert_eq!(text.contains("March 3, 2026 at 4:00 PM"), started);
+        assert_eq!(html.contains("Weekly on Tuesday"), repeated);
+        assert_eq!(text.contains("Weekly on Tuesday"), repeated);
     }
 }
