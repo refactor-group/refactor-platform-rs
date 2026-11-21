@@ -46,7 +46,8 @@ impl Email for SessionScheduled {
 pub struct SessionRescheduled {
     pub parties: Parties,
     pub when: When,
-    /// The start the recipient last heard of, when the start moved.
+    /// The start the recipient last heard of, when the start moved. `None` means only the
+    /// length changed.
     pub previous: Option<When>,
     pub duration: String,
     pub url: String,
@@ -68,10 +69,14 @@ impl Email for SessionRescheduled {
     }
 
     fn subject(&self) -> String {
-        format!(
-            "Your {} with {} moved to {}",
-            self.parties.session_label, self.parties.other.full_name, self.when.day
-        )
+        let (label, other) = (self.parties.session_label, &self.parties.other.full_name);
+        match self.previous {
+            Some(_) => format!("Your {label} with {other} moved to {}", self.when.day),
+            None => format!(
+                "Your {label} with {other} on {} now runs {}",
+                self.when.day, self.duration
+            ),
+        }
     }
 
     fn attachments(&self) -> Vec<Attachment> {

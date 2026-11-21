@@ -21,6 +21,31 @@ fn session_scheduled_copy() {
 #[test]
 fn session_rescheduled_copy() {
     insta::assert_snapshot!("session_rescheduled", copy(&session_rescheduled()));
+    insta::assert_snapshot!(
+        "session_rescheduled_length_only",
+        copy(&SessionRescheduled {
+            previous: None,
+            ..session_rescheduled()
+        })
+    );
+}
+
+/// A change to the length alone keeps the start, so nothing may say the session moved.
+#[test]
+fn a_length_only_change_never_says_the_session_moved() {
+    let email = SessionRescheduled {
+        previous: None,
+        ..session_rescheduled()
+    };
+    let (html, text) = bodies(&email);
+
+    for copy in [email.subject(), html, text] {
+        assert!(!copy.contains("moved"), "{copy}");
+        assert!(
+            copy.contains(&format!("now runs {}", email.duration)),
+            "{copy}"
+        );
+    }
 }
 
 #[test]
