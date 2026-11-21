@@ -690,7 +690,6 @@ fn config(server_url: &str, store_root: &StoreRoot) -> Config {
         "--recurring-sessions-scheduled-email-template-id=recurring-sessions-scheduled",
         "--session-rescheduled-email-template-id=session-rescheduled",
         "--recurring-sessions-rescheduled-email-template-id=recurring-sessions-rescheduled",
-        "--session-cancelled-email-template-id=session-cancelled",
         "--recurring-sessions-cancelled-email-template-id=recurring-sessions-cancelled",
         "--action-assigned-email-template-id=action-assigned",
         "--welcome-email-template-id=welcome",

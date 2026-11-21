@@ -1,0 +1,139 @@
+//! What each session email says, in every branch that changes its copy.
+
+use super::*;
+use crate::test_utils::email_composition::{
+    bodies, copy, parties, session_cancelled, session_reminder, session_rescheduled,
+    session_scheduled,
+};
+
+#[test]
+fn session_scheduled_copy() {
+    insta::assert_snapshot!("session_scheduled_by_other", copy(&session_scheduled()));
+    insta::assert_snapshot!(
+        "session_scheduled_by_you",
+        copy(&SessionScheduled {
+            by: Actor::You,
+            ..session_scheduled()
+        })
+    );
+}
+
+#[test]
+fn session_rescheduled_copy() {
+    insta::assert_snapshot!("session_rescheduled", copy(&session_rescheduled()));
+    insta::assert_snapshot!(
+        "session_rescheduled_length_only",
+        copy(&SessionRescheduled {
+            previous: None,
+            ..session_rescheduled()
+        })
+    );
+}
+
+/// A change to the length alone keeps the start, so nothing may say the session moved.
+#[test]
+fn a_length_only_change_never_says_the_session_moved() {
+    let email = SessionRescheduled {
+        previous: None,
+        ..session_rescheduled()
+    };
+    let (html, text) = bodies(&email);
+
+    for copy in [email.subject(), html, text] {
+        assert!(!copy.contains("moved"), "{copy}");
+        assert!(
+            copy.contains(&format!("now runs {}", email.duration)),
+            "{copy}"
+        );
+    }
+}
+
+#[test]
+fn session_cancelled_copy() {
+    insta::assert_snapshot!("session_cancelled_by_other", copy(&session_cancelled()));
+    insta::assert_snapshot!(
+        "session_cancelled_by_you",
+        copy(&SessionCancelled {
+            reason: CancelReason::Cancelled { by: Actor::You },
+            ..session_cancelled()
+        })
+    );
+    insta::assert_snapshot!(
+        "session_cancelled_superseded",
+        copy(&SessionCancelled {
+            reason: CancelReason::Superseded,
+            ..session_cancelled()
+        })
+    );
+}
+
+/// The title names the session the way the relationship's kind does, so colleagues read
+/// "Session cancelled" where coaching reads "Coaching session cancelled".
+#[test]
+fn a_colleague_cancellation_title_names_a_session() {
+    let email = SessionCancelled {
+        parties: Parties {
+            session_label: "session",
+            session_label_plural: "sessions",
+            ..parties()
+        },
+        ..session_cancelled()
+    };
+    let (html, text) = bodies(&email);
+
+    assert!(html.contains(">Session cancelled</h1>"), "{html}");
+    assert!(text.starts_with("Session cancelled"), "{text}");
+}
+
+#[test]
+fn session_reminder_copy() {
+    insta::assert_snapshot!("session_reminder", copy(&session_reminder()));
+}
+
+#[test]
+fn a_reschedule_shows_the_previous_time_only_when_the_start_moved() {
+    for (previous, shown) in [(session_rescheduled().previous, true), (None, false)] {
+        let (html, text) = bodies(&SessionRescheduled {
+            previous,
+            ..session_rescheduled()
+        });
+
+        assert_eq!(html.contains(r#"class="before""#), shown, "{html}");
+        assert_eq!(text.contains("\nBefore:\n"), shown, "{text}");
+    }
+}
+
+#[test]
+fn a_reminder_shows_the_title_only_when_there_is_one() {
+    for (title, shown) in [(session_reminder().title, true), (None, false)] {
+        let (html, text) = bodies(&SessionReminder {
+            title,
+            ..session_reminder()
+        });
+
+        assert_eq!(html.contains(">Session</p>"), shown, "{html}");
+        assert_eq!(text.contains("\nSession: "), shown, "{text}");
+    }
+}
+
+#[test]
+fn a_reminder_shows_where_only_when_there_is_a_meeting_link() {
+    for (meeting_url, shown) in [(session_reminder().meeting_url, true), (None, false)] {
+        let (html, text) = bodies(&SessionReminder {
+            meeting_url,
+            ..session_reminder()
+        });
+
+        assert_eq!(html.contains(">Where</p>"), shown, "{html}");
+        assert_eq!(
+            html.contains(r#"href="https://meet.example.com/alex-jane""#),
+            shown,
+            "{html}"
+        );
+        assert_eq!(
+            text.contains("\nWhere: https://meet.example.com/alex-jane\n"),
+            shown,
+            "{text}"
+        );
+    }
+}

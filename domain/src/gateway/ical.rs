@@ -26,6 +26,16 @@ pub enum Method {
     Cancel,
 }
 
+impl Method {
+    /// The `METHOD` value, as the calendar and its content type spell it.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Method::Request => "REQUEST",
+            Method::Cancel => "CANCEL",
+        }
+    }
+}
+
 /// VEVENT `STATUS`.
 pub enum EventStatus {
     Confirmed,
@@ -190,10 +200,7 @@ pub fn build_calendar(invites: &[IcsInvite]) -> Result<String, Error> {
         return Err(internal("invites in one calendar must share a method"));
     }
 
-    let method = match first.method {
-        Method::Request => "REQUEST",
-        Method::Cancel => "CANCEL",
-    };
+    let method = first.method.as_str();
 
     let block = if first.anchor_tz == chrono_tz::UTC {
         None

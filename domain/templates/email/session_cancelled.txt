@@ -1,0 +1,27 @@
+{% extends "email/base.txt" %}
+
+{% block title %}
+{%- match email.reason -%}
+{%- when CancelReason::Cancelled { .. } -%}
+{{ email.parties.session_label|capitalize }} cancelled
+{%- when CancelReason::Superseded -%}
+Old calendar event removed
+{%- endmatch -%}
+{% endblock %}
+
+{% block content -%}
+{% match email.reason -%}
+{% when CancelReason::Cancelled { by } -%}
+{% match by -%}
+{% when Actor::You -%}
+You cancelled your {{ email.parties.session_label }} with {{ email.parties.other.full_name }}.
+{% when Actor::Other -%}
+{{ email.parties.other.full_name }} cancelled your {{ email.parties.session_label }}.
+{% endmatch %}
+When: {{ email.when.date }} at {{ email.when.time }}
+With: {{ email.parties.other.full_name }}
+{% when CancelReason::Superseded -%}
+Your {{ email.parties.session_label }} with {{ email.parties.other.full_name }} on {{ email.when.date }} at {{ email.when.time }} had its own calendar event from before it joined a recurring series. That event is out of date, so the update removes it.
+{% endmatch %}
+A calendar update is attached.
+{%- endblock %}

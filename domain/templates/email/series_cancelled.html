@@ -1,0 +1,23 @@
+{% extends "email/base.html" -%}
+{% import "email/macros.html" as m -%}
+
+{% block preheader %}Upcoming sessions from {{ email.first_date }} through {{ email.last_date }} are cancelled.{% endblock %}
+
+{% block title %}{{ email.parties.session_label|capitalize }} series cancelled{% endblock %}
+
+{% block content -%}
+{% call m::notice() -%}
+{% match email.by -%}
+{% when Actor::You -%}
+You cancelled your recurring series of {{ email.parties.session_label_plural }} with <strong>{{ email.parties.other.full_name }}</strong>.
+{%- when Actor::Other -%}
+<strong>{{ email.parties.other.full_name }}</strong> cancelled your recurring series of {{ email.parties.session_label_plural }}.
+{%- endmatch %} Sessions you've already had stay in Refactor Coach with their notes.
+{%- endcall %}
+{% call m::details() -%}
+{% call m::row("Cancelled") %}{{ email.count }} upcoming session{{ email.count|pluralize }}{% endcall %}
+{% call m::row("Dates") %}{{ email.first_date }} through {{ email.last_date }}{% endcall %}
+{% call m::row("With") %}{{ email.parties.other.full_name }}{% endcall %}
+{%- endcall %}
+<p class="secondary">A calendar update is attached.</p>
+{% endblock %}

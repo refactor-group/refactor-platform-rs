@@ -1,0 +1,24 @@
+{% extends "email/base.html" -%}
+{% import "email/macros.html" as m -%}
+
+{% block preheader %}{{ email.cadence }} at {{ email.first.time }}, {{ email.count }} {{ email.parties.session_label_plural }} scheduled.{% endblock %}
+
+{% block title %}{{ email.parties.session_label|capitalize }} series scheduled{% endblock %}
+
+{% block content -%}
+{% match email.by -%}
+{% when Actor::You -%}
+<p>You scheduled a recurring series of {{ email.parties.session_label_plural }} with <strong>{{ email.parties.other.full_name }}</strong>.</p>
+{% when Actor::Other -%}
+<p><strong>{{ email.parties.other.full_name }}</strong> scheduled a recurring series of {{ email.parties.session_label_plural }} with you.</p>
+{% endmatch -%}
+{% call m::details() -%}
+{% call m::row("Starts") %}{{ email.first.date }} at {{ email.first.time }}{% endcall %}
+{% call m::row("Repeats") %}{{ email.cadence }}{% endcall %}
+{% call m::row("Runs through") %}{{ email.last_date }} · {{ email.count }} session{{ email.count|pluralize }}{% endcall %}
+{% call m::row("With") %}{{ email.parties.other.full_name }}{% endcall %}
+{% call m::row("Length") %}{{ email.duration }}{% endcall %}
+{%- endcall %}
+{% call m::button(email.url, "Open first session") %}{% endcall %}
+<p class="secondary">A calendar invite is attached.</p>
+{% endblock %}

@@ -1,0 +1,16 @@
+{% block title %}{% endblock %}
+
+Hi {{ email.parties.recipient.first_name }},
+
+{% block content %}{% endblock %}
+
+---
+
+You're receiving this because you have sessions with {{ email.parties.organization_name }} on Refactor Coach.
+Questions? Reply to this email or write to {{ brand.support_email }}.
+
+Refactor Coach is a product of Refactor Group:
+{{ brand.company_url }}
+
+Privacy:
+{{ brand.privacy_url }}

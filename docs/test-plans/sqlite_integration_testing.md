@@ -228,6 +228,11 @@ extractor cannot break one.
   the cancel for a standalone session a series edit replaces, reach a participant with no
   role, while a scheduled invite on the same seed reaches only the member
   (`domain/src/emails_sqlite_tests.rs`).
+- **Composed cancellations in the outbox** (`domain/src/emails_sqlite_tests.rs`): deleting
+  an upcoming session writes both participants' cancellations with the delete, coachee
+  first, in the relationship's conversation, each the composed email for its reader; a
+  refused delete writes none; and a reschedule that leaves no future sessions still writes
+  the cancellation of a legacy member's standalone event, outranking its last invite.
 - **Account delete with coaching history** (`domain/src/user_delete_sqlite_tests.rs`): an
   account in any relationship that has a session is refused with `user_has_coaching_history`
   and the count of such relationships, and nothing is deleted. An account whose relationships

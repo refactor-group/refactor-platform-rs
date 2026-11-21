@@ -288,21 +288,26 @@ fn config(args: &[&str]) -> Config {
     Config::from_args(["test"].iter().chain(args))
 }
 
+/// Whether `result` is the configuration error a refused start reports.
+fn refused_for_config(result: &Result<Sweep, Error>) -> bool {
+    matches!(
+        result,
+        Err(Error {
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+            ..
+        })
+    )
+}
+
 #[tokio::test]
 async fn production_refuses_to_start_without_an_email_provider() {
-    let refused = Sweep::from_config(&config(&["--runtime-env=production"])).await;
+    let refused = Sweep::from_config(&config(&[
+        "--runtime-env=production",
+        "--frontend-base-url=https://app.example.com",
+    ]))
+    .await;
 
-    assert!(
-        matches!(
-            &refused,
-            Err(Error {
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-                ..
-            })
-        ),
-        "{:?}",
-        refused.err()
-    );
+    assert!(refused_for_config(&refused), "{:?}", refused.err());
 }
 
 #[tokio::test]
@@ -319,9 +324,33 @@ async fn a_configured_email_provider_delivers_in_production() {
     let sweep = Sweep::from_config(&config(&[
         "--runtime-env=production",
         "--resend-api-key=test_key",
+        "--frontend-base-url=https://app.example.com",
     ]))
     .await
     .expect("production starts with a provider");
+
+    assert!(sweep.mailer.is_some());
+}
+
+#[tokio::test]
+async fn production_refuses_to_start_without_a_frontend_for_composed_emails() {
+    let refused = Sweep::from_config(&config(&[
+        "--runtime-env=production",
+        "--resend-api-key=test_key",
+    ]))
+    .await;
+
+    assert!(refused_for_config(&refused), "{:?}", refused.err());
+}
+
+#[tokio::test]
+async fn outside_production_no_frontend_still_starts() {
+    let sweep = Sweep::from_config(&config(&[
+        "--runtime-env=staging",
+        "--resend-api-key=test_key",
+    ]))
+    .await
+    .expect("staging starts without a frontend");
 
     assert!(sweep.mailer.is_some());
 }

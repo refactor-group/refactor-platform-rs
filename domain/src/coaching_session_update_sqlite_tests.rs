@@ -369,9 +369,14 @@ async fn deleting_a_session_whose_coachee_left_the_organization_is_allowed() {
         let db = database().await;
         let (session_id, _, _) = upcoming_session_without_members(&db).await;
 
-        crate::coaching_session::delete(&db, &service::config::Config::default(), session_id)
-            .await
-            .expect("the delete succeeds");
+        crate::coaching_session::delete(
+            &db,
+            &service::config::Config::default(),
+            session_id,
+            Id::new_v4(),
+        )
+        .await
+        .expect("the delete succeeds");
 
         assert_eq!(
             coaching_sessions::Entity::find_by_id(session_id)

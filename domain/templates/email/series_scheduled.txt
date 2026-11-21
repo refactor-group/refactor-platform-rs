@@ -1,0 +1,22 @@
+{% extends "email/base.txt" %}
+
+{% block title %}{{ email.parties.session_label|capitalize }} series scheduled{% endblock %}
+
+{% block content -%}
+{% match email.by -%}
+{% when Actor::You -%}
+You scheduled a recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name }}.
+{% when Actor::Other -%}
+{{ email.parties.other.full_name }} scheduled a recurring series of {{ email.parties.session_label_plural }} with you.
+{% endmatch %}
+Starts: {{ email.first.date }} at {{ email.first.time }}
+Repeats: {{ email.cadence }}
+Runs through: {{ email.last_date }} · {{ email.count }} session{{ email.count|pluralize }}
+With: {{ email.parties.other.full_name }}
+Length: {{ email.duration }}
+
+Open first session:
+{{ email.url }}
+
+A calendar invite is attached.
+{%- endblock %}

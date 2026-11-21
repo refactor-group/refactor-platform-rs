@@ -1,0 +1,18 @@
+{% extends "email/base.txt" %}
+
+{% block title %}{{ email.parties.session_label|capitalize }} series cancelled{% endblock %}
+
+{% block content -%}
+{% match email.by -%}
+{% when Actor::You -%}
+You cancelled your recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name }}.
+{%- when Actor::Other -%}
+{{ email.parties.other.full_name }} cancelled your recurring series of {{ email.parties.session_label_plural }}.
+{%- endmatch %} Sessions you've already had stay in Refactor Coach with their notes.
+
+Cancelled: {{ email.count }} upcoming session{{ email.count|pluralize }}
+Dates: {{ email.first_date }} through {{ email.last_date }}
+With: {{ email.parties.other.full_name }}
+
+A calendar update is attached.
+{%- endblock %}

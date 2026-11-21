@@ -1,0 +1,43 @@
+{% extends "email/base.html" -%}
+{% import "email/macros.html" as m -%}
+
+{% block preheader %}
+{%- match email.reason -%}
+{%- when CancelReason::Cancelled { .. } -%}
+The attached calendar update removes it from your calendar.
+{%- when CancelReason::Superseded -%}
+It was replaced by your recurring series with {{ email.parties.other.full_name }}.
+{%- endmatch -%}
+{% endblock %}
+
+{% block title %}
+{%- match email.reason -%}
+{%- when CancelReason::Cancelled { .. } -%}
+{{ email.parties.session_label|capitalize }} cancelled
+{%- when CancelReason::Superseded -%}
+Old calendar event removed
+{%- endmatch -%}
+{% endblock %}
+
+{% block content -%}
+{% match email.reason -%}
+{% when CancelReason::Cancelled { by } -%}
+{% call m::notice() -%}
+{% match by -%}
+{% when Actor::You -%}
+You cancelled your {{ email.parties.session_label }} with <strong>{{ email.parties.other.full_name }}</strong>.
+{%- when Actor::Other -%}
+<strong>{{ email.parties.other.full_name }}</strong> cancelled your {{ email.parties.session_label }}.
+{%- endmatch %}
+{%- endcall %}
+{% call m::details() -%}
+{% call m::row("When") %}{{ email.when.date }} at {{ email.when.time }}{% endcall %}
+{% call m::row("With") %}{{ email.parties.other.full_name }}{% endcall %}
+{%- endcall %}
+{% when CancelReason::Superseded -%}
+{% call m::notice() -%}
+Your {{ email.parties.session_label }} with <strong>{{ email.parties.other.full_name }}</strong> on {{ email.when.date }} at {{ email.when.time }} had its own calendar event from before it joined a recurring series. That event is out of date, so the update removes it.
+{%- endcall %}
+{% endmatch -%}
+<p class="secondary">A calendar update is attached.</p>
+{% endblock %}

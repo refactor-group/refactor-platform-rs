@@ -57,7 +57,7 @@ pub async fn delete(
     session: &Model,
 ) -> Result<(), Error> {
     ensure_permits(permit, session.coaching_relationship_id)?;
-    super::delete(db, config, session.id).await
+    super::delete(db, config, session.id, permit.user_id()).await
 }
 
 /// Re-sends `session`'s calendar invite to both participants.

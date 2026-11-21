@@ -1,25 +1,29 @@
-//! Who relationship emails reach, with membership read from real `user_roles` rows.
+//! Who relationship emails reach, with membership read from real `user_roles` rows, and
+//! what the composed ones leave in the outbox.
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use chrono::{NaiveDateTime, TimeDelta, Timelike, Utc};
 use entity::coaching_session_series as series_entity;
 use entity_api::coaching_session_pending_reschedule::{self, Schedule};
 use mockito::{Matcher, Mock, Server, ServerGuard};
-use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Set};
+use sea_orm::{
+    ActiveModelTrait, DatabaseConnection, EntityTrait, QueryOrder, Set, TransactionTrait,
+};
 
 use super::*;
 use crate::coaching_session::{Frequency, Recurrence};
+use crate::email_outbox::OutgoingEmail;
 use crate::error::ExternalErrorKind;
 use crate::events::EventPublisher;
 use crate::test_utils::sqlite::fixture::make_colleagues;
 use crate::test_utils::sqlite::{
-    database, mirror_migration_defaults, seed_membership, seed_organization, seed_user,
-    within_time_limit,
+    database, mirror_migration_defaults, seed_action, seed_membership, seed_organization,
+    seed_user, within_time_limit,
 };
-
-const SESSION_CANCELLED: &str = "session_cancel_tpl";
 
 const SERIES_RESCHEDULED: &str = "series_rescheduled_tpl";
 
@@ -29,7 +33,6 @@ fn sending(server: &ServerGuard) -> Config {
         "--resend-api-key=test_api_key",
         "--session-scheduled-email-template-id=session_scheduled_tpl",
         "--recurring-sessions-scheduled-email-template-id=series_scheduled_tpl",
-        &format!("--session-cancelled-email-template-id={SESSION_CANCELLED}"),
         &format!("--recurring-sessions-rescheduled-email-template-id={SERIES_RESCHEDULED}"),
         "--recurring-sessions-cancelled-email-template-id=series_cancel_tpl",
         "--action-assigned-email-template-id=action_assigned_tpl",
@@ -38,6 +41,51 @@ fn sending(server: &ServerGuard) -> Config {
         "--tiptap-auth-key=test-auth-key",
         &format!("--tiptap-url={}", server.url()),
     ])
+}
+
+/// Enough to compose an email, and no provider.
+fn composing() -> Config {
+    Config::from_args(["test", "--frontend-base-url=https://app.example.com"])
+}
+
+/// Each outbox row, oldest first, with the email it stores.
+async fn outbox(db: &DatabaseConnection) -> Vec<(entity::email_outbox::Model, OutgoingEmail)> {
+    entity::email_outbox::Entity::find()
+        .order_by_asc(entity::email_outbox::Column::CreatedAt)
+        .order_by_asc(entity::email_outbox::Column::Position)
+        .all(db)
+        .await
+        .expect("the outbox reads")
+        .into_iter()
+        .map(|row| {
+            let email = serde_json::from_value(row.request.clone().unwrap_or_default())
+                .expect("the stored email reads");
+            (row, email)
+        })
+        .collect()
+}
+
+/// Each outbox row's addressee and kind, oldest first.
+async fn outbox_kinds(db: &DatabaseConnection) -> Vec<(String, String)> {
+    outbox(db)
+        .await
+        .into_iter()
+        .map(|(row, email)| (email.to[0].email.clone(), row.kind))
+        .collect()
+}
+
+/// The only calendar part of `email`, decoded and unfolded.
+fn calendar_part(email: &OutgoingEmail) -> String {
+    let [attachment] = email.attachments.as_slice() else {
+        panic!("one calendar part: {email:?}");
+    };
+    String::from_utf8(
+        STANDARD
+            .decode(&attachment.content)
+            .expect("the part is base64"),
+    )
+    .expect("the part is UTF-8")
+    .replace("\r\n ", "")
 }
 
 /// Each Resend request's addressee and template.
@@ -76,14 +124,6 @@ impl Sent {
         self.all().into_iter().map(|(to, _)| to).collect()
     }
 
-    fn templates_to(&self, address: &str) -> Vec<String> {
-        self.all()
-            .into_iter()
-            .filter(|(to, _)| to == address)
-            .map(|(_, template)| template)
-            .collect()
-    }
-
     fn all(&self) -> Vec<(String, String)> {
         self.0.lock().expect("the capture lock").clone()
     }
@@ -96,6 +136,10 @@ struct Seeded {
     coachee: users::Model,
     relationship: coaching_relationships::Model,
     session: coaching_sessions::Model,
+}
+
+fn last_week() -> NaiveDateTime {
+    next_week() - TimeDelta::days(14)
 }
 
 fn next_week() -> NaiveDateTime {
@@ -220,11 +264,20 @@ impl Seeded {
 }
 
 async fn cancel_session(seeded: &Seeded, db: &DatabaseConnection) -> BTreeSet<String> {
-    let mut server = Server::new_async().await;
-    let sent = Sent::default();
-    let _mock = sent.capture(&mut server).await;
-    notify_session_cancelled(db, &sending(&server), &seeded.session).await;
-    sent.addressees()
+    let notice = CancellationNotice::load(db, &composing(), &seeded.session)
+        .await
+        .expect("the cancellation loads");
+    let txn = db.begin().await.expect("the transaction begins");
+    notice
+        .enqueue(&txn, &seeded.session, Cancellation::By(seeded.coach.id))
+        .await
+        .expect("the cancellations are written");
+    txn.commit().await.expect("the transaction commits");
+    outbox_kinds(db)
+        .await
+        .into_iter()
+        .map(|(to, _)| to)
+        .collect()
 }
 
 /// M9-01
@@ -251,6 +304,67 @@ async fn single_cancel_with_the_coach_holding_no_role_reaches_both() {
         assert_eq!(cancel_session(&seeded, &db).await, seeded.both());
     })
     .await;
+}
+
+/// Whether a cancellation is owed comes from the row the removing transaction locked, so a
+/// session moved into the future after its notice loaded is still announced.
+#[tokio::test]
+async fn a_session_moved_into_the_future_before_its_delete_is_announced() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed(&db).await;
+        let as_loaded = coaching_sessions::Model {
+            date: last_week(),
+            ..seeded.session.clone()
+        };
+
+        let written = cancel_with(&db, &seeded, &as_loaded, &seeded.session).await;
+
+        assert_eq!(written, seeded.both());
+    })
+    .await;
+}
+
+/// Removing a session already past is housekeeping, not a cancellation.
+#[tokio::test]
+async fn a_session_already_past_when_deleted_owes_no_cancellation() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed(&db).await;
+        let locked = coaching_sessions::Model {
+            date: last_week(),
+            ..seeded.session.clone()
+        };
+
+        let written = cancel_with(&db, &seeded, &seeded.session, &locked).await;
+
+        assert!(written.is_empty(), "{written:?}");
+    })
+    .await;
+}
+
+/// Loads the notice from `as_loaded`, then enqueues it for `locked` inside a transaction;
+/// returns who the outbox addressed.
+async fn cancel_with(
+    db: &DatabaseConnection,
+    seeded: &Seeded,
+    as_loaded: &coaching_sessions::Model,
+    locked: &coaching_sessions::Model,
+) -> BTreeSet<String> {
+    let notice = CancellationNotice::load(db, &composing(), as_loaded)
+        .await
+        .expect("the cancellation loads");
+    let txn = db.begin().await.expect("the transaction begins");
+    notice
+        .enqueue(&txn, locked, Cancellation::By(seeded.coach.id))
+        .await
+        .expect("the cancellations are written");
+    txn.commit().await.expect("the transaction commits");
+    outbox_kinds(db)
+        .await
+        .into_iter()
+        .map(|(to, _)| to)
+        .collect()
 }
 
 /// M9-03
@@ -340,12 +454,15 @@ async fn a_series_edit_cancels_an_orphan_for_a_coachee_holding_no_role() {
         .await;
 
         assert_eq!(
-            sent.templates_to(&seeded.coachee.email),
-            vec![SESSION_CANCELLED.to_string()]
+            sent.all(),
+            [(seeded.coach.email.clone(), SERIES_RESCHEDULED.to_string())]
         );
         assert_eq!(
-            sent.templates_to(&seeded.coach.email),
-            vec![SERIES_RESCHEDULED.to_string()]
+            outbox_kinds(&db).await,
+            [(
+                seeded.coachee.email.clone(),
+                "session_cancelled".to_string()
+            )]
         );
     })
     .await;
@@ -810,6 +927,193 @@ async fn a_colleague_resend_that_missed_only_the_scheduler_succeeds_and_is_annou
 
         result.expect("the other colleague was told");
         assert!(!pending, "the session is recorded as announced");
+    })
+    .await;
+}
+
+/// A reschedule that leaves no future sessions still cancels a legacy member's standalone
+/// event for both participants, under a `SEQUENCE` that outranks the invite that placed it.
+#[tokio::test]
+async fn a_reschedule_to_no_future_sessions_still_cancels_the_standalone_events() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed(&db).await;
+        let (series, sessions) = seeded.series(&db).await;
+        let orphan = coaching_sessions::Model {
+            ical_recurrence_id: None,
+            ical_sequence: 3,
+            ..sessions[0].clone()
+        };
+
+        notify_recurring_sessions_rescheduled(
+            &db,
+            &composing(),
+            &series,
+            PreviousSeries(&series),
+            &[],
+            ReplacedSessions(std::slice::from_ref(&orphan)),
+            &[],
+        )
+        .await;
+
+        let rows = outbox(&db).await;
+        assert_eq!(
+            rows.iter()
+                .map(|(row, email)| (row.kind.as_str(), email.to[0].email.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("session_cancelled", seeded.coachee.email.as_str()),
+                ("session_cancelled", seeded.coach.email.as_str()),
+            ]
+        );
+        let (_, email) = &rows[0];
+        assert!(
+            email.subject.starts_with("Old calendar event removed for "),
+            "a replaced event, not a cancelled session: {}",
+            email.subject
+        );
+        let cancel = calendar_part(email);
+        assert!(
+            cancel.contains(&format!("UID:{}@myrefactor.com", orphan.id)),
+            "{cancel}"
+        );
+        assert!(cancel.contains("METHOD:CANCEL"), "{cancel}");
+        assert!(cancel.contains("SEQUENCE:4"), "{cancel}");
+    })
+    .await;
+}
+
+/// Deleting an upcoming session writes both participants' cancellations with the delete,
+/// coachee first, ordered in their relationship, each telling its reader who cancelled.
+#[tokio::test]
+async fn deleting_a_session_writes_both_cancellations_with_the_delete() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed(&db).await;
+        let config = composing();
+        let organization = organization::find_by_id(&db, seeded.relationship.organization_id)
+            .await
+            .expect("the organization reads");
+
+        crate::coaching_session::delete(&db, &config, seeded.session.id, seeded.coach.id)
+            .await
+            .expect("the delete succeeds");
+
+        let rows = outbox(&db).await;
+        let conversation = Subject::CoachingRelationship(seeded.relationship.id).key();
+        assert_eq!(
+            rows.iter()
+                .map(|(row, _)| (
+                    row.kind.as_str(),
+                    row.subject_key.as_str(),
+                    row.recipient_user_id
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "session_cancelled",
+                    conversation.as_str(),
+                    seeded.coachee.id
+                ),
+                ("session_cancelled", conversation.as_str(), seeded.coach.id),
+            ]
+        );
+        let brand = Brand::from_config(&config).expect("the brand is configured");
+        for ((_, stored), (reader, other, by)) in rows.iter().zip([
+            (&seeded.coachee, &seeded.coach, Actor::Other),
+            (&seeded.coach, &seeded.coachee, Actor::You),
+        ]) {
+            let expected = compose(
+                &SessionCancelled {
+                    parties: Parties {
+                        recipient: Person::from(reader),
+                        other: Person::from(other),
+                        session_label: "coaching session",
+                        session_label_plural: "coaching sessions",
+                        organization_name: organization.name.clone(),
+                    },
+                    when: session_when(seeded.session.date, &reader.timezone),
+                    reason: CancelReason::Cancelled { by },
+                    calendar: Vec::new(),
+                },
+                &brand,
+            )
+            .expect("the expected email composes");
+            // The calendar part carries the send's timestamp, so it is checked on its own.
+            assert!(
+                OutgoingEmail {
+                    attachments: Vec::new(),
+                    ..stored.clone()
+                } == expected,
+                "{} got a different email",
+                reader.email
+            );
+            let cancel = calendar_part(stored);
+            assert!(cancel.contains("METHOD:CANCEL"), "{cancel}");
+            assert!(
+                cancel.contains("SEQUENCE:1"),
+                "outranks the invite: {cancel}"
+            );
+        }
+    })
+    .await;
+}
+
+/// A delete the database refuses writes no email.
+#[tokio::test]
+async fn a_refused_delete_writes_no_cancellation() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed(&db).await;
+        seed_action(&db, seeded.session.id, seeded.coach.id, "Follow up").await;
+
+        crate::coaching_session::delete(&db, &composing(), seeded.session.id, seeded.coach.id)
+            .await
+            .expect_err("a session with an action is refused");
+
+        assert!(outbox(&db).await.is_empty());
+    })
+    .await;
+}
+
+/// A series edit that skips a coachee holding no role writes her no cancellation for a
+/// standalone event already past: that is housekeeping, not a change to announce.
+#[tokio::test]
+async fn a_series_edit_writes_no_cancellation_for_a_past_orphan() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed(&db).await;
+        seeded.grant_role(&db, seeded.coach.id).await;
+        let (series, sessions) = seeded.series(&db).await;
+        let past_orphan = coaching_sessions::Model {
+            ical_recurrence_id: None,
+            ical_sequence: 1,
+            date: Utc::now().naive_utc() - TimeDelta::days(1),
+            ..sessions[0].clone()
+        };
+        let member_ids = notify_member_ids(&db, &seeded.relationship)
+            .await
+            .expect("membership reads");
+        let mut server = Server::new_async().await;
+        let sent = Sent::default();
+        let _mock = sent.capture(&mut server).await;
+
+        notify_recurring_sessions_rescheduled(
+            &db,
+            &sending(&server),
+            &series,
+            PreviousSeries(&series),
+            &sessions,
+            ReplacedSessions(std::slice::from_ref(&past_orphan)),
+            &member_ids,
+        )
+        .await;
+
+        assert_eq!(
+            sent.all(),
+            [(seeded.coach.email.clone(), SERIES_RESCHEDULED.to_string())]
+        );
+        assert!(outbox(&db).await.is_empty());
     })
     .await;
 }

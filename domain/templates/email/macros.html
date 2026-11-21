@@ -1,0 +1,64 @@
+{% macro details() -%}
+<table role="presentation" class="details" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr>
+<td class="details-cell">
+{{ caller() }}
+</td>
+</tr>
+</table>
+{%- endmacro %}
+
+{% macro row(label) -%}
+<p class="label">{{ label }}</p>
+<p class="value">{{ caller() }}</p>
+{%- endmacro %}
+
+{% macro notice() -%}
+<table role="presentation" class="notice" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr>
+<td class="notice-cell">
+<p>{{ caller() }}</p>
+</td>
+</tr>
+</table>
+{%- endmacro %}
+
+{% macro change() -%}
+<table role="presentation" class="change" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr>
+<td>
+{{ caller() }}
+</td>
+</tr>
+</table>
+{%- endmacro %}
+
+{% macro now() -%}
+<table role="presentation" class="now" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr>
+<td class="now-cell">
+<p class="tag">Now</p>
+{{ caller() }}
+</td>
+</tr>
+</table>
+{%- endmacro %}
+
+{% macro before() -%}
+<table role="presentation" class="before" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr>
+<td class="before-cell">
+<p class="tag">Before</p>
+{{ caller() }}
+</td>
+</tr>
+</table>
+{%- endmacro %}
+
+{% macro button(url, label) -%}
+<table role="presentation" class="button-table" cellpadding="0" cellspacing="0" border="0">
+<tr>
+<td class="button-cell"><a class="button" href="{{ url }}">{{ label }}</a></td>
+</tr>
+</table>
+{%- endmacro %}
