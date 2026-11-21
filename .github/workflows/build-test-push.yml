@@ -93,6 +93,31 @@ jobs:
       - name: Run clippy (docs-collab-server)
         run: cargo clippy -p docs-collab-server --all-targets -- -D warnings
 
+  # === CLOUDFLARE RANGES ===
+  # nginx restores the client IP only from these ranges; a stale list keys
+  # rate limits on Cloudflare's address for the missing range.
+  cloudflare-ips:
+    name: Cloudflare IP Ranges
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Compare set_real_ip_from with cloudflare.com/ips
+        run: |
+          v4=$(curl -fsS --retry 3 https://www.cloudflare.com/ips-v4)
+          v6=$(curl -fsS --retry 3 https://www.cloudflare.com/ips-v6)
+          published=$(printf '%s\n%s\n' "$v4" "$v6" | grep -v '^$' | sort)
+          configured=$(grep -oP '^\s*set_real_ip_from\s+\K[^;]+' nginx/nginx.conf | sort)
+          if ! diff <(echo "$published") <(echo "$configured"); then
+            echo "::error file=nginx/nginx.conf::set_real_ip_from differs from cloudflare.com/ips (< published, > configured). Update nginx.conf and the DigitalOcean firewall."
+            exit 1
+          fi
+          echo "nginx.conf matches all $(echo "$published" | wc -l) published Cloudflare ranges."
+
   # === TEST JOB ===
   test:
     name: Build & Test
