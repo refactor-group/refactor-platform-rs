@@ -554,15 +554,24 @@ async fn a_colleague_change_that_missed_only_the_scheduler_settles() {
     .await;
 }
 
-/// Sends session invites, and nothing else, to Resend at `server`.
+/// Sends series invites, and nothing else, to Resend at `server`; composes session invites.
 fn inviting(server: &ServerGuard) -> Config {
     Config::from_args([
         "test",
         "--resend-api-key=test_api_key",
-        "--session-scheduled-email-template-id=session_scheduled_tpl",
+        "--recurring-sessions-scheduled-email-template-id=series_scheduled_tpl",
         "--frontend-base-url=https://app.example.com",
         &format!("--resend-base-url={}", server.url()),
     ])
+}
+
+/// Each outbox row's kind and addressee.
+async fn outboxed(db: &DatabaseConnection) -> Vec<(String, Id)> {
+    crate::test_utils::email_outbox::rows(db)
+        .await
+        .into_iter()
+        .map(|row| (row.kind, row.recipient_user_id))
+        .collect()
 }
 
 /// The seeded fixture with `count` more sessions of R1 owed to COACH and, when `both`,
@@ -634,16 +643,119 @@ async fn an_invite_owed_again_while_a_send_holds_it_stays_owed() {
 }
 
 #[tokio::test]
-async fn many_owed_invites_drain_over_several_ticks() {
+async fn an_owed_session_invite_is_written_and_settled_together() {
     within_time_limit(async {
         let mut server = Server::new_async().await;
         let resend = server
             .mock("POST", "/emails")
-            .with_status(200)
-            .with_body(r#"{"id":"email_1"}"#)
-            .expect(12)
+            .expect(0)
             .create_async()
             .await;
+        let db = database().await;
+        let fixture = owing(&db, 1, true).await;
+        let [(target, _), ..] = pending_invites(&db).await.into_iter().collect::<Vec<_>>()[..]
+        else {
+            panic!("an invite is owed");
+        };
+        let before = session(&db, target).await.ical_sequence;
+        let ctx = job_context_with(db, inviting(&server));
+
+        Sweep::from_config(&ctx.config)
+            .run(&ctx)
+            .await
+            .expect("the tick runs");
+
+        let mut written = outboxed(&ctx.db).await;
+        written.sort();
+        let mut expected = [Caller::Coach, Caller::Coachee]
+            .map(|caller| ("session_scheduled".to_string(), fixture.user(caller)))
+            .to_vec();
+        expected.sort();
+        assert_eq!(written, expected);
+        assert_eq!(owed_rows(&ctx.db).await, Vec::new());
+        assert_eq!(
+            session(&ctx.db, target).await.ical_sequence,
+            before + 2,
+            "each copy goes out under its own SEQUENCE"
+        );
+        resend.assert_async().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_stale_claim_on_an_owed_session_invite_writes_nothing() {
+    within_time_limit(async {
+        let db = database().await;
+        owing(&db, 1, false).await;
+        let claimed = coaching_session_pending_invite::claim(
+            &db,
+            Utc::now().naive_utc(),
+            Id::new_v4(),
+            INVITE_BATCH,
+        )
+        .await
+        .expect("the sweep claims");
+        let [held] = <[_; 1]>::try_from(claimed).expect("one invite is owed");
+        let Target::Session(id) = held.target else {
+            panic!("a session's invite is owed");
+        };
+        let before = session(&db, id).await.ical_sequence;
+        let stale = coaching_session_pending_invite::Claimed {
+            claim_id: Id::new_v4(),
+            ..held
+        };
+
+        crate::coaching_session::enqueue_owed_invite(
+            &db,
+            &inviting(&Server::new_async().await),
+            id,
+            &stale,
+        )
+        .await
+        .expect("a stale claim is not an error");
+
+        assert_eq!(outboxed(&db).await, Vec::new());
+        assert_eq!(session(&db, id).await.ical_sequence, before);
+        assert_eq!(
+            owed_rows(&db).await,
+            vec![(0, true)],
+            "the holder still owes it"
+        );
+    })
+    .await;
+}
+
+/// With no frontend to link to no invite composes, so the owed row is settled unsent rather
+/// than retried.
+#[tokio::test]
+async fn an_owed_session_invite_that_cannot_compose_is_settled_unsent() {
+    within_time_limit(async {
+        let db = database().await;
+        owing(&db, 1, false).await;
+        let [(target, _), ..] = pending_invites(&db).await.into_iter().collect::<Vec<_>>()[..]
+        else {
+            panic!("an invite is owed");
+        };
+        let before = session(&db, target).await.ical_sequence;
+        let ctx = job_context_with(db, Config::from_args(["test"]));
+
+        Sweep::from_config(&ctx.config)
+            .run(&ctx)
+            .await
+            .expect("the tick runs");
+
+        assert_eq!(owed_rows(&ctx.db).await, Vec::new());
+        assert_eq!(outboxed(&ctx.db).await, Vec::new());
+        assert_eq!(session(&ctx.db, target).await.ical_sequence, before);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn many_owed_invites_drain_over_several_ticks() {
+    within_time_limit(async {
+        let server = Server::new_async().await;
         let db = database().await;
         owing(&db, 6, true).await;
         let ctx = job_context_with(db, inviting(&server));
@@ -653,17 +765,18 @@ async fn many_owed_invites_drain_over_several_ticks() {
         assert_eq!(
             owed_rows(&ctx.db).await.len(),
             2,
-            "ten sent in the first tick"
+            "ten written in the first tick"
         );
+        assert_eq!(outboxed(&ctx.db).await.len(), 10);
         sweep.run(&ctx).await.expect("the tick runs");
         assert_eq!(owed_rows(&ctx.db).await, Vec::new());
-        resend.assert_async().await;
+        assert_eq!(outboxed(&ctx.db).await.len(), 12);
     })
     .await;
 }
 
 #[tokio::test]
-async fn a_failed_invite_hands_the_rest_of_the_tick_back_uncharged() {
+async fn a_failed_series_invite_hands_the_rest_of_the_tick_back_uncharged() {
     within_time_limit(async {
         let mut server = Server::new_async().await;
         let resend = server
@@ -674,7 +787,15 @@ async fn a_failed_invite_hands_the_rest_of_the_tick_back_uncharged() {
             .create_async()
             .await;
         let db = database().await;
-        owing(&db, 3, false).await;
+        mirror_migration_defaults(&db).await;
+        let fixture = seed_fixture(&db).await;
+        coaching_session_pending_invite::queue(
+            &db,
+            &BTreeSet::from([Target::Series(fixture.sr1)]),
+            &[fixture.user(Caller::Coach), fixture.user(Caller::Coachee)],
+        )
+        .await
+        .expect("the invites are owed");
         let ctx = job_context_with(db, inviting(&server));
 
         Sweep::from_config(&ctx.config)
@@ -685,7 +806,7 @@ async fn a_failed_invite_hands_the_rest_of_the_tick_back_uncharged() {
         resend.assert_async().await;
         assert_eq!(
             owed_rows(&ctx.db).await,
-            vec![(0, false), (0, false), (1, false)],
+            vec![(0, false), (1, false)],
             "one attempt charged, none held"
         );
     })

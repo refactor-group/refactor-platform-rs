@@ -1,0 +1,110 @@
+{#- Colors are the design system's email values (refactor-platform-fe docs/design-system.md,
+    section 14), which are the frontend's tokens in hex, light / dark:
+    well (canvas, details) #f7f7f8 / canvas #121214, details #19191c
+    card #ffffff / #1b1b1f, border #e5e7eb / #2c2c33, fill (notice) #f2f3f5 / #26262c,
+    ink (title, values) #0a0a0a / #f4f4f5, ink-2 (body) #525252 / #c4c4cb,
+    muted (labels, secondary, footer) #737373 / #8e8e98,
+    brand-tint #eef0fc / #22233a, brand-border #dcdff6 / #34366a, brand #5b5fe8 / #7b7ff0,
+    primary #5b5fe8 with white text in both.
+    This stylesheet is the only place they appear. -#}
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="format-detection" content="telephone=no, date=no, address=no, email=no">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
+<title>{{ email.subject() }}</title>
+<style>
+  body { margin: 0; padding: 0; width: 100%; background-color: #f7f7f8; }
+  table { border-collapse: collapse; }
+  img { border: 0; outline: none; text-decoration: none; }
+  .content, .footer, .button { font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; }
+  .canvas { width: 100%; background-color: #f7f7f8; }
+  .canvas-cell { padding: 32px 16px; }
+  .container { width: 100%; max-width: 600px; }
+  .logo { padding: 0 4px 16px 4px; text-align: left; }
+  .frame { border-collapse: separate; }
+  .content { padding: 32px 32px 16px 32px; background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 16px; font-size: 15px; line-height: 24px; color: #525252; }
+  .content p { margin: 0 0 16px 0; }
+  .content .title { margin: 0 0 12px 0; font-size: 26px; line-height: 1.25; font-weight: 400; letter-spacing: -0.01em; color: #0a0a0a; }
+  .content strong { font-weight: 500; color: #0a0a0a; }
+  .content .secondary { font-size: 13px; line-height: 21px; color: #737373; }
+  .content .label { margin: 0; font-size: 12.5px; line-height: 18px; font-weight: 500; color: #737373; }
+  .content .value { margin: 2px 0 12px 0; font-size: 15px; line-height: 22px; font-weight: 500; color: #0a0a0a; }
+  .content .link { color: #5b5fe8; text-decoration: underline; }
+  .details, .notice, .now, .button-table { border-collapse: separate; }
+  .details, .change { margin: 4px 0 24px 0; }
+  .details-cell { padding: 16px 16px 4px 16px; background-color: #f7f7f8; border-radius: 12px; }
+  .notice { margin: 4px 0 16px 0; }
+  .notice-cell { padding: 12px 14px; background-color: #f2f3f5; border-radius: 12px; font-size: 14px; line-height: 22px; color: #525252; }
+  .content .notice-cell p { margin: 0; }
+  .now-cell { padding: 16px 16px 4px 16px; background-color: #eef0fc; border: 1px solid #dcdff6; border-radius: 12px; }
+  .before-cell { padding: 16px 17px 4px 17px; }
+  .content .tag { margin: 0 0 10px 0; font-size: 12.5px; line-height: 18px; font-weight: 500; color: #737373; }
+  .now-cell .tag { color: #5b5fe8; }
+  .before-cell .value { color: #737373; }
+  .before-cell .secondary { margin: 0 0 12px 0; }
+  .button-table { margin: 8px 0 24px 0; }
+  .button-cell { background-color: #5b5fe8; border-radius: 9999px; mso-padding-alt: 14px 24px; }
+  .button { display: inline-block; padding: 14px 24px; font-size: 15px; font-weight: 500; line-height: 20px; color: #ffffff; text-decoration: none; border-radius: 9999px; }
+  .footer { padding: 16px 4px 0 4px; font-size: 12px; line-height: 1.6; color: #737373; }
+  .footer p { margin: 0; }
+  .footer a { color: inherit; text-decoration: underline; }
+  @media only screen and (max-width: 620px) {
+    .canvas-cell { padding: 16px 12px !important; }
+    .content { padding: 24px 24px 8px 24px !important; }
+  }
+  @media (prefers-color-scheme: dark) {
+    body, .canvas { background-color: #121214 !important; }
+    .content { background-color: #1b1b1f !important; border-color: #2c2c33 !important; color: #c4c4cb !important; }
+    .content .title, .content strong, .content .value { color: #f4f4f5 !important; }
+    .content .label, .content .tag, .content .secondary, .footer { color: #8e8e98 !important; }
+    .details-cell { background-color: #19191c !important; }
+    .notice-cell { background-color: #26262c !important; color: #c4c4cb !important; }
+    .now-cell { background-color: #22233a !important; border-color: #34366a !important; }
+    .now-cell .tag, .content .link { color: #7b7ff0 !important; }
+    .before-cell .value { color: #8e8e98 !important; }
+  }
+</style>
+</head>
+<body>
+<div style="display: none; max-height: 0; max-width: 0; overflow: hidden; opacity: 0; mso-hide: all; font-size: 1px; line-height: 1px;">{% block preheader %}{% endblock %}{% for _ in 0..90 %}&zwnj;&nbsp;{% endfor %}</div>
+<table role="presentation" class="canvas" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr>
+<td class="canvas-cell" align="center">
+<!--[if mso]><table role="presentation" width="600" align="center" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
+<table role="presentation" class="container" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr>
+<td class="logo" align="left"><img src="{{ brand.logo_url }}" alt="Refactor Coach" width="40" height="40"></td>
+</tr>
+<tr>
+<td>
+<table role="presentation" class="frame" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr>
+<td class="content">
+<h1 class="title">{% block title %}{% endblock %}</h1>
+<p>Hi {{ email.parties.recipient.first_name }},</p>
+{% block content %}{% endblock %}
+</td>
+</tr>
+</table>
+</td>
+</tr>
+<tr>
+<td class="footer">
+<p>You're receiving this because you have sessions with {{ email.parties.organization_name }} on Refactor Coach.</p>
+<p>Questions? Reply to this email or write to <a href="mailto:{{ brand.support_email }}">{{ brand.support_email }}</a>.</p>
+<p>Refactor Coach is a product of <a href="{{ brand.company_url }}">Refactor Group</a> · <a href="{{ brand.privacy_url }}">Privacy</a></p>
+</td>
+</tr>
+</table>
+<!--[if mso]></td></tr></table><![endif]-->
+</td>
+</tr>
+</table>
+</body>
+</html>

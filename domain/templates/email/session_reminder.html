@@ -1,0 +1,23 @@
+{% extends "email/base.html" -%}
+{% import "email/macros.html" as m -%}
+
+{% block preheader %}Add your topics and review your actions before {{ email.when.date }} at {{ email.when.time }}.{% endblock %}
+
+{% block title %}Your {{ email.parties.session_label }} is coming up{% endblock %}
+
+{% block content -%}
+<p>Your {{ email.parties.session_label }} with <strong>{{ email.parties.other.full_name }}</strong> is coming up. Take a few moments to add the topics most worth discussing, review your actions due, and check that your goals still reflect what you're working toward.</p>
+{% call m::details() -%}
+{% if let Some(title) = email.title -%}
+{% call m::row("Session") %}{{ title }}{% endcall %}
+{%- endif %}
+{% call m::row("When") %}{{ email.when.date }} at {{ email.when.time }}{% endcall %}
+{% call m::row("With") %}{{ email.parties.other.full_name }}{% endcall %}
+{% call m::row("Length") %}{{ email.duration }}{% endcall %}
+{% if let Some(meeting_url) = email.meeting_url -%}
+{% call m::row("Where") %}<a class="link" href="{{ meeting_url }}">Meeting link</a>{% endcall %}
+{%- endif %}
+{%- endcall %}
+{% call m::button(email.url, "Open session") %}{% endcall %}
+<p class="secondary">Questions before you meet? Reach out to {{ email.parties.other.full_name }} directly.</p>
+{% endblock %}

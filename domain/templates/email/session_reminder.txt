@@ -1,0 +1,21 @@
+{% extends "email/base.txt" %}
+
+{% block title %}Your {{ email.parties.session_label }} is coming up{% endblock %}
+
+{% block content -%}
+Your {{ email.parties.session_label }} with {{ email.parties.other.full_name }} is coming up. Take a few moments to add the topics most worth discussing, review your actions due, and check that your goals still reflect what you're working toward.
+
+{% if let Some(title) = email.title -%}
+Session: {{ title }}
+{% endif -%}
+When: {{ email.when.date }} at {{ email.when.time }}
+With: {{ email.parties.other.full_name }}
+Length: {{ email.duration }}
+{% if let Some(meeting_url) = email.meeting_url -%}
+Where: {{ meeting_url }}
+{% endif %}
+Open session:
+{{ email.url }}
+
+Questions before you meet? Reach out to {{ email.parties.other.full_name }} directly.
+{%- endblock %}

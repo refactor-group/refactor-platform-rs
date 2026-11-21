@@ -93,11 +93,9 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "resend_base_url",
     "resend_api_key",
     "welcome_email_template_id",
-    "session_scheduled_email_template_id",
     "recurring_sessions_scheduled_email_template_id",
     "session_rescheduled_email_template_id",
     "recurring_sessions_rescheduled_email_template_id",
-    "session_cancelled_email_template_id",
     "recurring_sessions_cancelled_email_template_id",
     "action_assigned_email_template_id",
     "frontend_base_url",
@@ -324,9 +322,6 @@ pub struct Config {
     /// The Resend template ID for welcome emails.
     #[arg(long, env)]
     welcome_email_template_id: Option<String>,
-    /// The Resend template ID for session-scheduled emails.
-    #[arg(long, env)]
-    session_scheduled_email_template_id: Option<String>,
     /// The Resend template ID for recurring-sessions-scheduled emails.
     #[arg(long, env)]
     recurring_sessions_scheduled_email_template_id: Option<String>,
@@ -336,9 +331,6 @@ pub struct Config {
     /// The Resend template ID for series reschedule emails.
     #[arg(long, env)]
     recurring_sessions_rescheduled_email_template_id: Option<String>,
-    /// The Resend template ID for single-session cancellation emails.
-    #[arg(long, env)]
-    session_cancelled_email_template_id: Option<String>,
     /// The Resend template ID for series cancellation emails.
     #[arg(long, env)]
     recurring_sessions_cancelled_email_template_id: Option<String>,
@@ -808,10 +800,6 @@ impl Config {
         self.debug_field("recall_ai_base_url", &self.recall_ai_base_url);
         self.debug_field("welcome_email_template_id", &self.welcome_email_template_id);
         self.debug_field(
-            "session_scheduled_email_template_id",
-            &self.session_scheduled_email_template_id,
-        );
-        self.debug_field(
             "recurring_sessions_scheduled_email_template_id",
             &self.recurring_sessions_scheduled_email_template_id,
         );
@@ -822,10 +810,6 @@ impl Config {
         self.debug_field(
             "recurring_sessions_rescheduled_email_template_id",
             &self.recurring_sessions_rescheduled_email_template_id,
-        );
-        self.debug_field(
-            "session_cancelled_email_template_id",
-            &self.session_cancelled_email_template_id,
         );
         self.debug_field(
             "recurring_sessions_cancelled_email_template_id",
@@ -962,11 +946,6 @@ impl Config {
         self.welcome_email_template_id.clone()
     }
 
-    /// Returns the Resend template ID for session-scheduled emails, if configured.
-    pub fn session_scheduled_email_template_id(&self) -> Option<String> {
-        self.session_scheduled_email_template_id.clone()
-    }
-
     /// Returns the Resend template ID for recurring-sessions-scheduled emails, if configured.
     pub fn recurring_sessions_scheduled_email_template_id(&self) -> Option<String> {
         self.recurring_sessions_scheduled_email_template_id.clone()
@@ -981,11 +960,6 @@ impl Config {
     pub fn recurring_sessions_rescheduled_email_template_id(&self) -> Option<String> {
         self.recurring_sessions_rescheduled_email_template_id
             .clone()
-    }
-
-    /// Returns the Resend template ID for single-session cancellation emails, if configured.
-    pub fn session_cancelled_email_template_id(&self) -> Option<String> {
-        self.session_cancelled_email_template_id.clone()
     }
 
     /// Returns the Resend template ID for series cancellation emails, if configured.
@@ -1346,7 +1320,7 @@ mod tests {
         let matches = Config::command()
             .try_get_matches_from([
                 "refactor-platform-rs",
-                "--session-scheduled-email-template-id=new-coaching-session-scheduled",
+                "--recurring-sessions-scheduled-email-template-id=new-coaching-session-scheduled",
                 "--session-reminder-email-template-id=new-coaching-session-scheduled",
             ])
             .expect("args parse");
@@ -1363,7 +1337,7 @@ mod tests {
         assert_eq!(
             shared[0].1,
             vec![
-                "SESSION_SCHEDULED_EMAIL_TEMPLATE_ID",
+                "RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID",
                 "SESSION_REMINDER_EMAIL_TEMPLATE_ID"
             ],
             "both variables must be named, since either could be the wrong one"
@@ -1378,7 +1352,7 @@ mod tests {
         let matches = Config::command()
             .try_get_matches_from([
                 "refactor-platform-rs",
-                "--session-scheduled-email-template-id=new-coaching-session-scheduled",
+                "--recurring-sessions-scheduled-email-template-id=new-coaching-session-scheduled",
                 "--session-reminder-email-template-id=upcoming-coaching-session-reminder",
             ])
             .expect("args parse");

@@ -1,0 +1,34 @@
+---
+source: domain/src/email_composition/series_tests.rs
+expression: copy(&series_scheduled())
+---
+Subject: Series with Alex Smith starts Wed, Mar 4
+Preheader: Weekly on Wednesday at 10:00 AM, 13 coaching sessions scheduled.
+
+Coaching session series scheduled
+
+Hi Jane,
+
+Alex Smith scheduled a recurring series of coaching sessions with you.
+
+Starts: Wednesday, March 4, 2026 at 10:00 AM
+Repeats: Weekly on Wednesday
+Runs through: Wednesday, May 27, 2026 · 13 sessions
+With: Alex Smith
+Length: 1 hour
+
+Open first session:
+https://app.example.com/coaching-sessions/1
+
+A calendar invite is attached.
+
+---
+
+You're receiving this because you have sessions with Acme Corp on Refactor Coach.
+Questions? Reply to this email or write to hello@refactorcoach.com.
+
+Refactor Coach is a product of Refactor Group:
+https://www.refactorgroup.com
+
+Privacy:
+https://app.example.com/privacy

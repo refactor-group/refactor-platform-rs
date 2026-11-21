@@ -1,0 +1,39 @@
+---
+source: domain/src/email_composition/series_tests.rs
+expression: "copy(&SeriesRescheduled { by: Actor::You, ..series_rescheduled() })"
+---
+Subject: You moved your series with Alex Smith
+Preheader: Weekly on Wednesday at 10:00 AM, starting Wednesday, March 4, 2026.
+
+Coaching session series moved
+
+Hi Jane,
+
+You moved your recurring series of coaching sessions with Alex Smith. Your calendar updates in place, so there's nothing to delete.
+
+Now:
+Starts: Wednesday, March 4, 2026 at 10:00 AM
+Repeats: Weekly on Wednesday
+Runs through: Wednesday, May 27, 2026 · 13 sessions
+With: Alex Smith
+Length: 1 hour
+
+Before:
+Starts: Tuesday, March 3, 2026 at 4:00 PM
+Repeats: Weekly on Tuesday
+
+Open first session:
+https://app.example.com/coaching-sessions/1
+
+A calendar invite is attached.
+
+---
+
+You're receiving this because you have sessions with Acme Corp on Refactor Coach.
+Questions? Reply to this email or write to hello@refactorcoach.com.
+
+Refactor Coach is a product of Refactor Group:
+https://www.refactorgroup.com
+
+Privacy:
+https://app.example.com/privacy

@@ -132,9 +132,13 @@ fails to build. Elsewhere the sweep warns once at startup and fails each due row
 
 1. This infrastructure, with no sender moved. No behavior change.
 2. Senders move one at a time as their templates are rendered in-repo on the shared
-   layout (issue #525). Each sender's move ports its template, renders and enqueues in
-   the transaction it announces, and retires its `*_TEMPLATE_ID`. Sweeps that decide an
-   email is owed (reminders, pending reschedules, owed invites) claim, render and enqueue
-   in one transaction.
+   layout (issue #525, [Email composition](email_composition.md)). Each sender's move
+   ports its template, renders and enqueues in the transaction it announces, and retires
+   its `*_TEMPLATE_ID`. Sweeps that decide an email is owed (reminders, pending
+   reschedules, owed invites) claim, render and enqueue in one transaction. The
+   single-session cancellation and session scheduled emails, and the session invites the
+   pending reschedule sweep owes, have moved. A session invite resent on request is
+   composed the same way but handed to the `Mailer` directly, since its endpoint still
+   reports whether it was delivered.
 3. Once every sender has moved, `gateway::resend::Client::send_email` and the template
    path are removed, and the outbox is the only way email leaves.

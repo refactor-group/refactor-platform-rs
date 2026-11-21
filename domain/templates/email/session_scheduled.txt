@@ -1,0 +1,20 @@
+{% extends "email/base.txt" %}
+
+{% block title %}{{ email.parties.session_label|capitalize }} scheduled{% endblock %}
+
+{% block content -%}
+{% match email.by -%}
+{% when Actor::You -%}
+You scheduled a {{ email.parties.session_label }} with {{ email.parties.other.full_name }}.
+{% when Actor::Other -%}
+{{ email.parties.other.full_name }} scheduled a {{ email.parties.session_label }} with you.
+{% endmatch %}
+When: {{ email.when.date }} at {{ email.when.time }}
+With: {{ email.parties.other.full_name }}
+Length: {{ email.duration }}
+
+Open session:
+{{ email.url }}
+
+A calendar invite is attached.
+{%- endblock %}

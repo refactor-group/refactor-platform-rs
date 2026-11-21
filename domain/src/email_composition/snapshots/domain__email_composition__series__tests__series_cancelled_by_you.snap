@@ -1,0 +1,29 @@
+---
+source: domain/src/email_composition/series_tests.rs
+expression: "copy(&SeriesCancelled { by: Actor::You, ..series_cancelled() })"
+---
+Subject: You cancelled your series with Alex Smith
+Preheader: Upcoming sessions from Wednesday, March 4, 2026 through Wednesday, May 27, 2026 are cancelled.
+
+Coaching session series cancelled
+
+Hi Jane,
+
+You cancelled your recurring series of coaching sessions with Alex Smith. Sessions you've already had stay in Refactor Coach with their notes.
+
+Cancelled: 13 upcoming sessions
+Dates: Wednesday, March 4, 2026 through Wednesday, May 27, 2026
+With: Alex Smith
+
+A calendar update is attached.
+
+---
+
+You're receiving this because you have sessions with Acme Corp on Refactor Coach.
+Questions? Reply to this email or write to hello@refactorcoach.com.
+
+Refactor Coach is a product of Refactor Group:
+https://www.refactorgroup.com
+
+Privacy:
+https://app.example.com/privacy

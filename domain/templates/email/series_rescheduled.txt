@@ -1,0 +1,59 @@
+{% extends "email/base.txt" %}
+
+{% block title %}
+{%- match email.scope -%}
+{%- when Scope::WholeSeries { .. } -%}
+{{ email.parties.session_label|capitalize }} series moved
+{%- when Scope::FromSession { .. } -%}
+{{ email.parties.session_label_plural|capitalize }} moved
+{%- endmatch -%}
+{% endblock %}
+
+{% block content -%}
+{% match email.scope -%}
+{% when Scope::WholeSeries { previous_start, previous_cadence } -%}
+{% match email.by -%}
+{% when Actor::You -%}
+You moved your recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name }}. Your calendar updates in place, so there's nothing to delete.
+{% when Actor::Other -%}
+{{ email.parties.other.full_name }} moved your recurring series of {{ email.parties.session_label_plural }}. Your calendar updates in place, so there's nothing to delete.
+{% endmatch %}
+Now:
+Starts: {{ email.starts.date }} at {{ email.starts.time }}
+Repeats: {{ email.cadence }}
+Runs through: {{ email.last_date }} · {{ email.count }} session{{ email.count|pluralize }}
+With: {{ email.parties.other.full_name }}
+Length: {{ email.duration }}
+{% if previous_start.is_some() || previous_cadence.is_some() %}
+Before:
+{% if let Some(previous) = previous_start -%}
+Starts: {{ previous.date }} at {{ previous.time }}
+{% endif -%}
+{% if let Some(previous) = previous_cadence -%}
+Repeats: {{ previous }}
+{% endif -%}
+{% endif %}
+Open first session:
+{{ email.url }}
+{% when Scope::FromSession { first_moved_date, previous_cadence, previous_time } -%}
+{% match email.by -%}
+{% when Actor::You -%}
+You changed your recurring {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name }} from {{ first_moved_date }} onward. Your calendar updates in place, so there's nothing to delete.
+{% when Actor::Other -%}
+{{ email.parties.other.full_name }} changed your recurring {{ email.parties.session_label_plural }} from {{ first_moved_date }} onward. Your calendar updates in place, so there's nothing to delete.
+{% endmatch %}
+Now:
+Repeats: {{ email.cadence }} at {{ email.starts.time }}
+Dates: {{ first_moved_date }} through {{ email.last_date }} · {{ email.count }} session{{ email.count|pluralize }}
+With: {{ email.parties.other.full_name }}
+Length: {{ email.duration }}
+
+Before:
+Repeats: {{ previous_cadence }} at {{ previous_time }}
+Sessions before {{ first_moved_date }} are unchanged.
+
+Open session:
+{{ email.url }}
+{% endmatch %}
+A calendar invite is attached.
+{%- endblock %}

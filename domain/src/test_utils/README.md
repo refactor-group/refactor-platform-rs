@@ -12,6 +12,8 @@ items, which `domain/tests/` could not.
 | Module | Compiled when | Provides | For |
 |---|---|---|---|
 | `audit_event` | `domain`'s tests, or `test-sqlite` | `MemoryRecorder` (an audit `Recorder` that keeps events in memory) | tests of code that records audit events |
+| `email_composition` | `domain`'s tests | `brand`, `parties`, a sample of each composed email, `every_email`, `copy` (an email's subject, preheader and text, for a snapshot), `bodies` | composed-email snapshots and layout tests, previews |
+| `email_outbox` | `domain`'s tests | `outgoing_email` (a rendered email told apart by its subject) | email outbox tests |
 | `mock` | `domain`'s tests with the `mock` feature | `recording_publisher`, `both_participants_are_members` | mock database tests (the default) |
 | `proof` | `domain`'s tests | `coach_permit` (a `SchedulingPermit` with no database) | tests of the `with_permit` functions and `ensure_permits` |
 | `sqlite` | `domain`'s tests, or `test-sqlite` | `database`, `within_time_limit`, `seed_user`, `seed_organization`, `seed_coaching_session`, `seed_action`, `seed_agreement`, `seed_topic`, `seed_lapsed_membership`, `foreign_key_violation` (with `mock`) | SQLite tier tests |

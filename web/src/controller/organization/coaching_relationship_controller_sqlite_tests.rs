@@ -17,7 +17,7 @@ use domain::test_utils::sqlite::fixture::{
 };
 use domain::test_utils::sqlite::read_back::{
     pending_invites, relationship_row, relationships_between, reminders_sent, session_schedule,
-    verified_audit_trail, AuditEntry,
+    take_outbox_addressees, verified_audit_trail, AuditEntry,
 };
 use domain::test_utils::sqlite::{within_time_limit, Caller};
 use domain::users::Role;
@@ -1499,7 +1499,15 @@ fn owed_to_both(app: &TestApp, targets: &[Id]) -> BTreeSet<(Id, Id)> {
         .collect()
 }
 
-/// `count` copies of each caller's address, sorted as `take_emailed` returns them.
+/// Who was mailed or had an email written to the outbox since the last call, sorted.
+async fn invited(app: &mut TestApp) -> Vec<String> {
+    let mut invited = app.take_emailed();
+    invited.extend(take_outbox_addressees(app.db()).await);
+    invited.sort();
+    invited
+}
+
+/// `count` copies of each caller's address, sorted as [`invited`] returns them.
 fn mailed(callers: &[Caller], count: usize) -> Vec<String> {
     let mut mailed: Vec<String> = callers
         .iter()
@@ -1535,17 +1543,21 @@ async fn a_confirmed_switch_resends_every_upcoming_invite_to_both_once() {
             owed_to_both(&app, &[s1, s4, sr1]),
             "S1 and S4 their own, SR1's sessions their series'"
         );
-        app.take_emailed();
+        invited(&mut app).await;
         app.run_pending_reschedule_sweep().await;
         assert_eq!(
-            app.take_emailed(),
+            invited(&mut app).await,
             mailed(&[Caller::Coach, Caller::Coachee], 3),
             "one copy of each invite to each participant"
         );
         assert_eq!(pending_invites(app.db()).await, BTreeSet::new());
 
         app.run_pending_reschedule_sweep().await;
-        assert_eq!(app.take_emailed(), Vec::<String>::new(), "a second run");
+        assert_eq!(
+            invited(&mut app).await,
+            Vec::<String>::new(),
+            "a second run"
+        );
     })
     .await;
 }
@@ -1571,10 +1583,10 @@ async fn switches_before_the_sweep_owe_each_invite_once() {
             pending_invites(app.db()).await,
             owed_to_both(&app, &[s1, sr1])
         );
-        app.take_emailed();
+        invited(&mut app).await;
         app.run_pending_reschedule_sweep().await;
         assert_eq!(
-            app.take_emailed(),
+            invited(&mut app).await,
             mailed(&[Caller::Coach, Caller::Coachee], 2)
         );
     })
@@ -1590,11 +1602,11 @@ async fn a_participant_who_left_before_the_sweep_gets_no_invite() {
 
         admin_switches_r1_to_colleague(&mut app).await;
         remove_roles(app.db(), coachee, o1).await;
-        app.take_emailed();
+        invited(&mut app).await;
         app.run_pending_reschedule_sweep().await;
 
         assert_eq!(
-            app.take_emailed(),
+            invited(&mut app).await,
             mailed(&[Caller::Coach], 2),
             "S1 and SR1 to the coach only"
         );

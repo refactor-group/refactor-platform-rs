@@ -2,6 +2,8 @@
 
 pub mod audit_event;
 #[cfg(test)]
+pub(crate) mod email_composition;
+#[cfg(test)]
 pub(crate) mod email_outbox;
 #[cfg(test)]
 pub(crate) mod jobs;

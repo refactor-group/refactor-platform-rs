@@ -73,7 +73,7 @@ delivery, so use option 2 for those cases specifically.
 ## Setup / prerequisites
 
 1. **Resend config** (real key so emails actually send): `--resend-api-key`,
-   `--session-scheduled-email-template-id`, `--recurring-sessions-scheduled-email-template-id`,
+   `--recurring-sessions-scheduled-email-template-id`,
    `--frontend-base-url=https://<your app>` (drives the `View this session` link).
 2. **A coaching relationship** with a coach and coachee whose email inboxes you control.
    Set the **coach's timezone** to `America/New_York` for the DST/cross-zone checks.
@@ -369,7 +369,7 @@ the original, and a **bumped `SEQUENCE`**, so calendar clients remove the event.
 
 The email fires **after** the delete succeeds, so a failed delete never produces a cancellation notice.
 
-**Extra setup:** `--session-cancelled-email-template-id` and `--recurring-sessions-cancelled-email-template-id`.
+**Extra setup:** `--recurring-sessions-cancelled-email-template-id` for the series cancellation; a single-session cancellation is composed in the backend and needs only `--frontend-base-url`.
 
 ### HC1: Cancel a single session (happy path)
 1. Create a **future** single session (H1) and import its `.ics`.
