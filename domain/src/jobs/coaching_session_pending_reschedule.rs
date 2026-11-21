@@ -28,11 +28,12 @@
 //! organization, a session that has passed and a series with nothing left to attend are
 //! owed nothing. A session's invite is written to the email outbox in one transaction with
 //! its `SEQUENCE` bump and the row's completion; a failed load or write releases the row to
-//! retry, and a row is dropped unsent when no email can be composed. A series' invite is sent through its Resend template, and a row for one is dropped
-//! unsent without that template or a Resend key. A switch can owe many invites at once, so a
-//! tick claims at most [`INVITE_BATCH`] of them, and a failed series send hands the rest of
-//! the tick's back uncharged, as the reminder sweep does when Resend is unusable: the
-//! interval is the backoff.
+//! retry, and a row is dropped unsent when no email can be composed. A series' invite is
+//! sent through its Resend template, and a row for one is dropped unsent without that
+//! template or a Resend key. A switch can owe many invites at once, so a tick claims at most
+//! [`INVITE_BATCH`] of them, and a failed series send hands the rest of the tick's back
+//! uncharged, as the reminder sweep does when Resend is unusable: the interval is the
+//! backoff.
 //!
 //! See [`crate::jobs`] for why this is a sweep rather than an enqueued job.
 
@@ -87,6 +88,18 @@ enum Mode {
     Drain,
 }
 
+impl Mode {
+    /// Sends when Resend has a key and the template is set; otherwise drains, saying `emails` are off.
+    fn of(config: &Config, template: Option<&str>, emails: &str) -> Self {
+        if config.resend_api_key().is_some() && template.is_some() {
+            Mode::Send
+        } else {
+            info!("[coaching-session-pending-reschedule] {emails} are off; those owed will be dropped unsent");
+            Mode::Drain
+        }
+    }
+}
+
 /// What one owed invite's turn left behind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Resent {
@@ -122,36 +135,20 @@ impl Sweep {
             lease: coaching_session_pending_reschedule::LEASE,
         };
 
-        let sendable = config.resend_api_key().is_some()
-            && config.session_rescheduled_email_template_id().is_some();
-        let mode = if sendable {
-            Mode::Send
-        } else {
-            info!(
-                "[coaching-session-pending-reschedule] reschedule emails are off; pending changes will be \
-                 dropped unsent"
-            );
-            Mode::Drain
-        };
-
-        let series_invites = if config.resend_api_key().is_some()
-            && config
-                .recurring_sessions_scheduled_email_template_id()
-                .is_some()
-        {
-            Mode::Send
-        } else {
-            info!(
-                "[coaching-session-pending-reschedule] series invite emails are off; those owed \
-                 will be dropped unsent"
-            );
-            Mode::Drain
-        };
-
         Self {
             timing,
-            mode,
-            series_invites,
+            mode: Mode::of(
+                config,
+                config.session_rescheduled_email_template_id().as_deref(),
+                "reschedule emails",
+            ),
+            series_invites: Mode::of(
+                config,
+                config
+                    .recurring_sessions_scheduled_email_template_id()
+                    .as_deref(),
+                "series invite emails",
+            ),
         }
     }
 

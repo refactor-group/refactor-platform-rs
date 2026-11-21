@@ -1730,21 +1730,39 @@ fn session_cancelled_envelopes(
     cancellation: Cancellation,
     zone: Tz,
 ) -> Result<Vec<Envelope>, Error> {
-    let participants = audience.participants;
-    let ics = session_ics(
-        participants,
+    calendar_envelopes(
+        brand,
+        audience,
         session,
+        organization,
         &ical::Method::Cancel,
-        participants.session_cancelled_description(),
+        audience.participants.session_cancelled_description(),
         zone,
-    )?;
+        |copy| copy.cancelled(cancellation),
+    )
+}
+
+/// The email `email_for` builds for each participant `audience` may reach, carrying
+/// `session`'s `.ics` under `method` with `description`.
+#[allow(clippy::too_many_arguments)]
+fn calendar_envelopes<E: Email>(
+    brand: &Brand,
+    audience: &Audience<'_>,
+    session: &coaching_sessions::Model,
+    organization: &organizations::Model,
+    method: &ical::Method,
+    description: String,
+    zone: Tz,
+    email_for: impl Fn(SessionCopy) -> E,
+) -> Result<Vec<Envelope>, Error> {
+    let ics = session_ics(audience.participants, session, method, description, zone)?;
     Ok(session_envelopes(
         brand,
         audience,
         session,
         organization,
-        &calendar_attachments([(ics.as_str(), &ical::Method::Cancel)]),
-        |copy| copy.cancelled(cancellation),
+        &calendar_attachments([(ics.as_str(), method)]),
+        email_for,
     ))
 }
 
@@ -2001,28 +2019,27 @@ impl SessionNotice {
             ),
             Calendar::Cancel => participants.session_cancelled_description(),
         };
-        session_ics(&participants, session, &method, description, self.zone)
-            .map(|ics| {
-                session_envelopes(
-                    &self.brand,
-                    &Audience {
-                        participants: &participants,
-                        member_ids: &self.reach,
-                    },
-                    session,
-                    &self.parties.organization,
-                    &calendar_attachments([(ics.as_str(), &method)]),
-                    email_for,
-                )
-            })
-            .inspect_err(|e| {
-                warn!(
-                    "Failed to render the {} emails for session {}: {e:?}",
-                    E::KIND,
-                    session.id
-                )
-            })
-            .unwrap_or_default()
+        calendar_envelopes(
+            &self.brand,
+            &Audience {
+                participants: &participants,
+                member_ids: &self.reach,
+            },
+            session,
+            &self.parties.organization,
+            &method,
+            description,
+            self.zone,
+            email_for,
+        )
+        .inspect_err(|e| {
+            warn!(
+                "Failed to render the {} emails for session {}: {e:?}",
+                E::KIND,
+                session.id
+            )
+        })
+        .unwrap_or_default()
     }
 
     /// Writes the emails [`Self::envelopes`] renders on `txn`; returns who they address.
