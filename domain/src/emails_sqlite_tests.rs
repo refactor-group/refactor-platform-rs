@@ -20,9 +20,10 @@ use crate::email_outbox::OutgoingEmail;
 use crate::error::ExternalErrorKind;
 use crate::events::EventPublisher;
 use crate::test_utils::sqlite::fixture::make_colleagues;
+use crate::test_utils::sqlite::fixture::seed_goal;
 use crate::test_utils::sqlite::{
     database, mirror_migration_defaults, seed_action, seed_membership, seed_organization,
-    seed_user, within_time_limit,
+    seed_topic, seed_user, within_time_limit,
 };
 
 const SERIES_RESCHEDULED: &str = "series_rescheduled_tpl";
@@ -31,7 +32,6 @@ fn sending(server: &ServerGuard) -> Config {
     Config::from_args([
         "test",
         "--resend-api-key=test_api_key",
-        "--session-scheduled-email-template-id=session_scheduled_tpl",
         "--recurring-sessions-scheduled-email-template-id=series_scheduled_tpl",
         &format!("--recurring-sessions-rescheduled-email-template-id={SERIES_RESCHEDULED}"),
         "--recurring-sessions-cancelled-email-template-id=series_cancel_tpl",
@@ -263,13 +263,42 @@ impl Seeded {
     }
 }
 
+/// Writes `seeded.session`'s scheduled emails for the participants holding a role, as its
+/// create would; returns who the outbox addressed.
+async fn schedule_session(seeded: &Seeded, db: &DatabaseConnection) -> BTreeSet<String> {
+    let member_ids = notify_member_ids(db, &seeded.relationship)
+        .await
+        .expect("membership reads");
+    let notice = SessionNotice::scheduled(
+        db,
+        &composing(),
+        &seeded.relationship,
+        &member_ids,
+        &seeded.session,
+    )
+    .await
+    .expect("the invite loads");
+    let txn = db.begin().await.expect("the transaction begins");
+    let scheduled = notice.scheduled_by(&seeded.session, seeded.coach.id);
+    notice
+        .enqueue(&txn, &seeded.session, &ical::Method::Request, scheduled)
+        .await
+        .expect("the invites are written");
+    txn.commit().await.expect("the transaction commits");
+    outbox_kinds(db)
+        .await
+        .into_iter()
+        .map(|(to, _)| to)
+        .collect()
+}
+
 async fn cancel_session(seeded: &Seeded, db: &DatabaseConnection) -> BTreeSet<String> {
-    let notice = CancellationNotice::load(db, &composing(), &seeded.session)
+    let notice = SessionNotice::cancellation(db, &composing(), &seeded.session)
         .await
         .expect("the cancellation loads");
     let txn = db.begin().await.expect("the transaction begins");
     notice
-        .enqueue(&txn, &seeded.session, Cancellation::By(seeded.coach.id))
+        .enqueue_cancellation(&txn, &seeded.session, Cancellation::By(seeded.coach.id))
         .await
         .expect("the cancellations are written");
     txn.commit().await.expect("the transaction commits");
@@ -351,12 +380,12 @@ async fn cancel_with(
     as_loaded: &coaching_sessions::Model,
     locked: &coaching_sessions::Model,
 ) -> BTreeSet<String> {
-    let notice = CancellationNotice::load(db, &composing(), as_loaded)
+    let notice = SessionNotice::cancellation(db, &composing(), as_loaded)
         .await
         .expect("the cancellation loads");
     let txn = db.begin().await.expect("the transaction begins");
     notice
-        .enqueue(&txn, locked, Cancellation::By(seeded.coach.id))
+        .enqueue_cancellation(&txn, locked, Cancellation::By(seeded.coach.id))
         .await
         .expect("the cancellations are written");
     txn.commit().await.expect("the transaction commits");
@@ -393,28 +422,9 @@ async fn session_scheduled_with_the_coachee_holding_no_role_reaches_only_the_coa
         let db = database().await;
         let seeded = seed(&db).await;
         seeded.grant_role(&db, seeded.coach.id).await;
-        let organization = organization::find_by_id(&db, seeded.relationship.organization_id)
-            .await
-            .expect("the organization reads");
-        let member_ids = notify_member_ids(&db, &seeded.relationship)
-            .await
-            .expect("membership reads");
-        let mut server = Server::new_async().await;
-        let sent = Sent::default();
-        let _mock = sent.capture(&mut server).await;
-
-        notify_session_scheduled(
-            &db,
-            &sending(&server),
-            &seeded.session,
-            &seeded.relationship,
-            &organization,
-            &member_ids,
-        )
-        .await;
 
         assert_eq!(
-            sent.addressees(),
+            schedule_session(&seeded, &db).await,
             BTreeSet::from([seeded.coach.email.clone()])
         );
     })
@@ -542,9 +552,6 @@ async fn send_members_only(
     db: &DatabaseConnection,
 ) -> (BTreeSet<String>, Option<Delivery>) {
     let (series, sessions) = seeded.series(db).await;
-    let organization = organization::find_by_id(db, seeded.relationship.organization_id)
-        .await
-        .expect("the organization reads");
     let member_ids = notify_member_ids(db, &seeded.relationship)
         .await
         .expect("membership reads");
@@ -555,17 +562,7 @@ async fn send_members_only(
 
     let mut told = None;
     match email {
-        MembersOnly::SessionScheduled => {
-            notify_session_scheduled(
-                db,
-                &config,
-                &seeded.session,
-                &seeded.relationship,
-                &organization,
-                &member_ids,
-            )
-            .await;
-        }
+        MembersOnly::SessionScheduled => return (schedule_session(seeded, db).await, None),
         MembersOnly::SeriesScheduled => {
             notify_recurring_sessions_scheduled(
                 db,
@@ -727,7 +724,15 @@ async fn session_create_with_the_coach_holding_no_role_reaches_only_the_coachee(
 
         assert_eq!(
             sent.addressees(),
-            BTreeSet::from([seeded.coachee.email.clone()])
+            BTreeSet::new(),
+            "nothing is sent directly"
+        );
+        assert_eq!(
+            outbox_kinds(&db).await,
+            [(
+                seeded.coachee.email.clone(),
+                "session_scheduled".to_string()
+            )]
         );
     })
     .await;
@@ -1055,6 +1060,176 @@ async fn deleting_a_session_writes_both_cancellations_with_the_delete() {
                 "outranks the invite: {cancel}"
             );
         }
+    })
+    .await;
+}
+
+/// A Tiptap that accepts every document call, and `config` sending it there.
+async fn tiptap() -> (ServerGuard, Config) {
+    let mut server = Server::new_async().await;
+    server
+        .mock("POST", Matcher::Regex("^/api/documents/".to_string()))
+        .with_status(200)
+        .create_async()
+        .await;
+    server
+        .mock("DELETE", Matcher::Regex("^/api/documents/".to_string()))
+        .with_status(200)
+        .create_async()
+        .await;
+    let config = Config::from_args([
+        "test",
+        "--frontend-base-url=https://app.example.com",
+        "--tiptap-auth-key=test-auth-key",
+        &format!("--tiptap-url={}", server.url()),
+    ]);
+    (server, config)
+}
+
+/// Creating a session writes both participants' invites with the create, coachee first,
+/// ordered in their relationship, each listing the goal and topic the create carried in.
+#[tokio::test]
+async fn creating_a_session_writes_both_invites_with_the_create() {
+    within_time_limit(async {
+        let (db, seeded) = seeded_with(Members::Both).await;
+        let (_server, config) = tiptap().await;
+        let topic = seed_topic(
+            &db,
+            seeded.session.id,
+            seeded.coach.id,
+            "Carried topic",
+            0,
+            false,
+        )
+        .await;
+        crate::coaching_session_topics::ActiveModel {
+            id: Set(topic),
+            status: Set(crate::topic_status::Status::Deferred),
+            ..Default::default()
+        }
+        .update(&db)
+        .await
+        .expect("the topic is deferred");
+        let goal = seed_goal(
+            &db,
+            seeded.relationship.id,
+            seeded.session.id,
+            seeded.coach.id,
+        )
+        .await;
+        let goal_title = crate::goals::Entity::find_by_id(goal)
+            .one(&db)
+            .await
+            .expect("the goal reads")
+            .and_then(|goal| goal.title)
+            .expect("the goal has a title");
+        let organization = organization::find_by_id(&db, seeded.relationship.organization_id)
+            .await
+            .expect("the organization reads");
+
+        let created = crate::coaching_session::create(
+            &db,
+            &config,
+            &EventPublisher::new(),
+            coaching_sessions::Model {
+                id: Id::new_v4(),
+                date: seeded.session.date + TimeDelta::days(1),
+                ..seeded.session.clone()
+            },
+            seeded.coachee.id,
+            None,
+        )
+        .await
+        .expect("the session is created");
+
+        let rows = outbox(&db).await;
+        let conversation = Subject::CoachingRelationship(seeded.relationship.id).key();
+        assert_eq!(
+            rows.iter()
+                .map(|(row, _)| (
+                    row.kind.as_str(),
+                    row.subject_key.as_str(),
+                    row.recipient_user_id
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "session_scheduled",
+                    conversation.as_str(),
+                    seeded.coachee.id
+                ),
+                ("session_scheduled", conversation.as_str(), seeded.coach.id),
+            ]
+        );
+        let brand = Brand::from_config(&config).expect("the brand is configured");
+        for ((_, stored), (reader, other, by)) in rows.iter().zip([
+            (&seeded.coachee, &seeded.coach, Actor::You),
+            (&seeded.coach, &seeded.coachee, Actor::Other),
+        ]) {
+            let expected = compose(
+                &SessionScheduled {
+                    parties: Parties {
+                        recipient: Person::from(reader),
+                        other: Person::from(other),
+                        session_label: "coaching session",
+                        session_label_plural: "coaching sessions",
+                        organization_name: organization.name.clone(),
+                    },
+                    by,
+                    when: session_when(created.date, &reader.timezone),
+                    duration: "1 hour".to_string(),
+                    url: format!("https://app.example.com/coaching-sessions/{}", created.id),
+                    calendar: Vec::new(),
+                },
+                &brand,
+            )
+            .expect("the expected email composes");
+            // The calendar part carries the send's timestamp, so it is checked on its own.
+            assert!(
+                OutgoingEmail {
+                    attachments: Vec::new(),
+                    ..stored.clone()
+                } == expected,
+                "{} got a different email",
+                reader.email
+            );
+            let invite = calendar_part(stored);
+            assert!(invite.contains("METHOD:REQUEST"), "{invite}");
+            assert!(
+                invite.contains(&format!("UID:{}@myrefactor.com", created.id)),
+                "{invite}"
+            );
+            assert!(invite.contains("Carried topic"), "{invite}");
+            assert!(invite.contains(&goal_title), "{invite}");
+        }
+    })
+    .await;
+}
+
+/// A create the transaction refuses writes no email.
+#[tokio::test]
+async fn a_refused_create_writes_no_invite() {
+    within_time_limit(async {
+        let (db, seeded) = seeded_with(Members::Both).await;
+        let (_server, config) = tiptap().await;
+
+        crate::coaching_session::create(
+            &db,
+            &config,
+            &EventPublisher::new(),
+            coaching_sessions::Model {
+                id: Id::new_v4(),
+                date: seeded.session.date + TimeDelta::days(1),
+                title: Some("x".repeat(1_000)),
+                ..seeded.session.clone()
+            },
+            seeded.coach.id,
+            None,
+        )
+        .await
+        .expect_err("the title is too long");
+
+        assert!(outbox(&db).await.is_empty());
     })
     .await;
 }

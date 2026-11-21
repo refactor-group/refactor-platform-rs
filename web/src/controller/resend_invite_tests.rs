@@ -283,21 +283,19 @@ impl Fixture {
         self.session_sent_to(session, &self.both())
     }
 
-    /// Up to the send: the membership check, the bump, the parties, then the topics,
-    /// goals and open actions the description lists.
+    /// Up to the send: the membership check, the parties, the topics, goals and open
+    /// actions the description lists, then the bump.
     fn session_sent_to(&self, session: &Session, members: &[Id]) -> Call {
         let bumped = Session {
             ical_sequence: session.ical_sequence + 1,
             ..session.clone()
         };
         self.session_loaded(session).then(|db| {
-            self.parties(
-                self.membership(db, members)
-                    .append_query_results([vec![bumped]]),
-            )
-            .append_query_results::<coaching_session_topics::Model, _, _>([vec![]])
-            .append_query_results::<goals::Model, _, _>([vec![]])
-            .append_query_results::<actions::Model, _, _>([vec![]])
+            self.parties(self.membership(db, members))
+                .append_query_results::<coaching_session_topics::Model, _, _>([vec![]])
+                .append_query_results::<goals::Model, _, _>([vec![]])
+                .append_query_results::<actions::Model, _, _>([vec![]])
+                .append_query_results([vec![bumped]])
         })
     }
 }
@@ -387,7 +385,6 @@ async fn resend(call: Call, mail: Mail) -> Outcome {
     let config = Config::from_args([
         "test",
         "--resend-api-key=test_api_key_123",
-        "--session-scheduled-email-template-id=session_template",
         "--recurring-sessions-scheduled-email-template-id=series_template",
         "--frontend-base-url=https://app.example.com",
         &format!("--resend-base-url={}", server.url()),

@@ -2,12 +2,15 @@ use crate::coaching_relationships;
 use crate::coaching_sessions::Model;
 use crate::error::Error;
 use crate::events::DomainEvent;
-use crate::Id;
+use crate::topic_status::Status;
+use crate::{coaching_session_topics, goals, Id};
+use chrono::NaiveDateTime;
 use entity_api::coaching_session;
 use entity_api::coaching_session_goal;
 use entity_api::coaching_session_topic;
+use entity_api::goal;
 use log::*;
-use sea_orm::DatabaseTransaction;
+use sea_orm::{ConnectionTrait, DatabaseTransaction};
 
 /// Context handed to each hydration task. Tasks do their DB writes on `txn` (so
 /// they commit atomically with the session row) and return the `DomainEvent`s to
@@ -60,6 +63,40 @@ pub(crate) async fn run_coaching_session_hydration_tasks(
         events.extend(produced);
     }
     Ok(events)
+}
+
+/// What hydrating a new session carries into it, read without writing anything.
+pub(crate) struct CarriedForward {
+    /// The relationship's in-progress goals, capped as linking caps them.
+    pub goals: Vec<goals::Model>,
+    /// The prior session's Deferred topics, in their order.
+    pub topics: Vec<coaching_session_topics::Model>,
+}
+
+/// What [`GoalsCarryForwardTask`] and [`TopicsMoveForwardTask`] will carry into a new session
+/// of `coaching_relationship_id` at `date`, by the same reads, so its invite can list them
+/// before they run.
+pub(crate) async fn carried_forward(
+    db: &impl ConnectionTrait,
+    coaching_relationship_id: Id,
+    date: NaiveDateTime,
+) -> Result<CarriedForward, Error> {
+    let goals =
+        goal::find_in_progress_goals_by_coaching_relationship_id(db, coaching_relationship_id)
+            .await?
+            .into_iter()
+            .take(goal::max_in_progress_goals())
+            .collect();
+    let topics =
+        match coaching_session::find_prior_session(db, coaching_relationship_id, date).await? {
+            Some(prior) => coaching_session_topic::find_by_coaching_session_id(db, prior.id)
+                .await?
+                .into_iter()
+                .filter(|topic| topic.status == Status::Deferred)
+                .collect(),
+            None => Vec::new(),
+        };
+    Ok(CarriedForward { goals, topics })
 }
 
 /// Links the relationship's in-progress goals to the session and emits one

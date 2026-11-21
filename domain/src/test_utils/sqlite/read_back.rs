@@ -12,8 +12,9 @@ use entity::{
     actions, actions_users, agreements, audit_events, coaching_relationships,
     coaching_session_images, coaching_session_pending_invites, coaching_session_reminders,
     coaching_session_series, coaching_session_topics, coaching_session_views, coaching_sessions,
-    coaching_sessions_goals, goals, meeting_recording, oauth_connections, organizations,
-    transcript_analysis, transcript_segment, transcript_suggestion, user_roles, users, Id,
+    coaching_sessions_goals, email_outbox, goals, meeting_recording, oauth_connections,
+    organizations, transcript_analysis, transcript_segment, transcript_suggestion, user_roles,
+    users, Id,
 };
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
 use serde_json::Value;
@@ -28,6 +29,26 @@ pub struct AuditEntry {
     pub subject_type: String,
     pub subject_id: Id,
     pub details: Value,
+}
+
+/// The addressee of each email written to the outbox since the last call, sorted; the rows
+/// are removed as they are read.
+pub async fn take_outbox_addressees(db: &DatabaseConnection) -> Vec<String> {
+    let rows = email_outbox::Entity::find()
+        .all(db)
+        .await
+        .expect("the outbox reads");
+    email_outbox::Entity::delete_many()
+        .exec(db)
+        .await
+        .expect("the outbox clears");
+    let mut addressees: Vec<String> = rows
+        .into_iter()
+        .filter_map(|row| row.request)
+        .filter_map(|request| request["to"][0]["email"].as_str().map(String::from))
+        .collect();
+    addressees.sort();
+    addressees
 }
 
 /// Whether `user_id` holds any role in `organization_id`.

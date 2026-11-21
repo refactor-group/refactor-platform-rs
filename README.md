@@ -101,7 +101,6 @@ The platform uses Resend for transactional emails. To configure email functional
 1. **Environment Variables** (for Docker):
    - `RESEND_API_KEY`: Your Resend API key
    - `WELCOME_EMAIL_TEMPLATE_ID`: The template ID for welcome emails
-   - `SESSION_SCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for session-scheduled notification emails
    - `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for recurring-sessions-scheduled notification emails
    - `SESSION_RESCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for single-session reschedule notification emails
    - `RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for series reschedule notification emails
@@ -117,7 +116,6 @@ The platform uses Resend for transactional emails. To configure email functional
 2. **Command Line Arguments** (for direct execution):
    - `--resend-api-key`: Your Resend API key
    - `--welcome-email-template-id`: The template ID for welcome emails
-   - `--session-scheduled-email-template-id`: The template ID for session-scheduled emails
    - `--action-assigned-email-template-id`: The template ID for action-assigned emails
    - `--frontend-base-url`: Base URL for email links
 
@@ -126,7 +124,6 @@ Example:
 ```bash
 export RESEND_API_KEY="your-api-key"
 export WELCOME_EMAIL_TEMPLATE_ID="your-template-id"
-export SESSION_SCHEDULED_EMAIL_TEMPLATE_ID="your-template-id"
 export ACTION_ASSIGNED_EMAIL_TEMPLATE_ID="your-template-id"
 export FRONTEND_BASE_URL="https://myrefactor.com"
 ```
