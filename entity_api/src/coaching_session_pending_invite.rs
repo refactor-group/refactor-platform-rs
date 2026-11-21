@@ -151,10 +151,11 @@ pub async fn claim(
         .collect())
 }
 
-/// Drops a claimed row once its invite was sent or is no longer owed.
-pub async fn complete(db: &impl ConnectionTrait, claimed: &Claimed) -> Result<(), Error> {
-    Entity::delete_many().filter(held(claimed)).exec(db).await?;
-    Ok(())
+/// Drops a claimed row once its invite was sent or is no longer owed; returns whether the
+/// claim still held it.
+pub async fn complete(db: &impl ConnectionTrait, claimed: &Claimed) -> Result<bool, Error> {
+    let deleted = Entity::delete_many().filter(held(claimed)).exec(db).await?;
+    Ok(deleted.rows_affected > 0)
 }
 
 /// Hands back a claimed row the sweep did not attempt, charging it no attempt.

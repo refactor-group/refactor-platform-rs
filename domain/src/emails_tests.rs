@@ -260,7 +260,6 @@ fn create_full_config_with_mock(server_url: &str) -> Config {
         "test",
         "--resend-api-key=test_api_key_123",
         "--welcome-email-template-id=template_123",
-        "--session-scheduled-email-template-id=session_template_456",
         "--recurring-sessions-scheduled-email-template-id=recurring_template_xyz",
         "--session-rescheduled-email-template-id=session_reschedule_template_abc",
         "--recurring-sessions-rescheduled-email-template-id=series_reschedule_template_abc",
@@ -296,6 +295,45 @@ fn cancelled_envelopes(
         user::timezone(coach),
     )
     .expect("the cancellation builds")
+}
+
+/// A notice about sessions between `coach` and `coachee` that reaches both, as its loads
+/// would build it.
+fn test_notice(
+    coach: &users::Model,
+    coachee: &users::Model,
+    kind: coaching_relationship_kind::Kind,
+) -> SessionNotice {
+    SessionNotice {
+        brand: brand(),
+        page: SessionUrlBuilder {
+            base_url: "https://app.example.com".to_string(),
+            path_template: "/coaching-sessions/{session_id}".to_string(),
+        },
+        parties: InviteParties {
+            coach: coach.clone(),
+            coachee: coachee.clone(),
+            kind,
+            organization: create_test_organization(),
+        },
+        reach: vec![coach.id, coachee.id],
+        zone: user::timezone(coach),
+    }
+}
+
+/// Both participants' scheduled emails for `session`, which `coach` scheduled.
+fn scheduled_envelopes(
+    coach: &users::Model,
+    coachee: &users::Model,
+    kind: coaching_relationship_kind::Kind,
+    session: &coaching_sessions::Model,
+) -> Vec<Envelope> {
+    let notice = test_notice(coach, coachee, kind);
+    notice.envelopes(
+        session,
+        &Calendar::Invite(&Agenda::default()),
+        notice.scheduled_by(session, coach.id),
+    )
 }
 
 /// The one calendar part of `envelope`, which must carry `method`, decoded and unfolded.
@@ -833,113 +871,85 @@ fn test_build_session_invite_ics_bumped_sequence() {
     assert!(ics.contains(&format!("UID:{}@myrefactor.com", session.id)));
 }
 
-#[cfg(feature = "mock")]
-#[tokio::test]
-async fn test_send_session_scheduled_email_variables() {
-    let mut server = setup_test_server().await;
-    let config = create_full_config_with_mock(&server.url());
-
-    // Description loaders return empty sets; the `.ics` content is not asserted here.
-    let db = MockDatabase::new(DatabaseBackend::Postgres)
-        .append_query_results::<entity::coaching_session_topics::Model, _, _>(vec![vec![]])
-        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
-        .append_query_results::<entity::actions::Model, _, _>(vec![vec![]])
-        .into_connection();
-
-    // Coach and coachee in different timezones so a single body-match per
-    // recipient proves BOTH the role swap (coach <-> coachee) AND that each
-    // recipient's own timezone is used. Session is 2026-03-04 15:00 UTC:
-    //   - coachee (America/New_York, EST): 10:00 AM, Wed March 4
-    //   - coach   (Asia/Tokyo):            12:00 AM, Thu March 5 (date rolls)
+/// Each participant's scheduled email is addressed to them, names the other participant and
+/// shows the start in their own zone, with the invite attached.
+#[test]
+fn test_session_scheduled_envelopes() {
+    // Session is 2026-03-04 15:00 UTC: 10:00 AM Wed in New York, 12:00 AM Thu in Tokyo.
     let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "Asia/Tokyo");
     let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "America/New_York");
     let session = create_test_session();
-    let org = create_test_organization();
+    let url = format!("https://app.example.com/coaching-sessions/{}", session.id);
 
-    let session_url = format!("https://app.example.com/coaching-sessions/{}", session.id);
-
-    // Email to coachee — other_user is the coach, formatted in NY time.
-    let mock_coachee = server
-        .mock("POST", "/emails")
-        .match_body(expect_resend_body_with_ics(
-            serde_json::json!({
-                "from": FROM_ADDRESS,
-                "to": ["\"Jane Doe\" <jane@example.com>"],
-                "template": {
-                    "id": "session_template_456",
-                    "variables": {
-                        "first_name": "Jane",
-                        "other_user_first_name": "Alex",
-                        "other_user_last_name": "Smith",
-                        "other_user_role": "coach",
-                        "organization_name": "Acme Corp",
-                        "session_date": "Wednesday, March 4, 2026",
-                        "session_time": "10:00 AM",
-                        "session_duration": "1 hour",
-                        "session_url": session_url.clone(),
-                    }
-                }
-            }),
-            &ical::Method::Request,
-        ))
-        .with_status(200)
-        .with_body(r#"{"id":"email_test"}"#)
-        .expect(1)
-        .create_async()
-        .await;
-
-    // Email to coach — other_user is the coachee, formatted in Tokyo time
-    // (the session date rolls forward a day).
-    let mock_coach = server
-        .mock("POST", "/emails")
-        .match_body(expect_resend_body_with_ics(
-            serde_json::json!({
-                "from": FROM_ADDRESS,
-                "to": ["\"Alex Smith\" <alex@example.com>"],
-                "template": {
-                    "id": "session_template_456",
-                    "variables": {
-                        "first_name": "Alex",
-                        "other_user_first_name": "Jane",
-                        "other_user_last_name": "Doe",
-                        "other_user_role": "coachee",
-                        "organization_name": "Acme Corp",
-                        "session_date": "Thursday, March 5, 2026",
-                        "session_time": "12:00 AM",
-                        "session_duration": "1 hour",
-                        "session_url": session_url.clone(),
-                    }
-                }
-            }),
-            &ical::Method::Request,
-        ))
-        .with_status(200)
-        .with_body(r#"{"id":"email_test"}"#)
-        .expect(1)
-        .create_async()
-        .await;
-
-    let result = send_session_scheduled_email(
-        &db,
-        &config,
-        &Audience {
-            participants: &Participants {
-                coach: &coach,
-                coachee: &coachee,
-                kind: coaching_relationship_kind::Kind::Coaching,
-            },
-            member_ids: &[coach.id, coachee.id],
-        },
+    let envelopes = scheduled_envelopes(
+        &coach,
+        &coachee,
+        coaching_relationship_kind::Kind::Coaching,
         &session,
-        &org,
-    )
-    .await;
-    assert!(result.is_ok());
+    );
 
-    // Sends are best-effort (errors are swallowed), so assert the mocks
-    // matched to prove the attachment-bearing bodies actually went out.
-    mock_coachee.assert_async().await;
-    mock_coach.assert_async().await;
+    let [to_coachee, to_coach] = envelopes.as_slice() else {
+        panic!("one email per participant: {envelopes:?}");
+    };
+    for (envelope, reader, other, when, by) in [
+        (
+            to_coachee,
+            &coachee,
+            "Alex Smith scheduled a coaching session with you.",
+            "When: Wednesday, March 4, 2026 at 10:00 AM",
+            Actor::Other,
+        ),
+        (
+            to_coach,
+            &coach,
+            "You scheduled a coaching session with Jane Doe.",
+            "When: Thursday, March 5, 2026 at 12:00 AM",
+            Actor::You,
+        ),
+    ] {
+        assert_eq!(envelope.kind, "session_scheduled");
+        assert_eq!(envelope.recipient_id, reader.id);
+        assert_eq!(
+            envelope.subject,
+            Subject::CoachingRelationship(session.coaching_relationship_id)
+        );
+        assert_eq!(envelope.email.to[0].email, reader.email);
+        let text = &envelope.email.text;
+        assert!(text.contains(other), "{by:?}: {text}");
+        assert!(text.contains(when), "{text}");
+        assert!(text.contains("Length: 1 hour"), "{text}");
+        assert!(text.contains(&url), "{text}");
+        let invite = calendar_part(envelope, "REQUEST");
+        assert!(invite.contains("METHOD:REQUEST"), "{invite}");
+        assert!(
+            invite.contains(&format!("UID:{}@myrefactor.com", session.id)),
+            "{invite}"
+        );
+    }
+}
+
+/// The invite's DESCRIPTION lists the agenda it is given.
+#[test]
+fn test_session_scheduled_invite_lists_its_agenda() {
+    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
+    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
+    let session = create_test_session();
+    let notice = test_notice(&coach, &coachee, coaching_relationship_kind::Kind::Coaching);
+    let agenda = Agenda {
+        topics: vec!["Carried topic".to_string()],
+        goal_titles: vec!["Carried goal".to_string()],
+        open_actions: Vec::new(),
+    };
+
+    let envelopes = notice.envelopes(
+        &session,
+        &Calendar::Invite(&agenda),
+        notice.scheduled_by(&session, coach.id),
+    );
+
+    let invite = calendar_part(&envelopes[0], "REQUEST");
+    assert!(invite.contains("Carried topic"), "{invite}");
+    assert!(invite.contains("Carried goal"), "{invite}");
 }
 
 #[cfg(feature = "mock")]
@@ -1297,68 +1307,6 @@ async fn test_send_session_rescheduled_email_moved_start_is_not_unchanged() {
         &session,
         &org,
         previous_start,
-    )
-    .await;
-    assert!(result.is_ok());
-
-    mock.assert_async().await;
-}
-
-/// T5: the scheduled path keeps its existing variables and carries neither
-/// `when` variable, whose template does not declare them.
-#[cfg(feature = "mock")]
-#[tokio::test]
-async fn test_send_session_scheduled_email_omits_when_variables() {
-    let mut server = setup_test_server().await;
-    let config = create_full_config_with_mock(&server.url());
-    let db = mock_description_loaders();
-
-    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
-    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-    let session = create_test_session();
-    let org = create_test_organization();
-    let session_url = format!("https://app.example.com/coaching-sessions/{}", session.id);
-
-    let mock = server
-        .mock("POST", "/emails")
-        .match_body(expect_resend_body_with_ics(
-            serde_json::json!({
-                "template": {
-                    "id": "session_template_456",
-                    "variables": {
-                        "organization_name": "Acme Corp",
-                        "session_date": "Wednesday, March 4, 2026",
-                        "session_time": "3:00 PM",
-                        "session_duration": "1 hour",
-                        "session_url": session_url,
-                    }
-                }
-            }),
-            &ical::Method::Request,
-        ))
-        .match_request(reject_template_variables(&[
-            "session_when",
-            "previous_session_when",
-        ]))
-        .with_status(200)
-        .with_body(r#"{"id":"email_test"}"#)
-        .expect(2)
-        .create_async()
-        .await;
-
-    let result = send_session_scheduled_email(
-        &db,
-        &config,
-        &Audience {
-            participants: &Participants {
-                coach: &coach,
-                coachee: &coachee,
-                kind: coaching_relationship_kind::Kind::Coaching,
-            },
-            member_ids: &[coach.id, coachee.id],
-        },
-        &session,
-        &org,
     )
     .await;
     assert!(result.is_ok());
@@ -1867,7 +1815,7 @@ fn test_cancelling_a_legacy_series_member_addresses_it_by_its_own_uid() {
     );
 }
 
-/// The scheduled and rescheduled sends, for a series member with no `ical_recurrence_id`.
+/// The scheduled and rescheduled emails, for a series member with no `ical_recurrence_id`.
 /// Both must attach a self-contained invite rather than an occurrence override. These
 /// exist because the transaction-log tests below only prove the notify entry points stopped
 /// short-circuiting; they do not prove what actually leaves in the attachment.
@@ -1886,32 +1834,32 @@ async fn test_scheduling_and_rescheduling_a_legacy_series_member_send_standalone
     session.coaching_session_series_id = Some(Id::new_v4());
     session.ical_recurrence_id = None;
 
-    // Two sends per flow, four in total, each carrying a self-contained invite.
+    for envelope in scheduled_envelopes(
+        &coach,
+        &coachee,
+        coaching_relationship_kind::Kind::Coaching,
+        &session,
+    ) {
+        let invite = calendar_part(&envelope, "REQUEST");
+        assert!(
+            invite.contains(&format!("UID:{}@myrefactor.com", session.id)),
+            "a legacy member is scheduled under its own UID: {invite}"
+        );
+        assert!(
+            !vevent(&invite).contains("RECURRENCE-ID"),
+            "a self-contained event overrides no occurrence: {invite}"
+        );
+    }
+
+    // Two sends, each carrying a self-contained invite.
     let mock = server
         .mock("POST", "/emails")
         .match_request(capture.recorder())
         .with_status(200)
         .with_body(r#"{"id":"email_test"}"#)
-        .expect(4)
+        .expect(2)
         .create_async()
         .await;
-
-    let scheduled = send_session_scheduled_email(
-        &mock_description_loaders(),
-        &config,
-        &Audience {
-            participants: &Participants {
-                coach: &coach,
-                coachee: &coachee,
-                kind: coaching_relationship_kind::Kind::Coaching,
-            },
-            member_ids: &[coach.id, coachee.id],
-        },
-        &session,
-        &org,
-    )
-    .await;
-    assert!(scheduled.is_ok());
 
     let rescheduled = send_session_rescheduled_email(
         &mock_description_loaders(),
@@ -1972,7 +1920,7 @@ async fn test_session_cancelled_no_longer_short_circuits_a_legacy_series_member(
 
     let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
 
-    let notice = CancellationNotice::load(&db, &config, &session).await;
+    let notice = SessionNotice::cancellation(&db, &config, &session).await;
 
     assert!(notice.is_none(), "the mock answers no lookup");
 
@@ -1983,11 +1931,10 @@ async fn test_session_cancelled_no_longer_short_circuits_a_legacy_series_member(
     );
 }
 
-/// The same regression on the other two entry points. All three shared the early return,
-/// so all three need the guard against it coming back.
+/// The same regression on the rescheduled entry point, which shared the early return.
 #[cfg(feature = "mock")]
 #[tokio::test]
-async fn test_scheduled_and_rescheduled_no_longer_short_circuit_a_legacy_series_member() {
+async fn test_rescheduled_no_longer_short_circuits_a_legacy_series_member() {
     let server = setup_test_server().await;
     let config = create_full_config_with_mock(&server.url());
 
@@ -1995,21 +1942,6 @@ async fn test_scheduled_and_rescheduled_no_longer_short_circuit_a_legacy_series_
     session.coaching_session_series_id = Some(Id::new_v4());
     session.ical_recurrence_id = None;
     session.date = chrono::Utc::now().naive_utc() + chrono::Duration::days(7);
-
-    let scheduled_db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-    notify_session_scheduled(
-        &scheduled_db,
-        &config,
-        &session,
-        &test_relationship(),
-        &create_test_organization(),
-        &[],
-    )
-    .await;
-    assert!(
-        !scheduled_db.into_transaction_log().is_empty(),
-        "scheduled must not skip a legacy series member"
-    );
 
     let rescheduled_db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
     let _ = send_session_rescheduled(&rescheduled_db, &config, &session, session.date).await;
@@ -2223,49 +2155,24 @@ async fn test_a_failed_email_load_still_deletes_without_emails() {
     );
 }
 
+/// Without a frontend to link to no email composes, so a scheduled notice reads nothing.
 #[cfg(feature = "mock")]
 #[tokio::test]
-async fn test_send_session_scheduled_email_missing_template_id() {
-    // Config has an API key and frontend base URL but no session-scheduled
-    // template id — mirrors the welcome/action missing-template-id tests.
-    // Fails at config resolution, before any loader query runs.
+async fn test_a_scheduled_notice_without_a_frontend_reads_nothing() {
     let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-    let server = setup_test_server().await;
-    let config = Config::from_args([
-        "test",
-        "--resend-api-key=test_api_key_123",
-        &format!("--resend-base-url={}", server.url()),
-        "--frontend-base-url=https://app.example.com",
-    ]);
 
-    let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
-    let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
-    let session = create_test_session();
-    let org = create_test_organization();
-
-    let result = send_session_scheduled_email(
+    let notice = SessionNotice::scheduled(
         &db,
-        &config,
-        &Audience {
-            participants: &Participants {
-                coach: &coach,
-                coachee: &coachee,
-                kind: coaching_relationship_kind::Kind::Coaching,
-            },
-            member_ids: &[coach.id, coachee.id],
-        },
-        &session,
-        &org,
+        &Config::from_args(["test"]),
+        &test_relationship(),
+        &create_test_organization(),
+        &[],
+        &create_test_session(),
     )
     .await;
 
-    assert!(result.is_err());
-    if let Err(e) = result {
-        match e.error_kind {
-            DomainErrorKind::Internal(InternalErrorKind::Config) => {}
-            _ => panic!("Expected Config error, got: {:?}", e.error_kind),
-        }
-    }
+    assert!(notice.is_none());
+    assert!(db.into_transaction_log().is_empty());
 }
 
 // ── Action Assigned Email Tests ────────────────────────────────────
@@ -4888,53 +4795,31 @@ fn colleagues() -> (users::Model, users::Model) {
     )
 }
 
-/// MAIL-01 for colleagues: each scheduled email names the other a colleague, and the shared
-/// invite names them both.
-#[cfg(feature = "mock")]
-#[tokio::test]
-async fn each_colleagues_scheduled_email_names_the_other_a_colleague() {
-    let mut server = setup_test_server().await;
-    let config = create_full_config_with_mock(&server.url());
+/// MAIL-01 for colleagues: each scheduled email is addressed to one colleague and names the
+/// other, and the shared invite names them both.
+#[test]
+fn each_colleagues_scheduled_email_names_the_other() {
     let (alex, jane) = colleagues();
-    let capture = IcsCapture::default();
-    let to_alex = colleague_named_in(&mut server, "session_template_456", &alex, &jane).await;
-    let to_jane = server
-        .mock("POST", "/emails")
-        .match_body(mockito::Matcher::PartialJson(serde_json::json!({
-            "to": ["\"Jane Doe\" <jane@example.com>"],
-            "template": { "variables": {
-                "other_user_first_name": "Alex",
-                "other_user_role": "colleague",
-            }}
-        })))
-        .match_request(capture.recorder())
-        .with_status(200)
-        .with_body(r#"{"id":"email_test"}"#)
-        .expect(1)
-        .create_async()
-        .await;
 
-    send_session_scheduled_email(
-        &mock_description_loaders(),
-        &config,
-        &Audience {
-            participants: &Participants {
-                coach: &alex,
-                coachee: &jane,
-                kind: coaching_relationship_kind::Kind::Colleague,
-            },
-            member_ids: &[alex.id, jane.id],
-        },
+    let envelopes = scheduled_envelopes(
+        &alex,
+        &jane,
+        coaching_relationship_kind::Kind::Colleague,
         &create_test_session(),
-        &create_test_organization(),
-    )
-    .await
-    .expect("the scheduled emails send");
+    );
 
-    to_alex.assert_async().await;
-    to_jane.assert_async().await;
-    let vevent = capture.vevent();
-    let description = vevent
+    let [to_jane, to_alex] = envelopes.as_slice() else {
+        panic!("one email per colleague: {envelopes:?}");
+    };
+    assert_eq!(to_jane.email.to[0].email, jane.email);
+    assert!(to_jane
+        .email
+        .text
+        .contains("Alex Smith scheduled a session with you."));
+    assert_eq!(to_alex.email.to[0].email, alex.email);
+    assert!(to_alex.email.text.contains("With: Jane Doe"));
+    let invite = calendar_part(to_jane, "REQUEST");
+    let description = vevent(&invite)
         .lines()
         .find(|line| line.starts_with("DESCRIPTION:"))
         .expect("the invite carries a DESCRIPTION");
@@ -5047,35 +4932,21 @@ async fn session_label_mock(server: &mut ServerGuard, label: &str, plural: &str)
 }
 
 /// KIND-47: a session scheduled email names the session by its relationship's kind.
-#[cfg(feature = "mock")]
-#[tokio::test]
-async fn scheduled_emails_carry_the_kinds_session_label() {
-    let mut server = setup_test_server().await;
-    let config = create_full_config_with_mock(&server.url());
-    let mocks = session_label_mocks(&mut server).await;
+#[test]
+fn scheduled_emails_carry_the_kinds_session_label() {
     let (alex, jane) = colleagues();
 
-    for (kind, _, _) in SESSION_LABELS {
-        send_session_scheduled_email(
-            &mock_description_loaders(),
-            &config,
-            &Audience {
-                participants: &Participants {
-                    coach: &alex,
-                    coachee: &jane,
-                    kind,
-                },
-                member_ids: &[alex.id, jane.id],
-            },
-            &create_test_session(),
-            &create_test_organization(),
-        )
-        .await
-        .expect("the scheduled emails send");
-    }
-
-    for mock in mocks {
-        mock.assert_async().await;
+    for (kind, label, _) in SESSION_LABELS {
+        for envelope in scheduled_envelopes(&alex, &jane, kind, &create_test_session()) {
+            assert!(
+                envelope
+                    .email
+                    .text
+                    .contains(&format!("scheduled a {label} with")),
+                "{kind:?}: {}",
+                envelope.email.text
+            );
+        }
     }
 }
 
@@ -5494,10 +5365,12 @@ async fn occurrence_cancel_uses_the_stored_series_zone() {
         .append_query_results(vec![vec![series]])
         .into_connection();
 
-    let envelopes = CancellationNotice::load(&db, &config, &session)
+    let envelopes = SessionNotice::cancellation(&db, &config, &session)
         .await
         .expect("the cancellation loads")
-        .envelopes(&session, Cancellation::By(coach.id));
+        .envelopes(&session, &Calendar::Cancel, |copy| {
+            copy.cancelled(Cancellation::By(coach.id))
+        });
 
     let local = Utc
         .from_utc_datetime(&slot)

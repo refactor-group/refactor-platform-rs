@@ -102,8 +102,21 @@ design system should be mirrored there.
 4. Remove the sender's Resend template path and its `*_TEMPLATE_ID` from the config and
    every passthrough layer.
 
-The single-session cancellation follows this: the session delete loads a
-`CancellationNotice` first, then writes both participants' emails inside its transaction.
+The single-session emails follow this through one `SessionNotice`, which loads the brand,
+the parties, who may be reached and the invite's zone before the transaction, then renders
+and writes each reachable participant's email inside it. An invite's `.ics` DESCRIPTION
+lists the topics, goals and actions of an `Agenda` given when it is written:
+
+- **Cancelled**: the session delete writes both participants' emails in its transaction.
+- **Scheduled**: the session create writes both members' emails last in its transaction,
+  after the hydration tasks. Its DESCRIPTION lists the goals and topics those tasks
+  returned, so the invite names exactly what the create commits.
+- **Owed invites**: the pending reschedule sweep writes one participant's scheduled email
+  in a transaction that bumps the session's `SEQUENCE` and settles the owed row. Without
+  `FRONTEND_BASE_URL` the row is settled unsent.
+- **Resent invites**: `POST /coaching_sessions/{id}/resend_invite` renders the same email
+  and hands it to the `Mailer` at once, so it can still answer whether it was delivered.
+  With no email provider it answers 502 without bumping `SEQUENCE`.
 Production refuses to start without `FRONTEND_BASE_URL`, next to the email provider check. The standalone-event cancellations that series edits owe
 still follow the series emails, which send after their own transaction, so they are
 enqueued in a transaction of their own right after it until the series emails move.

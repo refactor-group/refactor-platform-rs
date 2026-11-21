@@ -1,6 +1,6 @@
 # Email Notifications Architecture
 
-Transactional emails are sent via [Resend](https://resend.com/). Most still use Resend-hosted templates filled with variables; the single-session cancellation is composed in the backend from in-repo templates and written to the [email outbox](email_outbox.md) in the transaction that deletes the session (see [Email composition](email_composition.md)). The rest move the same way, one sender at a time. The backend handles all email logic; the frontend has no involvement.
+Transactional emails are sent via [Resend](https://resend.com/). Most still use Resend-hosted templates filled with variables. The single-session emails that carry an invite or a cancellation are composed in the backend from in-repo templates (see [Email composition](email_composition.md)): the session-scheduled email is written to the [email outbox](email_outbox.md) in the transaction that creates the session, and the cancellation in the one that deletes it. The rest move the same way, one sender at a time. The backend handles all email logic; the frontend has no involvement.
 
 ## Notification Types
 
@@ -25,13 +25,11 @@ All email logic lives in `domain/src/emails.rs`, organized into two tiers:
 ```mermaid
 flowchart TD
     subgraph web["Controllers"]
-        CC["coaching_session_controller::create()"]
         AC["action_controller::create() / update()"]
         UC["user_controller::create()"]
     end
 
     subgraph domain["domain/src/emails.rs"]
-        NS["notify_session_scheduled()"]
         NA["notify_action_assigned()"]
         NW["notify_welcome_email()"]
     end
@@ -44,19 +42,19 @@ flowchart TD
         MS["tokio::spawn — fire-and-forget"]
     end
 
-    CC -->|best-effort| NS
     AC -->|best-effort| NA
     UC --> NW
 
-    NS & NA --> EF
-    NS & NA & NW --> MS
+    NA --> EF
+    NA & NW --> MS
 ```
 
 ## Error Handling
 
 All email sending is **best-effort** — failures never block the primary operation.
 
-- **Session scheduled / action assigned**: Controllers use `if let Err(e) = ... { warn!(...) }`
+- **Session scheduled**: Its reads run before the create's transaction; a failed read or render is logged and costs only the email. Only the outbox write can fail the create.
+- **Action assigned**: Controllers use `if let Err(e) = ... { warn!(...) }`
 - **Welcome email**: Uses `?` propagation for config errors (missing API key/template ID is a deployment issue worth surfacing). HTTP delivery is still fire-and-forget via `tokio::spawn()`.
 
 ## EmailNotification Trait
@@ -65,7 +63,6 @@ Encapsulates config resolution so `send_*` functions don't leak config details t
 
 | Implementor | Env Var |
 |---|---|
-| `SessionScheduled` | `SESSION_SCHEDULED_EMAIL_TEMPLATE_ID` |
 | `RecurringSessionsScheduled` | `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID` |
 | `SessionRescheduled` | `SESSION_RESCHEDULED_EMAIL_TEMPLATE_ID` |
 | `RecurringSessionsRescheduled` | `RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID` |
@@ -181,7 +178,8 @@ unannounced change, or as soon as the session starts within that cap.
   since a pending row suppresses the session's reminder.
 
 Every other session email stays immediate: creation, this-and-following edits, series
-edits, cancellations, and resends. Once one of those reaches the coachee, the pending
+edits, cancellations, and resends. Creation and cancellation write theirs to the outbox
+in the same transaction. Once one of those reaches the coachee, the pending
 reschedule is settled against the schedule that was sent, under the session's row lock:
 it is dropped if the session still matches, otherwise the newer change stays pending,
 now from what was sent.
@@ -195,14 +193,27 @@ row per invite (a series member's is its series', any other session's its own) a
 participant; a second switch before the sweep owes nothing more (one row per target and
 user). A switch landing while the sweep is sending a row releases that row's claim, so the
 earlier send's completion leaves it owed and the newer text goes out too. The pending
-reschedule sweep sends each row to that participant alone, through the same resend as
-`POST .../resend_invite` (same `UID`, higher `SEQUENCE`), and deletes it once delivered. It
-claims at most 10 rows a tick, and a failed send hands the rest of the tick's rows back
-uncharged, so a large switch drains over several ticks rather than bursting Resend. A
-participant who has left the organization, a session that has passed, and a series with
-nothing left to attend are owed nothing; a failed read is retried, not taken for any of
-those. A failed send is retried up to three times. Without `RESEND_API_KEY`, or without the
-row's own template (session or recurring sessions scheduled), the row is dropped unsent.
+reschedule sweep owes each row to that participant alone, under the same `UID` and a higher
+`SEQUENCE`. A session's invite is the composed session-scheduled email, written to the
+outbox in one transaction that bumps the session's `SEQUENCE` (taking its row lock first),
+writes the email and deletes the row; a row another sweep has since claimed writes nothing.
+A series' invite is sent through its Resend template, as `POST .../resend_invite` sends it,
+and the row is deleted once delivered. The sweep claims at most 10 rows a tick, and a failed
+series send hands the rest of the tick's rows back uncharged, so a large switch drains over
+several ticks rather than bursting Resend. A participant who has left the organization, a
+session that has passed, and a series with nothing left to attend are owed nothing; a failed
+read or write is retried, not taken for any of those, up to three times. Without
+`RESEND_API_KEY` or `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID`, a series row is dropped
+unsent.
+
+### Resending a session's invite
+
+`POST /coaching_sessions/{id}/resend_invite` bumps the session's `SEQUENCE` and hands the
+composed session-scheduled email to the email provider at once, rather than through the
+outbox, so it can answer whether the invite was delivered: 204 once everyone but the
+schedule owner has it, 502 otherwise. Each copy is sent under the idempotency key
+`session-invite-resend/{session_id}/{ical_sequence}/{recipient_id}`. Without a provider
+the resend is a 502.
 
 ## Timezone Handling
 
@@ -214,7 +225,6 @@ Session dates are stored as UTC. The `format_session_date_time()` helper convert
 |---|---|
 | `RESEND_API_KEY` | API authentication |
 | `WELCOME_EMAIL_TEMPLATE_ID` | Welcome email template |
-| `SESSION_SCHEDULED_EMAIL_TEMPLATE_ID` | Session scheduled template |
 | `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID` | Recurring Sessions scheduled template |
 | `SESSION_RESCHEDULED_EMAIL_TEMPLATE_ID` | Single-session reschedule template |
 | `RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID` | Series reschedule template |
