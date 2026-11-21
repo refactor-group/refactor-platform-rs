@@ -12,10 +12,9 @@ use crate::coaching_session_hydration::{
 };
 use crate::coaching_session_image;
 use crate::coaching_sessions::Model;
-use crate::emails::{self, Cancellation, SessionNotice};
+use crate::emails::{self, Agenda, Calendar, Cancellation, SessionNotice};
 use crate::error::{reason, DomainErrorKind, Error, ExternalErrorKind, InternalErrorKind};
 use crate::events::{DomainEvent, EventPublisher};
-use crate::gateway::ical::Method;
 use crate::gateway::mailer;
 use crate::gateway::tiptap::TiptapDocument;
 use crate::meeting_provider::{MeetingProperties, Provider};
@@ -179,6 +178,7 @@ pub(crate) async fn create(
         db,
         config,
         &coaching_relationship,
+        &organization,
         &member_ids,
         &coaching_session_model,
     )
@@ -213,16 +213,17 @@ pub(crate) async fn create(
             relationship: &coaching_relationship,
             member_ids: &member_ids,
         };
-        let events = run_coaching_session_hydration_tasks(&ctx).await?;
+        let hydrated = run_coaching_session_hydration_tasks(&ctx).await?;
         if let Some(notice) = &notice {
+            let agenda = Agenda::carried(&hydrated);
             let scheduled = notice.scheduled_by(&session, acting_user_id);
             notice
-                .enqueue(&txn, &session, &Method::Request, scheduled)
+                .enqueue(&txn, &session, &Calendar::Invite(&agenda), scheduled)
                 .await?;
         }
 
         txn.commit().await.map_err(entity_api::error::Error::from)?;
-        Ok((session, events))
+        Ok((session, hydrated.events))
     }
     .await;
 
@@ -415,7 +416,7 @@ pub async fn ensure_hydrated(
             relationship: &coaching_relationship,
             member_ids: &member_ids,
         };
-        let events = run_coaching_session_hydration_tasks(&ctx).await?;
+        let events = run_coaching_session_hydration_tasks(&ctx).await?.events;
 
         let updated = coaching_session::mark_hydrated(&txn, &session).await?;
         txn.commit().await.map_err(entity_api::error::Error::from)?;
@@ -750,14 +751,14 @@ pub(crate) async fn enqueue_owed_invite(
     claimed: &coaching_session_pending_invite::Claimed,
 ) -> Result<(), Error> {
     // Loaded outside the transaction, which then only locks, renders and writes.
-    let notice = owed_invite(db, config, id, claimed.user_id).await?;
+    let owed = owed_invite(db, config, id, claimed.user_id).await?;
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
-    if let Some(notice) = &notice {
+    if let Some((notice, agenda)) = &owed {
         // The bump takes the session's row lock before the outbox takes its conversation's.
         let bumped = coaching_session::increment_ical_sequence(&txn, id).await?;
         let scheduled = notice.scheduled_by(&bumped, bumped.scheduled_by_user_id);
         notice
-            .enqueue(&txn, &bumped, &Method::Request, scheduled)
+            .enqueue(&txn, &bumped, &Calendar::Invite(agenda), scheduled)
             .await?;
     }
     match coaching_session_pending_invite::complete(&txn, claimed).await? {
@@ -768,13 +769,14 @@ pub(crate) async fn enqueue_owed_invite(
     Ok(())
 }
 
-/// What session `id`'s own invite owed to `user_id` names, or `None` when none is owed.
+/// What session `id`'s own invite owed to `user_id` names and lists, or `None` when none is
+/// owed.
 async fn owed_invite(
     db: &DatabaseConnection,
     config: &Config,
     id: Id,
     user_id: Id,
-) -> Result<Option<SessionNotice>, Error> {
+) -> Result<Option<(SessionNotice, Agenda)>, Error> {
     let session = find_by_id(db, id).await?;
     if ensure_own_invite_upcoming(&session).is_err() {
         return Ok(None);
@@ -811,7 +813,8 @@ fn ensure_own_invite_upcoming(session: &Model) -> Result<(), Error> {
 }
 
 /// Bumps the session's SEQUENCE and hands its invite to the email provider now for those of
-/// `member_ids` who take part, reporting what each participant got.
+/// `member_ids` who take part, reporting what each participant got. Without a provider
+/// nothing is bumped and nobody is reached.
 async fn send_invite_again(
     db: &DatabaseConnection,
     config: &Config,
@@ -819,26 +822,27 @@ async fn send_invite_again(
     relationship: &coaching_relationships::Model,
     member_ids: &[Id],
 ) -> Result<(Model, emails::Delivered), Error> {
-    let notice =
-        SessionNotice::invite(db, config, relationship, member_ids.to_vec(), session).await?;
-    let mailer = mailer::from_config(config)
+    let Some(mailer) = mailer::from_config(config)
         .await
         .inspect_err(|e| warn!("The email provider failed to build: {e:?}"))
         .ok()
-        .flatten();
-    if mailer.is_none() {
+        .flatten()
+    else {
         warn!(
             "No email provider is configured, so session {} cannot be resent",
             session.id
         );
-    }
+        return Ok((session.clone(), emails::Delivered::default()));
+    };
+    let (notice, agenda) =
+        SessionNotice::invite(db, config, relationship, member_ids.to_vec(), session).await?;
     // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
     let bumped = coaching_session::increment_ical_sequence(db, session.id).await?;
     let delivered = notice
         .deliver_now(
-            mailer.as_deref(),
+            mailer.as_ref(),
             &bumped,
-            &Method::Request,
+            &Calendar::Invite(&agenda),
             |recipient_id| emails::invite_resend_key(&bumped, recipient_id),
             notice.scheduled_by(&bumped, bumped.scheduled_by_user_id),
         )
@@ -1395,6 +1399,50 @@ mod tests {
         }
     }
 
+    /// With no email provider a resend is not delivered, and neither bumps the SEQUENCE nor
+    /// loads the invite.
+    #[tokio::test]
+    async fn a_resend_without_an_email_provider_bumps_nothing() {
+        let organization = test_organization();
+        let coach = test_user_with_email("coach@example.com");
+        let coachee = test_user_with_email("coachee@example.com");
+        let relationship = coaching_relationships::Model {
+            coachee_id: coachee.id,
+            ..test_coaching_relationship(coach.id, organization.id)
+        };
+        let session = coaching_sessions::Model {
+            date: chrono::Utc::now().naive_utc() + chrono::Duration::days(7),
+            ..test_session(relationship.id, None)
+        };
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results(vec![vec![session.clone()]])
+            .append_query_results(vec![vec![relationship.clone()]])
+            .append_query_results(vec![both_participants_are_members(&relationship)])
+            .into_connection();
+
+        let err = resend_invite(
+            &db,
+            &Config::from_args(["test", "--frontend-base-url=https://app.example.com"]),
+            session.id,
+        )
+        .await
+        .expect_err("nothing is delivered");
+
+        assert!(
+            matches!(
+                err.error_kind,
+                DomainErrorKind::External(ExternalErrorKind::Network)
+            ),
+            "{err:?}"
+        );
+        let log = db.into_transaction_log();
+        assert_eq!(
+            log.len(),
+            3,
+            "only the session and its members are read: {log:?}"
+        );
+    }
+
     /// Test-only IntoUpdateMap wrapper (the web layer's TitleUpdateParams implements this).
     #[derive(Debug)]
     struct TestParams(mutate::UpdateMap);
@@ -1882,9 +1930,6 @@ mod tests {
             };
             db.append_query_results(vec![vec![user(relationship.coach_id)]])
                 .append_query_results(vec![vec![user(relationship.coachee_id)]])
-                .append_query_results(vec![vec![test_organization()]])
-                .append_query_results(vec![Vec::<goals::Model>::new()])
-                .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
         })
         .await;
 
@@ -1898,6 +1943,12 @@ mod tests {
         assert!(
             enqueued.is_some() && enqueued > hydrated,
             "the outbox write follows hydration: {create_txn:?}"
+        );
+        assert!(
+            create_txn[hydrated.map_or(0, |at| at + 1)..enqueued.unwrap_or_default()]
+                .iter()
+                .all(|q| q.contains("pg_advisory_xact_lock")),
+            "the invite reads nothing after hydration: {create_txn:?}"
         );
         assert_eq!(
             enqueued.map(|at| &create_txn[at + 1..]),
@@ -2081,12 +2132,9 @@ mod tests {
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![vec![org.clone()]])
             .append_query_results([members(&[coachee.id])])
-            // the invite: both users, the organization, then what the create carries forward
+            // the invite: both users
             .append_query_results(vec![vec![coach]])
             .append_query_results(vec![vec![coachee.clone()]])
-            .append_query_results(vec![vec![org.clone()]])
-            .append_query_results(vec![vec![goal.clone()]])
-            .append_query_results(vec![Vec::<coaching_sessions::Model>::new()])
             .append_query_results(vec![vec![session.clone()]])
             .append_query_results(vec![vec![goal]])
             .append_query_results(vec![vec![link]])

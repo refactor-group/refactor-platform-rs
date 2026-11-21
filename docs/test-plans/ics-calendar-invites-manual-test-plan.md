@@ -73,7 +73,7 @@ delivery, so use option 2 for those cases specifically.
 ## Setup / prerequisites
 
 1. **Resend config** (real key so emails actually send): `--resend-api-key`,
-   `--session-scheduled-email-template-id`, `--recurring-sessions-scheduled-email-template-id`,
+   `--recurring-sessions-scheduled-email-template-id`,
    `--frontend-base-url=https://<your app>` (drives the `View this session` link).
 2. **A coaching relationship** with a coach and coachee whose email inboxes you control.
    Set the **coach's timezone** to `America/New_York` for the DST/cross-zone checks.

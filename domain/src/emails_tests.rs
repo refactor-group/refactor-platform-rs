@@ -298,12 +298,11 @@ fn cancelled_envelopes(
 }
 
 /// A notice about sessions between `coach` and `coachee` that reaches both, as its loads
-/// would build it, listing `agenda`.
+/// would build it.
 fn test_notice(
     coach: &users::Model,
     coachee: &users::Model,
     kind: coaching_relationship_kind::Kind,
-    agenda: Agenda,
 ) -> SessionNotice {
     SessionNotice {
         brand: brand(),
@@ -319,7 +318,6 @@ fn test_notice(
         },
         reach: vec![coach.id, coachee.id],
         zone: user::timezone(coach),
-        agenda,
     }
 }
 
@@ -330,10 +328,10 @@ fn scheduled_envelopes(
     kind: coaching_relationship_kind::Kind,
     session: &coaching_sessions::Model,
 ) -> Vec<Envelope> {
-    let notice = test_notice(coach, coachee, kind, Agenda::default());
+    let notice = test_notice(coach, coachee, kind);
     notice.envelopes(
         session,
-        &ical::Method::Request,
+        &Calendar::Invite(&Agenda::default()),
         notice.scheduled_by(session, coach.id),
     )
 }
@@ -930,26 +928,22 @@ fn test_session_scheduled_envelopes() {
     }
 }
 
-/// The invite's DESCRIPTION lists the agenda a notice loaded.
+/// The invite's DESCRIPTION lists the agenda it is given.
 #[test]
 fn test_session_scheduled_invite_lists_its_agenda() {
     let coach = create_test_user_with("Alex", "Smith", "alex@example.com", "UTC");
     let coachee = create_test_user_with("Jane", "Doe", "jane@example.com", "UTC");
     let session = create_test_session();
-    let notice = test_notice(
-        &coach,
-        &coachee,
-        coaching_relationship_kind::Kind::Coaching,
-        Agenda {
-            topics: vec!["Carried topic".to_string()],
-            goal_titles: vec!["Carried goal".to_string()],
-            open_actions: Vec::new(),
-        },
-    );
+    let notice = test_notice(&coach, &coachee, coaching_relationship_kind::Kind::Coaching);
+    let agenda = Agenda {
+        topics: vec!["Carried topic".to_string()],
+        goal_titles: vec!["Carried goal".to_string()],
+        open_actions: Vec::new(),
+    };
 
     let envelopes = notice.envelopes(
         &session,
-        &ical::Method::Request,
+        &Calendar::Invite(&agenda),
         notice.scheduled_by(&session, coach.id),
     );
 
@@ -2171,6 +2165,7 @@ async fn test_a_scheduled_notice_without_a_frontend_reads_nothing() {
         &db,
         &Config::from_args(["test"]),
         &test_relationship(),
+        &create_test_organization(),
         &[],
         &create_test_session(),
     )
@@ -5373,7 +5368,7 @@ async fn occurrence_cancel_uses_the_stored_series_zone() {
     let envelopes = SessionNotice::cancellation(&db, &config, &session)
         .await
         .expect("the cancellation loads")
-        .envelopes(&session, &ical::Method::Cancel, |copy| {
+        .envelopes(&session, &Calendar::Cancel, |copy| {
             copy.cancelled(Cancellation::By(coach.id))
         });
 

@@ -28,7 +28,7 @@
 //! organization, a session that has passed and a series with nothing left to attend are
 //! owed nothing. A session's invite is written to the email outbox in one transaction with
 //! its `SEQUENCE` bump and the row's completion; a failed load or write releases the row to
-//! retry. A series' invite is sent through its Resend template, and a row for one is dropped
+//! retry, and a row is dropped unsent when no email can be composed. A series' invite is sent through its Resend template, and a row for one is dropped
 //! unsent without that template or a Resend key. A switch can owe many invites at once, so a
 //! tick claims at most [`INVITE_BATCH`] of them, and a failed series send hands the rest of
 //! the tick's back uncharged, as the reminder sweep does when Resend is unusable: the
@@ -53,7 +53,7 @@ use service::config::Config;
 use crate::coaching_session::record_delivered_notice;
 use crate::coaching_session_series;
 use crate::emails::{self, Delivered, Delivery};
-use crate::error::Error;
+use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::jobs::{Context, FirstRun, Job, Outcome};
 use crate::{coaching_relationships, coaching_sessions, Id};
 
@@ -242,8 +242,8 @@ impl Sweep {
     }
 }
 
-/// Writes one claimed owed session invite and settles its row together, or releases the row
-/// to retry when that fails.
+/// Writes one claimed owed session invite and settles its row together. A stack that composes
+/// no email settles the row unsent; any other failure releases it to retry.
 async fn enqueue_session_invite(
     ctx: &Context,
     id: Id,
@@ -252,6 +252,18 @@ async fn enqueue_session_invite(
     let db = &*ctx.db;
     match crate::coaching_session::enqueue_owed_invite(db, &ctx.config, id, claimed).await {
         Ok(()) => Resent::Handled,
+        Err(e)
+            if matches!(
+                e.error_kind,
+                DomainErrorKind::Internal(InternalErrorKind::Config)
+            ) =>
+        {
+            warn!(
+                "[coaching-session-pending-reschedule] session {id}'s invite to {} is dropped unsent: no email can be composed: {e:?}",
+                claimed.user_id
+            );
+            Resent::from(complete_invite(db, claimed).await)
+        }
         Err(e) => {
             warn!(
                 "[coaching-session-pending-reschedule] could not write session {id}'s invite to {}: {e:?}",

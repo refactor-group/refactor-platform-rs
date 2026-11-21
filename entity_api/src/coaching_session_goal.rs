@@ -291,7 +291,7 @@ pub async fn find_in_progress_goals_by_coaching_session_id(
 /// then bulk-inserts a join row for each one. Insertion uses
 /// `ON CONFLICT (coaching_session_id, goal_id) DO NOTHING`, so repeat calls
 /// for the same session are safe — already-linked goals are silently skipped.
-/// Returns the goal IDs of the rows actually inserted (empty when every goal
+/// Returns the goals of the rows actually inserted (empty when every goal
 /// was already linked), letting callers publish a link event per newly-linked
 /// goal without re-querying or risking duplicate notifications.
 ///
@@ -305,7 +305,7 @@ pub async fn link_in_progress_goals_to_session(
     db: &impl ConnectionTrait,
     coaching_relationship_id: Id,
     session_id: Id,
-) -> Result<Vec<Id>, Error> {
+) -> Result<Vec<goals::Model>, Error> {
     // Defensive cap: the write path enforces the limit, but we cap here too for safety.
     let in_progress_goals: Vec<_> =
         super::goal::find_in_progress_goals_by_coaching_relationship_id(
@@ -335,7 +335,10 @@ pub async fn link_in_progress_goals_to_session(
 
     let inserted = insert_links_skipping_existing(db, rows).await?;
 
-    Ok(inserted.into_iter().map(|link| link.goal_id).collect())
+    Ok(in_progress_goals
+        .into_iter()
+        .filter(|goal| inserted.iter().any(|link| link.goal_id == goal.id))
+        .collect())
 }
 
 /// Bulk-inserts `rows`, skipping any session-goal pair already linked; returns only the rows written.
@@ -787,7 +790,9 @@ mod tests {
         let linked = link_in_progress_goals_to_session(&db, relationship_id, session_id).await?;
         assert_eq!(linked.len(), 2, "should link 2 in-progress goals");
         assert!(
-            expected_goal_ids.iter().all(|id| linked.contains(id)),
+            expected_goal_ids
+                .iter()
+                .all(|id| linked.iter().any(|goal| goal.id == *id)),
             "returned goal IDs should match the inserted links"
         );
 

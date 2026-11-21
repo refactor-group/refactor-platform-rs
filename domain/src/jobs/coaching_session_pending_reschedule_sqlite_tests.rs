@@ -726,6 +726,32 @@ async fn a_stale_claim_on_an_owed_session_invite_writes_nothing() {
     .await;
 }
 
+/// With no frontend to link to no invite composes, so the owed row is settled unsent rather
+/// than retried.
+#[tokio::test]
+async fn an_owed_session_invite_that_cannot_compose_is_settled_unsent() {
+    within_time_limit(async {
+        let db = database().await;
+        owing(&db, 1, false).await;
+        let [(target, _), ..] = pending_invites(&db).await.into_iter().collect::<Vec<_>>()[..]
+        else {
+            panic!("an invite is owed");
+        };
+        let before = session(&db, target).await.ical_sequence;
+        let ctx = job_context_with(db, Config::from_args(["test"]));
+
+        Sweep::from_config(&ctx.config)
+            .run(&ctx)
+            .await
+            .expect("the tick runs");
+
+        assert_eq!(owed_rows(&ctx.db).await, Vec::new());
+        assert_eq!(outboxed(&ctx.db).await, Vec::new());
+        assert_eq!(session(&ctx.db, target).await.ical_sequence, before);
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn many_owed_invites_drain_over_several_ticks() {
     within_time_limit(async {

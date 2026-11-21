@@ -4,6 +4,7 @@ use std::future::Future;
 use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use entity_api::coaching_relationship::notify_member_ids;
+use futures::{future::ready, try_join, TryFutureExt};
 use log::*;
 use sea_orm::{ConnectionTrait, DatabaseConnection, DatabaseTransaction, TransactionTrait};
 use service::config::Config;
@@ -12,7 +13,7 @@ use crate::{
     actions, coaching_relationship,
     coaching_relationship_kind::{self, Kind, Seat},
     coaching_relationships, coaching_session,
-    coaching_session_hydration::{carried_forward, CarriedForward},
+    coaching_session_hydration::Hydrated,
     coaching_session_series,
     coaching_session_series::SeriesRule,
     coaching_sessions,
@@ -79,17 +80,21 @@ trait EmailNotification {
 
     /// Resolve the frontend base URL from config, or return a config error.
     fn resolve_base_url(config: &Config) -> Result<String, Error> {
-        config.frontend_base_url().ok_or_else(|| {
+        frontend_base_url(config).inspect_err(|_| {
             error!(
                 "Frontend base URL not configured, cannot send {} notification",
                 Self::notification_name()
-            );
-            Error {
-                source: None,
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-            }
+            )
         })
     }
+}
+
+/// `config`'s frontend base URL, or a config error when it names none.
+fn frontend_base_url(config: &Config) -> Result<String, Error> {
+    config.frontend_base_url().ok_or_else(|| Error {
+        source: None,
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
+    })
 }
 
 struct RecurringSessionsScheduled;
@@ -693,20 +698,6 @@ struct SessionUrlBuilder {
 }
 
 impl SessionUrlBuilder {
-    /// Links to a session's page under `config`'s frontend, or a config error when it names none.
-    fn session_page(config: &Config) -> Result<Self, Error> {
-        config
-            .frontend_base_url()
-            .map(|base_url| Self {
-                base_url,
-                path_template: config.session_scheduled_email_url_path().to_owned(),
-            })
-            .ok_or_else(|| Error {
-                source: None,
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
-            })
-    }
-
     fn build(&self, placeholder: &str, value: &str) -> String {
         let path = self.path_template.replace(placeholder, value);
         format!("{}{}", self.base_url, path)
@@ -770,15 +761,16 @@ impl ResolvedEmailConfig {
     }
 }
 
-/// Send a session-scheduled notification email to a single recipient.
-/// This is called once per recipient (coach and coachee each get their own email).
-async fn send_session_email_to_recipient(
+/// Send a session-rescheduled notification email to a single recipient, moved from
+/// `previous_start`. This is called once per recipient (coach and coachee each get their own
+/// email).
+async fn send_session_rescheduled_to_recipient(
     email_config: &ResolvedEmailConfig,
     to: &Recipient<'_>,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
     ics_body: &str,
-    reschedule: Option<&RescheduleVars>,
+    previous_start: NaiveDateTime,
 ) -> Result<(), Error> {
     let recipient = to.user;
     let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
@@ -786,7 +778,7 @@ async fn send_session_email_to_recipient(
     let session_duration =
         crate::duration::Duration::from_minutes_unchecked(session.duration_minutes).to_string();
 
-    let builder = SendEmailRequestBuilder::new()
+    let email_request = SendEmailRequestBuilder::new()
         .from(FROM_ADDRESS)
         .to_with_name(
             &recipient.email,
@@ -804,24 +796,18 @@ async fn send_session_email_to_recipient(
         .add_variable("session_time", session_time.as_str())
         .add_variable("session_duration", session_duration.as_str())
         .add_variable("session_url", session_url.as_str())
-        .add_optional_variable("session_or_series", reschedule.map(|r| r.session_or_series))
-        .add_ics_attachment(ics_body, &ical::Method::Request);
-
-    // The reschedule template declares both keys, so they ship together or not at all.
-    let email_request = match reschedule {
-        Some(r) => builder
-            .add_variable(
-                "session_when",
-                format_session_when(session.date, &recipient.timezone),
-            )
-            .add_variable(
-                "previous_session_when",
-                format_previous_session_when(r.previous_start, session.date, &recipient.timezone),
-            ),
-        None => builder,
-    }
-    .build()
-    .await?;
+        .add_variable("session_or_series", "session")
+        .add_ics_attachment(ics_body, &ical::Method::Request)
+        .add_variable(
+            "session_when",
+            format_session_when(session.date, &recipient.timezone),
+        )
+        .add_variable(
+            "previous_session_when",
+            format_previous_session_when(previous_start, session.date, &recipient.timezone),
+        )
+        .build()
+        .await?;
 
     email_config.client.send_email(email_request).await
 }
@@ -1099,16 +1085,17 @@ where
     }
 }
 
-/// Send single-session invite emails to the participants `audience` may reach, through
-/// notification type `N`'s Resend template. A reschedule passes an already-bumped `session`, so the `.ics` carries the next
-/// `SEQUENCE` under a stable `UID`.
-async fn send_single_session_invite_email<N: EmailNotification>(
+/// Send session-rescheduled notification emails to the participants `audience` may reach.
+/// `session` must already carry the bumped `ical_sequence`, so the invite updates the calendar
+/// event in place (same `UID`, next `SEQUENCE`). `previous_start` is the start the
+/// recipients last saw; equal to the new start when only a non-time field changed.
+async fn send_session_rescheduled_email(
     db: &DatabaseConnection,
     config: &Config,
     audience: &Audience<'_>,
     session: &coaching_sessions::Model,
     organization: &organizations::Model,
-    reschedule: Option<&RescheduleVars>,
+    previous_start: NaiveDateTime,
 ) -> Result<Delivered, Error> {
     let Audience {
         participants,
@@ -1117,13 +1104,13 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     let Participants { coach, coachee, .. } = *participants;
     info!(
         "Initiating {} emails for session: {} (coach: {}, coachee: {})",
-        N::notification_name(),
+        SessionRescheduled::notification_name(),
         session.id,
         coach.email,
         coachee.email
     );
 
-    let email_config = ResolvedEmailConfig::new::<N>(config).await?;
+    let email_config = ResolvedEmailConfig::new::<SessionRescheduled>(config).await?;
 
     // Same VEVENT for both recipients.
     let description = Agenda::of(db, session.id).await?.description(
@@ -1142,46 +1129,22 @@ async fn send_single_session_invite_email<N: EmailNotification>(
     )?;
 
     let copies = participants.copies();
-    Ok(
-        send_to_participants(&copies, member_ids, N::notification_name(), |to| {
-            send_session_email_to_recipient(
+    Ok(send_to_participants(
+        &copies,
+        member_ids,
+        SessionRescheduled::notification_name(),
+        |to| {
+            send_session_rescheduled_to_recipient(
                 &email_config,
                 to,
                 session,
                 organization,
                 &ics_body,
-                reschedule,
+                previous_start,
             )
-        })
-        .await,
+        },
     )
-}
-
-/// Send session-rescheduled notification emails to the participants `audience` may reach.
-/// `session` must already carry the bumped `ical_sequence`, so the invite updates the calendar
-/// event in place (same `UID`, next `SEQUENCE`). `previous_start` is the start the
-/// recipients last saw; equal to the new start when only a non-time field changed.
-async fn send_session_rescheduled_email(
-    db: &DatabaseConnection,
-    config: &Config,
-    audience: &Audience<'_>,
-    session: &coaching_sessions::Model,
-    organization: &organizations::Model,
-    previous_start: NaiveDateTime,
-) -> Result<Delivered, Error> {
-    send_single_session_invite_email::<SessionRescheduled>(
-        db,
-        config,
-        audience,
-        session,
-        organization,
-        Some(&RescheduleVars {
-            session_or_series: "session",
-            previous_start,
-            previous_recurrence_summary: None,
-        }),
-    )
-    .await
+    .await)
 }
 
 /// Context for an action-assigned email, bundling the action-specific data
@@ -1787,7 +1750,7 @@ fn session_cancelled_envelopes(
 
 /// What an invite's `.ics` DESCRIPTION lists beside the session itself.
 #[derive(Default)]
-struct Agenda {
+pub(crate) struct Agenda {
     topics: Vec<String>,
     goal_titles: Vec<String>,
     open_actions: Vec<OpenAction>,
@@ -1796,22 +1759,17 @@ struct Agenda {
 impl Agenda {
     /// What session `id` holds now.
     async fn of(db: &DatabaseConnection, id: Id) -> Result<Self, Error> {
+        let (topics, goals, actions) = try_join!(
+            entity_api::coaching_session_topic::find_by_coaching_session_id(db, id),
+            entity_api::coaching_session_goal::find_in_progress_goals_by_coaching_session_id(
+                db, id
+            ),
+            entity_api::action::find_open_by_coaching_session_id(db, id),
+        )?;
         Ok(Self {
-            topics: entity_api::coaching_session_topic::find_by_coaching_session_id(db, id)
-                .await?
-                .into_iter()
-                .map(|topic| topic.body)
-                .collect(),
-            goal_titles:
-                entity_api::coaching_session_goal::find_in_progress_goals_by_coaching_session_id(
-                    db, id,
-                )
-                .await?
-                .into_iter()
-                .filter_map(|goal| goal.title)
-                .collect(),
-            open_actions: entity_api::action::find_open_by_coaching_session_id(db, id)
-                .await?
+            topics: topics.into_iter().map(|topic| topic.body).collect(),
+            goal_titles: goals.into_iter().filter_map(|goal| goal.title).collect(),
+            open_actions: actions
                 .into_iter()
                 .filter_map(|action| {
                     action.body.map(|body| OpenAction {
@@ -1823,19 +1781,21 @@ impl Agenda {
         })
     }
 
-    /// What creating a session of `relationship_id` at `date` carries into it. A new session
-    /// has no actions.
-    async fn carried_into(
-        db: &DatabaseConnection,
-        relationship_id: Id,
-        date: NaiveDateTime,
-    ) -> Result<Self, Error> {
-        let CarriedForward { goals, topics } = carried_forward(db, relationship_id, date).await?;
-        Ok(Self {
-            topics: topics.into_iter().map(|topic| topic.body).collect(),
-            goal_titles: goals.into_iter().filter_map(|goal| goal.title).collect(),
+    /// What hydrating a new session carried into it. A new session has no actions.
+    pub(crate) fn carried(hydrated: &Hydrated) -> Self {
+        Self {
+            topics: hydrated
+                .topics
+                .iter()
+                .map(|topic| topic.body.clone())
+                .collect(),
+            goal_titles: hydrated
+                .goals
+                .iter()
+                .filter_map(|goal| goal.title.clone())
+                .collect(),
             open_actions: Vec::new(),
-        })
+        }
     }
 
     /// The DESCRIPTION of `session`'s invite, opened at `url`.
@@ -1859,6 +1819,23 @@ impl Agenda {
     }
 }
 
+/// The calendar part a session email carries.
+pub(crate) enum Calendar<'a> {
+    /// The session's invite, its DESCRIPTION listing the agenda.
+    Invite(&'a Agenda),
+    /// The session's cancellation.
+    Cancel,
+}
+
+impl Calendar<'_> {
+    fn method(&self) -> ical::Method {
+        match self {
+            Calendar::Invite(_) => ical::Method::Request,
+            Calendar::Cancel => ical::Method::Cancel,
+        }
+    }
+}
+
 /// What a session's emails name, loaded before the transaction that changes the session, so
 /// that transaction only renders and writes them.
 pub(crate) struct SessionNotice {
@@ -1869,12 +1846,24 @@ pub(crate) struct SessionNotice {
     reach: Vec<Id>,
     /// The zone from [`invite_zone`].
     zone: Tz,
-    agenda: Agenda,
 }
 
 /// Whether removing `session` at `now` announces a cancellation: only an upcoming one does.
 fn owes_cancellation(session: &coaching_sessions::Model, now: NaiveDateTime) -> bool {
     session.date >= now
+}
+
+/// `Ok` once `receipt` says the provider accepted the email, else why it did not.
+fn accepted(receipt: Receipt) -> Result<(), Error> {
+    let kind = match receipt {
+        Receipt::Accepted => return Ok(()),
+        Receipt::Retry { error, .. } => InternalErrorKind::Unavailable(error),
+        Receipt::Rejected(error) => InternalErrorKind::Rejected(error),
+    };
+    Err(Error {
+        source: None,
+        error_kind: DomainErrorKind::Internal(kind),
+    })
 }
 
 impl SessionNotice {
@@ -1888,12 +1877,12 @@ impl SessionNotice {
         session: &coaching_sessions::Model,
     ) -> Option<Self> {
         async {
-            let (brand, page) = Self::composing(config)?;
+            let composing = Self::composing(config)?;
             let relationship =
                 coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
             let reach = vec![relationship.coach_id, relationship.coachee_id];
-            let agenda = std::future::ready(Ok(Agenda::default()));
-            Self::load(db, (brand, page), &relationship, reach, session, agenda).await
+            let parties = InviteParties::load(db, &relationship).await?;
+            Self::load(db, composing, parties, reach, session).await
         }
         .await
         .inspect_err(|e| {
@@ -1905,20 +1894,22 @@ impl SessionNotice {
         .ok()
     }
 
-    /// Loads what the invite of `draft`, a session of `relationship` about to be created,
-    /// names for `reach`, or `None` when a load failed, which is logged and costs only the
-    /// email. Its DESCRIPTION lists what creating it carries forward.
+    /// Loads what the invite of `draft`, a session of `relationship` in `organization` about
+    /// to be created, names for `reach`, or `None` when a load failed, which is logged and
+    /// costs only the email. Its agenda is what creating it carries in, given when it is
+    /// written.
     pub(crate) async fn scheduled(
         db: &DatabaseConnection,
         config: &Config,
         relationship: &coaching_relationships::Model,
+        organization: &organizations::Model,
         reach: &[Id],
         draft: &coaching_sessions::Model,
     ) -> Option<Self> {
         async {
             let composing = Self::composing(config)?;
-            let agenda = Agenda::carried_into(db, relationship.id, draft.date);
-            Self::load(db, composing, relationship, reach.to_vec(), draft, agenda).await
+            let parties = InviteParties::of(db, relationship, organization.clone()).await?;
+            Self::load(db, composing, parties, reach.to_vec(), draft).await
         }
         .await
         .inspect_err(|e| {
@@ -1930,38 +1921,44 @@ impl SessionNotice {
         .ok()
     }
 
-    /// Loads what `session`'s invite, as it stands, names for `reach`.
+    /// Loads what `session`'s invite, as it stands, names for `reach`, and its agenda.
     pub(crate) async fn invite(
         db: &DatabaseConnection,
         config: &Config,
         relationship: &coaching_relationships::Model,
         reach: Vec<Id>,
         session: &coaching_sessions::Model,
-    ) -> Result<Self, Error> {
+    ) -> Result<(Self, Agenda), Error> {
         let composing = Self::composing(config)?;
-        let agenda = Agenda::of(db, session.id);
-        Self::load(db, composing, relationship, reach, session, agenda).await
+        try_join!(
+            async {
+                let parties = InviteParties::load(db, relationship).await?;
+                Self::load(db, composing, parties, reach, session).await
+            },
+            Agenda::of(db, session.id),
+        )
     }
 
     /// What every session email needs from config. Checked before any read, so a stack that
     /// composes no email loads nothing.
     fn composing(config: &Config) -> Result<(Brand, SessionUrlBuilder), Error> {
+        let base_url = frontend_base_url(config)?;
         Ok((
-            Brand::from_config(config)?,
-            SessionUrlBuilder::session_page(config)?,
+            Brand::new(&base_url),
+            SessionUrlBuilder {
+                base_url,
+                path_template: config.session_scheduled_email_url_path().to_owned(),
+            },
         ))
     }
 
     async fn load(
         db: &DatabaseConnection,
         (brand, page): (Brand, SessionUrlBuilder),
-        relationship: &coaching_relationships::Model,
+        parties: InviteParties,
         reach: Vec<Id>,
         session: &coaching_sessions::Model,
-        agenda: impl Future<Output = Result<Agenda, Error>>,
     ) -> Result<Self, Error> {
-        let parties = InviteParties::load(db, relationship).await?;
-        let agenda = agenda.await?;
         let zone = invite_zone(db, session, parties.participants().schedule_owner(session)).await?;
         Ok(Self {
             brand,
@@ -1969,7 +1966,6 @@ impl SessionNotice {
             parties,
             reach,
             zone,
-            agenda,
         })
     }
 
@@ -1986,25 +1982,26 @@ impl SessionNotice {
     }
 
     /// Renders the email `email_for` builds for each participant this notice reaches, about
-    /// `session` as the writing transaction holds it, with its calendar part for `method`.
-    /// Rendering reads nothing; a copy that fails to render is logged and skipped.
+    /// `session` as the writing transaction holds it, carrying `calendar`. Rendering reads
+    /// nothing; a copy that fails to render is logged and skipped.
     pub(crate) fn envelopes<E: Email>(
         &self,
         session: &coaching_sessions::Model,
-        method: &ical::Method,
+        calendar: &Calendar<'_>,
         email_for: impl Fn(SessionCopy) -> E,
     ) -> Vec<Envelope> {
         let participants = self.parties.participants();
-        let description = match method {
-            ical::Method::Request => self.agenda.description(
+        let method = calendar.method();
+        let description = match calendar {
+            Calendar::Invite(agenda) => agenda.description(
                 &participants,
                 session,
                 &self.parties.organization,
                 self.page.session(session.id),
             ),
-            ical::Method::Cancel => participants.session_cancelled_description(),
+            Calendar::Cancel => participants.session_cancelled_description(),
         };
-        session_ics(&participants, session, method, description, self.zone)
+        session_ics(&participants, session, &method, description, self.zone)
             .map(|ics| {
                 session_envelopes(
                     &self.brand,
@@ -2014,7 +2011,7 @@ impl SessionNotice {
                     },
                     session,
                     &self.parties.organization,
-                    &calendar_attachments([(ics.as_str(), method)]),
+                    &calendar_attachments([(ics.as_str(), &method)]),
                     email_for,
                 )
             })
@@ -2034,10 +2031,10 @@ impl SessionNotice {
         &self,
         txn: &DatabaseTransaction,
         session: &coaching_sessions::Model,
-        method: &ical::Method,
+        calendar: &Calendar<'_>,
         email_for: impl Fn(SessionCopy) -> E,
     ) -> Result<Vec<Id>, Error> {
-        let envelopes = self.envelopes(session, method, email_for);
+        let envelopes = self.envelopes(session, calendar, email_for);
         let recipients = envelopes.iter().map(|e| e.recipient_id).collect();
         email_outbox::enqueue(txn, envelopes).await?;
         Ok(recipients)
@@ -2055,7 +2052,7 @@ impl SessionNotice {
         if !owes_cancellation(cancelled, Utc::now().naive_utc()) {
             return Ok(());
         }
-        self.enqueue(txn, cancelled, &ical::Method::Cancel, |copy| {
+        self.enqueue(txn, cancelled, &Calendar::Cancel, |copy| {
             copy.cancelled(cancellation)
         })
         .await
@@ -2064,48 +2061,30 @@ impl SessionNotice {
 
     /// Hands the emails [`Self::envelopes`] renders to `mailer` now, each under the
     /// idempotency key `key` gives its recipient, and reports what each participant got.
-    /// Without a mailer, every copy owed is undelivered.
     pub(crate) async fn deliver_now<E: Email>(
         &self,
-        mailer: Option<&dyn Mailer>,
+        mailer: &dyn Mailer,
         session: &coaching_sessions::Model,
-        method: &ical::Method,
+        calendar: &Calendar<'_>,
         key: impl Fn(Id) -> String,
         email_for: impl Fn(SessionCopy) -> E,
     ) -> Delivered {
-        let envelopes = self.envelopes(session, method, email_for);
-        let delivery = |user_id| self.deliver_to(mailer, &envelopes, user_id, &key);
-        Delivered {
-            coachee: delivery(self.parties.coachee.id).await,
-            coach: delivery(self.parties.coach.id).await,
-        }
-    }
-
-    /// What delivering `user_id`'s copy among `envelopes` did.
-    async fn deliver_to(
-        &self,
-        mailer: Option<&dyn Mailer>,
-        envelopes: &[Envelope],
-        user_id: Id,
-        key: &impl Fn(Id) -> String,
-    ) -> Delivery {
-        if !self.reach.contains(&user_id) {
-            return Delivery::NoLongerAMember;
-        }
-        let copy = envelopes.iter().find(|e| e.recipient_id == user_id);
-        let (Some(mailer), Some(envelope)) = (mailer, copy) else {
-            return Delivery::Failed;
-        };
-        match mailer.deliver(&key(user_id), &envelope.email).await {
-            Receipt::Accepted => Delivery::Sent,
-            receipt => {
-                warn!(
-                    "The {} email to user {user_id} was not delivered: {receipt:?}",
-                    envelope.kind
-                );
-                Delivery::Failed
+        let envelopes = self.envelopes(session, calendar, email_for);
+        let copies = self.parties.participants().copies();
+        send_to_participants(&copies, &self.reach, E::KIND, |to| {
+            let envelope = envelopes.iter().find(|e| e.recipient_id == to.user.id);
+            let key = key(to.user.id);
+            async move {
+                let envelope = envelope.ok_or_else(|| Error {
+                    source: None,
+                    error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                        "the copy did not render".to_string(),
+                    )),
+                })?;
+                accepted(mailer.deliver(&key, &envelope.email).await)
             }
-        }
+        })
+        .await
     }
 }
 
@@ -2600,11 +2579,39 @@ impl InviteParties {
         db: &impl ConnectionTrait,
         relationship: &coaching_relationships::Model,
     ) -> Result<Self, Error> {
+        Self::loading(
+            db,
+            relationship,
+            organization::find_by_id(db, relationship.organization_id).map_err(Error::from),
+        )
+        .await
+    }
+
+    /// The parties of `relationship`, whose `organization` the caller already holds.
+    pub(crate) async fn of(
+        db: &impl ConnectionTrait,
+        relationship: &coaching_relationships::Model,
+        organization: organizations::Model,
+    ) -> Result<Self, Error> {
+        Self::loading(db, relationship, ready(Ok(organization))).await
+    }
+
+    /// Reads both participants beside `organization`.
+    async fn loading(
+        db: &impl ConnectionTrait,
+        relationship: &coaching_relationships::Model,
+        organization: impl Future<Output = Result<organizations::Model, Error>>,
+    ) -> Result<Self, Error> {
+        let (coach, coachee, organization) = try_join!(
+            user::find_by_id_without_roles(db, relationship.coach_id).map_err(Error::from),
+            user::find_by_id_without_roles(db, relationship.coachee_id).map_err(Error::from),
+            organization,
+        )?;
         Ok(Self {
-            coach: user::find_by_id_without_roles(db, relationship.coach_id).await?,
-            coachee: user::find_by_id_without_roles(db, relationship.coachee_id).await?,
+            coach,
+            coachee,
             kind: relationship.kind,
-            organization: organization::find_by_id(db, relationship.organization_id).await?,
+            organization,
         })
     }
 

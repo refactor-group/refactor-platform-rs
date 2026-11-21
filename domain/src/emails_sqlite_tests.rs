@@ -269,10 +269,14 @@ async fn schedule_session(seeded: &Seeded, db: &DatabaseConnection) -> BTreeSet<
     let member_ids = notify_member_ids(db, &seeded.relationship)
         .await
         .expect("membership reads");
+    let organization = organization::find_by_id(db, seeded.relationship.organization_id)
+        .await
+        .expect("the organization reads");
     let notice = SessionNotice::scheduled(
         db,
         &composing(),
         &seeded.relationship,
+        &organization,
         &member_ids,
         &seeded.session,
     )
@@ -281,7 +285,12 @@ async fn schedule_session(seeded: &Seeded, db: &DatabaseConnection) -> BTreeSet<
     let txn = db.begin().await.expect("the transaction begins");
     let scheduled = notice.scheduled_by(&seeded.session, seeded.coach.id);
     notice
-        .enqueue(&txn, &seeded.session, &ical::Method::Request, scheduled)
+        .enqueue(
+            &txn,
+            &seeded.session,
+            &Calendar::Invite(&Agenda::default()),
+            scheduled,
+        )
         .await
         .expect("the invites are written");
     txn.commit().await.expect("the transaction commits");
@@ -1206,30 +1215,49 @@ async fn creating_a_session_writes_both_invites_with_the_create() {
     .await;
 }
 
-/// A create the transaction refuses writes no email.
+/// A create whose commit fails, after its invites are written, leaves no invite and no
+/// session: the commit is refused by a foreign key the session insert breaks, which SQLite
+/// checks only at commit.
 #[tokio::test]
-async fn a_refused_create_writes_no_invite() {
+async fn a_create_whose_commit_fails_writes_no_invite() {
     within_time_limit(async {
         let (db, seeded) = seeded_with(Members::Both).await;
         let (_server, config) = tiptap().await;
+        for statement in [
+            "CREATE TABLE refactor_platform.commit_guard_parent (id TEXT PRIMARY KEY)",
+            "CREATE TABLE refactor_platform.commit_guard (parent_id TEXT \
+             REFERENCES commit_guard_parent (id) DEFERRABLE INITIALLY DEFERRED)",
+            "CREATE TEMP TRIGGER a_session_fails_the_commit \
+             AFTER INSERT ON refactor_platform.coaching_sessions \
+             BEGIN INSERT INTO commit_guard VALUES ('missing'); END",
+        ] {
+            db.execute_unprepared(statement)
+                .await
+                .expect("the commit guard is created");
+        }
+        let id = Id::new_v4();
 
         crate::coaching_session::create(
             &db,
             &config,
             &EventPublisher::new(),
             coaching_sessions::Model {
-                id: Id::new_v4(),
+                id,
                 date: seeded.session.date + TimeDelta::days(1),
-                title: Some("x".repeat(1_000)),
                 ..seeded.session.clone()
             },
             seeded.coach.id,
             None,
         )
         .await
-        .expect_err("the title is too long");
+        .expect_err("the commit fails");
 
         assert!(outbox(&db).await.is_empty());
+        assert!(coaching_sessions::Entity::find_by_id(id)
+            .one(&db)
+            .await
+            .expect("the session reads")
+            .is_none());
     })
     .await;
 }
