@@ -1790,18 +1790,20 @@ pub(crate) struct CancellationNotice {
     zone: Tz,
 }
 
+/// Whether removing `session` at `now` announces a cancellation: only an upcoming one does.
+fn owes_cancellation(session: &coaching_sessions::Model, now: NaiveDateTime) -> bool {
+    session.date >= now
+}
+
 impl CancellationNotice {
-    /// Loads what `session`'s cancellation names, or `None` when it owes no email: it is
-    /// already past (housekeeping, not a cancellation), or a load failed, which is logged
-    /// and costs only the email.
+    /// Loads what `session`'s cancellation names, or `None` when a load failed, which is
+    /// logged and costs only the email. Whether an email is owed at all is decided later,
+    /// from the row the removing transaction locked.
     pub(crate) async fn load(
         db: &DatabaseConnection,
         config: &Config,
         session: &coaching_sessions::Model,
     ) -> Option<Self> {
-        if session.date < Utc::now().naive_utc() {
-            return None;
-        }
         Self::try_load(db, config, session)
             .await
             .inspect_err(|e| {
@@ -1830,8 +1832,9 @@ impl CancellationNotice {
         })
     }
 
-    /// Renders both participants' emails for `cancelled`, which carries the outranking
-    /// `SEQUENCE`, and writes them on `txn`, the removing transaction. Rendering reads
+    /// Renders both participants' emails for `cancelled`, the row the removing transaction
+    /// locked, carrying the outranking `SEQUENCE`, and writes them on `txn`. A session already
+    /// past owes nothing: removing it is housekeeping, not a cancellation. Rendering reads
     /// nothing; a copy that fails to render is logged and skipped. Only the write fails `txn`.
     pub(crate) async fn enqueue(
         &self,
@@ -1839,6 +1842,9 @@ impl CancellationNotice {
         cancelled: &coaching_sessions::Model,
         cancellation: Cancellation,
     ) -> Result<(), Error> {
+        if !owes_cancellation(cancelled, Utc::now().naive_utc()) {
+            return Ok(());
+        }
         email_outbox::enqueue(txn, self.envelopes(cancelled, cancellation))
             .await
             .map(|_| ())

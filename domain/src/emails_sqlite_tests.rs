@@ -138,6 +138,10 @@ struct Seeded {
     session: coaching_sessions::Model,
 }
 
+fn last_week() -> NaiveDateTime {
+    next_week() - TimeDelta::days(14)
+}
+
 fn next_week() -> NaiveDateTime {
     (Utc::now() + TimeDelta::days(7))
         .naive_utc()
@@ -300,6 +304,67 @@ async fn single_cancel_with_the_coach_holding_no_role_reaches_both() {
         assert_eq!(cancel_session(&seeded, &db).await, seeded.both());
     })
     .await;
+}
+
+/// Whether a cancellation is owed comes from the row the removing transaction locked, so a
+/// session moved into the future after its notice loaded is still announced.
+#[tokio::test]
+async fn a_session_moved_into_the_future_before_its_delete_is_announced() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed(&db).await;
+        let as_loaded = coaching_sessions::Model {
+            date: last_week(),
+            ..seeded.session.clone()
+        };
+
+        let written = cancel_with(&db, &seeded, &as_loaded, &seeded.session).await;
+
+        assert_eq!(written, seeded.both());
+    })
+    .await;
+}
+
+/// Removing a session already past is housekeeping, not a cancellation.
+#[tokio::test]
+async fn a_session_already_past_when_deleted_owes_no_cancellation() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed(&db).await;
+        let locked = coaching_sessions::Model {
+            date: last_week(),
+            ..seeded.session.clone()
+        };
+
+        let written = cancel_with(&db, &seeded, &seeded.session, &locked).await;
+
+        assert!(written.is_empty(), "{written:?}");
+    })
+    .await;
+}
+
+/// Loads the notice from `as_loaded`, then enqueues it for `locked` inside a transaction;
+/// returns who the outbox addressed.
+async fn cancel_with(
+    db: &DatabaseConnection,
+    seeded: &Seeded,
+    as_loaded: &coaching_sessions::Model,
+    locked: &coaching_sessions::Model,
+) -> BTreeSet<String> {
+    let notice = CancellationNotice::load(db, &composing(), as_loaded)
+        .await
+        .expect("the cancellation loads");
+    let txn = db.begin().await.expect("the transaction begins");
+    notice
+        .enqueue(&txn, locked, Cancellation::By(seeded.coach.id))
+        .await
+        .expect("the cancellations are written");
+    txn.commit().await.expect("the transaction commits");
+    outbox_kinds(db)
+        .await
+        .into_iter()
+        .map(|(to, _)| to)
+        .collect()
 }
 
 /// M9-03

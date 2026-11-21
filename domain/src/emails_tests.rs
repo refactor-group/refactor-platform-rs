@@ -2223,31 +2223,6 @@ async fn test_a_failed_email_load_still_deletes_without_emails() {
     );
 }
 
-/// Deleting an already-completed session is housekeeping, not a cancellation. The
-/// guard must fire before any lookup, so the connection sees no statements at all.
-#[cfg(feature = "mock")]
-#[tokio::test]
-async fn test_session_cancelled_skips_past_session() {
-    let config = create_full_config_with_mock("http://localhost:1");
-    let mut session = create_test_session();
-    session.date = NaiveDate::from_ymd_opt(2020, 1, 15)
-        .unwrap()
-        .and_hms_opt(15, 0, 0)
-        .unwrap();
-
-    // Zero appended results: any query would panic or error rather than pass.
-    let db = MockDatabase::new(DatabaseBackend::Postgres).into_connection();
-
-    assert!(CancellationNotice::load(&db, &config, &session)
-        .await
-        .is_none());
-
-    assert!(
-        db.into_transaction_log().is_empty(),
-        "a past session must return before any statement runs"
-    );
-}
-
 #[cfg(feature = "mock")]
 #[tokio::test]
 async fn test_send_session_scheduled_email_missing_template_id() {
