@@ -21,7 +21,8 @@ How a single request traverses the throttle on its way to the handler:
 
 ```mermaid
 flowchart LR
-    Client[Client] --> Nginx["nginx<br/>(sets X-Forwarded-For)"]
+    Client[Client] --> Cloudflare["Cloudflare<br/>(sets CF-Connecting-IP)"]
+    Cloudflare --> Nginx["nginx<br/>(sets X-Forwarded-For)"]
     Nginx --> Router["axum Router<br/>web::router"]
     Router --> Throttle["PerIpThrottle layer<br/>web::middleware::throttle"]
     Throttle -->|over quota| Reject["429<br/>Too Many Requests"]
@@ -32,7 +33,7 @@ flowchart LR
     classDef ours fill:#d4e8ff,stroke:#2c5aa0
     classDef external fill:#f0f0f0,stroke:#888
     class Throttle,Router,Handler ours
-    class Nginx,Client,Bucket external
+    class Cloudflare,Nginx,Client,Bucket external
 ```
 
 Three things to notice:
@@ -114,7 +115,7 @@ Each call to `into_layer()` builds a fresh in-process governor — state is per-
 3. `Forwarded` header (RFC 7239)
 4. Peer socket address (fallback — what `tcp.accept()` returned)
 
-**Behind a trusted reverse proxy** (nginx in our deploys) the headers are set by infrastructure we control, so they accurately identify the client. The throttle works per-client. Our nginx is the edge (it terminates TLS, with nothing in front), so every `proxy_pass` location sets `X-Forwarded-For $remote_addr`, replacing anything the client sent. Appending with `$proxy_add_x_forwarded_for` would leave the client's own value as the first entry, which is the one the extractor reads. If a load balancer or CDN is ever put in front of nginx, use nginx's `real_ip` module with `set_real_ip_from` for that hop, so `$remote_addr` is the real client again.
+**Behind a trusted reverse proxy** (nginx in our deploys) the headers are set by infrastructure we control, so they accurately identify the client. The throttle works per-client. In production Cloudflare proxies every request to nginx, so the connecting address is Cloudflare's. nginx's `real_ip` module (`nginx/nginx.conf`) restores the client: on connections from Cloudflare's published ranges, it takes `$remote_addr` from `CF-Connecting-IP`, a header Cloudflare alone sets. It ignores that header from any other address, so a client connecting directly cannot choose its own. Every `proxy_pass` location then sets `X-Forwarded-For $remote_addr`, replacing anything the client sent. Appending with `$proxy_add_x_forwarded_for` would leave the client's own value as the first entry, which is the one the extractor reads. When Cloudflare publishes new ranges at cloudflare.com/ips, update the `set_real_ip_from` list; until then, requests from the new ranges are keyed by Cloudflare's address.
 
 **Without a reverse proxy** (or with one that doesn't strip client-provided `X-Forwarded-For`), the headers are spoofable. An attacker who controls the headers can present a different IP per request and bypass the throttle entirely. **This is the failure mode to watch for** when deploying:
 
@@ -179,7 +180,7 @@ Per-IP throttling is defeated by attackers controlling many IPs (botnet, residen
 - CAPTCHA challenges on suspicious traffic
 - Reputation-based throttling (block known abuse sources)
 
-None of these are in v1 — they belong at the edge (CDN / WAF) rather than the application layer. If we ever sit behind Cloudflare, configure it there.
+None of these are in v1 — they belong at the edge (CDN / WAF) rather than the application layer. We sit behind Cloudflare, so configure them there.
 
 ### 429 response shape
 
