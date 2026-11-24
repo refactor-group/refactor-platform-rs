@@ -168,8 +168,35 @@ mod merge_tests {
         })
     }
 
+    fn transcript(session_id: Id) -> Hit {
+        Hit::Transcript(TranscriptHit {
+            core: core(0.5, Id::new_v4()),
+            transcription_id: Id::new_v4(),
+            coaching_session_id: session_id,
+            coaching_relationship_id: Id::new_v4(),
+            session_date: Utc::now().naive_utc(),
+            start_ms: 0,
+            end_ms: 1000,
+            speaker_label: "Speaker A".to_string(),
+        })
+    }
+
     fn ids(hits: &[Hit]) -> Vec<Id> {
         hits.iter().map(|h| h.core().id).collect()
+    }
+
+    #[test]
+    fn a_transcript_hit_is_titled_after_its_session() {
+        let known = Id::new_v4();
+        let mut hits = vec![transcript(known), transcript(Id::new_v4())];
+        assert_eq!(title_session_ids(&mut hits)[0], known);
+
+        let titles = HashMap::from([(known, "Career growth".to_string())]);
+        apply_session_titles(&mut hits, &titles);
+
+        assert_eq!(hits[0].core().title, "Career growth");
+        // An unresolved session leaves what the searcher wrote.
+        assert_eq!(hits[1].core().title, "t");
     }
 
     #[test]

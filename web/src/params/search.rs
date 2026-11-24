@@ -179,10 +179,10 @@ impl IndexParams {
 }
 
 /// The full `types` vocabulary, present from day one. Tokens for types whose
-/// searcher has not shipped (`notes` PR 5, `transcripts` PR 2) or that the
+/// searcher has not shipped (`notes`, PR 5) or that the
 /// caller may not search (`users`, `organizations` — role-gated in PR 3) are
 /// known-but-inactive: never a 400, silently dropped.
-const INACTIVE_TYPE_TOKENS: [&str; 4] = ["notes", "transcripts", "users", "organizations"];
+const INACTIVE_TYPE_TOKENS: [&str; 3] = ["notes", "users", "organizations"];
 
 fn parse_type_token(token: &str) -> Result<Option<HitType>, Error> {
     match token {
@@ -191,6 +191,7 @@ fn parse_type_token(token: &str) -> Result<Option<HitType>, Error> {
         "actions" => Ok(Some(HitType::Action)),
         "agreements" => Ok(Some(HitType::Agreement)),
         "topics" => Ok(Some(HitType::Topic)),
+        "transcripts" => Ok(Some(HitType::Transcript)),
         "transcript_suggestions" => Ok(Some(HitType::TranscriptSuggestion)),
         t if INACTIVE_TYPE_TOKENS.contains(&t) => Ok(None),
         unknown => Err(invalid(

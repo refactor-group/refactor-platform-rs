@@ -204,6 +204,7 @@ fn hit_type_order_is_alphabetical_by_wire_name() {
     let mut types = [
         HitType::TranscriptSuggestion,
         HitType::Topic,
+        HitType::Transcript,
         HitType::CoachingSession,
         HitType::Goal,
         HitType::Action,
@@ -218,6 +219,7 @@ fn hit_type_order_is_alphabetical_by_wire_name() {
             HitType::CoachingSession,
             HitType::Goal,
             HitType::Topic,
+            HitType::Transcript,
             HitType::TranscriptSuggestion,
         ]
     );
@@ -406,6 +408,107 @@ mod mock_tests {
         assert!(sql.contains(&participant_rel.to_string()), "{sql}");
         assert!(!sql.contains(&visible_rel.to_string()), "{sql}");
         assert!(!sql.contains(r#"\"user_id\""#), "{sql}");
+    }
+
+    #[tokio::test]
+    async fn the_transcript_searcher_reads_the_stored_tsvector() {
+        // Re-parsing each segment's text is what the stored column exists to avoid.
+        let visibility = visibility();
+        let filters = Filters::default();
+        let sql = sql_of(
+            &transcript::Searcher,
+            &request(&visibility, None, &filters, None),
+        )
+        .await;
+        assert!(
+            sql.contains(r#"\"transcript_segments\".\"tsv\" @@"#),
+            "{sql}"
+        );
+        assert!(!sql.contains("to_tsvector"), "{sql}");
+    }
+
+    #[tokio::test]
+    async fn the_transcript_searcher_keeps_the_best_segments_of_each_transcription() {
+        let visibility = visibility();
+        let filters = Filters::default();
+        let cursor = Cursor {
+            score: 0.5,
+            hit_type: HitType::Transcript,
+            id: Id::new_v4(),
+        };
+        let sql = sql_of(
+            &transcript::Searcher,
+            &request(&visibility, None, &filters, Some(&cursor)),
+        )
+        .await;
+        assert!(
+            sql.contains(r#"PARTITION BY \"transcript_segments\".\"transcription_id\""#),
+            "{sql}"
+        );
+        // The group cap and the cursor filter ranked rows, so both sit outside
+        // the subquery that ranks them.
+        let (_, grouped) = sql
+            .split_once(r#"AS \"matches\""#)
+            .expect("ranked matches are a subquery");
+        assert!(grouped.contains(r#"\"rn\" <= "#), "{sql}");
+        assert!(grouped.contains(r#"\"score\" < "#), "{sql}");
+        assert!(grouped.contains(r#"\"id\" > "#), "{sql}");
+        assert!(grouped.contains("LIMIT"), "{sql}");
+    }
+
+    #[tokio::test]
+    async fn the_user_filter_means_participant_for_transcripts() {
+        let visibility = visibility();
+        let participant_rel = Id::new_v4();
+        let visible_rel = Id::new_v4();
+        let visible = [visible_rel];
+        let session_id = Id::new_v4();
+        let filters = Filters {
+            user_id: Some(Id::new_v4()),
+            coaching_session_id: Some(session_id),
+            participant_relationship_ids: Some(vec![participant_rel]),
+            ..Filters::default()
+        };
+        let sql = sql_of(
+            &transcript::Searcher,
+            &request(&visibility, Some(&visible), &filters, None),
+        )
+        .await;
+        assert!(sql.contains(&participant_rel.to_string()), "{sql}");
+        assert!(!sql.contains(&visible_rel.to_string()), "{sql}");
+        assert!(!sql.contains(r#"\"user_id\""#), "{sql}");
+        assert!(
+            sql.contains(r#"\"transcriptions\".\"coaching_session_id\" ="#),
+            "{sql}"
+        );
+        assert!(sql.contains(&session_id.to_string()), "{sql}");
+    }
+
+    #[tokio::test]
+    async fn the_updated_window_tests_a_transcript_segments_created_at() {
+        // Segments have no `updated_at`; they were last changed when written.
+        let visibility = visibility();
+        let filters = Filters {
+            updated: TimeRange {
+                from: Some(Utc::now().into()),
+                to_exclusive: Some(Utc::now().into()),
+            },
+            ..Filters::default()
+        };
+        let sql = sql_of(
+            &transcript::Searcher,
+            &request(&visibility, None, &filters, None),
+        )
+        .await;
+        assert!(
+            sql.contains(r#"\"transcript_segments\".\"created_at\" >= "#),
+            "{sql}"
+        );
+        assert!(
+            sql.contains(r#"\"transcript_segments\".\"created_at\" < "#),
+            "{sql}"
+        );
+        assert!(!sql.contains("updated_at"), "{sql}");
     }
 
     #[tokio::test]

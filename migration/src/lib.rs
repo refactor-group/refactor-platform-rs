@@ -74,6 +74,7 @@ mod m20261117_000001_create_coaching_session_pending_invites;
 mod m20261118_000001_meeting_recordings_bot_id_nullable;
 mod m20261119_000000_set_role_search_path;
 mod m20261120_000000_create_email_outbox;
+mod m20261124_000000_add_transcript_segment_search_column;
 
 pub struct Migrator;
 
@@ -157,6 +158,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261118_000001_meeting_recordings_bot_id_nullable::Migration),
             Box::new(m20261119_000000_set_role_search_path::Migration),
             Box::new(m20261120_000000_create_email_outbox::Migration),
+            Box::new(m20261124_000000_add_transcript_segment_search_column::Migration),
         ]
     }
 }
