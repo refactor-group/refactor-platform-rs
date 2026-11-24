@@ -1712,6 +1712,13 @@ pub(crate) struct SessionNotice {
     zone: Tz,
 }
 
+/// Writes `envelopes` to the outbox on `txn`; returns who they address.
+async fn write(txn: &DatabaseTransaction, envelopes: Vec<Envelope>) -> Result<Vec<Id>, Error> {
+    let recipients = envelopes.iter().map(|e| e.recipient_id).collect();
+    email_outbox::enqueue(txn, envelopes).await?;
+    Ok(recipients)
+}
+
 /// Whether removing `session` at `now` announces a cancellation: only an upcoming one does.
 fn owes_cancellation(session: &coaching_sessions::Model, now: NaiveDateTime) -> bool {
     session.date >= now
@@ -1915,10 +1922,45 @@ impl SessionNotice {
         calendar: &Calendar<'_>,
         email_for: impl Fn(SessionCopy) -> E,
     ) -> Result<Vec<Id>, Error> {
+        write(txn, self.envelopes(session, calendar, email_for)).await
+    }
+
+    /// [`Self::envelopes`], or an error when any participant this notice reaches has no copy.
+    pub(crate) fn envelopes_for_all<E: Email>(
+        &self,
+        session: &coaching_sessions::Model,
+        calendar: &Calendar<'_>,
+        email_for: impl Fn(SessionCopy) -> E,
+    ) -> Result<Vec<Envelope>, Error> {
         let envelopes = self.envelopes(session, calendar, email_for);
-        let recipients = envelopes.iter().map(|e| e.recipient_id).collect();
-        email_outbox::enqueue(txn, envelopes).await?;
-        Ok(recipients)
+        let missing: Vec<Id> = self
+            .reach
+            .iter()
+            .copied()
+            .filter(|id| envelopes.iter().all(|e| e.recipient_id != *id))
+            .collect();
+        match missing.is_empty() {
+            true => Ok(envelopes),
+            false => Err(Error {
+                source: None,
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(format!(
+                    "the {} emails to {missing:?} did not render",
+                    E::KIND
+                ))),
+            }),
+        }
+    }
+
+    /// Writes [`Self::envelopes_for_all`] on `txn`; returns who they address. Fails unless
+    /// every participant this notice reaches has a copy.
+    pub(crate) async fn enqueue_all<E: Email>(
+        &self,
+        txn: &DatabaseTransaction,
+        session: &coaching_sessions::Model,
+        calendar: &Calendar<'_>,
+        email_for: impl Fn(SessionCopy) -> E,
+    ) -> Result<Vec<Id>, Error> {
+        write(txn, self.envelopes_for_all(session, calendar, email_for)?).await
     }
 
     /// Writes both participants' cancellations of `cancelled`, the row the removing

@@ -210,25 +210,30 @@ above. Watch for: exactly one `BEGIN:VTIMEZONE` (before `BEGIN:VEVENT`), `DTSTAR
 
 ## Reschedule: single session (Phase 5a)
 
-Editing a single session now re-sends an updated invite (`METHOD:REQUEST`, **same UID**, **bumped
-`SEQUENCE`**) so calendar clients update the event in place. Fires only when a calendar-relevant field
-changed: `date`, `duration_minutes`, `meeting_url`, or `title`.
+Editing a single session's `date` or `duration_minutes` records a pending reschedule. Once the schedule
+has been quiet for the settle period (`SESSION_RESCHEDULE_SETTLE_SECONDS`, default 60), the participants
+get one reschedule email whose invite (`METHOD:REQUEST`, **same UID**) carries the session's current
+`SEQUENCE`, so calendar clients update the event in place. Several edits inside the settle period produce
+one email. An edit to `meeting_url` or `title` alone bumps `SEQUENCE` but sends no email; the next invite
+carries it.
 
 **Extra setup:** configure `--frontend-base-url`. The reschedule email is composed in the backend and
 written to the email outbox; without a frontend base URL none composes (see RS2).
 
 ### HR1: Edit a session's time (happy path)
 1. Create a single session (H1), import its `.ics` (note `SEQUENCE:0`).
-2. Change the session's **date/time** (or duration, or `meeting_url`) via the app.
+2. Change the session's **date/time** (or duration) via the app, then wait out the settle period.
 3. **Expect:** both coach and coachee receive a **reschedule** email with `invite.ics` whose `UID` is
    unchanged (`<session_id>@myrefactor.com`) and `SEQUENCE:1`.
 4. Import it: the **existing** calendar event moves to the new time in place (no duplicate).
-5. Edit again → next email carries `SEQUENCE:2`, still same UID, updates in place again.
+5. Change the time twice within the settle period, then wait it out → **one** email, carrying `SEQUENCE:3`
+   (each edit bumped it), still same UID, moved from the time step 3 announced, updating in place again.
 
-### HR2: Edit the title (description change is calendar-relevant)
+### HR2: Edit the title (calendar-relevant, but not a reschedule)
 1. On an existing session, set or change the **title**.
-2. **Expect:** a reschedule email fires; the `.ics` `DESCRIPTION` shows the new title line and `SEQUENCE`
-   is bumped. (A title edit via the dedicated title field also emits the normal in-app update.)
+2. **Expect:** no reschedule email; `SEQUENCE` is bumped. Then move the session's time (HR1 step 2): the
+   reschedule email's `.ics` `DESCRIPTION` shows the new title line. (A title edit via the dedicated title
+   field also emits the normal in-app update.)
 
 ### RS1: No-op edit sends nothing (sad path)
 1. Submit a session update that leaves `date`, `duration_minutes`, `meeting_url`, and `title` unchanged.

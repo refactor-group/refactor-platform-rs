@@ -361,14 +361,7 @@ fn calendar_part(envelope: &Envelope, method: &str) -> String {
         attachment.content_type,
         format!("text/calendar; method={method}; charset=UTF-8")
     );
-    let bytes = STANDARD
-        .decode(&attachment.content)
-        .expect("the part is base64");
-    String::from_utf8(bytes)
-        .expect("the part is UTF-8")
-        // Unfolded: RFC 5545 wraps at 75 octets, and a UID is long enough to split.
-        .replace("\r\n ", "")
-        .replace("\r\n\t", "")
+    crate::test_utils::email_outbox::calendar_part(&envelope.email)
 }
 
 #[tokio::test]
@@ -1071,6 +1064,29 @@ fn test_session_rescheduled_envelopes() {
         assert!(text.contains(&format!("Before:\n{before}")), "{text}");
         assert!(calendar_part(envelope, "REQUEST").contains("METHOD:REQUEST"));
     }
+}
+
+/// A reschedule is retried rather than settled when a participant it reaches got no copy, so
+/// the participants are told everything or nothing.
+#[test]
+fn envelopes_for_all_refuses_a_reach_with_a_copy_missing() {
+    let (alex, jane) = colleagues();
+    let session = create_test_session();
+    let complete = test_notice(&alex, &jane, coaching_relationship_kind::Kind::Coaching);
+    let missing = SessionNotice {
+        reach: vec![alex.id, jane.id, Id::new_v4()],
+        ..test_notice(&alex, &jane, coaching_relationship_kind::Kind::Coaching)
+    };
+    let render = |notice: &SessionNotice| {
+        notice.envelopes_for_all(
+            &session,
+            &Calendar::Invite(&Agenda::default()),
+            notice.rescheduled(&session, session.date - chrono::Duration::days(1)),
+        )
+    };
+
+    assert_eq!(render(&complete).expect("both copies render").len(), 2);
+    assert!(render(&missing).is_err());
 }
 
 /// A reschedule that kept the start changed only the length, so it names no earlier start.

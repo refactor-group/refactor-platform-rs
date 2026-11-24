@@ -58,7 +58,9 @@ pub(crate) fn calendar_part(email: &OutgoingEmail) -> String {
             .expect("the part is base64"),
     )
     .expect("the part is UTF-8")
+    // RFC 5545 folds long lines with a space or a tab after the break.
     .replace("\r\n ", "")
+    .replace("\r\n\t", "")
 }
 
 /// The outbox's one row; fails when there is not exactly one.

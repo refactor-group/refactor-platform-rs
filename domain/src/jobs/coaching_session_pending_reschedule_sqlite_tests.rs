@@ -451,6 +451,26 @@ async fn nothing_to_tell_settles_without_an_email() {
     .await;
 }
 
+/// A change with nothing to tell loads none of the email, so a failing email load cannot
+/// keep it from settling.
+#[tokio::test]
+async fn nothing_to_tell_settles_without_loading_the_email() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = changed_session(&db, Members::Both).await;
+        reschedule(&db, seeded.id, seeded.announced).await;
+        db.execute_unprepared("DROP TABLE user_roles")
+            .await
+            .expect("membership cannot be read");
+
+        let (ctx, outcome) = sweep(db, composing()).await;
+
+        assert_eq!(outcome, (1, 1));
+        assert_eq!(pending(&ctx.db, seeded.id).await, None);
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn a_failed_write_is_retried_then_given_up() {
     within_time_limit(async {
