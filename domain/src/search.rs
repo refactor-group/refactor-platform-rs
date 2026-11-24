@@ -23,7 +23,7 @@ use entity_api::search::{
 
 pub use entity_api::search::{
     ActionHit, AgreementHit, Core, Cursor, CursorDecodeError, Filters, GoalFilter, GoalHit, Hit,
-    HitType, SessionHit, TimeRange, TopicHit, TranscriptSuggestionHit,
+    HitType, SessionHit, TimeRange, TopicHit, TranscriptHit, TranscriptSuggestionHit,
 };
 
 /// How many searchers run concurrently. Each holds a pool connection while in
@@ -215,8 +215,9 @@ fn merge_and_paginate(mut merged: Vec<Hit>, limit: u16) -> (Vec<Hit>, Option<Str
     (merged, next_cursor)
 }
 
-/// The sessions whose titles the returned page displays: a `SessionHit`'s own
-/// `title` and the `session_title` context on action/agreement/suggestion hits.
+/// The sessions whose titles the returned page displays: a session or
+/// transcript hit's own `title`, and the `session_title` context on
+/// action/agreement/suggestion hits.
 fn title_session_ids(hits: &mut [Hit]) -> Vec<Id> {
     // `iter_mut` only because the slot accessor borrows mutably; this pass just reads ids.
     hits.iter_mut()

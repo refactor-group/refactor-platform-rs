@@ -12,7 +12,8 @@ use sea_orm::sea_query::{Alias, Expr, Query, SelectStatement, UnionType};
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, FromQueryResult};
 
 use super::{
-    action, agreement, coaching_session, compile_query, goal, topic, transcript_suggestion,
+    action, agreement, coaching_session, compile_query, goal, topic, transcript,
+    transcript_suggestion,
 };
 use super::{CompiledQuery, Hit, HitType};
 use crate::error::Error;
@@ -142,6 +143,13 @@ fn arm_for(hit_type: HitType, cq: &CompiledQuery, ids: &[Id]) -> SelectStatement
         HitType::Topic => build_arm::<coaching_session_topics::Entity>(
             coaching_session_topics::Column::Id,
             topic::TEXT_EXPR,
+            hit_type,
+            cq,
+            ids,
+        ),
+        HitType::Transcript => build_arm::<entity::transcript_segment::Entity>(
+            entity::transcript_segment::Column::Id,
+            transcript::TEXT_EXPR,
             hit_type,
             cq,
             ids,

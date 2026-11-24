@@ -232,6 +232,7 @@ use utoipa_rapidoc::RapiDoc;
                 domain::search::ActionHit,
                 domain::search::AgreementHit,
                 domain::search::TopicHit,
+                domain::search::TranscriptHit,
                 domain::search::TranscriptSuggestionHit,
                 domain::coaching_relationship_kind::Role,
                 domain::status::Status,

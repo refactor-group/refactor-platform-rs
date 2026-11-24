@@ -37,6 +37,7 @@ pub mod goal;
 mod session_title;
 mod snippet;
 pub mod topic;
+pub mod transcript;
 pub mod transcript_suggestion;
 mod visibility;
 
@@ -55,18 +56,20 @@ pub enum HitType {
     CoachingSession,
     Goal,
     Topic,
+    Transcript,
     TranscriptSuggestion,
 }
 
 impl HitType {
     /// Every searchable type, in merge (type-ascending) order. The single list
     /// that fan-out, snippet hydration, and the default `types` filter draw from.
-    pub const ALL: [HitType; 6] = [
+    pub const ALL: [HitType; 7] = [
         HitType::Action,
         HitType::Agreement,
         HitType::CoachingSession,
         HitType::Goal,
         HitType::Topic,
+        HitType::Transcript,
         HitType::TranscriptSuggestion,
     ];
 
@@ -80,6 +83,7 @@ impl HitType {
             HitType::Agreement => 4,
             HitType::Topic => 5,
             HitType::TranscriptSuggestion => 6,
+            HitType::Transcript => 7,
         }
     }
 
@@ -170,6 +174,24 @@ pub struct TopicHit {
     pub status: TopicStatus,
 }
 
+/// One matching transcript segment. A transcription contributes at most three,
+/// all sharing its best segment's `score`; `id` is the segment, `title` its
+/// session's title, and `start_ms` the playback offset to deep-link to.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[schema(as = domain::search::TranscriptHit)]
+pub struct TranscriptHit {
+    #[serde(flatten)]
+    pub core: Core,
+    pub transcription_id: Id,
+    pub coaching_session_id: Id,
+    pub coaching_relationship_id: Id,
+    #[schema(value_type = String, format = DateTime)]
+    pub session_date: DateTime,
+    pub start_ms: i32,
+    pub end_ms: i32,
+    pub speaker_label: String,
+}
+
 /// A pending AI-suggested item; no review status, since every hit is pending.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[schema(as = domain::search::TranscriptSuggestionHit)]
@@ -187,7 +209,7 @@ pub struct TranscriptSuggestionHit {
 }
 
 /// One search result. Additional variants ship additively in later PRs
-/// (notes, transcripts, users, organizations); clients must ignore unknown
+/// (notes, users, organizations); clients must ignore unknown
 /// `type` values.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -198,6 +220,7 @@ pub enum Hit {
     CoachingSession(SessionHit),
     Goal(GoalHit),
     Topic(TopicHit),
+    Transcript(TranscriptHit),
     TranscriptSuggestion(TranscriptSuggestionHit),
 }
 
@@ -210,6 +233,7 @@ impl Hit {
             Hit::CoachingSession(_) => HitType::CoachingSession,
             Hit::Goal(_) => HitType::Goal,
             Hit::Topic(_) => HitType::Topic,
+            Hit::Transcript(_) => HitType::Transcript,
             Hit::TranscriptSuggestion(_) => HitType::TranscriptSuggestion,
         }
     }
@@ -222,6 +246,7 @@ impl Hit {
             Hit::CoachingSession(h) => &h.core,
             Hit::Goal(h) => &h.core,
             Hit::Topic(h) => &h.core,
+            Hit::Transcript(h) => &h.core,
             Hit::TranscriptSuggestion(h) => &h.core,
         }
     }
@@ -235,6 +260,7 @@ impl Hit {
             Hit::CoachingSession(h) => &mut h.core,
             Hit::Goal(h) => &mut h.core,
             Hit::Topic(h) => &mut h.core,
+            Hit::Transcript(h) => &mut h.core,
             Hit::TranscriptSuggestion(h) => &mut h.core,
         }
     }
@@ -245,6 +271,8 @@ impl Hit {
             Hit::CoachingSession(h) => Some((h.core.id, &mut h.core.title)),
             Hit::Action(h) => Some((h.coaching_session_id, &mut h.session_title)),
             Hit::Agreement(h) => Some((h.coaching_session_id, &mut h.session_title)),
+            // A transcript is labelled by its session; the client adds any "Transcript" wording.
+            Hit::Transcript(h) => Some((h.coaching_session_id, &mut h.core.title)),
             Hit::TranscriptSuggestion(h) => Some((h.coaching_session_id, &mut h.session_title)),
             Hit::Goal(_) | Hit::Topic(_) => None,
         }
@@ -287,7 +315,7 @@ impl TimeRange {
 pub struct Filters {
     pub organization_id: Option<Id>,
     /// Creator (`user_id` column) for goals/actions/agreements/topics; for
-    /// sessions and transcript suggestions (which have no creator) the domain
+    /// sessions, transcripts and transcript suggestions (no creator) the domain
     /// compiles it into `participant_relationship_ids`.
     pub user_id: Option<Id>,
     pub coaching_session_id: Option<Id>,
@@ -326,7 +354,7 @@ pub struct Request<'a> {
 impl Request<'_> {
     /// The relationship id set a session-anchored searcher scopes on:
     /// the participant-narrowed set when the `user_id` filter targets
-    /// participation (sessions, transcript suggestions), otherwise the
+    /// participation (sessions, transcripts, transcript suggestions), otherwise the
     /// caller's visible set.
     pub(crate) fn effective_relationship_ids(&self, participant_semantics: bool) -> Option<&[Id]> {
         if participant_semantics {
@@ -358,6 +386,7 @@ fn searcher(hit_type: HitType) -> Box<dyn Searcher> {
         HitType::CoachingSession => Box::new(coaching_session::Searcher),
         HitType::Goal => Box::new(goal::Searcher),
         HitType::Topic => Box::new(topic::Searcher),
+        HitType::Transcript => Box::new(transcript::Searcher),
         HitType::TranscriptSuggestion => Box::new(transcript_suggestion::Searcher),
     }
 }
@@ -531,14 +560,23 @@ impl FtsExpressions {
         }
     }
 
+    /// Over a stored `english` tsvector column, for a table too large to
+    /// re-parse each candidate row's text.
+    pub(crate) fn stored(tsv_column: &str) -> Self {
+        Self {
+            tsv: tsv_column.to_string(),
+        }
+    }
+
     /// `tsv @@ query` — the index-served match condition.
     pub(crate) fn match_condition(&self, cq: &CompiledQuery) -> SimpleExpr {
         let (query_sql, binds) = cq.sql_and_binds();
         Expr::cust_with_values(format!("{} @@ {}", self.tsv, query_sql), binds)
     }
 
-    /// `ts_rank(tsv, query)` — recomputed per matching row (see the plan's
-    /// expression-index tradeoff note).
+    /// `ts_rank(tsv, query)` — over a text expression the tsvector is
+    /// recomputed per matching row (see the plan's expression-index tradeoff
+    /// note); a stored column is read as is.
     pub(crate) fn score(&self, cq: &CompiledQuery) -> SimpleExpr {
         let (query_sql, binds) = cq.sql_and_binds();
         Expr::cust_with_values(format!("ts_rank({}, {})", self.tsv, query_sql), binds)
@@ -548,9 +586,9 @@ impl FtsExpressions {
 /// The keyset continuation predicate for one searcher, with the mixed-direction
 /// tie-breakers folded per the searcher's constant type:
 /// `score < s OR (score = s AND (type > t OR (type = t AND id > i)))`.
-pub(crate) fn cursor_condition<C: ColumnTrait>(
+pub(crate) fn cursor_condition(
     score: impl Fn() -> SimpleExpr,
-    id_column: C,
+    id: SimpleExpr,
     my_type: HitType,
     cursor: &Cursor,
 ) -> Condition {
@@ -563,7 +601,7 @@ pub(crate) fn cursor_condition<C: ColumnTrait>(
             .add(
                 Condition::all()
                     .add(Expr::expr(score()).eq(cursor.score))
-                    .add(id_column.gt(cursor.id)),
+                    .add(Expr::expr(id).gt(cursor.id)),
             ),
         // This type sorts before the cursor's type: equal scores were already served.
         Ordering::Less => Expr::expr(score()).lt(cursor.score).into_condition(),
@@ -661,7 +699,7 @@ where
             .apply_if(self.req.cursor, |q, c| {
                 q.filter(cursor_condition(
                     || self.fts.score(&self.cq),
-                    src.id,
+                    src.id.into_expr(),
                     src.hit_type,
                     c,
                 ))

@@ -209,11 +209,16 @@ INSERT INTO transcriptions (id, coaching_session_id, meeting_recording_id, exter
   ('1d000000-0000-4000-a000-000000000003', '0d000000-0000-4000-a000-000000000003', '1c000000-0000-4000-a000-000000000003', 'search-tx-sg', 'completed', now(), now());
 
 -- The S1 segment says "loquat", which no proposal body does: Scenario M's
--- proof that only the body is searched, never the quote.
+-- proof that only the body is searched, never the quote. S1 has five kumquat
+-- segments across two speakers, so Scenario I can see the three-per-transcription cap.
 INSERT INTO transcript_segments (id, transcription_id, speaker_label, text, start_ms, end_ms, created_at) VALUES
   ('1e000000-0000-4000-a000-000000000001', '1d000000-0000-4000-a000-000000000001', 'Speaker A', 'Before spring I will trim that kumquat hedge, and the loquat too.', 60000, 64000, now()),
   ('1e000000-0000-4000-a000-000000000002', '1d000000-0000-4000-a000-000000000002', 'Speaker A', 'Let us try a few tamarind chutney recipes.',                         60000, 63000, now()),
-  ('1e000000-0000-4000-a000-000000000003', '1d000000-0000-4000-a000-000000000003', 'Speaker A', 'We should ship yuzu samples to the buyers.',                         60000, 63000, now());
+  ('1e000000-0000-4000-a000-000000000003', '1d000000-0000-4000-a000-000000000003', 'Speaker A', 'We should ship yuzu samples to the buyers.',                         60000, 63000, now()),
+  ('1e000000-0000-4000-a000-000000000004', '1d000000-0000-4000-a000-000000000001', 'Speaker B', 'Which kumquat variety did you settle on?',                           65000, 68000, now()),
+  ('1e000000-0000-4000-a000-000000000005', '1d000000-0000-4000-a000-000000000001', 'Speaker A', 'The kumquat nursery suggested the round one.',                       69000, 72000, now()),
+  ('1e000000-0000-4000-a000-000000000006', '1d000000-0000-4000-a000-000000000001', 'Speaker B', 'Kumquat marmalade could be a good first product.',                   73000, 77000, now()),
+  ('1e000000-0000-4000-a000-000000000007', '1d000000-0000-4000-a000-000000000001', 'Speaker A', 'Agreed, kumquat marmalade first, then the kumquat syrup.',           78000, 83000, now());
 
 INSERT INTO transcript_analyses (id, transcription_id, target, status, created_at, updated_at) VALUES
   ('1f000000-0000-4000-a000-000000000001', '1d000000-0000-4000-a000-000000000001', 'action', 'completed', now(), now()),
@@ -440,15 +445,30 @@ Logged in as **Sam**.
 
 ## 10. Scenario I: transcripts (PR 2+)
 
-Seed R1's transcript with `kumquat` in at least four segments across two
-different speakers, and `tamarind` in an R2 transcript.
+The 1.2 fixture seeds S1's transcript with `kumquat` in five segments across
+two speakers, and `tamarind` in an R2 transcript.
 
 | Check | Expected |
 |---|---|
-| Casey: `q=kumquat&types=transcripts` | grouped hits: at most **3 segments per transcription**, each with `transcription_id`, `start_ms`, `end_ms`, `speaker_label` |
+| Casey: `q=kumquat&types=transcripts` | exactly **3** hits, all with S1's `transcription_id` (five segments match; a transcription contributes at most three), each with `start_ms`, `end_ms`, `speaker_label`, and `updated_at` null |
+| Grouping | the three hits share one `score` (the transcription's best segment), and `…007`, which says kumquat twice, is among them |
+| Title and snippet | every hit's `title` is the session's title, `Planning the harvest kumquat review`, with no prefix (the client labels the hit from `type`); `snippet` marks `kumquat` |
+| Casey: `q=loquat&types=transcripts` | one hit, segment `…001` — the same word Scenario M proves is *not* found through suggestions |
+| Casey: `q=kumquat&types=transcripts&limit=2`, then follow `next_cursor` | 2 hits then 1, no repeats, then `next_cursor` null |
+| Casey: `q=kumquat&types=transcripts&user_id=<Jordan>` | zero hits — `user_id` means session participant, and Jordan is in neither of Casey's sessions |
 | Deep link | opening the session at `start_ms` lands playback at the matched utterance |
 | Casey: `q=tamarind&types=transcripts` | zero hits — transcripts are the richest corpus and the most damaging leak |
 | Alex: `q=kumquat&types=transcripts` | zero hits — the Admin role grants no relationship visibility (Scenario F) |
+
+**Index use.** The searcher matches the stored `tsv` column, never a
+`to_tsvector(...)` expression. On a production-sized table this must be a
+bitmap scan of `idx_transcript_segments_tsv`; on the fixture's handful of rows
+the planner may prefer a sequential scan, which is fine:
+
+```sql
+EXPLAIN SELECT id FROM refactor_platform.transcript_segments
+  WHERE tsv @@ websearch_to_tsquery('english', 'kumquat');
+```
 
 ## 11. Scenario J: members search (PR 3+)
 

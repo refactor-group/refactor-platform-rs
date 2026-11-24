@@ -277,10 +277,12 @@ Table refactor_platform.transcript_segments {
   sentiment varchar(20) [note: 'VARCHAR (not enum) to avoid PostgreSQL enum ownership friction']
   participant_id uuid [note: 'The speaker who said this segment; null for transcripts recorded before speakers were stored']
   created_at timestamptz [not null, default: `now()`]
+  tsv tsvector [note: 'Generated and stored: to_tsvector(english, text). Read only by search; not on the entity model']
 
   Indexes {
     (transcription_id, start_ms) [name: "idx_transcript_segments_transcription_start", note: "ASC on start_ms for ordered conversation fetch"]
     participant_id [name: "idx_transcript_segments_participant_id"]
+    tsv [type: gin, name: "idx_transcript_segments_tsv", note: "Transcript search"]
   }
 }
 
