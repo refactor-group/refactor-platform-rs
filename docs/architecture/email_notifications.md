@@ -1,6 +1,6 @@
 # Email Notifications Architecture
 
-Transactional emails are sent via [Resend](https://resend.com/). Most still use Resend-hosted templates filled with variables. The single-session emails that carry an invite or a cancellation are composed in the backend from in-repo templates (see [Email composition](email_composition.md)): the session-scheduled email is written to the [email outbox](email_outbox.md) in the transaction that creates the session, and the cancellation in the one that deletes it. The rest move the same way, one sender at a time. The backend handles all email logic; the frontend has no involvement.
+Transactional emails are sent via [Resend](https://resend.com/). Most still use Resend-hosted templates filled with variables. The single-session emails that carry an invite or a cancellation are composed in the backend from in-repo templates (see [Email composition](email_composition.md)): the session-scheduled email is written to the [email outbox](email_outbox.md) in the transaction that creates the session, the cancellation in the one that deletes it, and the session-rescheduled email by the pending reschedule sweep in the transaction that settles the change. The rest move the same way, one sender at a time. The backend handles all email logic; the frontend has no involvement.
 
 ## Notification Types
 
@@ -64,7 +64,6 @@ Encapsulates config resolution so `send_*` functions don't leak config details t
 | Implementor | Env Var |
 |---|---|
 | `RecurringSessionsScheduled` | `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID` |
-| `SessionRescheduled` | `SESSION_RESCHEDULED_EMAIL_TEMPLATE_ID` |
 | `RecurringSessionsRescheduled` | `RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID` |
 | `RecurringSessionsCancelled` | `RECURRING_SESSIONS_CANCELLED_EMAIL_TEMPLATE_ID` |
 | `ActionAssigned` | `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID` |
@@ -156,26 +155,30 @@ the pair rather than "the other person": `Coach: {name}` for coaching, and
 
 Editing a single session's date or duration (`PUT /coaching_sessions/{id}`) does not email
 right away. It records a pending reschedule holding the schedule participants were last
-told, and the `coaching-session-pending-reschedule` sweep (`domain::jobs::coaching_session_pending_reschedule`) sends the
-session-rescheduled email once the schedule has been quiet for
+told, and the `coaching-session-pending-reschedule` sweep (`domain::jobs::coaching_session_pending_reschedule`) writes the
+composed session-rescheduled email to the outbox once the schedule has been quiet for
 `SESSION_RESCHEDULE_SETTLE_SECONDS` (default 60), once
 `SESSION_RESCHEDULE_SETTLE_MAX_SECONDS` (default 300) have passed since the first
 unannounced change, or as soon as the session starts within that cap.
 
 - **Net change.** Several quick edits produce one email, moved from the last announced
-  start to the current one. The `.ics` carries the session's current `ical_sequence`.
+  start to the current one; a change to the length alone names no earlier start. The
+  `.ics` carries the session's current `ical_sequence`, which the edit already bumped.
+- **One transaction.** The sweep loads what the email names first, then locks the session
+  row as an edit does, writes each member's email of the session as locked, restamps their
+  notice and settles the row together. A change that lands after the claim is in the email
+  and stays pending from it; a row another sweep has since claimed writes nothing. The
+  outbox owns delivery, so a written email counts as told.
 - **Undo sends nothing.** Moving the session back to its announced schedule before the
   email goes out drops the pending row, and nobody is emailed.
-- **Retries.** A failed send is retried up to three times, then given up; the regular
-  reminder is the fallback. A new change restores the full count, and a failure is not
-  charged to a change made during the send. Delivery is at least once (see
-  [Background Jobs](background_jobs.md)).
-- **Members only.** Membership is checked at send time, as the reminder does: a
-  participant removed from the organization during the wait is not emailed, and a change
-  whose coachee was removed settles unsent.
-- **No email configured.** Without `RESEND_API_KEY` or
-  `SESSION_RESCHEDULED_EMAIL_TEMPLATE_ID` the sweep still runs and drops due rows unsent,
-  since a pending row suppresses the session's reminder.
+- **Retries.** A failed load or write is retried up to three times, then given up; the
+  regular reminder is the fallback. A new change restores the full count, and a failure is
+  not charged to a change made during the attempt.
+- **Members only.** Membership is checked when the email is written, as the reminder does:
+  a participant removed from the organization during the wait is not emailed, and a change
+  no member is owed settles unsent.
+- **No email composed.** Without `FRONTEND_BASE_URL` the sweep still runs and drops due
+  rows unsent, since a pending row suppresses the session's reminder.
 
 Every other session email stays immediate: creation, this-and-following edits, series
 edits, cancellations, and resends. Creation and cancellation write theirs to the outbox
@@ -226,7 +229,6 @@ Session dates are stored as UTC. The `format_session_date_time()` helper convert
 | `RESEND_API_KEY` | API authentication |
 | `WELCOME_EMAIL_TEMPLATE_ID` | Welcome email template |
 | `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID` | Recurring Sessions scheduled template |
-| `SESSION_RESCHEDULED_EMAIL_TEMPLATE_ID` | Single-session reschedule template |
 | `RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID` | Series reschedule template |
 | `RECURRING_SESSIONS_CANCELLED_EMAIL_TEMPLATE_ID` | Series cancellation template |
 | `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID` | Action assigned template |

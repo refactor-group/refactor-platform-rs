@@ -19,7 +19,7 @@ use crate::{
     coaching_sessions,
     email_composition::{
         calendar_attachments, compose,
-        session::{CancelReason, SessionCancelled, SessionScheduled},
+        session::{CancelReason, SessionCancelled, SessionRescheduled, SessionScheduled},
         Actor, Brand, Email, Parties, Person, When, FROM_ADDRESS, FROM_DISPLAY_NAME,
     },
     email_outbox::{self, Attachment, Envelope, Mailer, Receipt, Subject},
@@ -104,19 +104,6 @@ impl EmailNotification for RecurringSessionsScheduled {
     }
     fn notification_name() -> &'static str {
         "recurring sessions scheduled"
-    }
-    fn url_path_template(config: &Config) -> Option<String> {
-        Some(config.session_scheduled_email_url_path().to_owned())
-    }
-}
-
-struct SessionRescheduled;
-impl EmailNotification for SessionRescheduled {
-    fn template_id(config: &Config) -> Option<String> {
-        config.session_rescheduled_email_template_id()
-    }
-    fn notification_name() -> &'static str {
-        "session rescheduled"
     }
     fn url_path_template(config: &Config) -> Option<String> {
         Some(config.session_scheduled_email_url_path().to_owned())
@@ -761,57 +748,6 @@ impl ResolvedEmailConfig {
     }
 }
 
-/// Send a session-rescheduled notification email to a single recipient, moved from
-/// `previous_start`. This is called once per recipient (coach and coachee each get their own
-/// email).
-async fn send_session_rescheduled_to_recipient(
-    email_config: &ResolvedEmailConfig,
-    to: &Recipient<'_>,
-    session: &coaching_sessions::Model,
-    organization: &organizations::Model,
-    ics_body: &str,
-    previous_start: NaiveDateTime,
-) -> Result<(), Error> {
-    let recipient = to.user;
-    let (session_date, session_time) = format_session_date_time(session.date, &recipient.timezone);
-    let session_url = email_config.build_session_url(&session.id)?;
-    let session_duration =
-        crate::duration::Duration::from_minutes_unchecked(session.duration_minutes).to_string();
-
-    let email_request = SendEmailRequestBuilder::new()
-        .from(FROM_ADDRESS)
-        .to_with_name(
-            &recipient.email,
-            format!("{} {}", recipient.first_name, recipient.last_name),
-        )
-        .template_id(&email_config.template_id)
-        .add_variable("first_name", recipient.first_name.as_str())
-        .add_variable("other_user_first_name", to.other_user.first_name.as_str())
-        .add_variable("other_user_last_name", to.other_user.last_name.as_str())
-        .add_variable("other_user_role", to.other_user_role.as_str())
-        .add_variable("session_label", to.session_label)
-        .add_variable("session_label_plural", to.session_label_plural)
-        .add_variable("organization_name", organization.name.as_str())
-        .add_variable("session_date", session_date.as_str())
-        .add_variable("session_time", session_time.as_str())
-        .add_variable("session_duration", session_duration.as_str())
-        .add_variable("session_url", session_url.as_str())
-        .add_variable("session_or_series", "session")
-        .add_ics_attachment(ics_body, &ical::Method::Request)
-        .add_variable(
-            "session_when",
-            format_session_when(session.date, &recipient.timezone),
-        )
-        .add_variable(
-            "previous_session_when",
-            format_previous_session_when(previous_start, session.date, &recipient.timezone),
-        )
-        .build()
-        .await?;
-
-    email_config.client.send_email(email_request).await
-}
-
 /// Build the single-session invite `.ics` body. Pure: `dtstamp` is injected so the
 /// output is deterministic for a given input.
 fn build_session_invite_ics(
@@ -1085,68 +1021,6 @@ where
     }
 }
 
-/// Send session-rescheduled notification emails to the participants `audience` may reach.
-/// `session` must already carry the bumped `ical_sequence`, so the invite updates the calendar
-/// event in place (same `UID`, next `SEQUENCE`). `previous_start` is the start the
-/// recipients last saw; equal to the new start when only a non-time field changed.
-async fn send_session_rescheduled_email(
-    db: &DatabaseConnection,
-    config: &Config,
-    audience: &Audience<'_>,
-    session: &coaching_sessions::Model,
-    organization: &organizations::Model,
-    previous_start: NaiveDateTime,
-) -> Result<Delivered, Error> {
-    let Audience {
-        participants,
-        member_ids,
-    } = *audience;
-    let Participants { coach, coachee, .. } = *participants;
-    info!(
-        "Initiating {} emails for session: {} (coach: {}, coachee: {})",
-        SessionRescheduled::notification_name(),
-        session.id,
-        coach.email,
-        coachee.email
-    );
-
-    let email_config = ResolvedEmailConfig::new::<SessionRescheduled>(config).await?;
-
-    // Same VEVENT for both recipients.
-    let description = Agenda::of(db, session.id).await?.description(
-        participants,
-        session,
-        organization,
-        email_config.build_session_url(&session.id)?,
-    );
-    let zone = invite_zone(db, session, participants.schedule_owner(session)).await?;
-    let ics_body = session_ics(
-        participants,
-        session,
-        &ical::Method::Request,
-        description,
-        zone,
-    )?;
-
-    let copies = participants.copies();
-    Ok(send_to_participants(
-        &copies,
-        member_ids,
-        SessionRescheduled::notification_name(),
-        |to| {
-            send_session_rescheduled_to_recipient(
-                &email_config,
-                to,
-                session,
-                organization,
-                &ics_body,
-                previous_start,
-            )
-        },
-    )
-    .await)
-}
-
 /// Context for an action-assigned email, bundling the action-specific data
 /// that the email needs for template variables.
 struct ActionEmailContext<'a> {
@@ -1243,55 +1117,6 @@ fn build_session_ics(
         (Some(series_id), Some(_)) => build_occurrence(series_id, description),
         _ => build_standalone(description),
     }
-}
-
-/// Sends the session-rescheduled emails to the participants still in the organization.
-///
-/// Membership is checked here, not trusted from the edit: the send runs after a settle
-/// period, by which time someone may have lost access to the session's details.
-///
-/// A delivered send must settle the session's pending reschedule (via
-/// `coaching_session_pending_reschedule::complete`). Returns the session's relationship
-/// beside what the send did for each participant.
-pub async fn send_session_rescheduled(
-    db: &DatabaseConnection,
-    config: &Config,
-    session: &coaching_sessions::Model,
-    previous_start: NaiveDateTime,
-) -> Result<(coaching_relationships::Model, Delivered), Error> {
-    let relationship =
-        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-    let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
-    let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
-    let org = organization::find_by_id(db, relationship.organization_id).await?;
-    let member_ids = notify_member_ids(db, &relationship).await?;
-    if member_ids.is_empty() {
-        return Ok((
-            relationship,
-            Delivered {
-                coachee: Delivery::NoLongerAMember,
-                coach: Delivery::NoLongerAMember,
-            },
-        ));
-    }
-
-    let delivered = send_session_rescheduled_email(
-        db,
-        config,
-        &Audience {
-            participants: &Participants {
-                coach: &coach,
-                coachee: &coachee,
-                kind: relationship.kind,
-            },
-            member_ids: &member_ids,
-        },
-        session,
-        &org,
-        previous_start,
-    )
-    .await?;
-    Ok((relationship, delivered))
 }
 
 /// Whether a reminder attempt actually mailed anyone.
@@ -1652,6 +1477,8 @@ fn session_ics(
 pub(crate) struct SessionCopy {
     pub(crate) parties: Parties,
     pub(crate) recipient_id: Id,
+    /// The recipient's zone, which every start in their copy is shown in.
+    pub(crate) timezone: String,
     pub(crate) when: When,
     pub(crate) calendar: Vec<Attachment>,
 }
@@ -1684,6 +1511,24 @@ impl SessionCopy {
             calendar: self.calendar,
         }
     }
+
+    /// The session-rescheduled email for a session lasting `duration` and opened at `url`,
+    /// moved from `previous` when its start moved.
+    pub(crate) fn rescheduled(
+        self,
+        previous: Option<NaiveDateTime>,
+        duration: String,
+        url: String,
+    ) -> SessionRescheduled {
+        SessionRescheduled {
+            previous: previous.map(|start| session_when(start, &self.timezone)),
+            parties: self.parties,
+            when: self.when,
+            duration,
+            url,
+            calendar: self.calendar,
+        }
+    }
 }
 
 /// The email `email_for` builds for each participant `audience` may reach, coachee first,
@@ -1706,6 +1551,7 @@ fn session_envelopes<E: Email>(
             let email = email_for(SessionCopy {
                 parties: to.parties(organization),
                 recipient_id: to.user.id,
+                timezone: to.user.timezone.clone(),
                 when: session_when(session.date, &to.user.timezone),
                 calendar: calendar.to_vec(),
             });
@@ -1993,10 +1839,28 @@ impl SessionNotice {
         session: &coaching_sessions::Model,
         scheduler_id: Id,
     ) -> impl Fn(SessionCopy) -> SessionScheduled {
-        let duration =
-            crate::duration::Duration::from_minutes_unchecked(session.duration_minutes).to_string();
-        let url = self.page.session(session.id);
+        let (duration, url) = self.length_and_link(session);
         move |copy| copy.scheduled(scheduler_id, duration.clone(), url.clone())
+    }
+
+    /// Builds each copy of `session`'s session-rescheduled email, told last at `announced`:
+    /// it names that start only when the session no longer starts there.
+    pub(crate) fn rescheduled(
+        &self,
+        session: &coaching_sessions::Model,
+        announced: NaiveDateTime,
+    ) -> impl Fn(SessionCopy) -> SessionRescheduled {
+        let (duration, url) = self.length_and_link(session);
+        let previous = (announced != session.date).then_some(announced);
+        move |copy| copy.rescheduled(previous, duration.clone(), url.clone())
+    }
+
+    /// How long `session` lasts and where it opens, as its emails show them.
+    fn length_and_link(&self, session: &coaching_sessions::Model) -> (String, String) {
+        (
+            crate::duration::Duration::from_minutes_unchecked(session.duration_minutes).to_string(),
+            self.page.session(session.id),
+        )
     }
 
     /// Renders the email `email_for` builds for each participant this notice reaches, about

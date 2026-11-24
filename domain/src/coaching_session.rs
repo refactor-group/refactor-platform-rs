@@ -23,10 +23,11 @@ use crate::organization::ensure_not_archived;
 use crate::search::visibility_for;
 use crate::{users, Id};
 use chrono::{DurationRound, NaiveDateTime, TimeDelta, Utc};
+use entity_api::error::EntityApiErrorKind;
 use entity_api::{
     coaching_relationship, coaching_session, coaching_session_notice,
     coaching_session_pending_invite,
-    coaching_session_pending_reschedule::{self, Schedule},
+    coaching_session_pending_reschedule::{self, Completed, Schedule},
     coaching_sessions, mutate, organization, query,
     query::{IntoQueryFilterMap, QuerySort},
 };
@@ -767,6 +768,62 @@ pub(crate) async fn enqueue_owed_invite(
     }
     .map_err(entity_api::error::Error::from)?;
     Ok(())
+}
+
+/// Writes the session-rescheduled emails `claimed` owes to the participants still in the
+/// organization, stamps their notice and settles `claimed`, in one transaction. The emails
+/// describe the session as the transaction locked it; a schedule participants were already
+/// told writes none. A stack that composes no email settles `claimed` unsent, a deleted
+/// session took its row with it, and a claim another sweep has since taken writes nothing.
+pub(crate) async fn enqueue_reschedule(
+    db: &DatabaseConnection,
+    config: &Config,
+    claimed: &coaching_session_pending_reschedule::Claimed,
+) -> Result<(), Error> {
+    let id = claimed.coaching_session_id;
+    // Loaded outside the transaction, which then only locks, renders and writes.
+    let session = match find_by_id(db, id).await {
+        Err(e) if e.error_kind == EntityApiErrorKind::RecordNotFound => return Ok(()),
+        loaded => loaded?,
+    };
+    let notice = match reschedule_notice(db, config, &session).await {
+        Err(e) if e.error_kind == DomainErrorKind::Internal(InternalErrorKind::Config) => {
+            warn!("Session {id}'s reschedule is dropped unsent: no email can be composed: {e:?}");
+            None
+        }
+        loaded => Some(loaded?),
+    };
+
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    // The edit's row lock, taken before the outbox's conversation lock.
+    let locked = coaching_session::find_by_id_for_update(&txn, id).await?;
+    let current = Schedule::from(&locked);
+    if let Some((notice, agenda)) = notice.filter(|_| current != claimed.announced) {
+        let rescheduled = notice.rescheduled(&locked, claimed.announced.date);
+        let told = notice
+            .enqueue(&txn, &locked, &Calendar::Invite(&agenda), rescheduled)
+            .await?;
+        coaching_session_notice::stamp(&txn, id, &told, Utc::now().into()).await?;
+    }
+    match coaching_session_pending_reschedule::complete(&txn, claimed, current).await? {
+        Completed::Settled | Completed::StillPending => txn.commit().await,
+        Completed::Superseded => txn.rollback().await,
+    }
+    .map_err(entity_api::error::Error::from)?;
+    Ok(())
+}
+
+/// What `session`'s reschedule names for the participants still in the organization, and
+/// its agenda.
+async fn reschedule_notice(
+    db: &DatabaseConnection,
+    config: &Config,
+    session: &Model,
+) -> Result<(SessionNotice, Agenda), Error> {
+    let relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
+    SessionNotice::invite(db, config, &relationship, member_ids, session).await
 }
 
 /// What session `id`'s own invite owed to `user_id` names and lists, or `None` when none is

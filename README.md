@@ -102,7 +102,6 @@ The platform uses Resend for transactional emails. To configure email functional
    - `RESEND_API_KEY`: Your Resend API key
    - `WELCOME_EMAIL_TEMPLATE_ID`: The template ID for welcome emails
    - `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for recurring-sessions-scheduled notification emails
-   - `SESSION_RESCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for single-session reschedule notification emails
    - `RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for series reschedule notification emails
    - `RECURRING_SESSIONS_CANCELLED_EMAIL_TEMPLATE_ID`: The template ID for series cancellation notification emails
    - `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID`: The template ID for action-assigned notification emails

@@ -1,5 +1,7 @@
 //! Rendered emails for outbox tests.
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use entity_api::email_outbox::Model;
 use sea_orm::{ConnectionTrait, EntityTrait, QueryOrder};
 
@@ -30,6 +32,33 @@ pub(crate) async fn rows(db: &impl ConnectionTrait) -> Vec<Model> {
         .all(db)
         .await
         .expect("the rows read")
+}
+
+/// Every outbox row, oldest first, with the email it stores.
+pub(crate) async fn emails(db: &impl ConnectionTrait) -> Vec<(Model, OutgoingEmail)> {
+    rows(db)
+        .await
+        .into_iter()
+        .map(|row| {
+            let email = serde_json::from_value(row.request.clone().unwrap_or_default())
+                .expect("the stored email reads");
+            (row, email)
+        })
+        .collect()
+}
+
+/// The only calendar part of `email`, decoded and unfolded.
+pub(crate) fn calendar_part(email: &OutgoingEmail) -> String {
+    let [attachment] = email.attachments.as_slice() else {
+        panic!("one calendar part: {email:?}");
+    };
+    String::from_utf8(
+        STANDARD
+            .decode(&attachment.content)
+            .expect("the part is base64"),
+    )
+    .expect("the part is UTF-8")
+    .replace("\r\n ", "")
 }
 
 /// The outbox's one row; fails when there is not exactly one.

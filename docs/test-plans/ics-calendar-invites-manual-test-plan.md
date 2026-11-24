@@ -214,11 +214,8 @@ Editing a single session now re-sends an updated invite (`METHOD:REQUEST`, **sam
 `SEQUENCE`**) so calendar clients update the event in place. Fires only when a calendar-relevant field
 changed: `date`, `duration_minutes`, `meeting_url`, or `title`.
 
-**Extra setup:** configure `--session-rescheduled-email-template-id=<your Resend template>`. Without it, the
-edit still succeeds but the reschedule email fails best-effort and is logged (see RS2).
-
-Single and series use **separate** reschedule templates. Resend templates have no conditional syntax and the
-two paths send different variables, so one template cannot render both.
+**Extra setup:** configure `--frontend-base-url`. The reschedule email is composed in the backend and
+written to the email outbox; without a frontend base URL none composes (see RS2).
 
 ### HR1: Edit a session's time (happy path)
 1. Create a single session (H1), import its `.ics` (note `SEQUENCE:0`).
@@ -237,10 +234,10 @@ two paths send different variables, so one template cannot render both.
 1. Submit a session update that leaves `date`, `duration_minutes`, `meeting_url`, and `title` unchanged.
 2. **Expect:** **no** reschedule email is sent (nothing calendar-relevant changed); `SEQUENCE` does not bump.
 
-### RS2: Reschedule template not configured (sad path)
-1. Run the backend **without** `--session-rescheduled-email-template-id`, then edit a session's time.
-2. **Expect:** the edit succeeds (session updates, `ical_sequence` bumps); the reschedule email fails
-   best-effort and is logged. No crash, no partial email.
+### RS2: No email can be composed (sad path)
+1. Run the backend **without** `--frontend-base-url` (outside production), then edit a session's time.
+2. **Expect:** the edit succeeds (session updates, `ical_sequence` bumps); once it settles, the pending
+   reschedule is dropped unsent and logged. No crash, no partial email.
 
 ---
 

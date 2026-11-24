@@ -111,6 +111,10 @@ lists the topics, goals and actions of an `Agenda` given when it is written:
 - **Scheduled**: the session create writes both members' emails last in its transaction,
   after the hydration tasks. Its DESCRIPTION lists the goals and topics those tasks
   returned, so the invite names exactly what the create commits.
+- **Rescheduled**: the pending reschedule sweep writes each member's email of the session
+  as its transaction locked it, restamps their notice and settles the row together. It names
+  the start they last heard of only when the start moved. Without `FRONTEND_BASE_URL` the
+  row is settled unsent.
 - **Owed invites**: the pending reschedule sweep writes one participant's scheduled email
   in a transaction that bumps the session's `SEQUENCE` and settles the owed row. Without
   `FRONTEND_BASE_URL` the row is settled unsent.
