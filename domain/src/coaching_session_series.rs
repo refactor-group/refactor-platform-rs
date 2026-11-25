@@ -844,17 +844,19 @@ async fn record_following_notice(
         .await;
 }
 
-/// Delete the series row and its future sessions. Past sessions survive as
+/// Delete the series row and its future sessions, which `actor_id` cancelled, and tell both
+/// participants in the same transaction. Past sessions survive as
 /// orphan one-offs: the FK's `ON DELETE SET NULL` clears
 /// `coaching_session_series_id` for every row that the explicit future
 /// delete didn't touch, so their notes / meeting URLs / collab docs stay
 /// intact.
-///
 pub(crate) async fn delete_with_future_sessions(
     db: &DatabaseConnection,
     config: &Config,
-    series_id: Id,
+    series: &Model,
+    actor_id: Id,
 ) -> Result<(), Error> {
+    let series_id = series.id;
     let now_naive = chrono::Utc::now().naive_utc();
     let future_sessions =
         entity_api::coaching_session::find_future_sessions_by_series_id(db, series_id, now_naive)
@@ -869,6 +871,10 @@ pub(crate) async fn delete_with_future_sessions(
     // Read before the delete: the image rows' FK cascades, and `storage_key` is the only
     // pointer to the bytes.
     let image_keys = coaching_session_image::storage_keys_for_sessions(db, &future_ids).await?;
+    // Loaded outside the transaction: a failed read there would abort it, and the commit
+    // would roll the delete back while this call reported success.
+    let notice =
+        emails::SeriesNotice::cancellation(db, config, series.coaching_relationship_id).await;
 
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
 
@@ -898,14 +904,18 @@ pub(crate) async fn delete_with_future_sessions(
 
     coaching_session_series::delete(&txn, series_id).await?;
 
+    // The session locks and the series row are held, so the outbox's conversation lock
+    // comes last.
+    if let (Some(notice), Some(bumped)) = (&notice, &cancelled) {
+        notice
+            .enqueue_cancellation(&txn, bumped, &cancelled_sessions, actor_id)
+            .await?;
+    }
+
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
     cleanup_orphaned_docs(config, series_id, "delete", &doc_names_to_cleanup).await;
     coaching_session_image::destroy_objects(config, &image_keys).await;
-
-    if let Some(series) = cancelled {
-        emails::notify_recurring_sessions_cancelled(db, config, &series, &cancelled_sessions).await;
-    }
 
     Ok(())
 }
@@ -1953,7 +1963,13 @@ mod tests {
             }])
             .into_connection();
 
-        delete_with_future_sessions(&db, &test_config(), series_id).await?;
+        delete_with_future_sessions(
+            &db,
+            &test_config(),
+            &series_row(series_id, relationship_id),
+            Id::new_v4(),
+        )
+        .await?;
         Ok(())
     }
 
@@ -2129,8 +2145,105 @@ mod tests {
 
         // Tiptap is unreachable, so cleanup fails internally — but the call
         // returns Ok, proving the failure is swallowed rather than propagated.
-        delete_with_future_sessions(&db, &test_config(), series_id).await?;
+        delete_with_future_sessions(
+            &db,
+            &test_config(),
+            &series_row(series_id, relationship_id),
+            Id::new_v4(),
+        )
+        .await?;
         Ok(())
+    }
+
+    /// A weekly series `id` in relationship `relationship_id`, never sent.
+    fn series_row(id: Id, relationship_id: Id) -> Model {
+        let now = chrono::Utc::now();
+        Model {
+            id,
+            coaching_relationship_id: relationship_id,
+            rule: serde_json::json!({}),
+            ical_sequence: 0,
+            created_by_user_id: Id::new_v4(),
+            created_at: now.into(),
+            updated_at: now.into(),
+        }
+    }
+
+    /// A series delete writes its cancellations after the session locks and the series row,
+    /// taking the outbox's conversation lock last before COMMIT, and calls no provider.
+    #[tokio::test]
+    async fn delete_with_future_sessions_writes_the_cancellations_last_in_its_transaction() {
+        let (series, _, sessions) = following_fixture(2);
+        let bumped = Model {
+            ical_sequence: series.ical_sequence + 1,
+            ..series.clone()
+        };
+        let (coach, coachee) = (
+            user_with_email("coach@example.com"),
+            user_with_email("coachee@example.com"),
+        );
+        let relationship = entity::coaching_relationships::Model {
+            coach_id: coach.id,
+            coachee_id: coachee.id,
+            ..member_relationship(series.coaching_relationship_id)
+        };
+        let now = chrono::Utc::now();
+        let organization = entity::organizations::Model {
+            id: relationship.organization_id,
+            name: "Acme".into(),
+            logo: None,
+            slug: "acme".into(),
+            created_at: now.into(),
+            updated_at: now.into(),
+            archived_at: None,
+            archived_by: None,
+        };
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_query_results([sessions.clone()])
+            .append_query_results([Vec::<coaching_session_images::Model>::new()])
+            .append_query_results([[relationship]])
+            .append_query_results([[coach.clone()], [coachee]])
+            .append_query_results([[organization]])
+            // the re-read under the locks, then the bumped series
+            .append_query_results([sessions.clone()])
+            .append_query_results([[bumped]])
+            // BEGIN, two session locks, the session and series deletes, the conversation
+            // lock, the outbox write and COMMIT
+            .append_exec_results((0..8).map(|_| exec_ok()))
+            .into_connection();
+        let mailbox = Mailbox::new().await;
+
+        delete_with_future_sessions(&db, &mailbox.config(), &series, coach.id)
+            .await
+            .expect("the delete succeeds");
+
+        assert!(mailbox.recipients().is_empty(), "no provider is called");
+        let sql = written_sql(db);
+        let at = |needle: &str| {
+            sql.iter()
+                .position(|q| q.contains(needle))
+                .unwrap_or_else(|| panic!("no {needle}: {sql:?}"))
+        };
+        let session_locks = sql
+            .iter()
+            .enumerate()
+            .filter(|(_, q)| q.contains("pg_advisory_xact_lock($1)"))
+            .map(|(position, _)| position)
+            .collect::<Vec<_>>();
+        let series_row = at(r#"UPDATE "refactor_platform"."coaching_session_series""#);
+        let series_delete = at(r#"DELETE FROM "refactor_platform"."coaching_session_series""#);
+        let outbox_lock = at("pg_advisory_xact_lock($1, $2)");
+        let write = at(r#"INSERT INTO "refactor_platform"."email_outbox""#);
+        let commit = at("COMMIT");
+        assert_eq!(session_locks.len(), 2, "{sql:?}");
+        assert!(
+            session_locks.iter().all(|lock| *lock < series_row)
+                && series_row < series_delete
+                && series_delete < outbox_lock
+                && outbox_lock < write
+                && write < commit,
+            "{sql:?}"
+        );
     }
 
     fn test_config() -> Config {

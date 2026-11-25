@@ -1250,7 +1250,6 @@ jobs:
                   ACTION_ASSIGNED_EMAIL_TEMPLATE_ID='${{ vars.ACTION_ASSIGNED_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
                   ADDED_TO_ORGANIZATION_EMAIL_TEMPLATE_ID='${{ vars.ADDED_TO_ORGANIZATION_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
                   RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID='${{ vars.RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
-                  RECURRING_SESSIONS_CANCELLED_EMAIL_TEMPLATE_ID='${{ vars.RECURRING_SESSIONS_CANCELLED_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
                   SESSION_REMINDER_EMAIL_TEMPLATE_ID='${{ vars.SESSION_REMINDER_EMAIL_TEMPLATE_ID || 'UNUSED' }}'
                   # Blank, not 'UNUSED': these parse as numbers, and an empty value
                   # falls back to the in-code defaults (24h / 15min).

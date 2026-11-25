@@ -831,11 +831,15 @@ pub async fn delete(db: &impl ConnectionTrait, coaching_session_id: Id) -> Resul
 /// Acquires a transaction-scoped Postgres advisory lock keyed on the session
 /// id. Other callers requesting the same lock block until this transaction
 /// commits or rolls back. Used by the lazy-hydration path to serialize
-/// concurrent first-load requests for the same session.
+/// concurrent first-load requests for the same session. Does nothing on SQLite, the test
+/// tier, which has no advisory locks and runs on one connection.
 pub async fn acquire_advisory_lock(
     txn: &impl ConnectionTrait,
     session_id: Id,
 ) -> Result<(), Error> {
+    if txn.get_database_backend() != DatabaseBackend::Postgres {
+        return Ok(());
+    }
     let key = advisory_lock_key(session_id);
     txn.execute_raw(Statement::from_sql_and_values(
         DatabaseBackend::Postgres,

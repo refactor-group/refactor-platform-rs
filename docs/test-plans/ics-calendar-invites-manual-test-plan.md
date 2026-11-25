@@ -369,9 +369,10 @@ Deleting a session or a series sends a `METHOD:CANCEL` invite with `STATUS:CANCE
 the original, and a **bumped `SEQUENCE`**, so calendar clients remove the event. The cancellation email has
 **no link and no button**: the session no longer exists, so a link would 404.
 
-The email fires **after** the delete succeeds, so a failed delete never produces a cancellation notice.
+The email is written to the outbox in the delete's own transaction, so a failed delete never produces a
+cancellation notice.
 
-**Extra setup:** `--recurring-sessions-cancelled-email-template-id` for the series cancellation; a single-session cancellation is composed in the backend and needs only `--frontend-base-url`.
+**Extra setup:** both cancellations are composed in the backend and need only `--frontend-base-url`.
 
 ### HC1: Cancel a single session (happy path)
 1. Create a **future** single session (H1) and import its `.ics`.
@@ -386,7 +387,9 @@ The email fires **after** the delete succeeds, so a failed delete never produces
 1. Create a weekly series with future occurrences and import its `.ics`.
 2. Delete the series.
 3. **Expect:** a cancellation email stating how many upcoming sessions were cancelled, with the first and
-   last dates of that range. The `.ics` carries `METHOD:CANCEL` and the same `UID:<series_id>@myrefactor.com`.
+   last dates of that range in each recipient's own timezone. The canceller's subject reads "You cancelled your
+   series with ...", the other participant's "... cancelled your series". The `.ics` carries `METHOD:CANCEL`,
+   the same `UID:<series_id>@myrefactor.com` and `RRULE`, and a `SEQUENCE` one higher than the last invite.
 4. Open it: the whole recurring event is removed from your calendar.
 5. **In the app:** any sessions that already happened are still listed, with their notes. Only future
    sessions are deleted.
@@ -401,9 +404,10 @@ The email fires **after** the delete succeeds, so a failed delete never produces
 2. **Expect:** the series is deleted and **no** cancellation email is sent (there is nothing upcoming to
    cancel). Past sessions survive in the app.
 
-### SC3: Cancel template not configured (sad path)
-1. Run the backend **without** the cancellation template flags, then delete a future session.
-2. **Expect:** the delete succeeds; the email fails best-effort and is logged. No crash.
+### SC3: Email not configured (sad path)
+1. Run the backend **without** `--frontend-base-url`, then delete a future session and a series with future
+   sessions.
+2. **Expect:** both deletes succeed; each skipped email is logged. No crash.
 
 ### SC4: Series cancel also clears past occurrences from the calendar (known limitation)
 1. Cancel a series that had at least one occurrence in the past.

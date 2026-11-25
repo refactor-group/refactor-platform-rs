@@ -118,12 +118,18 @@ lists the topics, goals and actions of an `Agenda` given when it is written:
 - **Owed invites**: the pending reschedule sweep writes one participant's scheduled email
   in a transaction that bumps the session's `SEQUENCE` and settles the owed row. Without
   `FRONTEND_BASE_URL` the row is settled unsent.
+- **Series cancelled**: the series delete writes both participants' emails in its
+  transaction, after its session locks and the series row, carrying the series `CANCEL` at
+  its bumped `SEQUENCE` and a `CANCEL` for each legacy member's standalone event. Its dates
+  are each upcoming session's own start in the recipient's zone. A `SeriesNotice` loads what
+  they name before the transaction, as `SessionNotice` does.
 - **Resent invites**: `POST /coaching_sessions/{id}/resend_invite` renders the same email
   and hands it to the `Mailer` at once, so it can still answer whether it was delivered.
   With no email provider it answers 502 without bumping `SEQUENCE`.
 Production refuses to start without `FRONTEND_BASE_URL`, next to the email provider check. The standalone-event cancellations that series edits owe
-still follow the series emails, which send after their own transaction, so they are
-enqueued in a transaction of their own right after it until the series emails move.
+still follow the series scheduled and rescheduled emails, which send after their own
+transaction, so they are enqueued in a transaction of their own right after it until those
+emails move.
 
 ## Tests
 

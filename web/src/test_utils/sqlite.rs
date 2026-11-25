@@ -688,7 +688,6 @@ fn config(server_url: &str, store_root: &StoreRoot) -> Config {
         "--frontend-base-url=https://app.access.test",
         "--recurring-sessions-scheduled-email-template-id=recurring-sessions-scheduled",
         "--recurring-sessions-rescheduled-email-template-id=recurring-sessions-rescheduled",
-        "--recurring-sessions-cancelled-email-template-id=recurring-sessions-cancelled",
         "--action-assigned-email-template-id=action-assigned",
         "--welcome-email-template-id=welcome",
         "--assembly-ai-api-key=access-test-assembly-ai-key",

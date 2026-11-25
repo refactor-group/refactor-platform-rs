@@ -49,18 +49,31 @@ pub(crate) async fn emails(db: &impl ConnectionTrait) -> Vec<(Model, OutgoingEma
 
 /// The only calendar part of `email`, decoded and unfolded.
 pub(crate) fn calendar_part(email: &OutgoingEmail) -> String {
-    let [attachment] = email.attachments.as_slice() else {
-        panic!("one calendar part: {email:?}");
-    };
-    String::from_utf8(
-        STANDARD
-            .decode(&attachment.content)
-            .expect("the part is base64"),
-    )
-    .expect("the part is UTF-8")
-    // RFC 5545 folds long lines with a space or a tab after the break.
-    .replace("\r\n ", "")
-    .replace("\r\n\t", "")
+    let [part] = calendar_parts(email)
+        .try_into()
+        .unwrap_or_else(|parts: Vec<String>| {
+            panic!("one calendar part, not {}: {email:?}", parts.len())
+        });
+    part
+}
+
+/// Every calendar part of `email` in order, decoded and unfolded.
+pub(crate) fn calendar_parts(email: &OutgoingEmail) -> Vec<String> {
+    email
+        .attachments
+        .iter()
+        .map(|attachment| {
+            String::from_utf8(
+                STANDARD
+                    .decode(&attachment.content)
+                    .expect("the part is base64"),
+            )
+            .expect("the part is UTF-8")
+            // RFC 5545 folds long lines with a space or a tab after the break.
+            .replace("\r\n ", "")
+            .replace("\r\n\t", "")
+        })
+        .collect()
 }
 
 /// The outbox's one row; fails when there is not exactly one.

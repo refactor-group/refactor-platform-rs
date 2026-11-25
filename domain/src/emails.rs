@@ -19,6 +19,7 @@ use crate::{
     coaching_sessions,
     email_composition::{
         calendar_attachments, compose,
+        series::SeriesCancelled,
         session::{CancelReason, SessionCancelled, SessionRescheduled, SessionScheduled},
         Actor, Brand, Email, Parties, Person, When, FROM_ADDRESS, FROM_DISPLAY_NAME,
     },
@@ -120,18 +121,6 @@ impl EmailNotification for RecurringSessionsRescheduled {
     }
     fn url_path_template(config: &Config) -> Option<String> {
         Some(config.session_scheduled_email_url_path().to_owned())
-    }
-}
-
-/// Deliberately keeps the trait's `None` URL template: the series row is gone by the
-/// time a recipient could click through.
-struct RecurringSessionsCancelled;
-impl EmailNotification for RecurringSessionsCancelled {
-    fn template_id(config: &Config) -> Option<String> {
-        config.recurring_sessions_cancelled_email_template_id()
-    }
-    fn notification_name() -> &'static str {
-        "series cancelled"
     }
 }
 
@@ -1472,25 +1461,45 @@ fn session_ics(
     }
 }
 
-/// One participant's facts about a session, formatted for them, that each session email is
-/// built from.
-pub(crate) struct SessionCopy {
+/// One participant's facts, formatted for them, that every relationship email is built from.
+pub(crate) struct RecipientCopy {
     pub(crate) parties: Parties,
     pub(crate) recipient_id: Id,
     /// The recipient's zone, which every start in their copy is shown in.
     pub(crate) timezone: String,
-    pub(crate) when: When,
     pub(crate) calendar: Vec<Attachment>,
 }
 
+impl RecipientCopy {
+    /// `start` (UTC) in the recipient's zone.
+    fn when(&self, start: NaiveDateTime) -> When {
+        session_when(start, &self.timezone)
+    }
+}
+
+/// One participant's facts about a session, formatted for them, that each session email is
+/// built from.
+pub(crate) struct SessionCopy {
+    copy: RecipientCopy,
+    when: When,
+}
+
 impl SessionCopy {
+    /// `copy` about `session`, with its start in the recipient's zone.
+    fn of(copy: RecipientCopy, session: &coaching_sessions::Model) -> Self {
+        Self {
+            when: copy.when(session.date),
+            copy,
+        }
+    }
+
     /// The session-cancelled email, for `cancellation`.
     pub(crate) fn cancelled(self, cancellation: Cancellation) -> SessionCancelled {
         SessionCancelled {
-            reason: cancellation.reason_for(self.recipient_id),
-            parties: self.parties,
+            reason: cancellation.reason_for(self.copy.recipient_id),
+            parties: self.copy.parties,
             when: self.when,
-            calendar: self.calendar,
+            calendar: self.copy.calendar,
         }
     }
 
@@ -1503,12 +1512,12 @@ impl SessionCopy {
         url: String,
     ) -> SessionScheduled {
         SessionScheduled {
-            by: Actor::of(scheduler_id, self.recipient_id),
-            parties: self.parties,
+            by: Actor::of(scheduler_id, self.copy.recipient_id),
+            parties: self.copy.parties,
             when: self.when,
             duration,
             url,
-            calendar: self.calendar,
+            calendar: self.copy.calendar,
         }
     }
 
@@ -1521,26 +1530,26 @@ impl SessionCopy {
         url: String,
     ) -> SessionRescheduled {
         SessionRescheduled {
-            previous: previous.map(|start| session_when(start, &self.timezone)),
-            parties: self.parties,
+            previous: previous.map(|start| self.copy.when(start)),
+            parties: self.copy.parties,
             when: self.when,
             duration,
             url,
-            calendar: self.calendar,
+            calendar: self.copy.calendar,
         }
     }
 }
 
 /// The email `email_for` builds for each participant `audience` may reach, coachee first,
-/// each from their copy of `session` carrying `calendar`. A copy that fails to compose is
-/// logged and skipped.
-fn session_envelopes<E: Email>(
+/// each from their copy carrying `calendar`, in the conversation of `relationship_id`. A
+/// copy that fails to compose is logged and skipped.
+fn recipient_envelopes<E: Email>(
     brand: &Brand,
     audience: &Audience<'_>,
-    session: &coaching_sessions::Model,
     organization: &organizations::Model,
+    relationship_id: Id,
     calendar: &[Attachment],
-    email_for: impl Fn(SessionCopy) -> E,
+    email_for: impl Fn(RecipientCopy) -> E,
 ) -> Vec<Envelope> {
     audience
         .participants
@@ -1548,17 +1557,16 @@ fn session_envelopes<E: Email>(
         .iter()
         .filter(|(_, to)| audience.member_ids.contains(&to.user.id))
         .filter_map(|(_, to)| {
-            let email = email_for(SessionCopy {
+            let email = email_for(RecipientCopy {
                 parties: to.parties(organization),
                 recipient_id: to.user.id,
                 timezone: to.user.timezone.clone(),
-                when: session_when(session.date, &to.user.timezone),
                 calendar: calendar.to_vec(),
             });
             envelope(
                 brand,
                 &email,
-                Subject::CoachingRelationship(session.coaching_relationship_id),
+                Subject::CoachingRelationship(relationship_id),
                 to.user.id,
             )
         })
@@ -1602,13 +1610,13 @@ fn calendar_envelopes<E: Email>(
     email_for: impl Fn(SessionCopy) -> E,
 ) -> Result<Vec<Envelope>, Error> {
     let ics = session_ics(audience.participants, session, method, description, zone)?;
-    Ok(session_envelopes(
+    Ok(recipient_envelopes(
         brand,
         audience,
-        session,
         organization,
+        session.coaching_relationship_id,
         &calendar_attachments([(ics.as_str(), method)]),
-        email_for,
+        |copy| email_for(SessionCopy::of(copy, session)),
     ))
 }
 
@@ -1700,11 +1708,31 @@ impl Calendar<'_> {
     }
 }
 
+/// What every composed email needs from config: the brand, and where a session's page is.
+struct Composing {
+    brand: Brand,
+    page: SessionUrlBuilder,
+}
+
+impl Composing {
+    /// Read from `config`. Checked before any load, so a stack that composes no email loads
+    /// nothing.
+    fn of(config: &Config) -> Result<Self, Error> {
+        let base_url = frontend_base_url(config)?;
+        Ok(Self {
+            brand: Brand::new(&base_url),
+            page: SessionUrlBuilder {
+                base_url,
+                path_template: config.session_scheduled_email_url_path().to_owned(),
+            },
+        })
+    }
+}
+
 /// What a session's emails name, loaded before the transaction that changes the session, so
 /// that transaction only renders and writes them.
 pub(crate) struct SessionNotice {
-    brand: Brand,
-    page: SessionUrlBuilder,
+    composing: Composing,
     parties: InviteParties,
     /// The participants the emails may reach.
     reach: Vec<Id>,
@@ -1748,11 +1776,9 @@ impl SessionNotice {
         session: &coaching_sessions::Model,
     ) -> Option<Self> {
         async {
-            let composing = Self::composing(config)?;
-            let relationship =
-                coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-            let reach = vec![relationship.coach_id, relationship.coachee_id];
-            let parties = InviteParties::load(db, &relationship).await?;
+            let composing = Composing::of(config)?;
+            let (parties, reach) =
+                InviteParties::everyone(db, session.coaching_relationship_id).await?;
             Self::load(db, composing, parties, reach, session).await
         }
         .await
@@ -1778,7 +1804,7 @@ impl SessionNotice {
         draft: &coaching_sessions::Model,
     ) -> Option<Self> {
         async {
-            let composing = Self::composing(config)?;
+            let composing = Composing::of(config)?;
             let parties = InviteParties::of(db, relationship, organization.clone()).await?;
             Self::load(db, composing, parties, reach.to_vec(), draft).await
         }
@@ -1800,7 +1826,7 @@ impl SessionNotice {
         reach: Vec<Id>,
         session: &coaching_sessions::Model,
     ) -> Result<(Self, Agenda), Error> {
-        let composing = Self::composing(config)?;
+        let composing = Composing::of(config)?;
         try_join!(
             async {
                 let parties = InviteParties::load(db, relationship).await?;
@@ -1810,30 +1836,16 @@ impl SessionNotice {
         )
     }
 
-    /// What every session email needs from config. Checked before any read, so a stack that
-    /// composes no email loads nothing.
-    fn composing(config: &Config) -> Result<(Brand, SessionUrlBuilder), Error> {
-        let base_url = frontend_base_url(config)?;
-        Ok((
-            Brand::new(&base_url),
-            SessionUrlBuilder {
-                base_url,
-                path_template: config.session_scheduled_email_url_path().to_owned(),
-            },
-        ))
-    }
-
     async fn load(
         db: &DatabaseConnection,
-        (brand, page): (Brand, SessionUrlBuilder),
+        composing: Composing,
         parties: InviteParties,
         reach: Vec<Id>,
         session: &coaching_sessions::Model,
     ) -> Result<Self, Error> {
         let zone = invite_zone(db, session, parties.participants().schedule_owner(session)).await?;
         Ok(Self {
-            brand,
-            page,
+            composing,
             parties,
             reach,
             zone,
@@ -1866,7 +1878,7 @@ impl SessionNotice {
     fn length_and_link(&self, session: &coaching_sessions::Model) -> (String, String) {
         (
             crate::duration::Duration::from_minutes_unchecked(session.duration_minutes).to_string(),
-            self.page.session(session.id),
+            self.composing.page.session(session.id),
         )
     }
 
@@ -1886,12 +1898,12 @@ impl SessionNotice {
                 &participants,
                 session,
                 &self.parties.organization,
-                self.page.session(session.id),
+                self.composing.page.session(session.id),
             ),
             Calendar::Cancel => participants.session_cancelled_description(),
         };
         calendar_envelopes(
-            &self.brand,
+            &self.composing.brand,
             &Audience {
                 participants: &participants,
                 member_ids: &self.reach,
@@ -2008,6 +2020,172 @@ impl SessionNotice {
             }
         })
         .await
+    }
+}
+
+/// A series' upcoming sessions in start order, never empty: what its emails count and date.
+pub(crate) struct Upcoming<'a> {
+    first: &'a coaching_sessions::Model,
+    last: &'a coaching_sessions::Model,
+    all: &'a [coaching_sessions::Model],
+}
+
+impl<'a> Upcoming<'a> {
+    /// `sessions`, in start order, or `None` when there are none.
+    pub(crate) fn of(sessions: &'a [coaching_sessions::Model]) -> Option<Self> {
+        Some(Self {
+            first: sessions.first()?,
+            last: sessions.last()?,
+            all: sessions,
+        })
+    }
+}
+
+/// One participant's facts about a series, formatted for them, that each series email is
+/// built from.
+pub(crate) struct SeriesCopy(RecipientCopy);
+
+impl SeriesCopy {
+    /// The series-cancelled email for `upcoming`, the sessions `actor_id` cancelled, each date
+    /// read from its own start in the recipient's zone.
+    pub(crate) fn cancelled(self, actor_id: Id, upcoming: &Upcoming<'_>) -> SeriesCancelled {
+        let Self(copy) = self;
+        SeriesCancelled {
+            by: Actor::of(actor_id, copy.recipient_id),
+            count: upcoming.all.len(),
+            first_date: copy.when(upcoming.first.date).date,
+            last_date: copy.when(upcoming.last.date).date,
+            parties: copy.parties,
+            calendar: copy.calendar,
+        }
+    }
+}
+
+/// The calendar parts a series email carries.
+pub(crate) enum SeriesCalendar<'a> {
+    /// The series' cancellation, then one for each standalone event a legacy member among
+    /// the cancelled sessions left behind.
+    Cancel(&'a Upcoming<'a>),
+}
+
+/// `calendar`'s parts for `series`, stamped `dtstamp`, as attachments. `series` must already
+/// carry the `SEQUENCE` that outranks its last invite. A standalone cancellation that fails
+/// to build is logged and left out; only the series' own part fails the whole.
+fn series_calendar(
+    participants: &Participants<'_>,
+    series: &coaching_session_series::Model,
+    calendar: &SeriesCalendar<'_>,
+    dtstamp: NaiveDateTime,
+) -> Result<Vec<Attachment>, Error> {
+    match calendar {
+        SeriesCalendar::Cancel(upcoming) => {
+            let cancel = build_series_cancel_ics(
+                participants.coach,
+                participants.coachee,
+                upcoming.first,
+                series,
+                participants.series_cancelled_description(),
+                dtstamp,
+            )?;
+            let orphans = build_orphan_cancels(participants, upcoming.all, dtstamp);
+            Ok(calendar_attachments(
+                std::iter::once(&cancel)
+                    .chain(&orphans)
+                    .map(|part| (part.as_str(), &ical::Method::Cancel)),
+            ))
+        }
+    }
+}
+
+/// What a series' emails name, loaded before the transaction that changes the series, so
+/// that transaction only renders and writes them.
+pub(crate) struct SeriesNotice {
+    composing: Composing,
+    parties: InviteParties,
+    /// The participants the emails may reach.
+    reach: Vec<Id>,
+}
+
+impl SeriesNotice {
+    /// Loads what the cancellation of a series in relationship `relationship_id` names, or
+    /// `None` when a load failed, which is logged and costs only the email. Both participants
+    /// are told, members or not: a removed member still holds the events.
+    pub(crate) async fn cancellation(
+        db: &DatabaseConnection,
+        config: &Config,
+        relationship_id: Id,
+    ) -> Option<Self> {
+        async {
+            let composing = Composing::of(config)?;
+            let (parties, reach) = InviteParties::everyone(db, relationship_id).await?;
+            Ok::<_, Error>(Self {
+                composing,
+                parties,
+                reach,
+            })
+        }
+        .await
+        .inspect_err(|e| {
+            warn!(
+                "Failed to load the series cancelled emails for relationship {relationship_id}: \
+                 {e:?}"
+            )
+        })
+        .ok()
+    }
+
+    /// Renders the email `email_for` builds for each participant this notice reaches, about
+    /// `series` as the writing transaction holds it, carrying `calendar`. Rendering reads
+    /// nothing; a calendar that fails to build costs every copy, and a copy that fails to
+    /// render is skipped, each logged.
+    pub(crate) fn envelopes<E: Email>(
+        &self,
+        series: &coaching_session_series::Model,
+        calendar: &SeriesCalendar<'_>,
+        email_for: impl Fn(SeriesCopy) -> E,
+    ) -> Vec<Envelope> {
+        let participants = self.parties.participants();
+        series_calendar(&participants, series, calendar, Utc::now().naive_utc())
+            .map(|attachments| {
+                recipient_envelopes(
+                    &self.composing.brand,
+                    &Audience {
+                        participants: &participants,
+                        member_ids: &self.reach,
+                    },
+                    &self.parties.organization,
+                    series.coaching_relationship_id,
+                    &attachments,
+                    |copy| email_for(SeriesCopy(copy)),
+                )
+            })
+            .inspect_err(|e| {
+                warn!(
+                    "Failed to render the {} emails for series {}: {e:?}",
+                    E::KIND,
+                    series.id
+                )
+            })
+            .unwrap_or_default()
+    }
+
+    /// Writes each participant's cancellation of `series`, as the removing transaction bumped
+    /// it, naming `cancelled`, the upcoming sessions it locked and removed, which `actor_id`
+    /// cancelled. Nothing upcoming owes nothing. Only the write fails `txn`.
+    pub(crate) async fn enqueue_cancellation(
+        &self,
+        txn: &DatabaseTransaction,
+        series: &coaching_session_series::Model,
+        cancelled: &[coaching_sessions::Model],
+        actor_id: Id,
+    ) -> Result<(), Error> {
+        let Some(upcoming) = Upcoming::of(cancelled) else {
+            return Ok(());
+        };
+        let emails = self.envelopes(series, &SeriesCalendar::Cancel(&upcoming), |copy| {
+            copy.cancelled(actor_id, &upcoming)
+        });
+        write(txn, emails).await.map(|_| ())
     }
 }
 
@@ -2508,6 +2686,17 @@ impl InviteParties {
             organization::find_by_id(db, relationship.organization_id).map_err(Error::from),
         )
         .await
+    }
+
+    /// The parties of relationship `id`, and both participants as whom to reach, members or
+    /// not: a removed member still holds the events a cancellation clears.
+    pub(crate) async fn everyone(
+        db: &impl ConnectionTrait,
+        id: Id,
+    ) -> Result<(Self, Vec<Id>), Error> {
+        let parties = Self::load(db, &coaching_relationship::find_by_id(db, id).await?).await?;
+        let reach = parties.participants().ids().to_vec();
+        Ok((parties, reach))
     }
 
     /// The parties of `relationship`, whose `organization` the caller already holds.
@@ -3133,161 +3322,6 @@ fn attach_orphan_cancels(
     orphan_cancels.iter().fold(builder, |builder, cancel| {
         builder.add_ics_attachment(cancel, &ical::Method::Cancel)
     })
-}
-
-/// Send a series cancellation notification email to a single recipient. Carries fewer
-/// variables than the invite sends: no `session_url`, no duration, no first-session time.
-async fn send_recurring_sessions_cancelled_email_to_recipient(
-    email_config: &ResolvedEmailConfig,
-    to: &Recipient<'_>,
-    sessions: &[coaching_sessions::Model],
-    organization: &organizations::Model,
-    ics: &SeriesIcs,
-) -> Result<(), Error> {
-    let recipient = to.user;
-    let (first, last) = series_bounds(sessions)?;
-
-    let (first_session_date, _) = format_session_date_time(first.date, &recipient.timezone);
-    let (last_session_date, _) = format_session_date_time(last.date, &recipient.timezone);
-
-    let builder = SendEmailRequestBuilder::new()
-        .from(FROM_ADDRESS)
-        .to_with_name(
-            &recipient.email,
-            format!("{} {}", recipient.first_name, recipient.last_name),
-        )
-        .template_id(&email_config.template_id)
-        .add_variable("first_name", recipient.first_name.as_str())
-        .add_variable("other_user_first_name", to.other_user.first_name.as_str())
-        .add_variable("other_user_last_name", to.other_user.last_name.as_str())
-        .add_variable("other_user_role", to.other_user_role.as_str())
-        .add_variable("session_label", to.session_label)
-        .add_variable("session_label_plural", to.session_label_plural)
-        .add_variable("organization_name", organization.name.as_str())
-        .add_variable("session_count", sessions.len() as u64)
-        .add_variable("first_session_date", first_session_date.as_str())
-        .add_variable("last_session_date", last_session_date.as_str())
-        .add_ics_attachment(&ics.body, &ical::Method::Cancel);
-
-    // Clears whatever a legacy member left on calendars, which the series `CANCEL` cannot
-    // reach: it names the series `UID`, and these events were never filed under it.
-    let email_request = attach_orphan_cancels(builder, &ics.orphan_cancels)
-        .build()
-        .await?;
-
-    email_config.client.send_email(email_request).await
-}
-
-/// Send series cancellation emails to the participants `audience` may reach. Takes no
-/// database handle: a cancellation loads no topics, goals, or actions.
-async fn send_recurring_sessions_cancelled_email(
-    config: &Config,
-    series: &coaching_session_series::Model,
-    audience: &Audience<'_>,
-    sessions: &[coaching_sessions::Model],
-    organization: &organizations::Model,
-) -> Result<(), Error> {
-    let Audience {
-        participants,
-        member_ids,
-    } = *audience;
-    let Participants { coach, coachee, .. } = *participants;
-    info!(
-        "Initiating series cancelled emails for {} sessions (coach: {}, coachee: {})",
-        sessions.len(),
-        coach.email,
-        coachee.email
-    );
-
-    let email_config = ResolvedEmailConfig::new::<RecurringSessionsCancelled>(config).await?;
-
-    let (first, _) = series_bounds(sessions)?;
-
-    let dtstamp = chrono::Utc::now().naive_utc();
-    let ics = SeriesIcs {
-        body: build_series_cancel_ics(
-            coach,
-            coachee,
-            first,
-            series,
-            participants.series_cancelled_description(),
-            dtstamp,
-        )?,
-        // `sessions` is the set the delete removed, so any legacy member's standalone
-        // event is in here and would otherwise survive the cancellation.
-        orphan_cancels: build_orphan_cancels(participants, sessions, dtstamp),
-        split_from: None,
-    };
-
-    let copies = participants.copies();
-    send_to_participants(
-        &copies,
-        member_ids,
-        RecurringSessionsCancelled::notification_name(),
-        |to| {
-            send_recurring_sessions_cancelled_email_to_recipient(
-                &email_config,
-                to,
-                sessions,
-                organization,
-                &ics,
-            )
-        },
-    )
-    .await;
-
-    Ok(())
-}
-
-/// Orchestrate sending series cancellation emails (best-effort).
-///
-/// Call this with the in-memory models after the delete has committed. A series row is
-/// deleted even when nothing upcoming remains, so an empty `sessions` slice returns
-/// before any lookup rather than announcing zero cancelled sessions. Errors are logged
-/// internally and never block the caller.
-pub async fn notify_recurring_sessions_cancelled(
-    db: &DatabaseConnection,
-    config: &Config,
-    series: &coaching_session_series::Model,
-    sessions: &[coaching_sessions::Model],
-) {
-    if sessions.is_empty() {
-        return;
-    }
-
-    let result: Result<(), Error> = async {
-        let relationship_id = sessions[0].coaching_relationship_id;
-        let relationship = coaching_relationship::find_by_id(db, relationship_id).await?;
-        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
-        let org = organization::find_by_id(db, relationship.organization_id).await?;
-        let participants = Participants {
-            coach: &coach,
-            coachee: &coachee,
-            kind: relationship.kind,
-        };
-
-        // Both, members or not: a removed member still holds the events.
-        send_recurring_sessions_cancelled_email(
-            config,
-            series,
-            &Audience {
-                participants: &participants,
-                member_ids: &participants.ids(),
-            },
-            sessions,
-            &org,
-        )
-        .await
-    }
-    .await;
-
-    if let Err(e) = result {
-        warn!(
-            "Failed to send series cancelled emails for series {}: {e:?}",
-            series.id
-        );
-    }
 }
 
 /// Returns the title of the goal linked to an action, if any.

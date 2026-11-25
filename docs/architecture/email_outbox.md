@@ -136,8 +136,8 @@ fails to build. Elsewhere the sweep warns once at startup and fails each due row
    ports its template, renders and enqueues in the transaction it announces, and retires
    its `*_TEMPLATE_ID`. Sweeps that decide an email is owed (reminders, pending
    reschedules, owed invites) claim, render and enqueue in one transaction. The
-   single-session cancellation, session scheduled and session rescheduled emails, and the
-   session invites the pending reschedule sweep owes, have moved. A session invite resent on request is
+   single-session cancellation, session scheduled and session rescheduled emails, the
+   session invites the pending reschedule sweep owes, and the series cancellation have moved. A session invite resent on request is
    composed the same way but handed to the `Mailer` directly, since its endpoint still
    reports whether it was delivered.
 3. Once every sender has moved, `gateway::resend::Client::send_email` and the template
