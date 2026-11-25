@@ -287,9 +287,7 @@ pub(crate) async fn reschedule(
 
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
 
-    for id in &future_ids {
-        entity_api::coaching_session::acquire_advisory_lock(&txn, *id).await?;
-    }
+    entity_api::coaching_session::acquire_advisory_locks(&txn, future_ids.iter().copied()).await?;
 
     // Re-read under the locks. The snapshot above was taken before them, so an individual
     // reschedule committing in between would have bumped an `ical_sequence` it does not
@@ -666,9 +664,7 @@ pub(crate) async fn reschedule_following(
 
     // Session locks first, then the series row: the order the other series writes take.
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
-    for id in draft.affected_ids() {
-        entity_api::coaching_session::acquire_advisory_lock(&txn, id).await?;
-    }
+    entity_api::coaching_session::acquire_advisory_locks(&txn, draft.affected_ids()).await?;
     let existing = coaching_session_series::find_by_id_for_update(&txn, series_id).await?;
     let existing_rule = rule_of(&existing)?;
     let sessions = entity_api::coaching_session::find_by_series_id(&txn, series_id).await?;
@@ -873,22 +869,27 @@ pub(crate) async fn delete_with_future_sessions(
     let image_keys = coaching_session_image::storage_keys_for_sessions(db, &future_ids).await?;
     // Loaded outside the transaction: a failed read there would abort it, and the commit
     // would roll the delete back while this call reported success.
-    let notice =
-        emails::SeriesNotice::cancellation(db, config, series.coaching_relationship_id).await;
+    let notice = if future_ids.is_empty() {
+        None
+    } else {
+        emails::SeriesNotice::cancellation(db, config, series.coaching_relationship_id).await
+    };
 
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
 
-    for id in &future_ids {
-        entity_api::coaching_session::acquire_advisory_lock(&txn, *id).await?;
-    }
+    entity_api::coaching_session::acquire_advisory_locks(&txn, future_ids.iter().copied()).await?;
 
     // Re-read under the locks, for the same reason the series SEQUENCE is bumped inside
     // this transaction rather than in memory beforehand: the snapshot above predates the
     // locks, and a per-session cancellation built off a stale `ical_sequence` reuses a
     // number the client already applied, which it drops as a duplicate.
-    let cancelled_sessions =
+    // Only the sessions this delete removes: one added after the snapshot survives it.
+    let cancelled_sessions: Vec<_> =
         entity_api::coaching_session::find_future_sessions_by_series_id(&txn, series_id, now_naive)
-            .await?;
+            .await?
+            .into_iter()
+            .filter(|session| future_ids.contains(&session.id))
+            .collect();
 
     entity_api::coaching_session::bulk_delete_by_ids(&txn, &future_ids).await?;
 
@@ -1108,7 +1109,7 @@ mod tests {
         both_participants_are_members, members, membership_statements, user_with_email, Mailbox,
     };
     use chrono::NaiveDate;
-    use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult};
+    use sea_orm::{DatabaseBackend, MockDatabase, MockExecResult, Statement};
 
     fn weekly_rule_count(n: u32) -> Recurrence {
         Recurrence {
@@ -2169,11 +2170,14 @@ mod tests {
         }
     }
 
-    /// A series delete writes its cancellations after the session locks and the series row,
-    /// taking the outbox's conversation lock last before COMMIT, and calls no provider.
-    #[tokio::test]
-    async fn delete_with_future_sessions_writes_the_cancellations_last_in_its_transaction() {
-        let (series, _, sessions) = following_fixture(2);
+    /// Deletes `series` as its coach, where `snapshot` is what the delete reads before its
+    /// locks and `locked` what it re-reads under them. Returns the statements it ran and the
+    /// provider sends it made.
+    async fn delete_series(
+        series: &Model,
+        snapshot: Vec<coaching_sessions::Model>,
+        locked: Vec<coaching_sessions::Model>,
+    ) -> (Vec<Statement>, Vec<String>) {
         let bumped = Model {
             ical_sequence: series.ical_sequence + 1,
             ..series.clone()
@@ -2199,26 +2203,40 @@ mod tests {
             archived_by: None,
         };
         let db = MockDatabase::new(DatabaseBackend::Postgres)
-            .append_query_results([sessions.clone()])
+            .append_query_results([snapshot])
             .append_query_results([Vec::<coaching_session_images::Model>::new()])
             .append_query_results([[relationship]])
             .append_query_results([[coach.clone()], [coachee]])
             .append_query_results([[organization]])
-            // the re-read under the locks, then the bumped series
-            .append_query_results([sessions.clone()])
+            .append_query_results([locked])
             .append_query_results([[bumped]])
-            // BEGIN, two session locks, the session and series deletes, the conversation
-            // lock, the outbox write and COMMIT
-            .append_exec_results((0..8).map(|_| exec_ok()))
+            .append_exec_results((0..10).map(|_| exec_ok()))
             .into_connection();
         let mailbox = Mailbox::new().await;
 
-        delete_with_future_sessions(&db, &mailbox.config(), &series, coach.id)
+        delete_with_future_sessions(&db, &mailbox.config(), series, coach.id)
             .await
             .expect("the delete succeeds");
 
-        assert!(mailbox.recipients().is_empty(), "no provider is called");
-        let sql = written_sql(db);
+        let statements = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .cloned()
+            .collect();
+        (statements, mailbox.recipients())
+    }
+
+    /// A series delete writes its cancellations after the session locks and the series row,
+    /// taking the outbox's conversation lock last before COMMIT, and calls no provider.
+    #[tokio::test]
+    async fn delete_with_future_sessions_writes_the_cancellations_last_in_its_transaction() {
+        let (series, _, sessions) = following_fixture(2);
+
+        let (statements, sent) = delete_series(&series, sessions.clone(), sessions).await;
+
+        assert!(sent.is_empty(), "no provider is called");
+        let sql = statements.iter().map(|stmt| &stmt.sql).collect::<Vec<_>>();
         let at = |needle: &str| {
             sql.iter()
                 .position(|q| q.contains(needle))
@@ -2243,6 +2261,40 @@ mod tests {
                 && outbox_lock < write
                 && write < commit,
             "{sql:?}"
+        );
+    }
+
+    /// A session added to the series after the delete's snapshot survives the delete, so its
+    /// cancellation does not name it.
+    #[tokio::test]
+    async fn a_series_cancellation_names_only_the_sessions_its_delete_removes() {
+        let (series, _, sessions) = following_fixture(3);
+
+        let (statements, _) = delete_series(&series, sessions[..2].to_vec(), sessions).await;
+
+        let write = statements
+            .iter()
+            .find(|stmt| {
+                stmt.sql
+                    .contains(r#"INSERT INTO "refactor_platform"."email_outbox""#)
+            })
+            .map(|stmt| format!("{:?}", stmt.values))
+            .expect("the cancellations are written");
+        assert!(write.contains("Cancelled: 2 upcoming sessions"), "{write}");
+    }
+
+    /// A delete with nothing upcoming owes no email, so it reads nothing for one.
+    #[tokio::test]
+    async fn a_series_delete_with_nothing_upcoming_loads_no_email() {
+        let (series, _, _) = following_fixture(1);
+
+        let (statements, _) = delete_series(&series, vec![], vec![]).await;
+
+        assert!(
+            !statements.iter().any(|stmt| stmt
+                .sql
+                .contains(r#"FROM "refactor_platform"."coaching_relationships""#)),
+            "{statements:?}"
         );
     }
 
