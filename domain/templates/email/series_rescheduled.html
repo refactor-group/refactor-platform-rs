@@ -13,9 +13,9 @@
 {% block title %}
 {%- match email.scope -%}
 {%- when Scope::WholeSeries { .. } -%}
-{{ email.parties.session_label|capitalize }} series moved
+{{ email.parties.session_label|capitalize }} series rescheduled
 {%- when Scope::FromSession { .. } -%}
-{{ email.parties.session_label_plural|capitalize }} moved
+{{ email.parties.session_label_plural|capitalize }} rescheduled
 {%- endmatch -%}
 {% endblock %}
 
@@ -24,9 +24,9 @@
 {% when Scope::WholeSeries { previous_start, previous_cadence } -%}
 {% match email.by -%}
 {% when Actor::You -%}
-<p>You moved your recurring series of {{ email.parties.session_label_plural }} with <strong>{{ email.parties.other.full_name }}</strong>. Your calendar updates in place, so there's nothing to delete.</p>
+<p>You rescheduled your recurring series of {{ email.parties.session_label_plural }} with <strong>{{ email.parties.other.full_name }}</strong>.</p>
 {% when Actor::Other -%}
-<p><strong>{{ email.parties.other.full_name }}</strong> moved your recurring series of {{ email.parties.session_label_plural }}. Your calendar updates in place, so there's nothing to delete.</p>
+<p><strong>{{ email.parties.other.full_name }}</strong> rescheduled your recurring series of {{ email.parties.session_label_plural }}.</p>
 {% endmatch -%}
 {% call m::change() -%}
 {% call m::now() -%}
@@ -51,9 +51,9 @@
 {% when Scope::FromSession { first_moved_date, previous_cadence, previous_time } -%}
 {% match email.by -%}
 {% when Actor::You -%}
-<p>You changed your recurring {{ email.parties.session_label_plural }} with <strong>{{ email.parties.other.full_name }}</strong> from {{ first_moved_date }} onward. Your calendar updates in place, so there's nothing to delete.</p>
+<p>You changed your recurring {{ email.parties.session_label_plural }} with <strong>{{ email.parties.other.full_name }}</strong> from {{ first_moved_date }} onward.</p>
 {% when Actor::Other -%}
-<p><strong>{{ email.parties.other.full_name }}</strong> changed your recurring {{ email.parties.session_label_plural }} from {{ first_moved_date }} onward. Your calendar updates in place, so there's nothing to delete.</p>
+<p><strong>{{ email.parties.other.full_name }}</strong> changed your recurring {{ email.parties.session_label_plural }} from {{ first_moved_date }} onward.</p>
 {% endmatch -%}
 {% call m::change() -%}
 {% call m::now() -%}

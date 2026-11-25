@@ -4,21 +4,18 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 use chrono::{NaiveDateTime, TimeDelta, Timelike, Utc};
 use entity::coaching_session_series as series_entity;
 use entity_api::coaching_session_pending_reschedule::{self, Schedule};
 use mockito::{Matcher, Mock, Server, ServerGuard};
-use sea_orm::{
-    ActiveModelTrait, DatabaseConnection, EntityTrait, QueryOrder, Set, TransactionTrait,
-};
+use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Set, TransactionTrait};
 
 use super::*;
 use crate::coaching_session::{Frequency, Recurrence};
 use crate::email_outbox::OutgoingEmail;
 use crate::error::ExternalErrorKind;
 use crate::events::EventPublisher;
+use crate::test_utils::email_outbox::{calendar_part, emails as outbox};
 use crate::test_utils::sqlite::fixture::make_colleagues;
 use crate::test_utils::sqlite::fixture::seed_goal;
 use crate::test_utils::sqlite::{
@@ -48,23 +45,6 @@ fn composing() -> Config {
     Config::from_args(["test", "--frontend-base-url=https://app.example.com"])
 }
 
-/// Each outbox row, oldest first, with the email it stores.
-async fn outbox(db: &DatabaseConnection) -> Vec<(entity::email_outbox::Model, OutgoingEmail)> {
-    entity::email_outbox::Entity::find()
-        .order_by_asc(entity::email_outbox::Column::CreatedAt)
-        .order_by_asc(entity::email_outbox::Column::Position)
-        .all(db)
-        .await
-        .expect("the outbox reads")
-        .into_iter()
-        .map(|row| {
-            let email = serde_json::from_value(row.request.clone().unwrap_or_default())
-                .expect("the stored email reads");
-            (row, email)
-        })
-        .collect()
-}
-
 /// Each outbox row's addressee and kind, oldest first.
 async fn outbox_kinds(db: &DatabaseConnection) -> Vec<(String, String)> {
     outbox(db)
@@ -72,20 +52,6 @@ async fn outbox_kinds(db: &DatabaseConnection) -> Vec<(String, String)> {
         .into_iter()
         .map(|(row, email)| (email.to[0].email.clone(), row.kind))
         .collect()
-}
-
-/// The only calendar part of `email`, decoded and unfolded.
-fn calendar_part(email: &OutgoingEmail) -> String {
-    let [attachment] = email.attachments.as_slice() else {
-        panic!("one calendar part: {email:?}");
-    };
-    String::from_utf8(
-        STANDARD
-            .decode(&attachment.content)
-            .expect("the part is base64"),
-    )
-    .expect("the part is UTF-8")
-    .replace("\r\n ", "")
 }
 
 /// Each Resend request's addressee and template.

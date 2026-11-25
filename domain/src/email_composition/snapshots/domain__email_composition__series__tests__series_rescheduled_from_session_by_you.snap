@@ -5,11 +5,11 @@ expression: "copy(&SeriesRescheduled\n{ by: Actor::You, ..series_rescheduled_fro
 Subject: You changed part of your series with Alex Smith
 Preheader: Weekly on Wednesday at 10:00 AM from Wednesday, March 4, 2026, and earlier sessions are unchanged.
 
-Coaching sessions moved
+Coaching sessions rescheduled
 
 Hi Jane,
 
-You changed your recurring coaching sessions with Alex Smith from Wednesday, March 4, 2026 onward. Your calendar updates in place, so there's nothing to delete.
+You changed your recurring coaching sessions with Alex Smith from Wednesday, March 4, 2026 onward.
 
 Now:
 Repeats: Weekly on Wednesday at 10:00 AM

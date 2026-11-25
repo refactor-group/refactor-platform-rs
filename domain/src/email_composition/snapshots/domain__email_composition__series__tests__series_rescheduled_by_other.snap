@@ -2,14 +2,14 @@
 source: domain/src/email_composition/series_tests.rs
 expression: copy(&series_rescheduled())
 ---
-Subject: Alex Smith moved your series
+Subject: Alex Smith rescheduled your series
 Preheader: Weekly on Wednesday at 10:00 AM, starting Wednesday, March 4, 2026.
 
-Coaching session series moved
+Coaching session series rescheduled
 
 Hi Jane,
 
-Alex Smith moved your recurring series of coaching sessions. Your calendar updates in place, so there's nothing to delete.
+Alex Smith rescheduled your recurring series of coaching sessions.
 
 Now:
 Starts: Wednesday, March 4, 2026 at 10:00 AM

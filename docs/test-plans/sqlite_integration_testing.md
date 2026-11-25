@@ -198,11 +198,13 @@ extractor cannot break one.
   giving up, a new change restores the full retry budget, and deleting the session drops
   its row.
 - **The pending reschedule sweep**
-  (`domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs`): a due change is
-  emailed (moved from the last announced start), settled, and stamps notice; a failed send
-  leaves the row unclaimed with one more attempt until it is given up; a change already
-  reverted settles without an email; drain mode drops due rows unsent without stamping
-  notice; and a change that is not yet due is left untouched.
+  (`domain/src/jobs/coaching_session_pending_reschedule_sqlite_tests.rs`): a due change
+  writes each member's email to the outbox under the edit's `SEQUENCE`, stamps their notice
+  and settles in one transaction; a length-only change names no earlier start; a member who
+  left gets nothing; a stale claim writes and stamps nothing; a change after the claim is in
+  the email and stays pending from it; a failed write leaves the row unclaimed with one more
+  attempt until it is given up; a change already reverted, or one that cannot compose,
+  settles without an email; and a change that is not yet due is left untouched.
 - **A user's own lists skip organizations they left**
   (`domain/src/coaching_relationship_sqlite_tests.rs`,
   `domain/src/coaching_session_sqlite_tests.rs`, `domain/src/action_sqlite_tests.rs`,

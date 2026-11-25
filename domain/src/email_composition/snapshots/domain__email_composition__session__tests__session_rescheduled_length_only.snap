@@ -3,13 +3,13 @@ source: domain/src/email_composition/session_tests.rs
 expression: "copy(&SessionRescheduled { previous: None, ..session_rescheduled() })"
 ---
 Subject: Your coaching session with Alex Smith on Wed, Mar 4 now runs 1 hour
-Preheader: It now runs 1 hour, and your calendar updates in place.
+Preheader: It now runs 1 hour.
 
 Coaching session length changed
 
 Hi Jane,
 
-Your coaching session with Alex Smith now runs 1 hour. Your calendar updates in place, so there's nothing to delete.
+Your coaching session with Alex Smith now runs 1 hour.
 
 Now:
 When: Wednesday, March 4, 2026 at 10:00 AM

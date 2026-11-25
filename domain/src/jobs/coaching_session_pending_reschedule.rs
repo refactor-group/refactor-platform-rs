@@ -1,26 +1,21 @@
 //! Emails each session's net reschedule once its schedule has settled.
 //!
 //! A session edit records a pending reschedule instead of emailing. This sweep claims the
-//! rows that have come due and sends the session-rescheduled email, moved from the start
-//! participants were last told. A row is due once the schedule has been quiet for the
-//! settle period, the first unannounced change is older than the cap, or the session
-//! starts within the cap.
+//! rows that have come due and writes the session-rescheduled email to the email outbox,
+//! moved from the start participants were last told. A row is due once the schedule has
+//! been quiet for the settle period, the first unannounced change is older than the cap, or
+//! the session starts within the cap.
 //!
-//! Rows are claimed under a lease, so delivery is at least once: a send that outlives
-//! [`coaching_session_pending_reschedule::LEASE`], or a crash between a send and its completion, can repeat.
-//! A failed send is retried up to [`coaching_session_pending_reschedule::MAX_ATTEMPTS`] times, then given up;
-//! the regular reminder is the fallback.
-//!
-//! Only participants still in the session's organization are emailed. The change settles
-//! once everyone but its schedule owner was told or has left the organization, since someone
-//! who left is owed nothing.
-//!
-//! Without Resend or the rescheduled template the sweep still runs, dropping due rows
-//! unsent, since a pending row suppresses the session's reminder.
-//!
-//! A delivered send leaves the row to `coaching_session_pending_reschedule::complete`, which
-//! keeps it when a newer change landed mid-send. Each participant whose copy went out has
-//! their own notice restamped, even when another's failed and the send is retried.
+//! Each row is written in one transaction that locks the session as an edit does, writes
+//! the emails of the session as locked, restamps the notice of each participant they
+//! address and settles the row; a change that landed after the claim stays pending. Only
+//! participants still in the session's organization are emailed, since someone who left is
+//! owed nothing. The outbox owns delivery, so a written email counts as told. A failed load
+//! or write releases the row to retry, up to
+//! [`coaching_session_pending_reschedule::MAX_ATTEMPTS`] times, then it is given up and the
+//! regular reminder is the fallback. Writing needs no Resend template; a row is dropped
+//! unsent when no email can be composed, since a pending row suppresses the session's
+//! reminder.
 //!
 //! The same sweep re-sends the invites owed to participants after their relationship changed
 //! kind (`coaching_session_pending_invite`): one email per row, to that participant alone,
@@ -41,22 +36,17 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{TimeDelta, Utc};
-use entity_api::coaching_session;
 use entity_api::coaching_session_pending_invite::{self, Target};
-use entity_api::coaching_session_pending_reschedule::{
-    self, Claimed, Completed, Released, Schedule, Timing,
-};
-use entity_api::error::EntityApiErrorKind;
+use entity_api::coaching_session_pending_reschedule::{self, Claimed, Released, Timing};
 use log::*;
 use sea_orm::DatabaseConnection;
 use service::config::Config;
 
-use crate::coaching_session::record_delivered_notice;
 use crate::coaching_session_series;
-use crate::emails::{self, Delivered, Delivery};
+use crate::emails::Delivery;
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::jobs::{Context, FirstRun, Job, Outcome};
-use crate::{coaching_relationships, coaching_sessions, Id};
+use crate::Id;
 
 /// How often the sweep looks for due rows.
 const INTERVAL: Duration = Duration::from_secs(15);
@@ -76,7 +66,6 @@ const DEFAULT_SETTLE_MAX: TimeDelta = TimeDelta::seconds(300);
 
 pub struct Sweep {
     timing: Timing,
-    mode: Mode,
     /// Whether a series' owed invite is re-sent or dropped unsent.
     series_invites: Mode,
 }
@@ -119,7 +108,8 @@ impl From<bool> for Resent {
 }
 
 impl Sweep {
-    /// Builds the sweep from config, draining unsent when reschedule emails are off.
+    /// Builds the sweep from config, dropping owed series invites unsent when their emails are
+    /// off.
     pub fn from_config(config: &Config) -> Self {
         let timing = Timing {
             settle: delta_or(
@@ -137,11 +127,6 @@ impl Sweep {
 
         Self {
             timing,
-            mode: Mode::of(
-                config,
-                config.session_rescheduled_email_template_id().as_deref(),
-                "reschedule emails",
-            ),
             series_invites: Mode::of(
                 config,
                 config
@@ -195,46 +180,17 @@ impl Sweep {
             }
         }
     }
+}
 
-    /// Emails or drops one claimed row; returns whether it was handled.
-    async fn handle(&self, ctx: &Context, claimed: &Claimed) -> bool {
-        let db = &*ctx.db;
-        let id = claimed.coaching_session_id;
-        let session = match coaching_session::find_by_id(db, id).await {
-            Ok(session) => session,
-            // The session's deletion cascaded to the row.
-            Err(e) if e.error_kind == EntityApiErrorKind::RecordNotFound => return true,
-            Err(e) => {
-                warn!("[coaching-session-pending-reschedule] could not load session {id}: {e:?}");
-                return false;
-            }
-        };
-
-        let current = Schedule {
-            date: session.date,
-            duration_minutes: session.duration_minutes,
-        };
-        if self.mode == Mode::Drain || current == claimed.announced {
-            return settle(db, claimed, current).await;
-        }
-
-        match emails::send_session_rescheduled(db, &ctx.config, &session, claimed.announced.date)
-            .await
-        {
-            Ok((relationship, delivered)) => {
-                record_participant_notice(db, &session, &relationship, &delivered).await;
-                match delivered.settles(&relationship, session.scheduled_by_user_id) {
-                    true => settle(db, claimed, current).await,
-                    false => {
-                        warn!("[coaching-session-pending-reschedule] session {id} was not told to everyone owed it: {delivered:?}");
-                        retry(db, claimed).await
-                    }
-                }
-            }
-            Err(e) => {
-                warn!("[coaching-session-pending-reschedule] send failed for session {id}: {e:?}");
-                retry(db, claimed).await
-            }
+/// Writes one claimed row's reschedule and settles it together; returns whether it was
+/// handled. A failure releases the row to retry.
+async fn enqueue_reschedule(ctx: &Context, claimed: &Claimed) -> bool {
+    let id = claimed.coaching_session_id;
+    match crate::coaching_session::enqueue_reschedule(&ctx.db, &ctx.config, claimed).await {
+        Ok(()) => true,
+        Err(e) => {
+            warn!("[coaching-session-pending-reschedule] could not write session {id}'s reschedule: {e:?}");
+            retry(&ctx.db, claimed).await
         }
     }
 }
@@ -271,20 +227,6 @@ async fn enqueue_session_invite(
     }
 }
 
-/// Restamps the notice of each participant `delivered` reached. Best-effort: a failure is
-/// logged.
-async fn record_participant_notice(
-    db: &DatabaseConnection,
-    session: &coaching_sessions::Model,
-    relationship: &coaching_relationships::Model,
-    delivered: &Delivered,
-) {
-    if ![delivered.coachee, delivered.coach].contains(&Delivery::Sent) {
-        return;
-    }
-    record_delivered_notice(db, relationship, delivered, &[session.id]).await
-}
-
 /// Converts a configured duration, falling back to `default` when it overflows.
 fn delta_or(duration: Duration, default: TimeDelta, name: &str) -> TimeDelta {
     TimeDelta::from_std(duration).unwrap_or_else(|e| {
@@ -295,23 +237,7 @@ fn delta_or(duration: Duration, default: TimeDelta, name: &str) -> TimeDelta {
     })
 }
 
-/// Completes a claimed row after `sent` was told or nothing needed telling.
-async fn settle(db: &DatabaseConnection, claimed: &Claimed, sent: Schedule) -> bool {
-    let id = claimed.coaching_session_id;
-    match coaching_session_pending_reschedule::complete(db, claimed, sent).await {
-        Ok(Completed::Settled | Completed::StillPending) => true,
-        Ok(Completed::Superseded) => {
-            info!("[coaching-session-pending-reschedule] another claim took over session {id}");
-            true
-        }
-        Err(e) => {
-            warn!("[coaching-session-pending-reschedule] could not complete session {id}: {e:?}");
-            false
-        }
-    }
-}
-
-/// Releases a claimed row after a failed send; returns whether it was handled.
+/// Releases a claimed row after a failed write; returns whether it was handled.
 async fn retry(db: &DatabaseConnection, claimed: &Claimed) -> bool {
     let id = claimed.coaching_session_id;
     match coaching_session_pending_reschedule::release(db, claimed).await {
@@ -416,7 +342,7 @@ impl Job for Sweep {
 
         let mut handled = 0;
         for row in &claimed {
-            if self.handle(ctx, row).await {
+            if enqueue_reschedule(ctx, row).await {
                 handled += 1;
             }
         }
@@ -451,32 +377,6 @@ mod tests {
         let mut argv = vec!["test"];
         argv.extend_from_slice(args);
         Config::from_args(argv)
-    }
-
-    #[test]
-    fn from_config_drains_without_a_resend_key() {
-        let sweep = Sweep::from_config(&config(&[
-            "--session-rescheduled-email-template-id=rescheduled_tpl",
-        ]));
-
-        assert_eq!(sweep.mode, Mode::Drain);
-    }
-
-    #[test]
-    fn from_config_drains_without_a_template() {
-        let sweep = Sweep::from_config(&config(&["--resend-api-key=key"]));
-
-        assert_eq!(sweep.mode, Mode::Drain);
-    }
-
-    #[test]
-    fn from_config_sends_with_a_key_and_a_template() {
-        let sweep = Sweep::from_config(&config(&[
-            "--resend-api-key=key",
-            "--session-rescheduled-email-template-id=rescheduled_tpl",
-        ]));
-
-        assert_eq!(sweep.mode, Mode::Send);
     }
 
     #[test]

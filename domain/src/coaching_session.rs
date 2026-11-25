@@ -23,10 +23,11 @@ use crate::organization::ensure_not_archived;
 use crate::search::visibility_for;
 use crate::{users, Id};
 use chrono::{DurationRound, NaiveDateTime, TimeDelta, Utc};
+use entity_api::error::EntityApiErrorKind;
 use entity_api::{
     coaching_relationship, coaching_session, coaching_session_notice,
     coaching_session_pending_invite,
-    coaching_session_pending_reschedule::{self, Schedule},
+    coaching_session_pending_reschedule::{self, Completed, Schedule},
     coaching_sessions, mutate, organization, query,
     query::{IntoQueryFilterMap, QuerySort},
 };
@@ -728,9 +729,7 @@ pub(crate) async fn resend_invite(
     let session = find_by_id(db, id).await?;
     ensure_own_invite_upcoming(&session)?;
 
-    let relationship =
-        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
+    let (relationship, member_ids) = relationship_and_members(db, &session).await?;
     ensure_required_participants_are_members(&relationship, &member_ids)?;
 
     let (bumped, delivered) =
@@ -769,6 +768,107 @@ pub(crate) async fn enqueue_owed_invite(
     Ok(())
 }
 
+/// Writes the session-rescheduled emails `claimed` owes to the participants still in the
+/// organization, stamps their notice and settles `claimed`, in one transaction. The emails
+/// describe the session as the transaction locked it; a schedule participants were already
+/// told writes none. A stack that composes no email settles `claimed` unsent, a deleted
+/// session took its row with it, and a claim another sweep has since taken writes nothing.
+/// A copy that fails to render fails the whole write, so it is retried.
+pub(crate) async fn enqueue_reschedule(
+    db: &DatabaseConnection,
+    config: &Config,
+    claimed: &coaching_session_pending_reschedule::Claimed,
+) -> Result<(), Error> {
+    let id = claimed.coaching_session_id;
+    // Loaded outside the transaction, which then only locks, renders and writes.
+    let session = match find_by_id(db, id).await {
+        Err(e) if e.error_kind == EntityApiErrorKind::RecordNotFound => return Ok(()),
+        loaded => loaded?,
+    };
+    let reschedule = Reschedule::load(db, config, claimed, &session).await?;
+
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    // The edit's row lock, taken before the outbox's conversation lock.
+    let locked = coaching_session::find_by_id_for_update(&txn, id).await?;
+    let current = Schedule::from(&locked);
+    if current != claimed.announced {
+        match &reschedule {
+            Reschedule::Owed(notice, agenda) => {
+                let rescheduled = notice.rescheduled(&locked, claimed.announced.date);
+                let told = notice
+                    .enqueue_all(&txn, &locked, &Calendar::Invite(agenda), rescheduled)
+                    .await?;
+                coaching_session_notice::stamp(&txn, id, &told, Utc::now().into()).await?;
+            }
+            Reschedule::Unsendable => {}
+            Reschedule::Unchanged => return Err(changed_while_loading(id)),
+        }
+    }
+    match coaching_session_pending_reschedule::complete(&txn, claimed, current).await? {
+        Completed::Settled | Completed::StillPending => txn.commit().await,
+        Completed::Superseded => txn.rollback().await,
+    }
+    .map_err(entity_api::error::Error::from)?;
+    Ok(())
+}
+
+/// What a session's reschedule needs, loaded before the transaction that writes it.
+enum Reschedule {
+    /// The session was at its announced schedule, so nothing was loaded.
+    Unchanged,
+    /// No email can be composed, so the change settles unsent.
+    Unsendable,
+    /// What the emails name for the participants still in the organization, and the agenda.
+    Owed(Box<SessionNotice>, Agenda),
+}
+
+impl Reschedule {
+    /// Loads what `claimed`'s reschedule of `session` names, skipping the loads when the
+    /// session is at its announced schedule.
+    async fn load(
+        db: &DatabaseConnection,
+        config: &Config,
+        claimed: &coaching_session_pending_reschedule::Claimed,
+        session: &Model,
+    ) -> Result<Self, Error> {
+        if Schedule::from(session) == claimed.announced {
+            return Ok(Self::Unchanged);
+        }
+        let (relationship, member_ids) = relationship_and_members(db, session).await?;
+        match SessionNotice::invite(db, config, &relationship, member_ids, session).await {
+            Err(e) if e.error_kind == DomainErrorKind::Internal(InternalErrorKind::Config) => {
+                warn!(
+                    "[coaching-session-pending-reschedule] session {}'s reschedule is dropped unsent: no email can be composed: {e:?}",
+                    session.id
+                );
+                Ok(Self::Unsendable)
+            }
+            loaded => loaded.map(|(notice, agenda)| Self::Owed(Box::new(notice), agenda)),
+        }
+    }
+}
+
+/// Session `id` moved between loading its reschedule and locking it, so the write is retried.
+fn changed_while_loading(id: Id) -> Error {
+    Error {
+        source: None,
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(format!(
+            "session {id} moved while its reschedule loaded"
+        ))),
+    }
+}
+
+/// `session`'s relationship and which of its participants are still in its organization.
+async fn relationship_and_members(
+    db: &DatabaseConnection,
+    session: &Model,
+) -> Result<(coaching_relationships::Model, Vec<Id>), Error> {
+    let relationship =
+        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
+    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
+    Ok((relationship, member_ids))
+}
+
 /// What session `id`'s own invite owed to `user_id` names and lists, or `None` when none is
 /// owed.
 async fn owed_invite(
@@ -781,9 +881,7 @@ async fn owed_invite(
     if ensure_own_invite_upcoming(&session).is_err() {
         return Ok(None);
     }
-    let relationship =
-        coaching_relationship::find_by_id(db, session.coaching_relationship_id).await?;
-    let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
+    let (relationship, member_ids) = relationship_and_members(db, &session).await?;
     if !member_ids.contains(&user_id) {
         return Ok(None);
     }
