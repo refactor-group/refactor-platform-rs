@@ -71,7 +71,10 @@ impl Email for SessionRescheduled {
     fn subject(&self) -> String {
         let (label, other) = (self.parties.session_label, &self.parties.other.full_name);
         match self.previous {
-            Some(_) => format!("Your {label} with {other} moved to {}", self.when.day),
+            Some(_) => format!(
+                "Your {label} with {other} was rescheduled to {}",
+                self.when.day
+            ),
             None => format!(
                 "Your {label} with {other} on {} now runs {}",
                 self.when.day, self.duration

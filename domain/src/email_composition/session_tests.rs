@@ -30,9 +30,9 @@ fn session_rescheduled_copy() {
     );
 }
 
-/// A change to the length alone keeps the start, so nothing may say the session moved.
+/// A change to the length alone keeps the start, so nothing may say the session was rescheduled.
 #[test]
-fn a_length_only_change_never_says_the_session_moved() {
+fn a_length_only_change_never_says_the_session_was_rescheduled() {
     let email = SessionRescheduled {
         previous: None,
         ..session_rescheduled()
@@ -40,7 +40,7 @@ fn a_length_only_change_never_says_the_session_moved() {
     let (html, text) = bodies(&email);
 
     for copy in [email.subject(), html, text] {
-        assert!(!copy.contains("moved"), "{copy}");
+        assert!(!copy.contains("rescheduled"), "{copy}");
         assert!(
             copy.contains(&format!("now runs {}", email.duration)),
             "{copy}"

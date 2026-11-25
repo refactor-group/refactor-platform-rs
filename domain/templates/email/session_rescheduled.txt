@@ -1,9 +1,9 @@
 {% extends "email/base.txt" %}
 
-{% block title %}{{ email.parties.session_label|capitalize }} {% if email.previous.is_some() %}moved{% else %}length changed{% endif %}{% endblock %}
+{% block title %}{{ email.parties.session_label|capitalize }} {% if email.previous.is_some() %}rescheduled{% else %}length changed{% endif %}{% endblock %}
 
 {% block content -%}
-Your {{ email.parties.session_label }} with {{ email.parties.other.full_name }} {% if email.previous.is_some() %}has moved{% else %}now runs {{ email.duration }}{% endif %}. Your calendar updates in place, so there's nothing to delete.
+Your {{ email.parties.session_label }} with {{ email.parties.other.full_name }} {% if email.previous.is_some() %}has been rescheduled{% else %}now runs {{ email.duration }}{% endif %}.
 
 Now:
 When: {{ email.when.date }} at {{ email.when.time }}

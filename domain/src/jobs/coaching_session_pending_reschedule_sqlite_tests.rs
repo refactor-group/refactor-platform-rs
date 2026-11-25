@@ -262,7 +262,11 @@ async fn a_due_move_is_written_to_both_members_their_notice_stamped_and_settled(
             ])
         );
         for email in written_emails(&ctx.db).await {
-            assert!(email.subject.contains("moved to"), "{}", email.subject);
+            assert!(
+                email.subject.contains("rescheduled to"),
+                "{}",
+                email.subject
+            );
             let invite = calendar_part(&email);
             assert!(invite.contains("METHOD:REQUEST"), "{invite}");
             assert!(invite.contains(&format!("SEQUENCE:{SEQUENCE}")), "{invite}");

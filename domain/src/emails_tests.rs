@@ -1058,7 +1058,7 @@ fn test_session_rescheduled_envelopes() {
             envelope.subject,
             Subject::CoachingRelationship(session.coaching_relationship_id)
         );
-        assert!(envelope.email.subject.contains("moved to Wed, Mar 4"));
+        assert!(envelope.email.subject.contains("rescheduled to Wed, Mar 4"));
         let text = &envelope.email.text;
         assert!(text.contains(&format!("Now:\n{now}")), "{text}");
         assert!(text.contains(&format!("Before:\n{before}")), "{text}");
@@ -4444,7 +4444,7 @@ fn each_colleagues_rescheduled_email_names_the_other() {
     assert!(to_jane
         .email
         .text
-        .contains("Your session with Alex Smith has moved."));
+        .contains("Your session with Alex Smith has been rescheduled."));
     assert_eq!(to_alex.email.to[0].email, alex.email);
     assert!(to_alex.email.text.contains("With: Jane Doe"));
 }

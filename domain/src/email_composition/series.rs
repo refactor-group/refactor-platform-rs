@@ -100,9 +100,9 @@ impl Email for SeriesRescheduled {
     fn subject(&self) -> String {
         let other = &self.parties.other.full_name;
         match (&self.scope, self.by) {
-            (Scope::WholeSeries { .. }, Actor::Other) => format!("{other} moved your series"),
+            (Scope::WholeSeries { .. }, Actor::Other) => format!("{other} rescheduled your series"),
             (Scope::WholeSeries { .. }, Actor::You) => {
-                format!("You moved your series with {other}")
+                format!("You rescheduled your series with {other}")
             }
             (Scope::FromSession { .. }, Actor::Other) => {
                 format!("{other} changed part of your series")

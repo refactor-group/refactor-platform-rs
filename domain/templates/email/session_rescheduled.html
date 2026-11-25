@@ -1,12 +1,12 @@
 {% extends "email/base.html" -%}
 {% import "email/macros.html" as m -%}
 
-{% block preheader %}{% if email.previous.is_some() %}It now starts at {{ email.when.time }}{% else %}It now runs {{ email.duration }}{% endif %}, and your calendar updates in place.{% endblock %}
+{% block preheader %}{% if email.previous.is_some() %}It now starts at {{ email.when.time }}{% else %}It now runs {{ email.duration }}{% endif %}.{% endblock %}
 
-{% block title %}{{ email.parties.session_label|capitalize }} {% if email.previous.is_some() %}moved{% else %}length changed{% endif %}{% endblock %}
+{% block title %}{{ email.parties.session_label|capitalize }} {% if email.previous.is_some() %}rescheduled{% else %}length changed{% endif %}{% endblock %}
 
 {% block content -%}
-<p>Your {{ email.parties.session_label }} with <strong>{{ email.parties.other.full_name }}</strong> {% if email.previous.is_some() %}has moved{% else %}now runs {{ email.duration }}{% endif %}. Your calendar updates in place, so there's nothing to delete.</p>
+<p>Your {{ email.parties.session_label }} with <strong>{{ email.parties.other.full_name }}</strong> {% if email.previous.is_some() %}has been rescheduled{% else %}now runs {{ email.duration }}{% endif %}.</p>
 {% call m::change() -%}
 {% call m::now() -%}
 {% call m::row("When") %}{{ email.when.date }} at {{ email.when.time }}{% endcall %}
