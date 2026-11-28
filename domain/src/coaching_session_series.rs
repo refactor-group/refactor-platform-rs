@@ -988,12 +988,7 @@ pub(crate) async fn enqueue_owed_invite(
                 .await?;
         }
     }
-    match coaching_session_pending_invite::complete(&txn, claimed).await? {
-        true => txn.commit().await,
-        false => txn.rollback().await,
-    }
-    .map_err(entity_api::error::Error::from)?;
-    Ok(())
+    coaching_session::settle_owed_invite(txn, claimed).await
 }
 
 /// What series `id`'s invite owed to `user_id` names, with the upcoming sessions it lists,

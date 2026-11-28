@@ -2446,9 +2446,8 @@ impl SeriesNotice {
     }
 }
 
-/// Send a recurring-sessions-scheduled notification email to a single recipient.
-/// One email per recipient — coach and coachee each get their own summarizing
-/// the freshly scheduled series.
+/// Send a series rescheduled notification email to a single recipient, each with their own
+/// summary of the series as rescheduled.
 async fn send_recurring_series_email_to_recipient(
     email_config: &ResolvedEmailConfig,
     to: &Recipient<'_>,
@@ -2780,11 +2779,9 @@ struct SeriesInviteKind<'a> {
     shape: SeriesInviteShape<'a>,
 }
 
-/// Send series invite emails to the participants `audience` may reach. Generic over the notification
-/// type `N` so the scheduled and reschedule flows share one body; they differ only by
-/// template (via `N`) and the `session_or_series` template variable. A reschedule passes
-/// an already-bumped `series`, so the `.ics` carries the next `SEQUENCE` under a stable
-/// `UID`. A participant it skips still gets the orphan cancels, on their own emails.
+/// Send series rescheduled emails to the participants `audience` may reach. A reschedule
+/// passes an already-bumped `series`, so the `.ics` carries the next `SEQUENCE` under a
+/// stable `UID`. A participant it skips still gets the orphan cancels, on their own emails.
 async fn send_series_invite_email<N: EmailNotification>(
     db: &DatabaseConnection,
     config: &Config,

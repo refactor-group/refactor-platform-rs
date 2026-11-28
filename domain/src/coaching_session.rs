@@ -32,7 +32,9 @@ use entity_api::{
     query::{IntoQueryFilterMap, QuerySort},
 };
 use log::*;
-use sea_orm::{ConnectionTrait, DatabaseConnection, IntoActiveModel, TransactionTrait};
+use sea_orm::{
+    ConnectionTrait, DatabaseConnection, DatabaseTransaction, IntoActiveModel, TransactionTrait,
+};
 use service::config::Config;
 
 pub use entity_api::coaching_session::{
@@ -760,6 +762,15 @@ pub(crate) async fn enqueue_owed_invite(
             .enqueue(&txn, &bumped, &Calendar::Invite(agenda), scheduled)
             .await?;
     }
+    settle_owed_invite(txn, claimed).await
+}
+
+/// Settles `claimed` on `txn` and commits, or rolls back, writing nothing, when another sweep
+/// has since taken it.
+pub(crate) async fn settle_owed_invite(
+    txn: DatabaseTransaction,
+    claimed: &coaching_session_pending_invite::Claimed,
+) -> Result<(), Error> {
     match coaching_session_pending_invite::complete(&txn, claimed).await? {
         true => txn.commit().await,
         false => txn.rollback().await,
