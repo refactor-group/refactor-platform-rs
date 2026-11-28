@@ -12,7 +12,7 @@
 You cancelled your recurring series of {{ email.parties.session_label_plural }} with <strong>{{ email.parties.other.full_name }}</strong>.
 {%- when Actor::Other -%}
 <strong>{{ email.parties.other.full_name }}</strong> cancelled your recurring series of {{ email.parties.session_label_plural }}.
-{%- endmatch %} Sessions you've already had stay in Refactor Coach with their notes.
+{%- endmatch %} Sessions you've already had remain in Refactor Coach with their notes.
 {%- endcall %}
 {% call m::details() -%}
 {% call m::row("Cancelled") %}{{ email.count }} upcoming session{{ email.count|pluralize }}{% endcall %}
