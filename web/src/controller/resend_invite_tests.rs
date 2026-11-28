@@ -14,7 +14,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{NaiveDateTime, Utc};
 use mockito::{Mock, Server, ServerGuard};
 use password_auth::generate_hash;
-use sea_orm::{prelude::DateTimeWithTimeZone, DatabaseBackend, MockDatabase};
+use sea_orm::{prelude::DateTimeWithTimeZone, DatabaseBackend, MockDatabase, MockExecResult};
 use time::Duration;
 use tower::ServiceExt;
 use tower_sessions::Expiry;
@@ -241,7 +241,7 @@ impl Fixture {
     }
 
     /// Up to the send: the membership check, the parties, the goals the description lists,
-    /// the bump, then the members raised to it.
+    /// the upcoming sessions' locks, the bump, then the members raised to it.
     fn series_sent_to(&self, series: &Series, rows: Vec<Session>, members: &[Id]) -> Call {
         let bumped = series.ical_sequence + 1;
         let raised: Vec<_> = rows
@@ -255,9 +255,12 @@ impl Fixture {
             ical_sequence: bumped,
             ..series.clone()
         };
+        let locks = rows.len();
         self.series_loaded(series, rows).then(|db| {
             self.parties(self.membership(db, members))
                 .append_query_results::<goals::Model, _, _>([vec![]])
+                // a session lock for each upcoming session, then the bump
+                .append_exec_results((0..locks).map(|_| MockExecResult::default()))
                 .append_query_results([vec![bumped]])
                 .append_query_results([raised])
         })

@@ -135,7 +135,7 @@ pub(crate) async fn create_with_sessions(
     };
     let series = coaching_session_series::create(&txn, series_input).await?;
 
-    let sessions = coaching_session::bulk_create_recurring(
+    let mut sessions = coaching_session::bulk_create_recurring(
         &txn,
         coaching_relationship_id,
         owner_id,
@@ -145,6 +145,8 @@ pub(crate) async fn create_with_sessions(
         Some(resolved_duration),
     )
     .await?;
+    // RETURNING promises no order, and the email dates the first and last.
+    sessions.sort_by_key(|session| session.date);
     coaching_session::stamp_inserted_notice(&txn, &relationship, &sessions).await?;
     // The new rows are written, so the outbox's conversation lock comes last.
     if let Some(notice) = &notice {
@@ -976,9 +978,9 @@ pub(crate) async fn enqueue_owed_invite(
     // Loaded outside the transaction, which then only locks, renders and writes.
     let owed = owed_invite(db, config, id, claimed.user_id).await?;
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
-    if let Some(notice) = &owed {
+    if let Some((notice, upcoming_ids)) = &owed {
         // The bump takes the series' row lock before the outbox takes its conversation's.
-        let (bumped, rows) = bump_invite(&txn, id).await?;
+        let (bumped, rows) = bump_invite(&txn, id, upcoming_ids.iter().copied()).await?;
         let upcoming = upcoming_of(&rows, chrono::Utc::now().naive_utc());
         if let Some(upcoming) = emails::Upcoming::of(&upcoming) {
             notice
@@ -994,13 +996,14 @@ pub(crate) async fn enqueue_owed_invite(
     Ok(())
 }
 
-/// What series `id`'s invite owed to `user_id` names, or `None` when none is owed.
+/// What series `id`'s invite owed to `user_id` names, with the upcoming sessions it lists,
+/// or `None` when none is owed.
 async fn owed_invite(
     db: &DatabaseConnection,
     config: &Config,
     id: Id,
     user_id: Id,
-) -> Result<Option<emails::SeriesNotice>, Error> {
+) -> Result<Option<(emails::SeriesNotice, Vec<Id>)>, Error> {
     let series = coaching_session_series::find_by_id(db, id).await?;
     let upcoming = upcoming_members(db, id, chrono::Utc::now().naive_utc()).await?;
     let Ok(listed) = ensure_resendable(&upcoming) else {
@@ -1012,9 +1015,9 @@ async fn owed_invite(
     if !member_ids.contains(&user_id) {
         return Ok(None);
     }
-    emails::SeriesNotice::invite(db, config, &relationship, vec![user_id], &listed)
-        .await
-        .map(Some)
+    let notice =
+        emails::SeriesNotice::invite(db, config, &relationship, vec![user_id], &listed).await?;
+    Ok(Some((notice, upcoming.iter().map(|s| s.id).collect())))
 }
 
 /// `upcoming`, the series' sessions after now in start order, or a refusal when there is
@@ -1059,12 +1062,15 @@ fn upcoming_of(
 }
 
 /// Bumps series `id`'s SEQUENCE, taking its row lock, and raises its members to it, since
-/// Google drops an override whose SEQUENCE trails its master. Returns the bumped series and
-/// every session linked to it.
+/// Google drops an override whose SEQUENCE trails its master. Locks `upcoming` first, as the
+/// series' other writes do, so a concurrent delete cannot deadlock it. Returns the bumped
+/// series and every session linked to it.
 async fn bump_invite(
     db: &impl ConnectionTrait,
     id: Id,
+    upcoming: impl IntoIterator<Item = Id>,
 ) -> Result<(Model, Vec<coaching_sessions::Model>), Error> {
+    entity_api::coaching_session::acquire_advisory_locks(db, upcoming).await?;
     let bumped = coaching_session_series::increment_ical_sequence(db, id).await?;
     let rows =
         entity_api::coaching_session::raise_series_ical_sequence(db, id, bumped.ical_sequence)
@@ -1102,7 +1108,7 @@ async fn send_invite_again(
     .await?;
     // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
-    let (bumped, rows) = bump_invite(&txn, series.id).await?;
+    let (bumped, rows) = bump_invite(&txn, series.id, upcoming.iter().map(|s| s.id)).await?;
     txn.commit().await.map_err(entity_api::error::Error::from)?;
 
     let listed = upcoming_of(&rows, now);
@@ -3208,9 +3214,9 @@ mod tests {
         assert!(written.is_err(), "{written:?}");
     }
 
-    /// An owed series invite bumps the series, taking its row lock, and raises its members,
-    /// then takes the outbox's conversation lock, writes, settles the row and commits, and
-    /// calls no provider.
+    /// An owed series invite locks its upcoming sessions as a delete does, bumps the series,
+    /// taking its row lock, and raises its members, then takes the outbox's conversation
+    /// lock, writes, settles the row and commits, and calls no provider.
     #[tokio::test]
     async fn an_owed_series_invite_writes_after_the_series_row_lock() {
         let (series, _, sessions) = following_fixture(2);
@@ -3239,7 +3245,7 @@ mod tests {
         // the series bump, then its members raised
         .append_query_results(vec![vec![bumped]])
         .append_query_results(vec![sessions.clone()])
-        // BEGIN, the conversation lock, the outbox write, the row settled and COMMIT
+        // two session locks, the conversation lock, the outbox write and the row settled
         .append_exec_results((0..5).map(|_| exec_ok()))
         .into_connection();
         let mailbox = Mailbox::new().await;
@@ -3261,14 +3267,23 @@ mod tests {
                 .position(|q| q.contains(needle))
                 .unwrap_or_else(|| panic!("no {needle}: {sql:?}"))
         };
+        let session_locks = sql
+            .iter()
+            .enumerate()
+            .filter(|(_, q)| q.contains("pg_advisory_xact_lock($1)"))
+            .map(|(position, _)| position)
+            .collect::<Vec<_>>();
         let series_row = at(r#"UPDATE "refactor_platform"."coaching_session_series""#);
         let raised = at(r#"UPDATE "refactor_platform"."coaching_sessions""#);
         let outbox_lock = at("pg_advisory_xact_lock($1, $2)");
         let write = at(r#"INSERT INTO "refactor_platform"."email_outbox""#);
         let settled = at(r#"DELETE FROM "refactor_platform"."coaching_session_pending_invites""#);
         let commit = at("COMMIT");
+        assert_eq!(session_locks.len(), 2, "{sql:?}");
         assert!(
-            at("BEGIN") < series_row
+            session_locks
+                .iter()
+                .all(|lock| at("BEGIN") < *lock && *lock < series_row)
                 && series_row < raised
                 && raised < outbox_lock
                 && outbox_lock < write
