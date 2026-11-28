@@ -787,7 +787,7 @@ SELECT typowner::regrole FROM pg_type WHERE typname = 'coaching_relationship_kin
 | MAIL-05 | Series scheduled: SER-01 (`domain/src/coaching_session_series.rs:145`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:2224`, `:2041` | |
 | MAIL-06 | Series rescheduled: SER-08 (`domain/src/coaching_session_series.rs:308`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:2278` | |
 | MAIL-07 | Series rescheduled from an occurrence on: SER-10 (`domain/src/coaching_session_series.rs:754`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:2366` | |
-| MAIL-08 | Series cancelled: SER-12 (`domain/src/coaching_session_series.rs:872`) | COACH and COACHEE, members or not [membership] | `domain/src/emails.rs:2795` | |
+| MAIL-08 | Series cancelled: SER-12 (`domain/src/coaching_session_series.rs`, `delete_with_future_sessions`) | COACH and COACHEE, members or not [membership]; nothing when no session is upcoming | `domain/src/emails.rs` (`SeriesNotice::cancellation`, `InviteParties::everyone`) | Written to the outbox in the delete's transaction |
 | MAIL-09 | Series invite resend: SER-14 (`domain/src/coaching_session_series.rs:932`) | COACH and COACHEE, each only if still an org member [membership] | `domain/src/emails.rs:2099` | |
 | MAIL-10 | Session reminder (JOB-01) | COACHEE only | `domain/src/emails.rs:1363`, `:1367` | Automated: SQL-shape mock only; check recipients by hand. |
 | MAIL-11 | Action assigned: ACT-28, ACT-29, TRN-11, TRN-13 | Every listed assignee (the coach or coachee, per ACT rules) who is still an org member [membership] | `domain/src/emails.rs:2873`; `web/src/controller/action_controller.rs:136`, `:199`; `domain/src/transcript_suggestion/review.rs:380` | |
@@ -886,7 +886,7 @@ a frozen `domain` test, or by hand with the reason.
 | SER-09 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::only_the_coach_reschedules_a_series` |
 | SER-10 | by hand: reschedule takes Postgres advisory locks |
 | SER-11 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::only_the_coach_reschedules_following_sessions` |
-| SER-12 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::the_coach_deletes_a_series_with_no_upcoming_sessions`; by hand with upcoming sessions and for MAIL-08: deleting them takes Postgres advisory locks |
+| SER-12 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::the_coach_deletes_a_series_with_no_upcoming_sessions`; with upcoming sessions, `domain/src/emails_sqlite_tests.rs::deleting_a_series_writes_both_cancellations_with_the_delete` |
 | SER-13 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::only_the_coach_deletes_a_series` |
 | SER-14 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_coach_resends_a_series_invite` |
 | SER-15 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::only_the_coach_resends_a_series_invite` |
@@ -1144,7 +1144,7 @@ a frozen `domain` test, or by hand with the reason.
 | MAIL-05 | `domain/src/emails_sqlite_tests.rs::members_only_emails_reach_only_participants_holding_a_role`, `domain/src/emails_sqlite_tests.rs::series_create_with_the_coach_holding_no_role_reaches_only_the_coachee` |
 | MAIL-06 | `domain/src/emails_sqlite_tests.rs::members_only_emails_reach_only_participants_holding_a_role`; `domain/src/coaching_session_series.rs::tests::m5_09_series_reschedule_emails_only_current_members` |
 | MAIL-07 | `domain/src/emails_sqlite_tests.rs::members_only_emails_reach_only_participants_holding_a_role`, `domain/src/emails_sqlite_tests.rs::a_following_reschedule_reports_a_coachee_holding_no_role_as_not_a_member`; `domain/src/coaching_session_series.rs::tests::m5_10_reschedule_following_emails_only_current_members` |
-| MAIL-08 | `domain/src/emails_sqlite_tests.rs::series_cancel_with_the_coachee_holding_no_role_reaches_both` |
+| MAIL-08 | `domain/src/emails_sqlite_tests.rs::deleting_a_series_writes_both_cancellations_with_the_delete`, `domain/src/emails_sqlite_tests.rs::deleting_a_series_with_nothing_upcoming_writes_no_cancellation` |
 | MAIL-09 | `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_series_resend_mails_both_members`, `web/src/controller/coaching_session_series_controller_sqlite_tests.rs::a_coach_who_left_cannot_resend_a_series_invite`; `domain/src/emails_sqlite_tests.rs::series_resend_with_the_coach_holding_no_role_reaches_only_the_coachee`; `web/src/controller/resend_invite_tests.rs::series_resend_bumps_the_series_and_raises_its_members`, `web/src/controller/resend_invite_tests.rs::resend_with_a_removed_coach_mails_only_the_coachee`, `web/src/controller/resend_invite_tests.rs::resend_to_a_removed_coachee_is_refused` |
 | MAIL-10 | `domain/src/emails_tests.rs::test_send_session_reminder_email_goes_only_to_the_coachee`; `domain/src/emails_sqlite_tests.rs::a_reminder_recipient_is_mailed_only_while_holding_a_role` |
 | MAIL-11 | `domain/src/emails_sqlite_tests.rs::action_assigned_reaches_only_an_assignee_holding_a_role` |

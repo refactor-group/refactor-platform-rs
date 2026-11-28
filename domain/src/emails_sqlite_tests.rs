@@ -15,9 +15,9 @@ use crate::coaching_session::{Frequency, Recurrence};
 use crate::email_outbox::OutgoingEmail;
 use crate::error::ExternalErrorKind;
 use crate::events::EventPublisher;
-use crate::test_utils::email_outbox::{calendar_part, emails as outbox};
+use crate::test_utils::email_outbox::{calendar_part, calendar_parts, emails as outbox};
 use crate::test_utils::sqlite::fixture::make_colleagues;
-use crate::test_utils::sqlite::fixture::seed_goal;
+use crate::test_utils::sqlite::fixture::{move_series_into_the_past, seed_goal};
 use crate::test_utils::sqlite::{
     database, mirror_migration_defaults, seed_action, seed_membership, seed_organization,
     seed_topic, seed_user, within_time_limit,
@@ -31,7 +31,6 @@ fn sending(server: &ServerGuard) -> Config {
         "--resend-api-key=test_api_key",
         "--recurring-sessions-scheduled-email-template-id=series_scheduled_tpl",
         &format!("--recurring-sessions-rescheduled-email-template-id={SERIES_RESCHEDULED}"),
-        "--recurring-sessions-cancelled-email-template-id=series_cancel_tpl",
         "--action-assigned-email-template-id=action_assigned_tpl",
         "--frontend-base-url=https://app.example.com",
         &format!("--resend-base-url={}", server.url()),
@@ -371,21 +370,201 @@ async fn cancel_with(
         .collect()
 }
 
-/// M9-03
+/// M9-03: deleting a series writes both participants' cancellations with the delete, the
+/// coachee holding no role, coachee first, ordered in their relationship, each telling its
+/// reader who cancelled and carrying the series `CANCEL` then a legacy member's own.
 #[tokio::test]
-async fn series_cancel_with_the_coachee_holding_no_role_reaches_both() {
+async fn deleting_a_series_writes_both_cancellations_with_the_delete() {
     within_time_limit(async {
         let db = database().await;
         let seeded = seed(&db).await;
         seeded.grant_role(&db, seeded.coach.id).await;
         let (series, sessions) = seeded.series(&db).await;
-        let mut server = Server::new_async().await;
-        let sent = Sent::default();
-        let _mock = sent.capture(&mut server).await;
+        let orphan = legacy_member(&db, &sessions[1]).await;
+        let config = composing();
+        let organization = organization::find_by_id(&db, seeded.relationship.organization_id)
+            .await
+            .expect("the organization reads");
 
-        notify_recurring_sessions_cancelled(&db, &sending(&server), &series, &sessions).await;
+        crate::coaching_session_series::delete_with_future_sessions(
+            &db,
+            &config,
+            &series,
+            seeded.coach.id,
+        )
+        .await
+        .expect("the delete succeeds");
 
-        assert_eq!(sent.addressees(), seeded.both());
+        let rows = outbox(&db).await;
+        let conversation = Subject::CoachingRelationship(seeded.relationship.id).key();
+        assert_eq!(
+            rows.iter()
+                .map(|(row, _)| (
+                    row.kind.as_str(),
+                    row.subject_key.as_str(),
+                    row.recipient_user_id
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("series_cancelled", conversation.as_str(), seeded.coachee.id),
+                ("series_cancelled", conversation.as_str(), seeded.coach.id),
+            ]
+        );
+        let brand = Brand::from_config(&config).expect("the brand is configured");
+        for ((_, stored), (reader, other, by)) in rows.iter().zip([
+            (&seeded.coachee, &seeded.coach, Actor::Other),
+            (&seeded.coach, &seeded.coachee, Actor::You),
+        ]) {
+            let expected = compose(
+                &SeriesCancelled {
+                    parties: Parties {
+                        recipient: Person::from(reader),
+                        other: Person::from(other),
+                        session_label: "coaching session",
+                        session_label_plural: "coaching sessions",
+                        organization_name: organization.name.clone(),
+                    },
+                    by,
+                    count: 2,
+                    first_date: session_when(sessions[0].date, &reader.timezone).date,
+                    last_date: session_when(sessions[1].date, &reader.timezone).date,
+                    calendar: Vec::new(),
+                },
+                &brand,
+            )
+            .expect("the expected email composes");
+            // The calendar parts carry the send's timestamp, so they are checked on their own.
+            assert!(
+                OutgoingEmail {
+                    attachments: Vec::new(),
+                    ..stored.clone()
+                } == expected,
+                "{} got a different email",
+                reader.email
+            );
+            let [cancel, orphan_cancel] = calendar_parts(stored)
+                .try_into()
+                .unwrap_or_else(|parts: Vec<String>| panic!("two parts: {parts:?}"));
+            assert!(cancel.contains("METHOD:CANCEL"), "{cancel}");
+            assert!(
+                cancel.contains(&format!("UID:{}@myrefactor.com", series.id)),
+                "{cancel}"
+            );
+            assert!(
+                cancel.contains("SEQUENCE:1"),
+                "outranks the invite: {cancel}"
+            );
+            assert!(cancel.contains("RRULE:FREQ=WEEKLY"), "{cancel}");
+            assert!(
+                orphan_cancel.contains(&format!("UID:{}@myrefactor.com", orphan.id)),
+                "{orphan_cancel}"
+            );
+            assert!(
+                orphan_cancel.contains("SEQUENCE:2"),
+                "outranks its standalone invite: {orphan_cancel}"
+            );
+        }
+    })
+    .await;
+}
+
+/// `session` as a legacy member: invited under its own `UID` before series invites existed.
+async fn legacy_member(
+    db: &DatabaseConnection,
+    session: &coaching_sessions::Model,
+) -> coaching_sessions::Model {
+    let mut active: coaching_sessions::ActiveModel = session.clone().into();
+    active.ical_recurrence_id = Set(None);
+    active.ical_sequence = Set(1);
+    active
+        .update(db)
+        .await
+        .expect("the session is a legacy member")
+}
+
+/// A series delete with nothing upcoming writes no cancellation: removing it is housekeeping.
+#[tokio::test]
+async fn deleting_a_series_with_nothing_upcoming_writes_no_cancellation() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed(&db).await;
+        let (series, _) = seeded.series(&db).await;
+        move_series_into_the_past(&db, series.id).await;
+
+        crate::coaching_session_series::delete_with_future_sessions(
+            &db,
+            &composing(),
+            &series,
+            seeded.coach.id,
+        )
+        .await
+        .expect("the delete succeeds");
+
+        assert!(outbox(&db).await.is_empty());
+    })
+    .await;
+}
+
+/// A series delete the database refuses writes no cancellation.
+#[tokio::test]
+async fn a_refused_series_delete_writes_no_cancellation() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed(&db).await;
+        let (series, sessions) = seeded.series(&db).await;
+        seed_action(&db, sessions[1].id, seeded.coach.id, "Follow up").await;
+
+        crate::coaching_session_series::delete_with_future_sessions(
+            &db,
+            &composing(),
+            &series,
+            seeded.coach.id,
+        )
+        .await
+        .expect_err("a series with an action is refused");
+
+        assert!(outbox(&db).await.is_empty());
+    })
+    .await;
+}
+
+/// A series delete whose commit fails, after its cancellations are written, leaves no
+/// cancellation and the series in place: the commit is refused by a foreign key the series
+/// delete breaks, which SQLite checks only at commit.
+#[tokio::test]
+async fn a_series_delete_whose_commit_fails_writes_no_cancellation() {
+    within_time_limit(async {
+        let db = database().await;
+        let seeded = seed(&db).await;
+        let (series, _) = seeded.series(&db).await;
+        for statement in [
+            "CREATE TABLE refactor_platform.commit_guard_parent (id TEXT PRIMARY KEY)",
+            "CREATE TABLE refactor_platform.commit_guard (parent_id TEXT \
+             REFERENCES commit_guard_parent (id) DEFERRABLE INITIALLY DEFERRED)",
+            "CREATE TEMP TRIGGER a_series_delete_fails_the_commit \
+             AFTER DELETE ON refactor_platform.coaching_session_series \
+             BEGIN INSERT INTO commit_guard VALUES ('missing'); END",
+        ] {
+            db.execute_unprepared(statement)
+                .await
+                .expect("the commit guard is created");
+        }
+
+        crate::coaching_session_series::delete_with_future_sessions(
+            &db,
+            &composing(),
+            &series,
+            seeded.coach.id,
+        )
+        .await
+        .expect_err("the commit fails");
+
+        assert!(outbox(&db).await.is_empty());
+        assert!(series_entity::Entity::find_by_id(series.id)
+            .one(&db)
+            .await
+            .expect("the series reads")
+            .is_some());
     })
     .await;
 }

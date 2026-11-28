@@ -1,6 +1,6 @@
 # Email Notifications Architecture
 
-Transactional emails are sent via [Resend](https://resend.com/). Most still use Resend-hosted templates filled with variables. The single-session emails that carry an invite or a cancellation are composed in the backend from in-repo templates (see [Email composition](email_composition.md)): the session-scheduled email is written to the [email outbox](email_outbox.md) in the transaction that creates the session, the cancellation in the one that deletes it, and the session-rescheduled email by the pending reschedule sweep in the transaction that settles the change. The rest move the same way, one sender at a time. The backend handles all email logic; the frontend has no involvement.
+Transactional emails are sent via [Resend](https://resend.com/). Most still use Resend-hosted templates filled with variables. The single-session emails that carry an invite or a cancellation are composed in the backend from in-repo templates (see [Email composition](email_composition.md)): the session-scheduled email is written to the [email outbox](email_outbox.md) in the transaction that creates the session, the cancellation in the one that deletes it, the series cancellation in the one that deletes the series, and the session-rescheduled email by the pending reschedule sweep in the transaction that settles the change. The rest move the same way, one sender at a time. The backend handles all email logic; the frontend has no involvement.
 
 ## Notification Types
 
@@ -54,6 +54,7 @@ flowchart TD
 All email sending is **best-effort** — failures never block the primary operation.
 
 - **Session scheduled**: Its reads run before the create's transaction; a failed read or render is logged and costs only the email. Only the outbox write can fail the create.
+- **Series cancelled**: Its reads run before the delete's transaction. Inside it, after the session locks and the series row, both participants' emails are written with the series `CANCEL` and a `CANCEL` for each legacy member's standalone event; the subject tells the canceller "You cancelled...". A series with nothing upcoming writes nothing. A failed read or render costs only the email; only the outbox write can fail the delete.
 - **Action assigned**: Controllers use `if let Err(e) = ... { warn!(...) }`
 - **Welcome email**: Uses `?` propagation for config errors (missing API key/template ID is a deployment issue worth surfacing). HTTP delivery is still fire-and-forget via `tokio::spawn()`.
 
@@ -65,14 +66,12 @@ Encapsulates config resolution so `send_*` functions don't leak config details t
 |---|---|
 | `RecurringSessionsScheduled` | `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID` |
 | `RecurringSessionsRescheduled` | `RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID` |
-| `RecurringSessionsCancelled` | `RECURRING_SESSIONS_CANCELLED_EMAIL_TEMPLATE_ID` |
 | `ActionAssigned` | `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID` |
 | `AddedToOrganization` | `ADDED_TO_ORGANIZATION_EMAIL_TEMPLATE_ID` |
 | `SessionReminder` | `SESSION_REMINDER_EMAIL_TEMPLATE_ID` |
 
-`RecurringSessionsCancelled` deliberately keeps the trait's `None` URL template: the
-record is deleted by the time a recipient could click through, so the email carries no link.
-The composed single-session cancellation carries no link for the same reason.
+The composed session and series cancellations carry no link: the record is deleted by the
+time a recipient could click through.
 
 ## Calendar Invites (`.ics`)
 
@@ -230,7 +229,6 @@ Session dates are stored as UTC. The `format_session_date_time()` helper convert
 | `WELCOME_EMAIL_TEMPLATE_ID` | Welcome email template |
 | `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID` | Recurring Sessions scheduled template |
 | `RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID` | Series reschedule template |
-| `RECURRING_SESSIONS_CANCELLED_EMAIL_TEMPLATE_ID` | Series cancellation template |
 | `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID` | Action assigned template |
 | `ADDED_TO_ORGANIZATION_EMAIL_TEMPLATE_ID` | Added-to-organization template |
 | `SESSION_REMINDER_EMAIL_TEMPLATE_ID` | Upcoming-session reminder template. Unset disables the reminder job |

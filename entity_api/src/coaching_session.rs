@@ -23,7 +23,7 @@ use sea_orm::{
     Value,
 };
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use utoipa::ToSchema;
 
 /// Resolve the duration for a new coaching session via the defaulting cascade.
@@ -831,11 +831,15 @@ pub async fn delete(db: &impl ConnectionTrait, coaching_session_id: Id) -> Resul
 /// Acquires a transaction-scoped Postgres advisory lock keyed on the session
 /// id. Other callers requesting the same lock block until this transaction
 /// commits or rolls back. Used by the lazy-hydration path to serialize
-/// concurrent first-load requests for the same session.
+/// concurrent first-load requests for the same session. Does nothing on SQLite, the test
+/// tier, which has no advisory locks and runs on one connection.
 pub async fn acquire_advisory_lock(
     txn: &impl ConnectionTrait,
     session_id: Id,
 ) -> Result<(), Error> {
+    if txn.get_database_backend() != DatabaseBackend::Postgres {
+        return Ok(());
+    }
     let key = advisory_lock_key(session_id);
     txn.execute_raw(Statement::from_sql_and_values(
         DatabaseBackend::Postgres,
@@ -843,6 +847,18 @@ pub async fn acquire_advisory_lock(
         [key.into()],
     ))
     .await?;
+    Ok(())
+}
+
+/// Acquires the advisory lock of each of `session_ids` in id order, so two transactions
+/// locking overlapping sessions cannot deadlock.
+pub async fn acquire_advisory_locks(
+    txn: &impl ConnectionTrait,
+    session_ids: impl IntoIterator<Item = Id>,
+) -> Result<(), Error> {
+    for id in session_ids.into_iter().collect::<BTreeSet<_>>() {
+        acquire_advisory_lock(txn, id).await?;
+    }
     Ok(())
 }
 
@@ -1860,6 +1876,31 @@ mod tests {
             admin_org_ids: vec![],
             member_org_ids: vec![organization_id],
         }
+    }
+
+    /// Sessions lock in id order whatever order they are given in.
+    #[tokio::test]
+    async fn acquire_advisory_locks_locks_in_id_order() -> Result<(), Error> {
+        let (low, high) = (Id::from_u128(1), Id::from_u128(2));
+        let db = MockDatabase::new(DatabaseBackend::Postgres)
+            .append_exec_results([MockExecResult::default(), MockExecResult::default()])
+            .into_connection();
+
+        acquire_advisory_locks(&db, [high, low]).await?;
+
+        let keys = db
+            .into_transaction_log()
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .map(|stmt| stmt.values.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            [low, high]
+                .map(|id| Some(sea_orm::Values(vec![advisory_lock_key(id).into()])))
+                .to_vec()
+        );
+        Ok(())
     }
 
     /// The claim has to select and write in one statement, and the conflict clause has

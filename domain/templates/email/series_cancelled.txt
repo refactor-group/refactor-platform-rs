@@ -8,7 +8,7 @@
 You cancelled your recurring series of {{ email.parties.session_label_plural }} with {{ email.parties.other.full_name }}.
 {%- when Actor::Other -%}
 {{ email.parties.other.full_name }} cancelled your recurring series of {{ email.parties.session_label_plural }}.
-{%- endmatch %} Sessions you've already had stay in Refactor Coach with their notes.
+{%- endmatch %} Sessions you've already had remain in Refactor Coach with their notes.
 
 Cancelled: {{ email.count }} upcoming session{{ email.count|pluralize }}
 Dates: {{ email.first_date }} through {{ email.last_date }}

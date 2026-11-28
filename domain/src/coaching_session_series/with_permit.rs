@@ -82,7 +82,7 @@ pub async fn delete_with_future_sessions(
     series: &Model,
 ) -> Result<(), Error> {
     ensure_permits(permit, series.coaching_relationship_id)?;
-    super::delete_with_future_sessions(db, config, series.id).await
+    super::delete_with_future_sessions(db, config, series, permit.user_id()).await
 }
 
 /// Re-sends `series`' calendar invite to both participants.
