@@ -158,22 +158,7 @@ pub async fn complete(db: &impl ConnectionTrait, claimed: &Claimed) -> Result<bo
     Ok(deleted.rows_affected > 0)
 }
 
-/// Hands back a claimed row the sweep did not attempt, charging it no attempt.
-pub async fn hand_back(db: &impl ConnectionTrait, claimed: &Claimed) -> Result<(), Error> {
-    Entity::update_many()
-        .col_expr(Column::ClaimId, Expr::value(Option::<Id>::None))
-        .col_expr(
-            Column::ClaimedAt,
-            Expr::value(Option::<NaiveDateTime>::None),
-        )
-        .col_expr(Column::UpdatedAt, Expr::value(Utc::now()))
-        .filter(held(claimed))
-        .exec(db)
-        .await?;
-    Ok(())
-}
-
-/// Hands a claimed row back after a failed send, giving up after `MAX_ATTEMPTS`.
+/// Hands a claimed row back after a failed write, giving up after `MAX_ATTEMPTS`.
 pub async fn release(db: &impl ConnectionTrait, claimed: &Claimed) -> Result<Released, Error> {
     let released = Entity::update_many()
         .col_expr(Column::ClaimId, Expr::value(Option::<Id>::None))

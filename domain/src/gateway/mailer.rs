@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use log::warn;
 use service::config::Config;
 
 use crate::email_outbox::Mailer;
@@ -16,4 +17,14 @@ pub async fn from_config(config: &Config) -> Result<Option<Arc<dyn Mailer>>, Err
             .await
             .map(|client| Some(Arc::new(client) as Arc<dyn Mailer>)),
     }
+}
+
+/// The configured email provider, or `None` when none is configured or it failed to build,
+/// which is logged.
+pub async fn configured(config: &Config) -> Option<Arc<dyn Mailer>> {
+    from_config(config)
+        .await
+        .inspect_err(|e| warn!("The email provider failed to build: {e:?}"))
+        .ok()
+        .flatten()
 }

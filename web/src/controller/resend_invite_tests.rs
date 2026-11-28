@@ -14,7 +14,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{NaiveDateTime, Utc};
 use mockito::{Mock, Server, ServerGuard};
 use password_auth::generate_hash;
-use sea_orm::{prelude::DateTimeWithTimeZone, DatabaseBackend, MockDatabase};
+use sea_orm::{prelude::DateTimeWithTimeZone, DatabaseBackend, MockDatabase, MockExecResult};
 use time::Duration;
 use tower::ServiceExt;
 use tower_sessions::Expiry;
@@ -240,8 +240,8 @@ impl Fixture {
         self.series_sent_to(series, rows, &self.both())
     }
 
-    /// Up to the send: the membership check, the bump, the members raised to it, the
-    /// parties, then the goals the description lists.
+    /// Up to the send: the membership check, the parties, the goals the description lists,
+    /// the upcoming sessions' locks, the bump, then the members raised to it.
     fn series_sent_to(&self, series: &Series, rows: Vec<Session>, members: &[Id]) -> Call {
         let bumped = series.ical_sequence + 1;
         let raised: Vec<_> = rows
@@ -255,13 +255,14 @@ impl Fixture {
             ical_sequence: bumped,
             ..series.clone()
         };
+        let locks = rows.len();
         self.series_loaded(series, rows).then(|db| {
-            self.parties(
-                self.membership(db, members)
-                    .append_query_results([vec![bumped]])
-                    .append_query_results([raised]),
-            )
-            .append_query_results::<goals::Model, _, _>([vec![]])
+            self.parties(self.membership(db, members))
+                .append_query_results::<goals::Model, _, _>([vec![]])
+                // a session lock for each upcoming session, then the bump
+                .append_exec_results((0..locks).map(|_| MockExecResult::default()))
+                .append_query_results([vec![bumped]])
+                .append_query_results([raised])
         })
     }
 
@@ -379,16 +380,25 @@ async fn mock_resend(
 
 /// Logs the caller in over the real routers, then sends the resend `POST`.
 async fn resend(call: Call, mail: Mail) -> Outcome {
+    resend_with(call, mail, true).await
+}
+
+/// [`resend`], with Resend configured as the email provider only when `provider`.
+async fn resend_with(call: Call, mail: Mail, provider: bool) -> Outcome {
     let mut server = Server::new_async().await;
     let sent = Arc::new(Mutex::new(Vec::new()));
     let mocks = mock_resend(&mut server, &sent, mail).await;
-    let config = Config::from_args([
-        "test",
-        "--resend-api-key=test_api_key_123",
-        "--recurring-sessions-scheduled-email-template-id=series_template",
-        "--frontend-base-url=https://app.example.com",
-        &format!("--resend-base-url={}", server.url()),
-    ]);
+    let resend_url = format!("--resend-base-url={}", server.url());
+    let config = Config::from_args(
+        ["test", "--frontend-base-url=https://app.example.com"]
+            .into_iter()
+            .chain(
+                provider
+                    .then_some(["--resend-api-key=test_api_key_123", resend_url.as_str()])
+                    .into_iter()
+                    .flatten(),
+            ),
+    );
     let db = Arc::new(call.db.into_connection());
     let app_state = AppState::new(
         service::AppState::new(config, &db),
@@ -518,6 +528,28 @@ async fn series_resend_reports_an_unreached_coachee() {
     .await;
 
     assert_eq!(out.status, StatusCode::BAD_GATEWAY);
+}
+
+/// With no email provider a series resend answers 502 before bumping anything.
+#[tokio::test]
+async fn series_resend_without_a_provider_bumps_nothing() {
+    let f = Fixture::new();
+    let series = f.series(start_in(7));
+
+    let out = resend_with(
+        f.series_loaded(&series, f.members(&series))
+            .then(|db| f.membership(db, &f.both())),
+        Mail::NONE,
+        false,
+    )
+    .await;
+
+    assert_eq!(out.status, StatusCode::BAD_GATEWAY);
+    assert!(
+        out.sequence_updates.is_empty(),
+        "{:?}",
+        out.sequence_updates
+    );
 }
 
 #[tokio::test]

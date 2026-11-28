@@ -20,14 +20,15 @@ use crate::error::{reason, Error};
 #[cfg(all(test, feature = "mock"))]
 use crate::error::{EntityErrorKind, InternalErrorKind};
 use crate::gateway::ical;
+use crate::gateway::mailer;
 use crate::gateway::tiptap::TiptapDocument;
 use crate::Id;
 use chrono::{NaiveDateTime, TimeDelta};
 use chrono_tz::Tz;
-use entity_api::coaching_session_series;
+use entity_api::{coaching_session_pending_invite, coaching_session_series};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use log::{debug, warn};
-use sea_orm::{DatabaseConnection, TransactionTrait};
+use sea_orm::{ConnectionTrait, DatabaseConnection, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use service::config::Config;
 
@@ -118,6 +119,8 @@ pub(crate) async fn create_with_sessions(
         timezone: zone.name().to_string(),
     };
     let rule_json = serde_json::to_value(&rule)?;
+    // Loaded outside the transaction: a failed read there would abort it.
+    let notice = emails::SeriesNotice::scheduled(db, config, &relationship, member_ids).await;
 
     let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
 
@@ -132,7 +135,7 @@ pub(crate) async fn create_with_sessions(
     };
     let series = coaching_session_series::create(&txn, series_input).await?;
 
-    let sessions = coaching_session::bulk_create_recurring(
+    let mut sessions = coaching_session::bulk_create_recurring(
         &txn,
         coaching_relationship_id,
         owner_id,
@@ -142,20 +145,17 @@ pub(crate) async fn create_with_sessions(
         Some(resolved_duration),
     )
     .await?;
+    // RETURNING promises no order, and the email dates the first and last.
+    sessions.sort_by_key(|session| session.date);
     coaching_session::stamp_inserted_notice(&txn, &relationship, &sessions).await?;
+    // The new rows are written, so the outbox's conversation lock comes last.
+    if let Some(notice) = &notice {
+        notice
+            .enqueue_scheduled(&txn, &series, &sessions, acting_user_id)
+            .await?;
+    }
 
     txn.commit().await.map_err(entity_api::error::Error::from)?;
-
-    // Best-effort, after commit: a failed invite must not undo a created series.
-    emails::notify_recurring_sessions_scheduled(
-        db,
-        config,
-        &series,
-        &sessions,
-        &relationship,
-        &member_ids,
-    )
-    .await;
 
     Ok((series, sessions))
 }
@@ -933,15 +933,24 @@ pub(crate) async fn resend_invite(
 ) -> Result<(), Error> {
     let series = coaching_session_series::find_by_id(db, series_id).await?;
     let now = chrono::Utc::now().naive_utc();
-    ensure_resendable(&upcoming_members(db, series_id, now).await?)?;
+    let upcoming = upcoming_members(db, series_id, now).await?;
+    ensure_resendable(&upcoming)?;
 
     let relationship =
         coaching_relationship::find_by_id(db, series.coaching_relationship_id).await?;
     let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
     ensure_required_participants_are_members(&relationship, &member_ids)?;
 
-    let (upcoming, delivered) =
-        send_invite_again(db, config, &series, &relationship, &member_ids, now).await?;
+    let (upcoming, delivered) = send_invite_again(
+        db,
+        config,
+        &series,
+        &relationship,
+        member_ids,
+        upcoming,
+        now,
+    )
+    .await?;
     upcoming.iter().try_for_each(|session| {
         coaching_session::ensure_others_told(
             &delivered,
@@ -955,44 +964,68 @@ pub(crate) async fn resend_invite(
     Ok(())
 }
 
-/// Resend series `series_id`'s invite to `user_id` alone, under a bumped SEQUENCE. `None` when
-/// none is owed: nothing is left to attend, or the series predates resendable invites. A
-/// participant no longer in the organization is sent nothing.
-pub(crate) async fn resend_invite_to(
+/// Writes series `id`'s invite for `claimed`'s participant alone, under a bumped SEQUENCE
+/// that raises its members, and settles `claimed`, in one transaction. A series with nothing
+/// left to attend, one that predates resendable invites and a participant no longer in the
+/// organization are owed nothing, so only the claim is settled. A claim another sweep has
+/// since taken writes nothing.
+pub(crate) async fn enqueue_owed_invite(
     db: &DatabaseConnection,
     config: &Config,
-    series_id: Id,
-    user_id: Id,
-) -> Result<Option<emails::Delivery>, Error> {
-    let series = coaching_session_series::find_by_id(db, series_id).await?;
-    let now = chrono::Utc::now().naive_utc();
-    // A failed read is not a refusal: it errs, so the owed invite is retried.
-    if ensure_resendable(&upcoming_members(db, series_id, now).await?).is_err() {
-        return Ok(None);
+    id: Id,
+    claimed: &coaching_session_pending_invite::Claimed,
+) -> Result<(), Error> {
+    // Loaded outside the transaction, which then only locks, renders and writes.
+    let owed = owed_invite(db, config, id, claimed.user_id).await?;
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    if let Some((notice, upcoming_ids)) = &owed {
+        // The bump takes the series' row lock before the outbox takes its conversation's.
+        let (bumped, rows) = bump_invite(&txn, id, upcoming_ids.iter().copied()).await?;
+        let upcoming = upcoming_of(&rows, chrono::Utc::now().naive_utc());
+        if let Some(upcoming) = emails::Upcoming::of(&upcoming) {
+            notice
+                .enqueue_invite(&txn, &bumped, &rows, &upcoming)
+                .await?;
+        }
     }
+    coaching_session::settle_owed_invite(txn, claimed).await
+}
+
+/// What series `id`'s invite owed to `user_id` names, with the upcoming sessions it lists,
+/// or `None` when none is owed.
+async fn owed_invite(
+    db: &DatabaseConnection,
+    config: &Config,
+    id: Id,
+    user_id: Id,
+) -> Result<Option<(emails::SeriesNotice, Vec<Id>)>, Error> {
+    let series = coaching_session_series::find_by_id(db, id).await?;
+    let upcoming = upcoming_members(db, id, chrono::Utc::now().naive_utc()).await?;
+    let Ok(listed) = ensure_resendable(&upcoming) else {
+        return Ok(None);
+    };
     let relationship =
         coaching_relationship::find_by_id(db, series.coaching_relationship_id).await?;
     let member_ids = coaching_relationship::notify_member_ids(db, &relationship).await?;
     if !member_ids.contains(&user_id) {
-        return Ok(Some(emails::Delivery::NoLongerAMember));
+        return Ok(None);
     }
-
-    let (_, delivered) =
-        send_invite_again(db, config, &series, &relationship, &[user_id], now).await?;
-    Ok(delivered.to(&relationship, user_id))
+    let notice =
+        emails::SeriesNotice::invite(db, config, &relationship, vec![user_id], &listed).await?;
+    Ok(Some((notice, upcoming.iter().map(|s| s.id).collect())))
 }
 
-/// Refuses a series with nothing left to attend, or with an upcoming member that predates
-/// `ical_recurrence_id` (such a series was never published as one, so a snapshot would not
-/// line up with what calendars hold).
-fn ensure_resendable(upcoming: &[coaching_sessions::Model]) -> Result<(), Error> {
-    if upcoming.is_empty() {
-        return Err(Error::conflict_because(
+/// `upcoming`, the series' sessions after now in start order, or a refusal when there is
+/// nothing left to attend or an upcoming member predates `ical_recurrence_id` (such a series
+/// was never published as one, so a snapshot would not line up with what calendars hold).
+fn ensure_resendable(upcoming: &[coaching_sessions::Model]) -> Result<emails::Upcoming<'_>, Error> {
+    let listed = emails::Upcoming::of(upcoming).ok_or_else(|| {
+        Error::conflict_because(
             reason::NO_UPCOMING_SESSIONS,
             "This series has no upcoming sessions.",
             serde_json::json!({}),
-        ));
-    }
+        )
+    })?;
     if upcoming.iter().any(|s| s.ical_recurrence_id.is_none()) {
         return Err(Error::conflict_because(
             reason::LEGACY_SERIES,
@@ -1000,65 +1033,89 @@ fn ensure_resendable(upcoming: &[coaching_sessions::Model]) -> Result<(), Error>
             serde_json::json!({}),
         ));
     }
-    Ok(())
+    Ok(listed)
 }
 
-/// The series' sessions starting after `now`.
+/// The series' sessions starting after `now`, earliest first.
 async fn upcoming_members(
     db: &DatabaseConnection,
     series_id: Id,
     now: NaiveDateTime,
 ) -> Result<Vec<coaching_sessions::Model>, Error> {
-    Ok(
-        entity_api::coaching_session::find_by_series_id(db, series_id)
-            .await?
-            .into_iter()
-            .filter(|s| s.date > now)
-            .collect(),
-    )
+    let rows = entity_api::coaching_session::find_by_series_id(db, series_id).await?;
+    Ok(upcoming_of(&rows, now))
 }
 
-/// Bumps the series' SEQUENCE and sends its invite to those of `member_ids` who take part;
-/// returns the sessions after `now` it listed, earliest first.
+/// Those of `rows` starting after `now`, earliest first.
+fn upcoming_of(
+    rows: &[coaching_sessions::Model],
+    now: NaiveDateTime,
+) -> Vec<coaching_sessions::Model> {
+    let mut upcoming: Vec<_> = rows.iter().filter(|s| s.date > now).cloned().collect();
+    upcoming.sort_by_key(|s| s.date);
+    upcoming
+}
+
+/// Bumps series `id`'s SEQUENCE, taking its row lock, and raises its members to it, since
+/// Google drops an override whose SEQUENCE trails its master. Locks `upcoming` first, as the
+/// series' other writes do, so a concurrent delete cannot deadlock it. Returns the bumped
+/// series and every session linked to it.
+async fn bump_invite(
+    db: &impl ConnectionTrait,
+    id: Id,
+    upcoming: impl IntoIterator<Item = Id>,
+) -> Result<(Model, Vec<coaching_sessions::Model>), Error> {
+    entity_api::coaching_session::acquire_advisory_locks(db, upcoming).await?;
+    let bumped = coaching_session_series::increment_ical_sequence(db, id).await?;
+    let rows =
+        entity_api::coaching_session::raise_series_ical_sequence(db, id, bumped.ical_sequence)
+            .await?;
+    Ok((bumped, rows))
+}
+
+/// Bumps the series' SEQUENCE and hands its invite to the email provider now for those of
+/// `member_ids` who take part, reporting what each participant got and the sessions after
+/// `now` it listed, earliest first. `upcoming` is what was upcoming before the bump. Without
+/// a provider nothing is bumped and nobody is reached.
 async fn send_invite_again(
     db: &DatabaseConnection,
     config: &Config,
     series: &Model,
     relationship: &coaching_relationships::Model,
-    member_ids: &[Id],
+    member_ids: Vec<Id>,
+    upcoming: Vec<coaching_sessions::Model>,
     now: NaiveDateTime,
 ) -> Result<(Vec<coaching_sessions::Model>, emails::Delivered), Error> {
-    // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
-    // Members are raised with the series because Google drops an override whose SEQUENCE
-    // trails its master.
-    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
-    let bumped = coaching_session_series::increment_ical_sequence(&txn, series.id).await?;
-    let rows = entity_api::coaching_session::raise_series_ical_sequence(
-        &txn,
-        series.id,
-        bumped.ical_sequence,
-    )
-    .await?;
-    txn.commit().await.map_err(entity_api::error::Error::from)?;
-
-    let mut upcoming: Vec<coaching_sessions::Model> =
-        rows.iter().filter(|s| s.date > now).cloned().collect();
-    upcoming.sort_by_key(|s| s.date);
-    let parties = emails::InviteParties::load(db, relationship).await?;
-    let delivered = emails::send_series_invite_resend(
+    let Some(mailer) = mailer::configured(config).await else {
+        warn!(
+            "No email provider is configured, so series {} cannot be resent",
+            series.id
+        );
+        return Ok((upcoming, emails::Delivered::default()));
+    };
+    let notice = emails::SeriesNotice::invite(
         db,
         config,
-        &bumped,
-        &emails::Audience {
-            participants: &parties.participants(),
-            member_ids,
-        },
-        &upcoming,
-        &rows,
-        &parties.organization,
+        relationship,
+        member_ids,
+        &ensure_resendable(&upcoming)?,
     )
     .await?;
-    Ok((upcoming, delivered))
+    // Committed before the send: a failed send leaves a gap in SEQUENCE, which is harmless.
+    let txn = db.begin().await.map_err(entity_api::error::Error::from)?;
+    let (bumped, rows) = bump_invite(&txn, series.id, upcoming.iter().map(|s| s.id)).await?;
+    txn.commit().await.map_err(entity_api::error::Error::from)?;
+
+    let listed = upcoming_of(&rows, now);
+    let delivered = notice
+        .deliver_invite(
+            mailer.as_ref(),
+            &bumped,
+            &rows,
+            &ensure_resendable(&listed)?,
+        )
+        .await;
+    Ok((listed, delivered))
 }
 
 async fn cleanup_orphaned_docs(
@@ -1408,7 +1465,12 @@ mod tests {
         let series = Model {
             id: Id::new_v4(),
             coaching_relationship_id: relationship_id,
-            rule: serde_json::json!({}),
+            rule: serde_json::json!({
+                "start_at": start(),
+                "recurrence": { "frequency": "weekly", "interval": 1, "count": 3 },
+                "duration_minutes": 60,
+                "timezone": "UTC",
+            }),
             ical_sequence: 0,
             created_by_user_id: coach_id,
             created_at: now.into(),
@@ -1468,29 +1530,25 @@ mod tests {
             .append_query_results(vec![vec![coach_row("UTC")]])
             // 3. resolve_duration → user::find_by_id with related user_roles
             .append_query_results::<(entity::users::Model, Option<entity::user_roles::Model>), _, _>(
-                vec![vec![(coach, None)]],
-            )
-            .append_exec_results(vec![MockExecResult {
-                last_insert_id: 0,
-                rows_affected: 1,
-            }])
+                vec![vec![(coach.clone(), None)]],
+            );
+        let coachee = entity::users::Model {
+            id: relationship.coachee_id,
+            ..coach_row("UTC")
+        };
+        // 4. the invite's parties, before the transaction
+        let db = invite_loads(db, relationship.organization_id, &coach, &coachee)
+            // the series and sessions inserted, returning their rows
             .append_query_results(vec![vec![series.clone()]])
             .append_query_results(vec![expected_sessions.clone()])
-            .append_exec_results(vec![MockExecResult {
-                last_insert_id: 0,
-                rows_affected: 1,
-            }]);
-        let db = invite_loads(
-            db,
-            relationship.organization_id,
-            &coach_row("UTC"),
-            &coach_row("UTC"),
-        )
-        .into_connection();
+            // BEGIN, the notice stamps, the conversation locks, the outbox write and COMMIT
+            .append_exec_results((0..6).map(|_| exec_ok()))
+            .into_connection();
+        let mailbox = Mailbox::new().await;
 
         let (returned_series, returned_sessions) = create_with_sessions(
             &db,
-            &test_config(),
+            &mailbox.config(),
             relationship_id,
             coach_id,
             start(),
@@ -1504,9 +1562,42 @@ mod tests {
         assert!(returned_sessions
             .iter()
             .all(|s| s.coaching_session_series_id == Some(series.id)));
+        assert!(mailbox.recipients().is_empty(), "no provider is called");
         // M5-04: the invite reuses the create's membership check.
         let log = db.into_transaction_log();
         assert_eq!(membership_statements(&log), 1, "{log:?}");
+        // The inserts and notice stamps come before the outbox's conversation lock, which
+        // comes before its write and COMMIT.
+        let sql: Vec<String> = log
+            .iter()
+            .flat_map(|txn| txn.statements())
+            .map(|stmt| stmt.sql.clone())
+            .collect();
+        let at = |needle: &str| {
+            sql.iter()
+                .position(|q| q.contains(needle))
+                .unwrap_or_else(|| panic!("no {needle}: {sql:?}"))
+        };
+        let begin = at("BEGIN");
+        let sessions_insert = at(r#"INSERT INTO "refactor_platform"."coaching_sessions""#);
+        let stamps = at(r#"INSERT INTO "refactor_platform"."coaching_session_notices""#);
+        let outbox_lock = at("pg_advisory_xact_lock($1, $2)");
+        let write = at(r#"INSERT INTO "refactor_platform"."email_outbox""#);
+        let commit = at("COMMIT");
+        assert!(
+            sql[..begin]
+                .iter()
+                .all(|q| !q.contains("pg_advisory_xact_lock")),
+            "{sql:?}"
+        );
+        assert!(
+            begin < sessions_insert
+                && sessions_insert < stamps
+                && stamps < outbox_lock
+                && outbox_lock < write
+                && write < commit,
+            "{sql:?}"
+        );
         Ok(())
     }
 
@@ -3031,7 +3122,6 @@ mod tests {
         let config = Config::from_args([
             "test",
             "--resend-api-key=test_api_key",
-            "--recurring-sessions-scheduled-email-template-id=series_template",
             "--frontend-base-url=https://app.example.com",
             &format!("--resend-base-url={}", resend.url()),
         ]);
@@ -3070,14 +3160,14 @@ mod tests {
             // the relationship and its members
             .append_query_results(vec![vec![relationship.clone()]])
             .append_query_results(vec![both_participants_are_members(&relationship)])
-            // the series bump, then its members raised
-            .append_query_results(vec![vec![bumped]])
-            .append_query_results(vec![sessions.clone()])
             // the email: parties, then the first session's goals
             .append_query_results(vec![vec![coach]])
             .append_query_results(vec![vec![coachee]])
             .append_query_results(vec![vec![organization]])
             .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+            // the series bump, then its members raised
+            .append_query_results(vec![vec![bumped]])
+            .append_query_results(vec![sessions.clone()])
             // each upcoming session's locked re-read, then its clear
             .append_query_results(vec![vec![sessions[0].clone()]])
             .append_query_results(vec![vec![sessions[1].clone()]])
@@ -3106,10 +3196,95 @@ mod tests {
             .append_query_results(vec![vec![series.clone()]])
             .append_query_errors([sea_orm::DbErr::Custom("connection lost".to_owned())])
             .into_connection();
+        let claimed = coaching_session_pending_invite::Claimed {
+            id: Id::new_v4(),
+            user_id: Id::new_v4(),
+            target: coaching_session_pending_invite::Target::Series(series.id),
+            claim_id: Id::new_v4(),
+        };
 
-        let resent =
-            resend_invite_to(&db, &Config::from_args(["test"]), series.id, Id::new_v4()).await;
+        let written =
+            enqueue_owed_invite(&db, &Config::from_args(["test"]), series.id, &claimed).await;
 
-        assert!(resent.is_err(), "{resent:?}");
+        assert!(written.is_err(), "{written:?}");
+    }
+
+    /// An owed series invite locks its upcoming sessions as a delete does, bumps the series,
+    /// taking its row lock, and raises its members, then takes the outbox's conversation
+    /// lock, writes, settles the row and commits, and calls no provider.
+    #[tokio::test]
+    async fn an_owed_series_invite_writes_after_the_series_row_lock() {
+        let (series, _, sessions) = following_fixture(2);
+        let (coach, coachee) = (coach_row("UTC"), coach_row("UTC"));
+        let relationship = entity::coaching_relationships::Model {
+            coach_id: coach.id,
+            coachee_id: coachee.id,
+            ..member_relationship(series.coaching_relationship_id)
+        };
+        let bumped = Model {
+            ical_sequence: series.ical_sequence + 1,
+            ..series.clone()
+        };
+        let db = invite_loads(
+            MockDatabase::new(DatabaseBackend::Postgres)
+                .append_query_results(vec![vec![series.clone()]])
+                .append_query_results(vec![sessions.clone()])
+                .append_query_results(vec![vec![relationship.clone()]])
+                .append_query_results(vec![both_participants_are_members(&relationship)]),
+            relationship.organization_id,
+            &coach,
+            &coachee,
+        )
+        // the first session's goals
+        .append_query_results::<entity::goals::Model, _, _>(vec![vec![]])
+        // the series bump, then its members raised
+        .append_query_results(vec![vec![bumped]])
+        .append_query_results(vec![sessions.clone()])
+        // two session locks, the conversation lock, the outbox write and the row settled
+        .append_exec_results((0..5).map(|_| exec_ok()))
+        .into_connection();
+        let mailbox = Mailbox::new().await;
+        let claimed = coaching_session_pending_invite::Claimed {
+            id: Id::new_v4(),
+            user_id: coachee.id,
+            target: coaching_session_pending_invite::Target::Series(series.id),
+            claim_id: Id::new_v4(),
+        };
+
+        enqueue_owed_invite(&db, &mailbox.config(), series.id, &claimed)
+            .await
+            .expect("the invite is written");
+
+        assert!(mailbox.recipients().is_empty(), "no provider is called");
+        let sql = written_sql(db);
+        let at = |needle: &str| {
+            sql.iter()
+                .position(|q| q.contains(needle))
+                .unwrap_or_else(|| panic!("no {needle}: {sql:?}"))
+        };
+        let session_locks = sql
+            .iter()
+            .enumerate()
+            .filter(|(_, q)| q.contains("pg_advisory_xact_lock($1)"))
+            .map(|(position, _)| position)
+            .collect::<Vec<_>>();
+        let series_row = at(r#"UPDATE "refactor_platform"."coaching_session_series""#);
+        let raised = at(r#"UPDATE "refactor_platform"."coaching_sessions""#);
+        let outbox_lock = at("pg_advisory_xact_lock($1, $2)");
+        let write = at(r#"INSERT INTO "refactor_platform"."email_outbox""#);
+        let settled = at(r#"DELETE FROM "refactor_platform"."coaching_session_pending_invites""#);
+        let commit = at("COMMIT");
+        assert_eq!(session_locks.len(), 2, "{sql:?}");
+        assert!(
+            session_locks
+                .iter()
+                .all(|lock| at("BEGIN") < *lock && *lock < series_row)
+                && series_row < raised
+                && raised < outbox_lock
+                && outbox_lock < write
+                && write < settled
+                && settled < commit,
+            "{sql:?}"
+        );
     }
 }

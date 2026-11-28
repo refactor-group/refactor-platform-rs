@@ -111,7 +111,6 @@ impl Mailbox {
         Config::from_args([
             "test".to_string(),
             "--resend-api-key=test_api_key".to_string(),
-            "--recurring-sessions-scheduled-email-template-id=recurring_template".to_string(),
             "--recurring-sessions-rescheduled-email-template-id=series_reschedule_template"
                 .to_string(),
             "--frontend-base-url=https://app.example.com".to_string(),

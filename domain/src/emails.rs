@@ -19,7 +19,7 @@ use crate::{
     coaching_sessions,
     email_composition::{
         calendar_attachments, compose,
-        series::SeriesCancelled,
+        series::{SeriesCancelled, SeriesScheduled},
         session::{CancelReason, SessionCancelled, SessionRescheduled, SessionScheduled},
         Actor, Brand, Email, Parties, Person, When, FROM_ADDRESS, FROM_DISPLAY_NAME,
     },
@@ -96,19 +96,6 @@ fn frontend_base_url(config: &Config) -> Result<String, Error> {
         source: None,
         error_kind: DomainErrorKind::Internal(InternalErrorKind::Config),
     })
-}
-
-struct RecurringSessionsScheduled;
-impl EmailNotification for RecurringSessionsScheduled {
-    fn template_id(config: &Config) -> Option<String> {
-        config.recurring_sessions_scheduled_email_template_id()
-    }
-    fn notification_name() -> &'static str {
-        "recurring sessions scheduled"
-    }
-    fn url_path_template(config: &Config) -> Option<String> {
-        Some(config.session_scheduled_email_url_path().to_owned())
-    }
 }
 
 struct RecurringSessionsRescheduled;
@@ -858,19 +845,6 @@ impl Delivered {
         .collect()
     }
 
-    /// What this send did for `user_id`, by the seat they hold in `relationship`; `None` when
-    /// they hold none.
-    pub fn to(
-        &self,
-        relationship: &coaching_relationships::Model,
-        user_id: Id,
-    ) -> Option<Delivery> {
-        relationship.seat(user_id).map(|seat| match seat {
-            Seat::CoachId => self.coach,
-            Seat::CoacheeId => self.coachee,
-        })
-    }
-
     /// The participants this send skipped for no longer being members.
     fn skipped(&self, participants: &Participants<'_>) -> Vec<Id> {
         [
@@ -1279,6 +1253,14 @@ pub(crate) fn invite_resend_key(session: &coaching_sessions::Model, recipient_id
     format!(
         "session-invite-resend/{}/{}/{recipient_id}",
         session.id, session.ical_sequence
+    )
+}
+
+/// One key per resent series invite, as [`invite_resend_key`] is for a session's.
+fn series_invite_resend_key(series: &coaching_session_series::Model, recipient_id: Id) -> String {
+    format!(
+        "series-invite-resend/{}/{}/{recipient_id}",
+        series.id, series.ical_sequence
     )
 }
 
@@ -1944,23 +1926,11 @@ impl SessionNotice {
         calendar: &Calendar<'_>,
         email_for: impl Fn(SessionCopy) -> E,
     ) -> Result<Vec<Envelope>, Error> {
-        let envelopes = self.envelopes(session, calendar, email_for);
-        let missing: Vec<Id> = self
-            .reach
-            .iter()
-            .copied()
-            .filter(|id| envelopes.iter().all(|e| e.recipient_id != *id))
-            .collect();
-        match missing.is_empty() {
-            true => Ok(envelopes),
-            false => Err(Error {
-                source: None,
-                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(format!(
-                    "the {} emails to {missing:?} did not render",
-                    E::KIND
-                ))),
-            }),
-        }
+        require_all(
+            &self.reach,
+            self.envelopes(session, calendar, email_for),
+            E::KIND,
+        )
     }
 
     /// Writes [`Self::envelopes_for_all`] on `txn`; returns who they address. Fails unless
@@ -2004,23 +1974,61 @@ impl SessionNotice {
         key: impl Fn(Id) -> String,
         email_for: impl Fn(SessionCopy) -> E,
     ) -> Delivered {
-        let envelopes = self.envelopes(session, calendar, email_for);
-        let copies = self.parties.participants().copies();
-        send_to_participants(&copies, &self.reach, E::KIND, |to| {
-            let envelope = envelopes.iter().find(|e| e.recipient_id == to.user.id);
-            let key = key(to.user.id);
-            async move {
-                let envelope = envelope.ok_or_else(|| Error {
-                    source: None,
-                    error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-                        "the copy did not render".to_string(),
-                    )),
-                })?;
-                accepted(mailer.deliver(&key, &envelope.email).await)
-            }
-        })
+        deliver_to(
+            mailer,
+            &self.parties.participants(),
+            &self.reach,
+            &self.envelopes(session, calendar, email_for),
+            E::KIND,
+            key,
+        )
         .await
     }
+}
+
+/// `envelopes`, or an error naming `kind` when anyone in `reach` has no copy.
+fn require_all(reach: &[Id], envelopes: Vec<Envelope>, kind: &str) -> Result<Vec<Envelope>, Error> {
+    let missing: Vec<Id> = reach
+        .iter()
+        .copied()
+        .filter(|id| envelopes.iter().all(|e| e.recipient_id != *id))
+        .collect();
+    match missing.is_empty() {
+        true => Ok(envelopes),
+        false => Err(Error {
+            source: None,
+            error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(format!(
+                "the {kind} emails to {missing:?} did not render"
+            ))),
+        }),
+    }
+}
+
+/// Hands each of `participants` in `reach` their `kind` copy among `envelopes` through
+/// `mailer` now, under the idempotency key `key` gives them, and reports what each got.
+/// Someone with no copy counts as failed.
+async fn deliver_to(
+    mailer: &dyn Mailer,
+    participants: &Participants<'_>,
+    reach: &[Id],
+    envelopes: &[Envelope],
+    kind: &str,
+    key: impl Fn(Id) -> String,
+) -> Delivered {
+    send_to_participants(&participants.copies(), reach, kind, |to| {
+        let envelope = envelopes.iter().find(|e| e.recipient_id == to.user.id);
+        let key = key(to.user.id);
+        async move {
+            let envelope = envelope.ok_or_else(|| Error {
+                source: None,
+                error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+                    "the copy did not render".to_string(),
+                )),
+            })?;
+            accepted(mailer.deliver(&key, &envelope.email).await)
+        }
+    })
+    .await
 }
 
 /// A series' upcoming sessions in start order, never empty: what its emails count and date.
@@ -2046,6 +2054,32 @@ impl<'a> Upcoming<'a> {
 pub(crate) struct SeriesCopy(RecipientCopy);
 
 impl SeriesCopy {
+    /// The series-scheduled email for `upcoming`, which `scheduler_id` scheduled, repeating as
+    /// `cadence` and opened at `url`, each date read from its own start in the recipient's zone.
+    pub(crate) fn scheduled(
+        self,
+        scheduler_id: Id,
+        upcoming: &Upcoming<'_>,
+        cadence: &str,
+        url: &str,
+    ) -> SeriesScheduled {
+        let Self(copy) = self;
+        SeriesScheduled {
+            by: Actor::of(scheduler_id, copy.recipient_id),
+            first: copy.when(upcoming.first.date),
+            last_date: copy.when(upcoming.last.date).date,
+            duration: crate::duration::Duration::from_minutes_unchecked(
+                upcoming.first.duration_minutes,
+            )
+            .to_string(),
+            cadence: cadence.to_owned(),
+            count: upcoming.all.len(),
+            url: url.to_owned(),
+            parties: copy.parties,
+            calendar: copy.calendar,
+        }
+    }
+
     /// The series-cancelled email for `upcoming`, the sessions `actor_id` cancelled, each date
     /// read from its own start in the recipient's zone.
     pub(crate) fn cancelled(self, actor_id: Id, upcoming: &Upcoming<'_>) -> SeriesCancelled {
@@ -2063,28 +2097,53 @@ impl SeriesCopy {
 
 /// The calendar parts a series email carries.
 pub(crate) enum SeriesCalendar<'a> {
+    /// The series' invite in a shape, linking to the first of the upcoming sessions.
+    Invite(SeriesInviteShape<'a>, &'a Upcoming<'a>),
     /// The series' cancellation, then one for each standalone event a legacy member among
     /// the cancelled sessions left behind.
     Cancel(&'a Upcoming<'a>),
 }
 
-/// `calendar`'s parts for `series`, stamped `dtstamp`, as attachments. `series` must already
-/// carry the `SEQUENCE` that outranks its last invite. A standalone cancellation that fails
-/// to build is logged and left out; only the series' own part fails the whole.
+/// `calendar`'s parts for `series`, carrying `description` and stamped `dtstamp`, as
+/// attachments. `series` must already carry the `SEQUENCE` that outranks its last invite. A
+/// standalone cancellation that fails to build is logged and left out; only the series' own
+/// parts fail the whole.
 fn series_calendar(
     participants: &Participants<'_>,
     series: &coaching_session_series::Model,
     calendar: &SeriesCalendar<'_>,
+    description: String,
     dtstamp: NaiveDateTime,
 ) -> Result<Vec<Attachment>, Error> {
     match calendar {
+        SeriesCalendar::Invite(shape, upcoming) => {
+            let ics = series_ics(
+                participants,
+                series,
+                upcoming.first,
+                shape,
+                &[],
+                description,
+                dtstamp,
+            )?;
+            Ok(calendar_attachments(
+                std::iter::once(&ics.body)
+                    .chain(&ics.split_from)
+                    .map(|part| (part.as_str(), &ical::Method::Request))
+                    .chain(
+                        ics.orphan_cancels
+                            .iter()
+                            .map(|part| (part.as_str(), &ical::Method::Cancel)),
+                    ),
+            ))
+        }
         SeriesCalendar::Cancel(upcoming) => {
             let cancel = build_series_cancel_ics(
                 participants.coach,
                 participants.coachee,
                 upcoming.first,
                 series,
-                participants.series_cancelled_description(),
+                description,
                 dtstamp,
             )?;
             let orphans = build_orphan_cancels(participants, upcoming.all, dtstamp);
@@ -2097,6 +2156,27 @@ fn series_calendar(
     }
 }
 
+/// The DESCRIPTION of a series' invite: it links to `first`, its first upcoming session, and
+/// lists `goal_titles`, that session's in-progress goals.
+fn series_description(
+    participants: &Participants<'_>,
+    organization: &organizations::Model,
+    url: String,
+    goal_titles: &[String],
+    first: &coaching_sessions::Model,
+) -> String {
+    ical::compose_description(&DescriptionParts {
+        session_url: url,
+        title: None,
+        participants: &participants.description_line(),
+        organization_name: &organization.name,
+        topics: &[],
+        goal_titles,
+        open_actions: &[],
+        anchor_tz: user::timezone(participants.schedule_owner(first)),
+    })
+}
+
 /// What a series' emails name, loaded before the transaction that changes the series, so
 /// that transaction only renders and writes them.
 pub(crate) struct SeriesNotice {
@@ -2104,9 +2184,66 @@ pub(crate) struct SeriesNotice {
     parties: InviteParties,
     /// The participants the emails may reach.
     reach: Vec<Id>,
+    /// The in-progress goals of the series' first upcoming session, which its invite lists.
+    goal_titles: Vec<String>,
 }
 
 impl SeriesNotice {
+    /// Loads what the invite of a series about to be created in `relationship` names for
+    /// `reach`, or `None` when a load failed, which is logged and costs only the email. A new
+    /// series has no goals yet.
+    pub(crate) async fn scheduled(
+        db: &DatabaseConnection,
+        config: &Config,
+        relationship: &coaching_relationships::Model,
+        reach: Vec<Id>,
+    ) -> Option<Self> {
+        async {
+            let composing = Composing::of(config)?;
+            let parties = InviteParties::load(db, relationship).await?;
+            Ok::<_, Error>(Self {
+                composing,
+                parties,
+                reach,
+                goal_titles: Vec::new(),
+            })
+        }
+        .await
+        .inspect_err(|e| {
+            warn!(
+                "Failed to load the series scheduled emails for relationship {}: {e:?}",
+                relationship.id
+            )
+        })
+        .ok()
+    }
+
+    /// Loads what a series' invite, as it stands, names for `reach`, and the goals the first of
+    /// `upcoming` holds.
+    pub(crate) async fn invite(
+        db: &DatabaseConnection,
+        config: &Config,
+        relationship: &coaching_relationships::Model,
+        reach: Vec<Id>,
+        upcoming: &Upcoming<'_>,
+    ) -> Result<Self, Error> {
+        let composing = Composing::of(config)?;
+        let (parties, goals) = try_join!(
+            InviteParties::load(db, relationship),
+            entity_api::coaching_session_goal::find_in_progress_goals_by_coaching_session_id(
+                db,
+                upcoming.first.id
+            )
+            .map_err(Error::from),
+        )?;
+        Ok(Self {
+            composing,
+            parties,
+            reach,
+            goal_titles: goals.into_iter().filter_map(|goal| goal.title).collect(),
+        })
+    }
+
     /// Loads what the cancellation of a series in relationship `relationship_id` names, or
     /// `None` when a load failed, which is logged and costs only the email. Both participants
     /// are told, members or not: a removed member still holds the events.
@@ -2122,6 +2259,7 @@ impl SeriesNotice {
                 composing,
                 parties,
                 reach,
+                goal_titles: Vec::new(),
             })
         }
         .await
@@ -2145,28 +2283,147 @@ impl SeriesNotice {
         email_for: impl Fn(SeriesCopy) -> E,
     ) -> Vec<Envelope> {
         let participants = self.parties.participants();
-        series_calendar(&participants, series, calendar, Utc::now().naive_utc())
-            .map(|attachments| {
-                recipient_envelopes(
-                    &self.composing.brand,
-                    &Audience {
-                        participants: &participants,
-                        member_ids: &self.reach,
-                    },
-                    &self.parties.organization,
-                    series.coaching_relationship_id,
-                    &attachments,
-                    |copy| email_for(SeriesCopy(copy)),
-                )
+        let description = match calendar {
+            SeriesCalendar::Invite(_, upcoming) => series_description(
+                &participants,
+                &self.parties.organization,
+                self.composing.page.session(upcoming.first.id),
+                &self.goal_titles,
+                upcoming.first,
+            ),
+            SeriesCalendar::Cancel(_) => participants.series_cancelled_description(),
+        };
+        series_calendar(
+            &participants,
+            series,
+            calendar,
+            description,
+            Utc::now().naive_utc(),
+        )
+        .map(|attachments| {
+            recipient_envelopes(
+                &self.composing.brand,
+                &Audience {
+                    participants: &participants,
+                    member_ids: &self.reach,
+                },
+                &self.parties.organization,
+                series.coaching_relationship_id,
+                &attachments,
+                |copy| email_for(SeriesCopy(copy)),
+            )
+        })
+        .inspect_err(|e| {
+            warn!(
+                "Failed to render the {} emails for series {}: {e:?}",
+                E::KIND,
+                series.id
+            )
+        })
+        .unwrap_or_default()
+    }
+
+    /// [`Self::envelopes`] of the series-scheduled email about `upcoming`, carrying `series`'
+    /// invite in `shape`, which `scheduler_id` scheduled.
+    fn scheduled_envelopes(
+        &self,
+        series: &coaching_session_series::Model,
+        shape: SeriesInviteShape<'_>,
+        upcoming: &Upcoming<'_>,
+        scheduler_id: Id,
+    ) -> Vec<Envelope> {
+        let url = self.composing.page.session(upcoming.first.id);
+        serde_json::from_value::<SeriesRule>(series.rule.clone())
+            .map(|rule| {
+                let cadence = rule.recurrence.summary();
+                self.envelopes(series, &SeriesCalendar::Invite(shape, upcoming), |copy| {
+                    copy.scheduled(scheduler_id, upcoming, &cadence, &url)
+                })
             })
             .inspect_err(|e| {
                 warn!(
                     "Failed to render the {} emails for series {}: {e:?}",
-                    E::KIND,
+                    SeriesScheduled::KIND,
                     series.id
                 )
             })
             .unwrap_or_default()
+    }
+
+    /// The series-scheduled emails of `series` as it stands, a snapshot of `rows`, every
+    /// session linked to it, naming whoever scheduled the first of `upcoming`.
+    fn invite_envelopes(
+        &self,
+        series: &coaching_session_series::Model,
+        rows: &[coaching_sessions::Model],
+        upcoming: &Upcoming<'_>,
+    ) -> Vec<Envelope> {
+        let snapshot = SeriesInviteShape::Snapshot {
+            rows,
+            split_from: None,
+            previous_overrides: None,
+        };
+        self.scheduled_envelopes(
+            series,
+            snapshot,
+            upcoming,
+            upcoming.first.scheduled_by_user_id,
+        )
+    }
+
+    /// Writes each participant's series-scheduled email for `series`, whose `sessions`
+    /// `scheduler_id` just created, carrying its invite. A copy that fails to render is logged
+    /// and costs only the email; only the write fails `txn`.
+    pub(crate) async fn enqueue_scheduled(
+        &self,
+        txn: &DatabaseTransaction,
+        series: &coaching_session_series::Model,
+        sessions: &[coaching_sessions::Model],
+        scheduler_id: Id,
+    ) -> Result<(), Error> {
+        let Some(upcoming) = Upcoming::of(sessions) else {
+            return Ok(());
+        };
+        let emails =
+            self.scheduled_envelopes(series, SeriesInviteShape::Master, &upcoming, scheduler_id);
+        write(txn, emails).await.map(|_| ())
+    }
+
+    /// Writes [`Self::invite_envelopes`] on `txn`; returns who they address. Fails unless every
+    /// participant this notice reaches has a copy.
+    pub(crate) async fn enqueue_invite(
+        &self,
+        txn: &DatabaseTransaction,
+        series: &coaching_session_series::Model,
+        rows: &[coaching_sessions::Model],
+        upcoming: &Upcoming<'_>,
+    ) -> Result<Vec<Id>, Error> {
+        let emails = self.invite_envelopes(series, rows, upcoming);
+        write(
+            txn,
+            require_all(&self.reach, emails, SeriesScheduled::KIND)?,
+        )
+        .await
+    }
+
+    /// Hands [`Self::invite_envelopes`] to `mailer` now, each under its recipient's resend
+    /// key, and reports what each participant got.
+    pub(crate) async fn deliver_invite(
+        &self,
+        mailer: &dyn Mailer,
+        series: &coaching_session_series::Model,
+        rows: &[coaching_sessions::Model],
+        upcoming: &Upcoming<'_>,
+    ) -> Delivered {
+        deliver_to(
+            mailer,
+            &self.parties.participants(),
+            &self.reach,
+            &self.invite_envelopes(series, rows, upcoming),
+            SeriesScheduled::KIND,
+            |recipient_id| series_invite_resend_key(series, recipient_id),
+        )
+        .await
     }
 
     /// Writes each participant's cancellation of `series`, as the removing transaction bumped
@@ -2189,9 +2446,8 @@ impl SeriesNotice {
     }
 }
 
-/// Send a recurring-sessions-scheduled notification email to a single recipient.
-/// One email per recipient — coach and coachee each get their own summarizing
-/// the freshly scheduled series.
+/// Send a series rescheduled notification email to a single recipient, each with their own
+/// summary of the series as rescheduled.
 async fn send_recurring_series_email_to_recipient(
     email_config: &ResolvedEmailConfig,
     to: &Recipient<'_>,
@@ -2416,102 +2672,21 @@ fn build_series_snapshot_ics(
     ical::build_calendar(&invites)
 }
 
-/// Which `.ics` a series email carries.
-enum SeriesInviteShape<'a> {
-    /// The master VEVENT only (create and reschedule).
-    Master,
-    /// The series as it stands today, built from every row linked to the series. After a
-    /// split it also carries the series it split from, so calendars drop the occurrences
-    /// the new series took over.
-    Snapshot {
-        rows: &'a [coaching_sessions::Model],
-        split_from: Option<SeriesRows<'a>>,
-        /// Rows, as they were, that may hold an override under the series they were
-        /// published in. Each is replaced where the snapshot reuses its address, else
-        /// cancelled.
-        previous_overrides: Option<SeriesRows<'a>>,
-    },
-}
-
-/// A series and every row linked to it, which its snapshot is built from.
-#[derive(Clone, Copy)]
-struct SeriesRows<'a> {
-    series: &'a coaching_session_series::Model,
-    rows: &'a [coaching_sessions::Model],
-}
-
-/// What kind of series email this is: the reschedule template variables, if any, and
-/// which `.ics` it carries.
-struct SeriesInviteKind<'a> {
-    reschedule: Option<&'a RescheduleVars>,
-    shape: SeriesInviteShape<'a>,
-}
-
-/// Send series invite emails to the participants `audience` may reach. Generic over the notification
-/// type `N` so the scheduled and reschedule flows share one body; they differ only by
-/// template (via `N`) and the `session_or_series` template variable. A reschedule passes
-/// an already-bumped `series`, so the `.ics` carries the next `SEQUENCE` under a stable
-/// `UID`. A participant it skips still gets the orphan cancels, on their own emails.
-async fn send_series_invite_email<N: EmailNotification>(
-    db: &DatabaseConnection,
-    config: &Config,
+/// Every `.ics` part of `series`' invite in `shape`, each carrying `description`, stamped
+/// `dtstamp`: the invite, the series it split from, then a `CANCEL` for each standalone event a
+/// legacy member among `replaced` left behind and for each override the invite no longer
+/// addresses. `first` is its first session, which a master invite starts at.
+fn series_ics(
+    participants: &Participants<'_>,
     series: &coaching_session_series::Model,
-    audience: &Audience<'_>,
-    sessions: &SeriesSessions<'_>,
-    organization: &organizations::Model,
-    kind: SeriesInviteKind<'_>,
-) -> Result<Delivered, Error> {
-    let Audience {
-        participants,
-        member_ids,
-    } = *audience;
+    first: &coaching_sessions::Model,
+    shape: &SeriesInviteShape<'_>,
+    replaced: &[coaching_sessions::Model],
+    description: String,
+    dtstamp: NaiveDateTime,
+) -> Result<SeriesIcs, Error> {
     let Participants { coach, coachee, .. } = *participants;
-    let SeriesInviteKind { reschedule, shape } = kind;
-    let SeriesSessions {
-        current: sessions,
-        replaced,
-    } = *sessions;
-    info!(
-        "Initiating {} emails for {} sessions (coach: {}, coachee: {})",
-        N::notification_name(),
-        sessions.len(),
-        coach.email,
-        coachee.email
-    );
-
-    let email_config = ResolvedEmailConfig::new::<N>(config).await?;
-
-    let first = sessions.first().ok_or_else(|| Error {
-        source: None,
-        error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
-            "Cannot send recurring sessions email: sessions slice is empty".to_string(),
-        )),
-    })?;
-
-    // Series description links to the first session and lists only its in-progress goals.
-    let first_goal_titles =
-        entity_api::coaching_session_goal::find_in_progress_goals_by_coaching_session_id(
-            db, first.id,
-        )
-        .await?
-        .into_iter()
-        .filter_map(|g| g.title)
-        .collect::<Vec<String>>();
-
-    let anchor_tz = user::timezone(participants.schedule_owner(first));
-    let description = ical::compose_description(&DescriptionParts {
-        session_url: email_config.build_session_url(&first.id)?,
-        title: None,
-        participants: &participants.description_line(),
-        organization_name: &organization.name,
-        topics: &[],
-        goal_titles: &first_goal_titles,
-        open_actions: &[],
-        anchor_tz,
-    });
-
-    let dtstamp = chrono::Utc::now().naive_utc();
-    let ics = match shape {
+    Ok(match shape {
         SeriesInviteShape::Master => SeriesIcs {
             body: build_series_invite_ics(coach, coachee, first, series, description, dtstamp)?,
             // The replaced rows are gone from the database, but any standalone events they
@@ -2570,7 +2745,105 @@ async fn send_series_invite_email<N: EmailNotification>(
                     .collect(),
             }
         }
-    };
+    })
+}
+
+/// Which `.ics` a series email carries.
+pub(crate) enum SeriesInviteShape<'a> {
+    /// The master VEVENT only (create and reschedule).
+    Master,
+    /// The series as it stands today, built from every row linked to the series. After a
+    /// split it also carries the series it split from, so calendars drop the occurrences
+    /// the new series took over.
+    Snapshot {
+        rows: &'a [coaching_sessions::Model],
+        split_from: Option<SeriesRows<'a>>,
+        /// Rows, as they were, that may hold an override under the series they were
+        /// published in. Each is replaced where the snapshot reuses its address, else
+        /// cancelled.
+        previous_overrides: Option<SeriesRows<'a>>,
+    },
+}
+
+/// A series and every row linked to it, which its snapshot is built from.
+#[derive(Clone, Copy)]
+pub(crate) struct SeriesRows<'a> {
+    series: &'a coaching_session_series::Model,
+    rows: &'a [coaching_sessions::Model],
+}
+
+/// What kind of series email this is: the reschedule template variables, if any, and
+/// which `.ics` it carries.
+struct SeriesInviteKind<'a> {
+    reschedule: Option<&'a RescheduleVars>,
+    shape: SeriesInviteShape<'a>,
+}
+
+/// Send series rescheduled emails to the participants `audience` may reach. A reschedule
+/// passes an already-bumped `series`, so the `.ics` carries the next `SEQUENCE` under a
+/// stable `UID`. A participant it skips still gets the orphan cancels, on their own emails.
+async fn send_series_invite_email<N: EmailNotification>(
+    db: &DatabaseConnection,
+    config: &Config,
+    series: &coaching_session_series::Model,
+    audience: &Audience<'_>,
+    sessions: &SeriesSessions<'_>,
+    organization: &organizations::Model,
+    kind: SeriesInviteKind<'_>,
+) -> Result<Delivered, Error> {
+    let Audience {
+        participants,
+        member_ids,
+    } = *audience;
+    let Participants { coach, coachee, .. } = *participants;
+    let SeriesInviteKind { reschedule, shape } = kind;
+    let SeriesSessions {
+        current: sessions,
+        replaced,
+    } = *sessions;
+    info!(
+        "Initiating {} emails for {} sessions (coach: {}, coachee: {})",
+        N::notification_name(),
+        sessions.len(),
+        coach.email,
+        coachee.email
+    );
+
+    let email_config = ResolvedEmailConfig::new::<N>(config).await?;
+
+    let first = sessions.first().ok_or_else(|| Error {
+        source: None,
+        error_kind: DomainErrorKind::Internal(InternalErrorKind::Other(
+            "Cannot send recurring sessions email: sessions slice is empty".to_string(),
+        )),
+    })?;
+
+    // Series description links to the first session and lists only its in-progress goals.
+    let first_goal_titles =
+        entity_api::coaching_session_goal::find_in_progress_goals_by_coaching_session_id(
+            db, first.id,
+        )
+        .await?
+        .into_iter()
+        .filter_map(|g| g.title)
+        .collect::<Vec<String>>();
+
+    let description = series_description(
+        participants,
+        organization,
+        email_config.build_session_url(&first.id)?,
+        &first_goal_titles,
+        first,
+    );
+    let ics = series_ics(
+        participants,
+        series,
+        first,
+        &shape,
+        replaced,
+        description,
+        chrono::Utc::now().naive_utc(),
+    )?;
 
     // Timezone-independent, so it is computed once rather than per recipient.
     let current_rule: SeriesRule = serde_json::from_value(series.rule.clone())?;
@@ -2599,72 +2872,6 @@ async fn send_series_invite_email<N: EmailNotification>(
     )
     .await;
     Ok(delivered)
-}
-
-/// Send recurring-sessions-scheduled notification emails to the participants `audience`
-/// may reach.
-async fn send_recurring_sessions_scheduled_email(
-    db: &DatabaseConnection,
-    config: &Config,
-    series: &coaching_session_series::Model,
-    audience: &Audience<'_>,
-    sessions: &[coaching_sessions::Model],
-    organization: &organizations::Model,
-) -> Result<(), Error> {
-    send_series_invite_email::<RecurringSessionsScheduled>(
-        db,
-        config,
-        series,
-        audience,
-        &SeriesSessions {
-            current: sessions,
-            replaced: &[],
-        },
-        organization,
-        SeriesInviteKind {
-            reschedule: None,
-            shape: SeriesInviteShape::Master,
-        },
-    )
-    .await
-    .map(|_| ())
-}
-
-/// Resend a series' invite as it stands today. `series` must already carry the bumped
-/// `ical_sequence`. `upcoming` is what the email lists; `rows` is every session linked
-/// to the series, which the snapshot is built from.
-///
-/// A delivered send must clear each session's pending reschedule (via
-/// `coaching_session::record_announced`).
-pub(crate) async fn send_series_invite_resend(
-    db: &DatabaseConnection,
-    config: &Config,
-    series: &coaching_session_series::Model,
-    audience: &Audience<'_>,
-    upcoming: &[coaching_sessions::Model],
-    rows: &[coaching_sessions::Model],
-    organization: &organizations::Model,
-) -> Result<Delivered, Error> {
-    send_series_invite_email::<RecurringSessionsScheduled>(
-        db,
-        config,
-        series,
-        audience,
-        &SeriesSessions {
-            current: upcoming,
-            replaced: &[],
-        },
-        organization,
-        SeriesInviteKind {
-            reschedule: None,
-            shape: SeriesInviteShape::Snapshot {
-                rows,
-                split_from: None,
-                previous_overrides: None,
-            },
-        },
-    )
-    .await
 }
 
 /// Who an invite for a relationship goes to, and the organization it names.
@@ -2771,57 +2978,6 @@ async fn send_recurring_sessions_rescheduled_email(
     )
     .await
     .map(|_| ())
-}
-
-/// Orchestrate sending recurring-sessions-scheduled emails (best-effort).
-///
-/// Looks up both users of the caller's `relationship` and its organization, then sends a
-/// single summary email per recipient in `member_ids` covering the whole series.
-///
-/// Errors are logged internally — email delivery must never block or fail
-/// the calling operation.
-pub async fn notify_recurring_sessions_scheduled(
-    db: &DatabaseConnection,
-    config: &Config,
-    series: &coaching_session_series::Model,
-    sessions: &[coaching_sessions::Model],
-    relationship: &coaching_relationships::Model,
-    member_ids: &[Id],
-) {
-    if sessions.is_empty() {
-        return;
-    }
-
-    let result: Result<(), Error> = async {
-        let coach = user::find_by_id_without_roles(db, relationship.coach_id).await?;
-        let coachee = user::find_by_id_without_roles(db, relationship.coachee_id).await?;
-        let org = organization::find_by_id(db, relationship.organization_id).await?;
-
-        send_recurring_sessions_scheduled_email(
-            db,
-            config,
-            series,
-            &Audience {
-                participants: &Participants {
-                    coach: &coach,
-                    coachee: &coachee,
-                    kind: relationship.kind,
-                },
-                member_ids,
-            },
-            sessions,
-            &org,
-        )
-        .await
-    }
-    .await;
-
-    if let Err(e) = result {
-        warn!(
-            "Failed to send recurring sessions scheduled emails for {} sessions: {e:?}",
-            sessions.len()
-        );
-    }
 }
 
 /// Orchestrate sending series reschedule emails (best-effort).

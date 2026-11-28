@@ -13,14 +13,14 @@ use super::*;
 use crate::email_outbox::OutgoingEmail;
 use crate::test_utils::email_outbox::{calendar_part, emails};
 use crate::test_utils::jobs::job_context_with;
-use crate::test_utils::sqlite::fixture::seed_session_starting_in;
+use crate::test_utils::sqlite::fixture::{move_series_into_the_past, seed_session_starting_in};
 use crate::test_utils::sqlite::read_back::pending_invites;
 use crate::test_utils::sqlite::{
     database, mirror_migration_defaults, seed_fixture, seed_membership, seed_organization,
     seed_user, within_time_limit, Caller, Fixture,
 };
 use crate::{coaching_relationships, coaching_session_pending_reschedules, coaching_sessions, Id};
-use entity::coaching_session_pending_invites;
+use entity::{coaching_session_pending_invites, coaching_session_series};
 
 /// The `SEQUENCE` the seeded session's last edit left it at.
 const SEQUENCE: i32 = 3;
@@ -530,12 +530,11 @@ async fn a_change_that_is_not_due_is_left_alone() {
     .await;
 }
 
-/// Sends series invites, and nothing else, to Resend at `server`; composes session invites.
+/// Composes invites, with Resend at `server` as the provider the sweep must not call.
 fn inviting(server: &ServerGuard) -> Config {
     Config::from_args([
         "test",
         "--resend-api-key=test_api_key",
-        "--recurring-sessions-scheduled-email-template-id=series_scheduled_tpl",
         "--frontend-base-url=https://app.example.com",
         &format!("--resend-base-url={}", server.url()),
     ])
@@ -733,7 +732,14 @@ async fn many_owed_invites_drain_over_several_ticks() {
     within_time_limit(async {
         let server = Server::new_async().await;
         let db = database().await;
-        owing(&db, 6, true).await;
+        let fixture = owing(&db, 5, true).await;
+        coaching_session_pending_invite::queue(
+            &db,
+            &BTreeSet::from([Target::Series(fixture.sr1)]),
+            &[fixture.user(Caller::Coach), fixture.user(Caller::Coachee)],
+        )
+        .await
+        .expect("the series invites are owed");
         let ctx = job_context_with(db, inviting(&server));
         let sweep = Sweep::from_config(&ctx.config);
 
@@ -751,27 +757,52 @@ async fn many_owed_invites_drain_over_several_ticks() {
     .await;
 }
 
+/// Series `id` and each of its sessions' `SEQUENCE`.
+async fn series_sequences(db: &DatabaseConnection, id: Id) -> (i32, Vec<i32>) {
+    let series = coaching_session_series::Entity::find_by_id(id)
+        .one(db)
+        .await
+        .expect("the series reads")
+        .expect("the series exists");
+    let mut sessions: Vec<i32> = coaching_sessions::Entity::find()
+        .all(db)
+        .await
+        .expect("the sessions read")
+        .into_iter()
+        .filter(|session| session.coaching_session_series_id == Some(id))
+        .map(|session| session.ical_sequence)
+        .collect();
+    sessions.sort();
+    (series.ical_sequence, sessions)
+}
+
+/// The seeded fixture with series `series` of it owed to each of `callers`.
+async fn owing_series(
+    db: &DatabaseConnection,
+    series: impl Fn(&Fixture) -> Id,
+    callers: &[Caller],
+) -> (Fixture, Id) {
+    mirror_migration_defaults(db).await;
+    let fixture = seed_fixture(db).await;
+    let id = series(&fixture);
+    let users: Vec<Id> = callers.iter().map(|caller| fixture.user(*caller)).collect();
+    coaching_session_pending_invite::queue(db, &BTreeSet::from([Target::Series(id)]), &users)
+        .await
+        .expect("the invites are owed");
+    (fixture, id)
+}
+
 #[tokio::test]
-async fn a_failed_series_invite_hands_the_rest_of_the_tick_back_uncharged() {
+async fn an_owed_series_invite_is_written_and_settled_together() {
     within_time_limit(async {
         let mut server = Server::new_async().await;
         let resend = server
             .mock("POST", "/emails")
-            .with_status(429)
-            .with_header("retry-after", "3")
-            .expect(1)
+            .expect(0)
             .create_async()
             .await;
         let db = database().await;
-        mirror_migration_defaults(&db).await;
-        let fixture = seed_fixture(&db).await;
-        coaching_session_pending_invite::queue(
-            &db,
-            &BTreeSet::from([Target::Series(fixture.sr1)]),
-            &[fixture.user(Caller::Coach), fixture.user(Caller::Coachee)],
-        )
-        .await
-        .expect("the invites are owed");
+        let (fixture, sr1) = owing_series(&db, |f| f.sr1, &[Caller::Coach, Caller::Coachee]).await;
         let ctx = job_context_with(db, inviting(&server));
 
         Sweep::from_config(&ctx.config)
@@ -779,12 +810,146 @@ async fn a_failed_series_invite_hands_the_rest_of_the_tick_back_uncharged() {
             .await
             .expect("the tick runs");
 
-        resend.assert_async().await;
+        let mut written = outboxed(&ctx.db).await;
+        written.sort();
+        let mut expected = [Caller::Coach, Caller::Coachee]
+            .map(|caller| ("series_scheduled".to_string(), fixture.user(caller)))
+            .to_vec();
+        expected.sort();
+        assert_eq!(written, expected);
+        assert_eq!(owed_rows(&ctx.db).await, Vec::new());
         assert_eq!(
-            owed_rows(&ctx.db).await,
-            vec![(0, false), (1, false)],
-            "one attempt charged, none held"
+            series_sequences(&ctx.db, sr1).await,
+            (2, vec![2, 2]),
+            "each copy goes out under its own SEQUENCE, its members raised to it"
         );
+        for (_, email) in emails(&*ctx.db).await {
+            let invite = calendar_part(&email);
+            assert!(
+                invite.contains(&format!("UID:{sr1}@myrefactor.com")),
+                "{invite}"
+            );
+            assert!(invite.contains("RRULE:FREQ=WEEKLY"), "{invite}");
+        }
+        resend.assert_async().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_stale_claim_on_an_owed_series_invite_writes_nothing() {
+    within_time_limit(async {
+        let db = database().await;
+        let (_, sr1) = owing_series(&db, |f| f.sr1, &[Caller::Coach]).await;
+        let claimed = coaching_session_pending_invite::claim(
+            &db,
+            Utc::now().naive_utc(),
+            Id::new_v4(),
+            INVITE_BATCH,
+        )
+        .await
+        .expect("the sweep claims");
+        let [held] = <[_; 1]>::try_from(claimed).expect("one invite is owed");
+        let before = series_sequences(&db, sr1).await;
+        let stale = coaching_session_pending_invite::Claimed {
+            claim_id: Id::new_v4(),
+            ..held
+        };
+
+        crate::coaching_session_series::enqueue_owed_invite(
+            &db,
+            &inviting(&Server::new_async().await),
+            sr1,
+            &stale,
+        )
+        .await
+        .expect("a stale claim is not an error");
+
+        assert_eq!(outboxed(&db).await, Vec::new());
+        assert_eq!(series_sequences(&db, sr1).await, before);
+        assert_eq!(
+            owed_rows(&db).await,
+            vec![(0, true)],
+            "the holder still owes it"
+        );
+    })
+    .await;
+}
+
+/// With no frontend to link to no invite composes, so the owed row is settled unsent rather
+/// than retried.
+#[tokio::test]
+async fn an_owed_series_invite_that_cannot_compose_is_settled_unsent() {
+    within_time_limit(async {
+        let db = database().await;
+        let (_, sr1) = owing_series(&db, |f| f.sr1, &[Caller::Coach]).await;
+        let before = series_sequences(&db, sr1).await;
+        let ctx = job_context_with(db, Config::from_args(["test"]));
+
+        Sweep::from_config(&ctx.config)
+            .run(&ctx)
+            .await
+            .expect("the tick runs");
+
+        assert_eq!(owed_rows(&ctx.db).await, Vec::new());
+        assert_eq!(outboxed(&ctx.db).await, Vec::new());
+        assert_eq!(series_sequences(&ctx.db, sr1).await, before);
+    })
+    .await;
+}
+
+/// A series with nothing left to attend, and a participant who left the organization, are
+/// owed no invite: the row settles with nothing written or bumped.
+#[tokio::test]
+async fn an_owed_series_invite_nobody_is_owed_settles_unsent() {
+    within_time_limit(async {
+        // SR1 moved into the past for COACH; SR3 for REMOVED, who holds no role.
+        for (case, (caller, into_the_past)) in [(Caller::Coach, true), (Caller::Removed, false)]
+            .into_iter()
+            .enumerate()
+        {
+            let db = database().await;
+            let series = |f: &Fixture| if into_the_past { f.sr1 } else { f.sr3 };
+            let (_, id) = owing_series(&db, series, &[caller]).await;
+            if into_the_past {
+                move_series_into_the_past(&db, id).await;
+            }
+            let before = series_sequences(&db, id).await;
+            let ctx = job_context_with(db, composing());
+
+            Sweep::from_config(&ctx.config)
+                .run(&ctx)
+                .await
+                .expect("the tick runs");
+
+            assert_eq!(owed_rows(&ctx.db).await, Vec::new(), "case {case}");
+            assert_eq!(outboxed(&ctx.db).await, Vec::new(), "case {case}");
+            assert_eq!(series_sequences(&ctx.db, id).await, before, "case {case}");
+        }
+    })
+    .await;
+}
+
+/// An owed series invite whose write fails is released to retry, its bump rolled back.
+#[tokio::test]
+async fn an_owed_series_invite_whose_write_fails_is_retried_unbumped() {
+    within_time_limit(async {
+        let db = database().await;
+        let (_, sr1) = owing_series(&db, |f| f.sr1, &[Caller::Coach]).await;
+        let before = series_sequences(&db, sr1).await;
+        db.execute_unprepared("DROP TABLE email_outbox")
+            .await
+            .expect("the outbox is gone");
+        let ctx = job_context_with(db, composing());
+
+        let outcome = Sweep::from_config(&ctx.config)
+            .run(&ctx)
+            .await
+            .expect("the tick runs");
+
+        assert_eq!((outcome.processed, outcome.attempted), (0, 1));
+        assert_eq!(owed_rows(&ctx.db).await, vec![(1, false)]);
+        assert_eq!(series_sequences(&ctx.db, sr1).await, before);
     })
     .await;
 }

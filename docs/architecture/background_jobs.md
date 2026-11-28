@@ -69,8 +69,7 @@ flowchart LR
     SR -->|"claim due pairs\n(upsert ON CONFLICT)"| DB
     SR -->|"send via Resend"| R["Resend"]
     PRS -->|"claim due rows and owed invites\n(lease, SKIP LOCKED)"| DB
-    PRS -->|"write reschedules and session invites\nto the email outbox"| DB
-    PRS -->|"send series invites via Resend"| R
+    PRS -->|"write reschedules and owed invites\nto the email outbox"| DB
 ```
 
 ## Idempotency and multiple replicas
@@ -150,9 +149,8 @@ reschedule is written once. `release` hands a row back after a failed load or wr
 giving up after `MAX_ATTEMPTS`; a failure counts only against the revision that was
 claimed. Both act only while the caller still holds the claim.
 
-An owed series invite is still sent through Resend before its row is completed, so its
-delivery is at least once: a send that outlives the lease, or a crash between the send and
-the completion, can repeat the email. The reminder's upsert-plus-unique-index
+An owed invite, a session's or a series', is written to the outbox in the transaction that
+completes its row, so it is written once. The reminder's upsert-plus-unique-index
 claim does not fit here because the row is the work item itself and must be reclaimable,
 not a record of what was sent.
 
@@ -167,7 +165,7 @@ drains over several ticks instead of bursting against the Resend API.
 | `session-reminder` | `SESSION_REMINDER_POLL_MINUTES` (default 15) | Immediately | Emails each participant the relationship's kind reminds (a coaching relationship's coachee, both colleagues) ahead of an upcoming session. Not scheduled at all when `SESSION_REMINDER_EMAIL_TEMPLATE_ID` is unset. |
 | `email-outbox` | 1s | Immediately | Delivers due `email_outbox` rows, rendered emails, through the configured provider (Resend) under each row's idempotency key, retrying with backoff and failing rows past 20 hours. Always scheduled. In production the server refuses to start without a provider; elsewhere the sweep fails due rows unsent. See [`email_outbox.md`](email_outbox.md). |
 | `email-outbox-purge` | 1h | After interval | Deletes `email_outbox` rows finished more than 7 days ago. |
-| `coaching-session-pending-reschedule` | 15s | Immediately | Emails a single session's net reschedule once it settles (`SESSION_RESCHEDULE_SETTLE_SECONDS`, default 60, capped by `SESSION_RESCHEDULE_SETTLE_MAX_SECONDS`, default 300). Writes the composed email to the email outbox, restamps each member's notice and settles the row in one transaction. Always scheduled: without `FRONTEND_BASE_URL` it drops due rows unsent, since a pending row suppresses the session's reminder. Also settles invites owed after a kind switch: a session's is written to the email outbox, a series' is sent through its Resend template. |
+| `coaching-session-pending-reschedule` | 15s | Immediately | Emails a single session's net reschedule once it settles (`SESSION_RESCHEDULE_SETTLE_SECONDS`, default 60, capped by `SESSION_RESCHEDULE_SETTLE_MAX_SECONDS`, default 300). Writes the composed email to the email outbox, restamps each member's notice and settles the row in one transaction. Always scheduled: without `FRONTEND_BASE_URL` it drops due rows unsent, since a pending row suppresses the session's reminder. Also settles invites owed after a kind switch, a session's or a series', writing each to the email outbox with its `SEQUENCE` bump. |
 
 The session-store expiry task in `web::init_server` stays hand-rolled: it is
 `tower_sessions`' own `continuously_delete_expired` helper, not one of our jobs.

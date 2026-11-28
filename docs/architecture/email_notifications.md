@@ -1,6 +1,6 @@
 # Email Notifications Architecture
 
-Transactional emails are sent via [Resend](https://resend.com/). Most still use Resend-hosted templates filled with variables. The single-session emails that carry an invite or a cancellation are composed in the backend from in-repo templates (see [Email composition](email_composition.md)): the session-scheduled email is written to the [email outbox](email_outbox.md) in the transaction that creates the session, the cancellation in the one that deletes it, the series cancellation in the one that deletes the series, and the session-rescheduled email by the pending reschedule sweep in the transaction that settles the change. The rest move the same way, one sender at a time. The backend handles all email logic; the frontend has no involvement.
+Transactional emails are sent via [Resend](https://resend.com/). Most still use Resend-hosted templates filled with variables. The single-session emails that carry an invite or a cancellation are composed in the backend from in-repo templates (see [Email composition](email_composition.md)): the session-scheduled email is written to the [email outbox](email_outbox.md) in the transaction that creates the session, the cancellation in the one that deletes it, the series-scheduled email in the one that creates the series, the series cancellation in the one that deletes the series, and the session-rescheduled email by the pending reschedule sweep in the transaction that settles the change. The rest move the same way, one sender at a time. The backend handles all email logic; the frontend has no involvement.
 
 ## Notification Types
 
@@ -54,6 +54,7 @@ flowchart TD
 All email sending is **best-effort** — failures never block the primary operation.
 
 - **Session scheduled**: Its reads run before the create's transaction; a failed read or render is logged and costs only the email. Only the outbox write can fail the create.
+- **Series scheduled**: Its reads run before the create's transaction. Inside it, after the inserts and notice stamps, each member's email is written with the series invite; the subject names the other participant and the first session's day, and the copy tells the scheduler "You scheduled...". A failed read or render costs only the email; only the outbox write can fail the create.
 - **Series cancelled**: Its reads run before the delete's transaction. Inside it, after the session locks and the series row, both participants' emails are written with the series `CANCEL` and a `CANCEL` for each legacy member's standalone event; the subject tells the canceller "You cancelled...". A series with nothing upcoming writes nothing. A failed read or render costs only the email; only the outbox write can fail the delete.
 - **Action assigned**: Controllers use `if let Err(e) = ... { warn!(...) }`
 - **Welcome email**: Uses `?` propagation for config errors (missing API key/template ID is a deployment issue worth surfacing). HTTP delivery is still fire-and-forget via `tokio::spawn()`.
@@ -64,7 +65,6 @@ Encapsulates config resolution so `send_*` functions don't leak config details t
 
 | Implementor | Env Var |
 |---|---|
-| `RecurringSessionsScheduled` | `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID` |
 | `RecurringSessionsRescheduled` | `RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID` |
 | `ActionAssigned` | `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID` |
 | `AddedToOrganization` | `ADDED_TO_ORGANIZATION_EMAIL_TEMPLATE_ID` |
@@ -199,13 +199,13 @@ reschedule sweep owes each row to that participant alone, under the same `UID` a
 `SEQUENCE`. A session's invite is the composed session-scheduled email, written to the
 outbox in one transaction that bumps the session's `SEQUENCE` (taking its row lock first),
 writes the email and deletes the row; a row another sweep has since claimed writes nothing.
-A series' invite is sent through its Resend template, as `POST .../resend_invite` sends it,
-and the row is deleted once delivered. The sweep claims at most 10 rows a tick, and a failed
-series send hands the rest of the tick's rows back uncharged, so a large switch drains over
-several ticks rather than bursting Resend. A participant who has left the organization, a
-session that has passed, and a series with nothing left to attend are owed nothing; a failed
-read or write is retried, not taken for any of those, up to three times. Without
-`RESEND_API_KEY` or `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID`, a series row is dropped
+A series' invite is the composed series-scheduled email, a snapshot of the series as it
+stands, written the same way in one transaction that bumps the series' `SEQUENCE` (taking its
+row lock first), raises its members to it, writes the email and deletes the row. The sweep
+claims at most 10 rows a tick, so a large switch drains over several ticks. A participant who
+has left the organization, a session that has passed, and a series with nothing left to attend
+or that predates resendable invites are owed nothing; a failed read or write is retried, not
+taken for any of those, up to three times. Without `FRONTEND_BASE_URL` a row is dropped
 unsent.
 
 ### Resending a session's invite
@@ -217,6 +217,12 @@ schedule owner has it, 502 otherwise. Each copy is sent under the idempotency ke
 `session-invite-resend/{session_id}/{ical_sequence}/{recipient_id}`. Without a provider
 the resend is a 502.
 
+`POST /coaching_session_series/{id}/resend_invite` does the same for a series: it bumps the
+series' `SEQUENCE`, raises its members to it and hands each member the composed
+series-scheduled email carrying a snapshot of the series as it stands, under
+`series-invite-resend/{series_id}/{ical_sequence}/{recipient_id}`. The email names whoever
+scheduled the first upcoming session. Without a provider it is a 502 and nothing is bumped.
+
 ## Timezone Handling
 
 Session dates are stored as UTC. The `format_session_date_time()` helper converts to each recipient's timezone (from `users.timezone`, an IANA string) using `chrono-tz`, falling back to UTC if invalid.
@@ -227,7 +233,6 @@ Session dates are stored as UTC. The `format_session_date_time()` helper convert
 |---|---|
 | `RESEND_API_KEY` | API authentication |
 | `WELCOME_EMAIL_TEMPLATE_ID` | Welcome email template |
-| `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID` | Recurring Sessions scheduled template |
 | `RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID` | Series reschedule template |
 | `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID` | Action assigned template |
 | `ADDED_TO_ORGANIZATION_EMAIL_TEMPLATE_ID` | Added-to-organization template |
