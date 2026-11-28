@@ -101,7 +101,6 @@ The platform uses Resend for transactional emails. To configure email functional
 1. **Environment Variables** (for Docker):
    - `RESEND_API_KEY`: Your Resend API key
    - `WELCOME_EMAIL_TEMPLATE_ID`: The template ID for welcome emails
-   - `RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for recurring-sessions-scheduled notification emails
    - `RECURRING_SESSIONS_RESCHEDULED_EMAIL_TEMPLATE_ID`: The template ID for series reschedule notification emails
    - `ACTION_ASSIGNED_EMAIL_TEMPLATE_ID`: The template ID for action-assigned notification emails
    - `ADDED_TO_ORGANIZATION_EMAIL_TEMPLATE_ID`: The template ID for added-to-organization notification emails

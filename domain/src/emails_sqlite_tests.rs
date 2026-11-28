@@ -29,7 +29,6 @@ fn sending(server: &ServerGuard) -> Config {
     Config::from_args([
         "test",
         "--resend-api-key=test_api_key",
-        "--recurring-sessions-scheduled-email-template-id=series_scheduled_tpl",
         &format!("--recurring-sessions-rescheduled-email-template-id={SERIES_RESCHEDULED}"),
         "--action-assigned-email-template-id=action_assigned_tpl",
         "--frontend-base-url=https://app.example.com",
@@ -256,6 +255,33 @@ async fn schedule_session(seeded: &Seeded, db: &DatabaseConnection) -> BTreeSet<
             &Calendar::Invite(&Agenda::default()),
             scheduled,
         )
+        .await
+        .expect("the invites are written");
+    txn.commit().await.expect("the transaction commits");
+    outbox_kinds(db)
+        .await
+        .into_iter()
+        .map(|(to, _)| to)
+        .collect()
+}
+
+/// Writes the scheduled emails of `series`, holding `sessions`, for the participants holding
+/// a role, as its create would; returns who the outbox addressed.
+async fn schedule_series(
+    seeded: &Seeded,
+    db: &DatabaseConnection,
+    series: &series_entity::Model,
+    sessions: &[coaching_sessions::Model],
+) -> BTreeSet<String> {
+    let member_ids = notify_member_ids(db, &seeded.relationship)
+        .await
+        .expect("membership reads");
+    let notice = SeriesNotice::scheduled(db, &composing(), &seeded.relationship, member_ids)
+        .await
+        .expect("the invite loads");
+    let txn = db.begin().await.expect("the transaction begins");
+    notice
+        .enqueue_scheduled(&txn, series, sessions, seeded.coach.id)
         .await
         .expect("the invites are written");
     txn.commit().await.expect("the transaction commits");
@@ -656,7 +682,8 @@ async fn session_resend_with_the_coach_holding_no_role_reaches_only_the_coachee(
     .await;
 }
 
-/// MAIL-09: a series resend skips a coach holding no role.
+/// MAIL-09: a series resend skips a coach holding no role, handing the coachee's copy to the
+/// provider now rather than to the outbox.
 #[tokio::test]
 async fn series_resend_with_the_coach_holding_no_role_reaches_only_the_coachee() {
     within_time_limit(async {
@@ -676,6 +703,7 @@ async fn series_resend_with_the_coach_holding_no_role_reaches_only_the_coachee()
             sent.addressees(),
             BTreeSet::from([seeded.coachee.email.clone()])
         );
+        assert!(outbox(&db).await.is_empty(), "a resend goes out now");
     })
     .await;
 }
@@ -718,15 +746,7 @@ async fn send_members_only(
     match email {
         MembersOnly::SessionScheduled => return (schedule_session(seeded, db).await, None),
         MembersOnly::SeriesScheduled => {
-            notify_recurring_sessions_scheduled(
-                db,
-                &config,
-                &series,
-                &sessions,
-                &seeded.relationship,
-                &member_ids,
-            )
-            .await;
+            return (schedule_series(seeded, db, &series, &sessions).await, None)
         }
         MembersOnly::SeriesRescheduled => {
             notify_recurring_sessions_rescheduled(
@@ -892,6 +912,35 @@ async fn session_create_with_the_coach_holding_no_role_reaches_only_the_coachee(
     .await;
 }
 
+/// Two weekly sessions starting the day after next week.
+fn weekly_twice() -> Recurrence {
+    Recurrence {
+        frequency: Frequency::Weekly,
+        interval: 1,
+        by_weekdays: None,
+        count: Some(2),
+        until: None,
+    }
+}
+
+/// Creates a weekly two-session series as `seeded`'s coach under `config`.
+async fn create_series(
+    db: &DatabaseConnection,
+    config: &Config,
+    seeded: &Seeded,
+) -> Result<(series_entity::Model, Vec<coaching_sessions::Model>), Error> {
+    crate::coaching_session_series::create_with_sessions(
+        db,
+        config,
+        seeded.relationship.id,
+        seeded.coach.id,
+        next_week() + TimeDelta::days(1),
+        weekly_twice(),
+        None,
+    )
+    .await
+}
+
 /// MAIL-05: creating a series skips a coach holding no role.
 #[tokio::test]
 async fn series_create_with_the_coach_holding_no_role_reaches_only_the_coachee() {
@@ -900,30 +949,136 @@ async fn series_create_with_the_coach_holding_no_role_reaches_only_the_coachee()
         let mut server = Server::new_async().await;
         let sent = Sent::default();
         let _mock = sent.capture(&mut server).await;
-        let weekly_twice = Recurrence {
-            frequency: Frequency::Weekly,
-            interval: 1,
-            by_weekdays: None,
-            count: Some(2),
-            until: None,
-        };
 
-        crate::coaching_session_series::create_with_sessions(
-            &db,
-            &sending(&server),
-            seeded.relationship.id,
-            seeded.coach.id,
-            next_week() + TimeDelta::days(1),
-            weekly_twice,
-            None,
-        )
-        .await
-        .expect("the series is created");
+        create_series(&db, &sending(&server), &seeded)
+            .await
+            .expect("the series is created");
 
         assert_eq!(
             sent.addressees(),
-            BTreeSet::from([seeded.coachee.email.clone()])
+            BTreeSet::new(),
+            "nothing is sent directly"
         );
+        assert_eq!(
+            outbox_kinds(&db).await,
+            [(seeded.coachee.email.clone(), "series_scheduled".to_string())]
+        );
+    })
+    .await;
+}
+
+/// Creating a series writes both participants' invites with the create, coachee first,
+/// ordered in their relationship, each telling its reader who scheduled it and carrying the
+/// series' first invite.
+#[tokio::test]
+async fn creating_a_series_writes_both_invites_with_the_create() {
+    within_time_limit(async {
+        let (db, seeded) = seeded_with(Members::Both).await;
+        let config = composing();
+        let organization = organization::find_by_id(&db, seeded.relationship.organization_id)
+            .await
+            .expect("the organization reads");
+
+        let (series, sessions) = create_series(&db, &config, &seeded)
+            .await
+            .expect("the series is created");
+
+        let rows = outbox(&db).await;
+        let conversation = Subject::CoachingRelationship(seeded.relationship.id).key();
+        assert_eq!(
+            rows.iter()
+                .map(|(row, _)| (
+                    row.kind.as_str(),
+                    row.subject_key.as_str(),
+                    row.recipient_user_id
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("series_scheduled", conversation.as_str(), seeded.coachee.id),
+                ("series_scheduled", conversation.as_str(), seeded.coach.id),
+            ]
+        );
+        let brand = Brand::from_config(&config).expect("the brand is configured");
+        for ((_, stored), (reader, other, by)) in rows.iter().zip([
+            (&seeded.coachee, &seeded.coach, Actor::Other),
+            (&seeded.coach, &seeded.coachee, Actor::You),
+        ]) {
+            let expected = compose(
+                &SeriesScheduled {
+                    parties: Parties {
+                        recipient: Person::from(reader),
+                        other: Person::from(other),
+                        session_label: "coaching session",
+                        session_label_plural: "coaching sessions",
+                        organization_name: organization.name.clone(),
+                    },
+                    by,
+                    first: session_when(sessions[0].date, &reader.timezone),
+                    last_date: session_when(sessions[1].date, &reader.timezone).date,
+                    duration: "1 hour".to_string(),
+                    cadence: weekly_twice().summary(),
+                    count: 2,
+                    url: format!(
+                        "https://app.example.com/coaching-sessions/{}",
+                        sessions[0].id
+                    ),
+                    calendar: Vec::new(),
+                },
+                &brand,
+            )
+            .expect("the expected email composes");
+            // The calendar part carries the send's timestamp, so it is checked on its own.
+            assert!(
+                OutgoingEmail {
+                    attachments: Vec::new(),
+                    ..stored.clone()
+                } == expected,
+                "{} got a different email",
+                reader.email
+            );
+            let invite = calendar_part(stored);
+            assert!(invite.contains("METHOD:REQUEST"), "{invite}");
+            assert!(
+                invite.contains(&format!("UID:{}@myrefactor.com", series.id)),
+                "{invite}"
+            );
+            assert!(invite.contains("SEQUENCE:0"), "{invite}");
+            assert!(invite.contains("RRULE:FREQ=WEEKLY"), "{invite}");
+        }
+    })
+    .await;
+}
+
+/// A series create whose commit fails, after its invites are written, leaves no invite and
+/// no series: the commit is refused by a foreign key the series insert breaks, which SQLite
+/// checks only at commit.
+#[tokio::test]
+async fn a_series_create_whose_commit_fails_writes_no_invite() {
+    within_time_limit(async {
+        let (db, seeded) = seeded_with(Members::Both).await;
+        for statement in [
+            "CREATE TABLE refactor_platform.commit_guard_parent (id TEXT PRIMARY KEY)",
+            "CREATE TABLE refactor_platform.commit_guard (parent_id TEXT \
+             REFERENCES commit_guard_parent (id) DEFERRABLE INITIALLY DEFERRED)",
+            "CREATE TEMP TRIGGER a_series_fails_the_commit \
+             AFTER INSERT ON refactor_platform.coaching_session_series \
+             BEGIN INSERT INTO commit_guard VALUES ('missing'); END",
+        ] {
+            db.execute_unprepared(statement)
+                .await
+                .expect("the commit guard is created");
+        }
+
+        create_series(&db, &composing(), &seeded)
+            .await
+            .expect_err("the commit fails");
+
+        assert!(outbox(&db).await.is_empty());
+        assert!(series_entity::Entity::find()
+            .all(&db)
+            .await
+            .expect("the series read")
+            .is_empty());
     })
     .await;
 }

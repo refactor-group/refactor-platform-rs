@@ -686,7 +686,6 @@ fn config(server_url: &str, store_root: &StoreRoot) -> Config {
         &format!("--resend-base-url={server_url}"),
         "--resend-api-key=access-test-resend-key",
         "--frontend-base-url=https://app.access.test",
-        "--recurring-sessions-scheduled-email-template-id=recurring-sessions-scheduled",
         "--recurring-sessions-rescheduled-email-template-id=recurring-sessions-rescheduled",
         "--action-assigned-email-template-id=action-assigned",
         "--welcome-email-template-id=welcome",

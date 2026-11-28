@@ -124,7 +124,7 @@ fails to build. Elsewhere the sweep warns once at startup and fails each due row
 | `entity::email_outbox` | The row. |
 | `entity_api::email_outbox` | `insert`, `claim`, `mark_sent`, `release`, `fail`, `purge`: one statement each, every transition filtered by the held claim. |
 | `domain::email_outbox` | `OutgoingEmail`, `Envelope` (the email with its subject and recipient), `enqueue`, the `Mailer` trait and its `Receipt`, `RetryPolicy` and the pure `settle`, which maps a receipt to the row's next state. |
-| `domain::gateway::mailer` | `from_config`: the configured `Mailer`, if any. |
+| `domain::gateway::mailer` | `from_config`: the configured `Mailer`, if any; `configured` logs a provider that fails to build and reads it as none. |
 | `domain::gateway::resend` | `Mailer` for Resend: maps an `OutgoingEmail` onto its send fields and classifies responses into `Receipt`. |
 | `domain::jobs::email_outbox` | The sweep and the purge, composed from a `Mailer` and a `RetryPolicy`. |
 
@@ -137,7 +137,8 @@ fails to build. Elsewhere the sweep warns once at startup and fails each due row
    its `*_TEMPLATE_ID`. Sweeps that decide an email is owed (reminders, pending
    reschedules, owed invites) claim, render and enqueue in one transaction. The
    single-session cancellation, session scheduled and session rescheduled emails, the
-   session invites the pending reschedule sweep owes, and the series cancellation have moved. A session invite resent on request is
+   session and series invites the pending reschedule sweep owes, and the series scheduled
+   and cancelled emails have moved. A session or series invite resent on request is
    composed the same way but handed to the `Mailer` directly, since its endpoint still
    reports whether it was delivered.
 3. Once every sender has moved, `gateway::resend::Client::send_email` and the template

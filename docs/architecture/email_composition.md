@@ -123,13 +123,20 @@ lists the topics, goals and actions of an `Agenda` given when it is written:
   its bumped `SEQUENCE` and a `CANCEL` for each legacy member's standalone event. Its dates
   are each upcoming session's own start in the recipient's zone. A `SeriesNotice` loads what
   they name before the transaction, as `SessionNotice` does.
-- **Resent invites**: `POST /coaching_sessions/{id}/resend_invite` renders the same email
-  and hands it to the `Mailer` at once, so it can still answer whether it was delivered.
-  With no email provider it answers 502 without bumping `SEQUENCE`.
+- **Series scheduled**: the series create writes each member's email in its transaction,
+  after the inserts and notice stamps, carrying the series invite (`RRULE`, `SEQUENCE` 0).
+  Its dates are the first and last session's own start in the recipient's zone.
+- **Owed series invites**: the pending reschedule sweep writes one participant's series
+  scheduled email, a snapshot of the series as it stands, in a transaction that bumps the
+  series' `SEQUENCE` (taking its row lock), raises its members to it and settles the owed
+  row. Without `FRONTEND_BASE_URL` the row is settled unsent.
+- **Resent invites**: `POST /coaching_sessions/{id}/resend_invite` and
+  `POST /coaching_session_series/{id}/resend_invite` render the same emails and hand them to
+  the `Mailer` at once, so they can still answer whether they were delivered. With no email
+  provider they answer 502 without bumping `SEQUENCE`.
 Production refuses to start without `FRONTEND_BASE_URL`, next to the email provider check. The standalone-event cancellations that series edits owe
-still follow the series scheduled and rescheduled emails, which send after their own
-transaction, so they are enqueued in a transaction of their own right after it until those
-emails move.
+still follow the series rescheduled emails, which send after their own transaction, so they
+are enqueued in a transaction of their own right after it until those emails move.
 
 ## Tests
 

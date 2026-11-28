@@ -920,12 +920,7 @@ async fn send_invite_again(
     relationship: &coaching_relationships::Model,
     member_ids: &[Id],
 ) -> Result<(Model, emails::Delivered), Error> {
-    let Some(mailer) = mailer::from_config(config)
-        .await
-        .inspect_err(|e| warn!("The email provider failed to build: {e:?}"))
-        .ok()
-        .flatten()
-    else {
+    let Some(mailer) = mailer::configured(config).await else {
         warn!(
             "No email provider is configured, so session {} cannot be resent",
             session.id

@@ -17,18 +17,14 @@
 //! unsent when no email can be composed, since a pending row suppresses the session's
 //! reminder.
 //!
-//! The same sweep re-sends the invites owed to participants after their relationship changed
+//! The same sweep writes the invites owed to participants after their relationship changed
 //! kind (`coaching_session_pending_invite`): one email per row, to that participant alone,
 //! under the same lease, retry and give-up rules. A participant who has left the
 //! organization, a session that has passed and a series with nothing left to attend are
-//! owed nothing. A session's invite is written to the email outbox in one transaction with
-//! its `SEQUENCE` bump and the row's completion; a failed load or write releases the row to
-//! retry, and a row is dropped unsent when no email can be composed. A series' invite is
-//! sent through its Resend template, and a row for one is dropped unsent without that
-//! template or a Resend key. A switch can owe many invites at once, so a tick claims at most
-//! [`INVITE_BATCH`] of them, and a failed series send hands the rest of the tick's back
-//! uncharged, as the reminder sweep does when Resend is unusable: the interval is the
-//! backoff.
+//! owed nothing. A session's or series' invite is written to the email outbox in one
+//! transaction with its `SEQUENCE` bump and the row's completion; a failed load or write
+//! releases the row to retry, and a row is dropped unsent when no email can be composed. A
+//! switch can owe many invites at once, so a tick claims at most [`INVITE_BATCH`] of them.
 //!
 //! See [`crate::jobs`] for why this is a sweep rather than an enqueued job.
 
@@ -42,8 +38,6 @@ use log::*;
 use sea_orm::DatabaseConnection;
 use service::config::Config;
 
-use crate::coaching_session_series;
-use crate::emails::Delivery;
 use crate::error::{DomainErrorKind, Error, InternalErrorKind};
 use crate::jobs::{Context, FirstRun, Job, Outcome};
 use crate::Id;
@@ -54,8 +48,7 @@ const INTERVAL: Duration = Duration::from_secs(15);
 /// Most pending reschedules one tick will claim.
 const BATCH: u64 = 50;
 
-/// Most owed invites one tick will claim, so a large switch drains over several ticks
-/// rather than bursting Resend.
+/// Most owed invites one tick will claim, so a large switch drains over several ticks.
 const INVITE_BATCH: u64 = 10;
 
 /// Settle period used when the configured one does not fit a `TimeDelta`.
@@ -66,118 +59,25 @@ const DEFAULT_SETTLE_MAX: TimeDelta = TimeDelta::seconds(300);
 
 pub struct Sweep {
     timing: Timing,
-    /// Whether a series' owed invite is re-sent or dropped unsent.
-    series_invites: Mode,
-}
-
-/// Whether due rows are emailed or dropped unsent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Mode {
-    Send,
-    Drain,
-}
-
-impl Mode {
-    /// Sends when Resend has a key and the template is set; otherwise drains, saying `emails` are off.
-    fn of(config: &Config, template: Option<&str>, emails: &str) -> Self {
-        if config.resend_api_key().is_some() && template.is_some() {
-            Mode::Send
-        } else {
-            info!("[coaching-session-pending-reschedule] {emails} are off; those owed will be dropped unsent");
-            Mode::Drain
-        }
-    }
-}
-
-/// What one owed invite's turn left behind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Resent {
-    Handled,
-    Unhandled,
-    /// Resend did not take the email, so the rest of the tick waits for the next one.
-    SendFailed,
-}
-
-impl From<bool> for Resent {
-    fn from(handled: bool) -> Self {
-        match handled {
-            true => Resent::Handled,
-            false => Resent::Unhandled,
-        }
-    }
 }
 
 impl Sweep {
-    /// Builds the sweep from config, dropping owed series invites unsent when their emails are
-    /// off.
+    /// Builds the sweep from config.
     pub fn from_config(config: &Config) -> Self {
-        let timing = Timing {
-            settle: delta_or(
-                config.session_reschedule_settle(),
-                DEFAULT_SETTLE,
-                "SESSION_RESCHEDULE_SETTLE_SECONDS",
-            ),
-            settle_max: delta_or(
-                config.session_reschedule_settle_max(),
-                DEFAULT_SETTLE_MAX,
-                "SESSION_RESCHEDULE_SETTLE_MAX_SECONDS",
-            ),
-            lease: coaching_session_pending_reschedule::LEASE,
-        };
-
         Self {
-            timing,
-            series_invites: Mode::of(
-                config,
-                config
-                    .recurring_sessions_scheduled_email_template_id()
-                    .as_deref(),
-                "series invite emails",
-            ),
-        }
-    }
-
-    /// Re-sends, writes or drops one claimed owed invite.
-    async fn resend_invite(
-        &self,
-        ctx: &Context,
-        claimed: &coaching_session_pending_invite::Claimed,
-    ) -> Resent {
-        match claimed.target {
-            Target::Session(id) => enqueue_session_invite(ctx, id, claimed).await,
-            Target::Series(id) => self.resend_series_invite(ctx, id, claimed).await,
-        }
-    }
-
-    /// Re-sends or drops one claimed owed series invite.
-    async fn resend_series_invite(
-        &self,
-        ctx: &Context,
-        id: Id,
-        claimed: &coaching_session_pending_invite::Claimed,
-    ) -> Resent {
-        let db = &*ctx.db;
-        let user_id = claimed.user_id;
-        let resent = match self.series_invites {
-            Mode::Drain => Ok(None),
-            Mode::Send => {
-                coaching_session_series::resend_invite_to(db, &ctx.config, id, user_id).await
-            }
-        };
-        match resent {
-            Ok(Some(Delivery::Failed)) => {
-                warn!(
-                    "[coaching-session-pending-reschedule] invite {:?} did not reach {user_id}",
-                    claimed.target
-                );
-                retry_invite(db, claimed).await;
-                Resent::SendFailed
-            }
-            Ok(_) => Resent::from(complete_invite(db, claimed).await),
-            Err(e) => {
-                warn!("[coaching-session-pending-reschedule] could not resend invite {:?} to {user_id}: {e:?}", claimed.target);
-                Resent::from(retry_invite(db, claimed).await)
-            }
+            timing: Timing {
+                settle: delta_or(
+                    config.session_reschedule_settle(),
+                    DEFAULT_SETTLE,
+                    "SESSION_RESCHEDULE_SETTLE_SECONDS",
+                ),
+                settle_max: delta_or(
+                    config.session_reschedule_settle_max(),
+                    DEFAULT_SETTLE_MAX,
+                    "SESSION_RESCHEDULE_SETTLE_MAX_SECONDS",
+                ),
+                lease: coaching_session_pending_reschedule::LEASE,
+            },
         }
     }
 }
@@ -195,16 +95,21 @@ async fn enqueue_reschedule(ctx: &Context, claimed: &Claimed) -> bool {
     }
 }
 
-/// Writes one claimed owed session invite and settles its row together. A stack that composes
-/// no email settles the row unsent; any other failure releases it to retry.
-async fn enqueue_session_invite(
-    ctx: &Context,
-    id: Id,
-    claimed: &coaching_session_pending_invite::Claimed,
-) -> Resent {
-    let db = &*ctx.db;
-    match crate::coaching_session::enqueue_owed_invite(db, &ctx.config, id, claimed).await {
-        Ok(()) => Resent::Handled,
+/// Writes one claimed owed invite and settles its row together; returns whether it was
+/// handled. A stack that composes no email settles the row unsent; any other failure releases
+/// it to retry.
+async fn enqueue_invite(ctx: &Context, claimed: &coaching_session_pending_invite::Claimed) -> bool {
+    let (db, config) = (&*ctx.db, &ctx.config);
+    let written = match claimed.target {
+        Target::Session(id) => {
+            crate::coaching_session::enqueue_owed_invite(db, config, id, claimed).await
+        }
+        Target::Series(id) => {
+            crate::coaching_session_series::enqueue_owed_invite(db, config, id, claimed).await
+        }
+    };
+    match written {
+        Ok(()) => true,
         Err(e)
             if matches!(
                 e.error_kind,
@@ -212,17 +117,17 @@ async fn enqueue_session_invite(
             ) =>
         {
             warn!(
-                "[coaching-session-pending-reschedule] session {id}'s invite to {} is dropped unsent: no email can be composed: {e:?}",
-                claimed.user_id
+                "[coaching-session-pending-reschedule] invite {:?} to {} is dropped unsent: no email can be composed: {e:?}",
+                claimed.target, claimed.user_id
             );
-            Resent::from(complete_invite(db, claimed).await)
+            complete_invite(db, claimed).await
         }
         Err(e) => {
             warn!(
-                "[coaching-session-pending-reschedule] could not write session {id}'s invite to {}: {e:?}",
-                claimed.user_id
+                "[coaching-session-pending-reschedule] could not write invite {:?} to {}: {e:?}",
+                claimed.target, claimed.user_id
             );
-            Resent::from(retry_invite(db, claimed).await)
+            retry_invite(db, claimed).await
         }
     }
 }
@@ -276,23 +181,7 @@ async fn complete_invite(
         .is_ok()
 }
 
-/// Hands back a claimed owed invite the tick did not attempt. Best-effort: its lease runs out
-/// anyway.
-async fn hand_back_invite(
-    db: &DatabaseConnection,
-    claimed: &coaching_session_pending_invite::Claimed,
-) {
-    let _ = coaching_session_pending_invite::hand_back(db, claimed)
-        .await
-        .inspect_err(|e| {
-            warn!(
-                "[coaching-session-pending-reschedule] could not hand back invite {}: {e:?}",
-                claimed.id
-            )
-        });
-}
-
-/// Releases a claimed owed invite after a failed send; returns whether it was handled.
+/// Releases a claimed owed invite after a failed write; returns whether it was handled.
 async fn retry_invite(
     db: &DatabaseConnection,
     claimed: &coaching_session_pending_invite::Claimed,
@@ -346,16 +235,10 @@ impl Job for Sweep {
                 handled += 1;
             }
         }
-        let mut unattempted = owed.iter();
-        for row in unattempted.by_ref() {
-            match self.resend_invite(ctx, row).await {
-                Resent::Handled => handled += 1,
-                Resent::Unhandled => {}
-                Resent::SendFailed => break,
+        for row in &owed {
+            if enqueue_invite(ctx, row).await {
+                handled += 1;
             }
-        }
-        for row in unattempted {
-            hand_back_invite(&ctx.db, row).await;
         }
 
         Ok(Outcome::partial(
@@ -377,17 +260,6 @@ mod tests {
         let mut argv = vec!["test"];
         argv.extend_from_slice(args);
         Config::from_args(argv)
-    }
-
-    #[test]
-    fn from_config_resends_series_invites_with_a_key_and_their_template() {
-        let mode = |args: &[&str]| Sweep::from_config(&config(args)).series_invites;
-        let series = "--recurring-sessions-scheduled-email-template-id=recurring_tpl";
-        let key = "--resend-api-key=key";
-
-        assert_eq!(mode(&[key, series]), Mode::Send);
-        assert_eq!(mode(&[key]), Mode::Drain);
-        assert_eq!(mode(&[series]), Mode::Drain);
     }
 
     #[test]

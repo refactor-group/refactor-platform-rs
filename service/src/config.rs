@@ -93,7 +93,6 @@ const CONFIG_FIELD_KEYS: &[&str] = &[
     "resend_base_url",
     "resend_api_key",
     "welcome_email_template_id",
-    "recurring_sessions_scheduled_email_template_id",
     "recurring_sessions_rescheduled_email_template_id",
     "action_assigned_email_template_id",
     "frontend_base_url",
@@ -320,9 +319,6 @@ pub struct Config {
     /// The Resend template ID for welcome emails.
     #[arg(long, env)]
     welcome_email_template_id: Option<String>,
-    /// The Resend template ID for recurring-sessions-scheduled emails.
-    #[arg(long, env)]
-    recurring_sessions_scheduled_email_template_id: Option<String>,
     /// The Resend template ID for series reschedule emails.
     #[arg(long, env)]
     recurring_sessions_rescheduled_email_template_id: Option<String>,
@@ -792,10 +788,6 @@ impl Config {
         self.debug_field("recall_ai_base_url", &self.recall_ai_base_url);
         self.debug_field("welcome_email_template_id", &self.welcome_email_template_id);
         self.debug_field(
-            "recurring_sessions_scheduled_email_template_id",
-            &self.recurring_sessions_scheduled_email_template_id,
-        );
-        self.debug_field(
             "recurring_sessions_rescheduled_email_template_id",
             &self.recurring_sessions_rescheduled_email_template_id,
         );
@@ -928,11 +920,6 @@ impl Config {
     /// Returns the Resend template ID for welcome emails, if configured.
     pub fn welcome_email_template_id(&self) -> Option<String> {
         self.welcome_email_template_id.clone()
-    }
-
-    /// Returns the Resend template ID for recurring-sessions-scheduled emails, if configured.
-    pub fn recurring_sessions_scheduled_email_template_id(&self) -> Option<String> {
-        self.recurring_sessions_scheduled_email_template_id.clone()
     }
 
     /// Returns the Resend template ID for series reschedule emails, if configured.
@@ -1286,16 +1273,16 @@ impl fmt::Display for ApiVersion {
 
 #[cfg(test)]
 mod tests {
-    /// The failure this catches: a reminder configured with the scheduled template's id
-    /// still sends, and Resend rejects it for a variable only the scheduled template
-    /// declares. Nothing before the send can tell the two slugs apart.
+    /// The failure this catches: a reminder configured with the welcome template's id still
+    /// sends, and Resend rejects it for a variable only the welcome template declares.
+    /// Nothing before the send can tell the two slugs apart.
     #[test]
     fn shared_template_ids_reports_a_slug_pasted_into_the_wrong_variable() {
         let matches = Config::command()
             .try_get_matches_from([
                 "refactor-platform-rs",
-                "--recurring-sessions-scheduled-email-template-id=new-coaching-session-scheduled",
-                "--session-reminder-email-template-id=new-coaching-session-scheduled",
+                "--welcome-email-template-id=welcome-to-refactor",
+                "--session-reminder-email-template-id=welcome-to-refactor",
             ])
             .expect("args parse");
 
@@ -1306,12 +1293,12 @@ mod tests {
             1,
             "one collision, reported once, got: {shared:?}"
         );
-        assert_eq!(shared[0].0, "new-coaching-session-scheduled");
+        assert_eq!(shared[0].0, "welcome-to-refactor");
         // Uppercased back to the environment variables an operator edits.
         assert_eq!(
             shared[0].1,
             vec![
-                "RECURRING_SESSIONS_SCHEDULED_EMAIL_TEMPLATE_ID",
+                "WELCOME_EMAIL_TEMPLATE_ID",
                 "SESSION_REMINDER_EMAIL_TEMPLATE_ID"
             ],
             "both variables must be named, since either could be the wrong one"
@@ -1326,7 +1313,7 @@ mod tests {
         let matches = Config::command()
             .try_get_matches_from([
                 "refactor-platform-rs",
-                "--recurring-sessions-scheduled-email-template-id=new-coaching-session-scheduled",
+                "--welcome-email-template-id=welcome-to-refactor",
                 "--session-reminder-email-template-id=upcoming-coaching-session-reminder",
             ])
             .expect("args parse");

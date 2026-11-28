@@ -33,8 +33,8 @@ scheduled email, now carrying an attachment `invite.ics`:
   `Topics to discuss:` + bullets, `Goals you're working toward:` + bullets,
   `Actions due for this session:` + `<body> (due <date>)` / `<body> (no due date)`.
 
-When a **series** is created, both parties get the recurring-sessions email carrying an
-`invite.ics` that is a single recurring event:
+When a **series** is created, each member gets the series-scheduled email, written to the outbox in the
+create's transaction, carrying an `invite.ics` that is a single recurring event:
 - `UID:<series_id>@myrefactor.com`, `SEQUENCE:0`, `METHOD:REQUEST`.
 - `RRULE` derived from the series recurrence (`weekly` -> `FREQ=WEEKLY`; `biweekly` ->
   `FREQ=WEEKLY;INTERVAL=2`; weekdays -> `BYDAY=...`; count -> `COUNT=n`; until -> `UNTIL=...`).
@@ -73,8 +73,8 @@ delivery, so use option 2 for those cases specifically.
 ## Setup / prerequisites
 
 1. **Resend config** (real key so emails actually send): `--resend-api-key`,
-   `--recurring-sessions-scheduled-email-template-id`,
-   `--frontend-base-url=https://<your app>` (drives the `View this session` link).
+   `--frontend-base-url=https://<your app>` (drives the `View this session` link; the session and
+   series scheduled emails are composed in the backend and need no template id).
 2. **A coaching relationship** with a coach and coachee whose email inboxes you control.
    Set the **coach's timezone** to `America/New_York` for the DST/cross-zone checks.
 3. Run the backend (`cargo run`) and drive it via the frontend or `curl` (create session /
@@ -134,7 +134,9 @@ above. Watch for: exactly one `BEGIN:VTIMEZONE` (before `BEGIN:VEVENT`), `DTSTAR
 ### H3: Recurring series (weekly)
 1. Create a weekly series (coach `America/New_York`), several occurrences, with `meeting_url`.
 2. **Expect:** one email per recipient with `invite.ics` containing `UID:<series_id>@myrefactor.com`,
-   `RRULE:FREQ=WEEKLY`, `SEQUENCE:0`, `DTSTART;TZID=America/New_York:...` at the first session.
+   `RRULE:FREQ=WEEKLY`, `SEQUENCE:0`, `DTSTART;TZID=America/New_York:...` at the first session. The
+   scheduler's copy reads "You scheduled a recurring series ...", the other participant's "... scheduled
+   a recurring series ... with you"; dates and times are in each recipient's own timezone.
 3. Import: the full series materializes; each occurrence handles DST correctly in NY.
 4. Description shows `View this session: <first session url>` + the first session's in-progress
    goals only (no title/topics/actions).
@@ -196,10 +198,10 @@ above. Watch for: exactly one `BEGIN:VTIMEZONE` (before `BEGIN:VEVENT`), `DTSTAR
 2. **Expect:** still one recurring `.ics` with `UID:<series_id>...` and an `RRULE` (e.g. `COUNT=1`);
    imports as a single event.
 
-### S8: Missing Resend template id
-1. Start the backend without the session-scheduled (or recurring) template id configured.
-2. **Expect:** creating a session/series does not crash the request; the email simply fails and
-   is logged (best-effort). No partial/garbage email.
+### S8: Email not configured
+1. Start the backend without `--frontend-base-url`.
+2. **Expect:** creating a session/series does not crash the request; the skipped email is logged
+   (best-effort). No partial/garbage email.
 
 ### S9: Re-import the same invite (idempotency by UID)
 1. Import H1's `.ics`, then import it again (or forward the email to yourself and re-add).
@@ -342,7 +344,7 @@ Reschedule emails say what changed, not just what it changed to. These are asser
 
 ### HE3: A new series states its cadence
 1. Create a weekly series.
-2. **Expect:** the email states **Repeats: Weekly**. Cross-check it against the calendar client's
+2. **Expect:** the email states **Repeats:** with the cadence (e.g. "Weekly on Monday"). Cross-check it against the calendar client's
    own reading of the `RRULE` (Google shows e.g. "Weekly on Monday"); the two are computed
    independently and must agree.
 
